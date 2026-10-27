@@ -128,11 +128,11 @@ The app container runs `npm run db:indexes` and then listens on port 4317. Set `
 
 Vercel and MongoDB Atlas: follow [DEPLOY.md](DEPLOY.md). The Vercel build syncs the indexes, then creates one admin from `ADMIN_EMAIL` and `ADMIN_PASSWORD`. `npm run db:seed` refuses to run when `NODE_ENV` is production or `VERCEL` is set, so demo accounts never load there.
 
-A plain server under pm2, with no proxy: the whole app (pages and API) is one Next.js process, plus the daily jobs.
+A plain server under pm2, with no proxy: the whole app (pages and API) is one Next.js process, plus the daily jobs. It uses port 3009; SynergyFund's frontend holds 3007 on the shared server.
 
 ```bash
 npm ci && npm run db:indexes && npm run build
-pm2 start node_modules/.bin/next --name upb-capital -- start -p 3007 -H 0.0.0.0
+pm2 start node_modules/.bin/next --name upb-capital -- start -p 3009 -H 0.0.0.0
 pm2 start node_modules/.bin/tsx --name upb-jobs --cron-restart "0 13 * * *" --no-autorestart -- --env-file=.env scripts/jobs.ts
 pm2 save
 ```
