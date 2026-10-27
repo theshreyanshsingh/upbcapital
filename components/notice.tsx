@@ -1,0 +1,75 @@
+const COPY: Record<string, string> = {
+  submitted: "The file is with the desk.",
+  resubmitted: "Updated and sent back to review.",
+  nda: "The agreement is signed. Street address and borrower name are open, and the PDF is in the data room.",
+  message: "Sent.",
+  wires: "Wire instructions updated.",
+  uploaded: "File added to the checklist.",
+  step: "That closing step is marked complete.",
+  submitted_kyc: "Your buyer file is with the desk.",
+  kyc: "Verification updated.",
+  stripe_price: "The fee schedule is saved, and Stripe has a new Pro price.",
+  read: "Notices marked read.",
+  inquiry: "Sent to the desk and the seller.",
+  pro: "Pro is active on this account. The simulated charge is on the revenue ledger.",
+  canceled: "Pro is canceled. You are back on the free desk.",
+  mock: "Stripe keys are not set, so checkout stays on the desk.",
+  stripe_success: "Stripe sent you back. Membership updates when the webhook lands.",
+  stripe_cancel: "Checkout was canceled. Nothing was charged.",
+  saved: "Search saved. Matches will be logged to the desk mail when paper goes live.",
+  updated: "Account updated.",
+  membership: "Membership updated.",
+  saved_settings: "The fee schedule is updated.",
+  auction: "Bid terms saved.",
+  duplicated: "A copy is in review.",
+  repriced: "The tape was repriced.",
+  credit: "Pro is active. A referral credit covered this month.",
+  totp: "Add the secret to an authenticator, then confirm the code.",
+  totp_on: "Two-factor sign-in is on.",
+  totp_off: "Two-factor sign-in is off.",
+  codes: "Write the recovery codes down. They will not be shown again.",
+  email_otp: "Email fallback updated.",
+  email_sent: "A code is on its way to your email.",
+  template: "The form is saved.",
+  boarded: "Servicer boarding is saved.",
+  box: "The buy box is scored against the book.",
+  lead: "The lead is updated.",
+  bid: "The desk bid is on file.",
+  owned: "The book is updated.",
+  payment: "Payment logged.",
+  desk_closing: "Accepted. The closing checklist is open. The note joins the book when that file is marked closed.",
+  loss: "The asset file is updated.",
+  reo: "The property record is open, with a rehab budget and an exit.",
+  relist: "The note is back on the book, with the file and the payment history.",
+  slice: "The split is modeled. List it when the price is right.",
+  capital: "Capital is updated.",
+  compliance: "Compliance settings are saved.",
+  rehab: "The rehab picture is saved.",
+  filing: "The filing is updated.",
+  post: "The journal is saved.",
+  key: "The API key is updated.",
+  webhook: "The webhook is updated.",
+  cost: "The unit cost is saved.",
+  prefs: "Notice preferences are saved.",
+  group: "The group is open. Seats fill until the price is covered.",
+  joined: "Your seat is on the book.",
+  reconfirmed: "You reconfirmed the counter.",
+  dropped: "The seat is open again.",
+  extended: "The deadline moved.",
+  partial: "A partial bid is allowed.",
+  offered: "The group offer went to the seller as one bid.",
+  dissolved: "The group is dissolved. Everyone was told.",
+  funded: "That share is marked funded.",
+};
+
+export function Notice({ notice, error }: { notice?: string; error?: string }) {
+  if (error) {
+    return <p role="alert" className="border border-bad/40 bg-bad/10 px-4 py-3 text-sm text-bad rounded-xl">{error}</p>;
+  }
+  if (!notice) return null;
+  return (
+    <p role="status" className="border border-link/30 bg-link/10 px-4 py-3 text-sm text-foreground rounded-xl">
+      {COPY[notice] ?? decodeURIComponent(notice)}
+    </p>
+  );
+}

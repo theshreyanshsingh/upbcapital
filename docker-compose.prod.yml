@@ -1,0 +1,26 @@
+services:
+  db:
+    image: mongo:7
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    volumes:
+      - upb_mongo:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "try { rs.status().ok } catch (e) { rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: 'localhost:27017' }] }).ok }"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: mongodb://db:27017/upb_capital?directConnection=true
+      AUTH_SECRET: replace-me
+      NEXT_PUBLIC_APP_URL: http://127.0.0.1:4317
+    ports:
+      - "4317:4317"
+    command: sh -c "npm run db:indexes && npm start"
+
+volumes:
+  upb_mongo:

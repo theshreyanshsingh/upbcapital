@@ -1,0 +1,88 @@
+"use server";
+
+import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
+import { requireRole } from "@/lib/auth";
+import { openClosing } from "@/lib/closing-service";
+import { prisma } from "@/lib/prisma";
+import { audit } from "@/lib/audit";
+
+function amountOf(formData: FormData, key = "amount") {
+  const value = Number(String(formData.get(key) || "").replace(/[$,\s]/g, ""));
+  return Number.isFinite(value) ? value : NaN;
+}
+
+export async function placeDeskBid(formData: FormData) {
+  const user = await requireRole(["ADMIN"]);
+  const listingId = String(formData.get("listingId") || "");
+  const listing = await prisma.listing.findUnique({ where: { id: listingId }, include: { notes: true, seller: true } });
+  if (!listing || !["APPROVED", "SUBMITTED", "UNDER_REVIEW", "PENDING"].includes(listing.status)) {
+    redirect(`/admin/listings/${listingId}?error=That listing is not open for a desk bid.`);
+  }
+  const amount = amountOf(formData);
+  if (!(amount > 0)) redirect(`/admin/listings/${listingId}?error=Enter a bid.`);
+  const noteId = String(formData.get("noteId") || "");
+  const note = noteId ? listing.notes.find((item) => item.id === noteId) : null;
+  if (noteId && !note) redirect(`/admin/listings/${listingId}?error=That loan is not on this listing.`);
+  const message = String(formData.get("message") || "").trim().slice(0, 1000);
+  await prisma.deskBid.create({
+    data: { listingId, noteId: note?.id, amount, message },
+  });
+  await audit(user.id, "DESK_BID", "listing", listingId, `Desk bid $${amount.toLocaleString("en-US")}`);
+  revalidatePath("/admin/book");
+  redirect(`/admin/listings/${listingId}?notice=bid`);
+}
+
+export async function decideDeskBid(formData: FormData) {
+  const user = await requireRole(["ADMIN"]);
+  const id = String(formData.get("id") || "");
+  const decision = String(formData.get("decision") || "");
+  const bid = await prisma.deskBid.findUnique({ where: { id }, include: { listing: { include: { notes: true } } } });
+  if (!bid || bid.status !== "OPEN") redirect("/admin/book?error=That bid is already decided.");
+  if (decision === "DECLINED" || decision === "WITHDRAWN") {
+    await prisma.deskBid.update({ where: { id }, data: { status: decision } });
+    redirect("/admin/book?notice=bid");
+  }
+  if (decision !== "ACCEPTED") redirect("/admin/book?error=Unknown decision.");
+  await prisma.deskBid.update({ where: { id }, data: { status: "ACCEPTED" } });
+  if (bid.noteId) {
+    await prisma.note.update({ where: { id: bid.noteId }, data: { tradeStatus: "IN_CONTRACT" } });
+  }
+  if (bid.listing.status !== "SOLD") {
+    await prisma.listing.update({ where: { id: bid.listingId }, data: { status: "PENDING" } });
+  }
+  const closing = await openClosing({
+    listingId: bid.listingId,
+    deskBidId: bid.id,
+    noteId: bid.noteId,
+    salePrice: Number(bid.amount),
+    title: bid.listing.title,
+  });
+  await audit(user.id, "DESK_BID_ACCEPTED", "listing", bid.listingId, `Closing ${closing.id} at $${Number(bid.amount).toLocaleString("en-US")}`);
+  redirect(`/closings/${closing.id}?notice=desk_closing`);
+}
+
+export async function logDeskPayment(formData: FormData) {
+  await requireRole(["ADMIN"]);
+  const holdingId = String(formData.get("holdingId") || "");
+  const amount = amountOf(formData);
+  const paidOn = String(formData.get("paidOn") || "");
+  const memo = String(formData.get("memo") || "").trim().slice(0, 240);
+  if (!(amount > 0) || !/^\d{4}-\d{2}-\d{2}$/.test(paidOn)) redirect("/admin/book?error=Amount and date are required.");
+  const holding = await prisma.deskHolding.findUnique({ where: { id: holdingId } });
+  if (!holding) redirect("/admin/book?error=That note is not on the desk book.");
+  await prisma.cashReceipt.create({
+    data: { deskHoldingId: holdingId, amount, paidOn: new Date(`${paidOn}T00:00:00Z`), memo },
+  });
+  revalidatePath("/admin/book");
+  redirect("/admin/book?notice=payment");
+}
+
+export async function setDeskHoldingStatus(formData: FormData) {
+  await requireRole(["ADMIN"]);
+  const id = String(formData.get("id") || "");
+  const status = String(formData.get("status") || "");
+  if (!["CURRENT", "WATCH", "RESOLVED"].includes(status)) redirect("/admin/book?error=Unknown status.");
+  await prisma.deskHolding.update({ where: { id }, data: { status: status as "CURRENT" } });
+  redirect("/admin/book?notice=owned");
+}

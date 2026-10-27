@@ -1,0 +1,1335 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  INDIVIDUAL_SELLER
+  INSTITUTIONAL_SELLER
+  BUYER
+  ADMIN
+  BROKER
+}
+
+enum AccountStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum CompanyType {
+  BANK
+  FUND
+  SERVICER
+  OTHER
+}
+
+enum SubscriptionTier {
+  FREE
+  PRO
+}
+
+enum SubscriptionStatus {
+  INCOMPLETE
+  ACTIVE
+  CANCELED
+  PAST_DUE
+}
+
+enum ListingKind {
+  SINGLE
+  POOL
+}
+
+enum ListingStatus {
+  SUBMITTED
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+  CHANGES_REQUESTED
+  PENDING
+  SOLD
+}
+
+enum PropertyType {
+  SFR
+  CONDO
+  TOWNHOUSE
+  MULTIFAMILY
+  LAND
+  COMMERCIAL
+  MIXED_USE
+  OTHER
+}
+
+enum LienPosition {
+  FIRST
+  SECOND
+  THIRD
+  OTHER
+}
+
+enum PaymentStatus {
+  PERFORMING
+  NON_PERFORMING
+  SUB_PERFORMING
+}
+
+enum Occupancy {
+  OWNER_OCCUPIED
+  TENANT
+  VACANT
+  UNKNOWN
+}
+
+enum ForeclosureStatus {
+  NONE
+  PRE_FORECLOSURE
+  NOTICE_OF_DEFAULT
+  LIS_PENDENS
+  AUCTION_SCHEDULED
+  REO
+  UNKNOWN
+}
+
+enum DocType {
+  NOTE
+  MORTGAGE
+  PAY_HISTORY
+  BPO
+  TITLE
+  TAPE
+  NDA
+  OTHER
+}
+
+enum NdaMethod {
+  TYPED
+  DRAWN
+  LEGACY
+}
+
+enum NoteTradeStatus {
+  AVAILABLE
+  IN_CONTRACT
+  SOLD
+}
+
+enum VerificationStatus {
+  NOT_STARTED
+  SUBMITTED
+  APPROVED
+  CHANGES_REQUESTED
+  REJECTED
+}
+
+enum InvestorEntity {
+  INDIVIDUAL
+  LLC
+  TRUST
+  FUND
+  OTHER
+}
+
+enum OfferMessageKind {
+  OFFER
+  COUNTER
+  NOTE
+}
+
+enum ClosingStatus {
+  OPEN
+  COMPLETE
+  CANCELED
+}
+
+enum ClosingStepKey {
+  PURCHASE_AGREEMENT
+  BUYER_DEPOSIT
+  COLLATERAL_TRANSFER
+  ASSIGNMENT
+  PAYMENT_RECEIVED
+  CLOSED
+}
+
+enum ClosingStepStatus {
+  PENDING
+  COMPLETE
+}
+
+enum InquiryType {
+  OFFER
+  INFO_REQUEST
+  DATA_ROOM
+}
+
+enum InquiryStatus {
+  OPEN
+  REVIEWED
+  ACCEPTED
+  DECLINED
+}
+
+enum ReviewAction {
+  COMMENT
+  UNDER_REVIEW
+  APPROVE
+  REJECT
+  REQUEST_CHANGES
+  MARK_PENDING
+  MARK_SOLD
+  EDIT
+}
+
+enum RevenueType {
+  BUYER_PREMIUM
+  SELLER_COMMISSION
+  SUBSCRIPTION
+  BROKER_FEE
+}
+
+enum BrokerDealRole {
+  SELLER_BROKER
+  AFFILIATE
+}
+
+enum FeeBasis {
+  PERCENT
+  FLAT
+}
+
+enum BrokerFeeStatus {
+  OWED
+  PAID
+}
+
+enum BidMode {
+  NONE
+  SEALED
+  BEST_AND_FINAL
+}
+
+model User {
+  id                           String             @id @default(cuid()) @map("_id")
+  email                        String             @unique
+  passwordHash                 String
+  name                         String
+  role                         Role
+  accountStatus                AccountStatus      @default(PENDING)
+  phone                        String             @default("")
+  companyName                  String             @default("")
+  companyType                  CompanyType?
+  subscriptionTier             SubscriptionTier   @default(FREE)
+  subscriptionStatus           SubscriptionStatus @default(INCOMPLETE)
+  subscriptionComped           Boolean            @default(false)
+  stripeCustomerId             String?
+  stripeSubscriptionId         String?
+  subscriptionCurrentPeriodEnd DateTime?
+  referralCode                 String?            @unique
+  referredById                 String?
+  referredBy                   User?              @relation("Referrals", fields: [referredById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  referrals                    User[]             @relation("Referrals")
+  referralCredits              Int                @default(0)
+  referralRewarded             Boolean            @default(false)
+  totpSecret                   String             @default("")
+  totpEnabled                  Boolean            @default(false)
+  recoveryHashes               String             @default("")
+  recoveryReveal               String             @default("")
+  emailOtpFallback             Boolean            @default(false)
+  notifyEmail                  Boolean            @default(true)
+  notifyInApp                  Boolean            @default(true)
+  digest                       DigestFrequency    @default(WEEKLY)
+  lastDigestAt                 DateTime?
+  createdAt                    DateTime           @default(now())
+  sessions                     ServerSession[]
+  listings                     Listing[]
+  inquiries                    Inquiry[]
+  favorites                    Favorite[]
+  ndas                         NdaAcknowledgment[]
+  reviews                      ReviewComment[]
+  savedSearches                SavedSearch[]
+  buyerProfile                 BuyerProfile?
+  offerMessages                OfferMessage[]
+  notifications                Notification[]
+  listingViews                 ListingView[]
+  auditEvents                  AuditEvent[]
+  buyBoxes                     BuyBox[]
+  buyerHoldings                BuyerHolding[]
+  groupsOpened                 GroupBuy[]       @relation("GroupsOpened")
+  groupPositions               GroupPosition[]
+  closingFunders               ClosingFunder[]
+  apiKeys                      ApiKey[]
+  webhooks                     WebhookEndpoint[]
+  posts                        Post[]
+  tapeDrafts                   TapeDraft[]
+  threadSeats                  ThreadMember[]
+  threadPosts                  ThreadPost[] @relation("ThreadAuthor")
+  brokerProfile                BrokerProfile?
+  brokeredListings             Listing[]          @relation("BrokeredListings")
+  brokerFees                   BrokerFee[]
+}
+
+model PlatformSettings {
+  id                   String   @id @default("default") @map("_id")
+  buyerPremiumBps      Int      @default(250)
+  sellerCommissionBps  Int      @default(300)
+  proMonthlyPriceCents Int      @default(24900)
+  earlyAccessHours     Int      @default(48)
+  freeBrowseLimit      Int      @default(4)
+  stripeProductId      String   @default("")
+  stripePriceId        String   @default("")
+  wireInstructions     String   @default("")
+  chargeDeskFees       Boolean  @default(true)
+  retentionYears       Int      @default(7)
+  brokerFeeBasis       FeeBasis @default(PERCENT)
+  brokerFeeBps         Int      @default(2000)
+  brokerFeeCents       Int      @default(50000)
+  affiliateFeeBasis    FeeBasis @default(PERCENT)
+  affiliateFeeBps      Int      @default(1000)
+  affiliateFeeCents    Int      @default(25000)
+  updatedAt            DateTime @updatedAt
+}
+
+model BrokerProfile {
+  userId             String    @id @map("_id")
+  user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company            String    @default("")
+  licenseType        String    @default("")
+  licenseNumber      String    @default("")
+  states             String    @default("")
+  w9Key              String    @default("")
+  w9Name             String    @default("")
+  payoutNote         String    @default("")
+  bio                String    @default("")
+  portraitKey        String    @default("")
+  welcomedAt         DateTime?
+  brokerFeeBasis     FeeBasis?
+  brokerFeeBps       Int?
+  brokerFeeCents     Int?
+  affiliateFeeBasis  FeeBasis?
+  affiliateFeeBps    Int?
+  affiliateFeeCents  Int?
+  updatedAt          DateTime  @updatedAt
+}
+
+model BrokerFee {
+  id          String          @id @default(cuid()) @map("_id")
+  closingId   String
+  closing     Closing         @relation(fields: [closingId], references: [id], onDelete: Cascade)
+  brokerId    String
+  broker      User            @relation(fields: [brokerId], references: [id], onDelete: Cascade)
+  role        BrokerDealRole
+  amountCents Int
+  basis       FeeBasis
+  status      BrokerFeeStatus @default(OWED)
+  paidAt      DateTime?
+  createdAt   DateTime        @default(now())
+
+  @@unique([closingId, brokerId, role])
+  @@index([status])
+  @@index([brokerId])
+}
+
+model Listing {
+  id                   String        @id @default(cuid()) @map("_id")
+  kind                 ListingKind
+  sellerId             String
+  seller               User          @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  status               ListingStatus @default(SUBMITTED)
+  title                String
+  summary              String        @default("")
+  submittedAt          DateTime      @default(now())
+  approvedAt           DateTime?
+  soldAt               DateTime?
+  salePrice            Float?
+  buyerPremiumCents    Int?
+  sellerCommissionCents Int?
+  buyerTotalCents      Int?
+  netToSellerCents     Int?
+  acceptedInquiryId    String?
+  brokerId             String?
+  broker               User?         @relation("BrokeredListings", fields: [brokerId], references: [id], onDelete: SetNull)
+  brokerRole           BrokerDealRole?
+  clientSellerName     String        @default("")
+  clientRelationship   String        @default("")
+  authorizationKey     String        @default("")
+  authorizationName    String        @default("")
+  viewCount            Int           @default(0)
+  bidMode              BidMode       @default(NONE)
+  bidDeadline          DateTime?
+  auctionNotifiedAt    DateTime?
+  bidReminderAt        DateTime?
+  sellerFinanced       Boolean       @default(false)
+  notes                Note[]
+  documents            Document[]
+  inquiries            Inquiry[]
+  favorites            Favorite[]
+  ndas                 NdaAcknowledgment[]
+  reviews              ReviewComment[]
+  closings             Closing[]
+  groupBuys            GroupBuy[]
+  views                ListingView[]
+  matches              ListingMatch[]
+  deskBids             DeskBid[]
+  deskHoldings         DeskHolding[]
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  @@index([status])
+  @@index([sellerId])
+  @@index([brokerId])
+  @@index([approvedAt])
+  @@index([status, approvedAt])
+}
+
+model Note {
+  id                String            @id @default(cuid()) @map("_id")
+  listingId         String
+  listing           Listing           @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  streetAddress     String
+  city              String
+  state             String
+  zip               String            @default("")
+  propertyType      PropertyType
+  occupancy         Occupancy         @default(UNKNOWN)
+  estimatedValue    Float
+  lienPosition      LienPosition
+  upb               Float
+  interestRate      Float
+  monthlyPi         Float
+  paymentStatus     PaymentStatus
+  monthsDelinquent  Int               @default(0)
+  lastPaidDate      DateTime?
+  originationDate   DateTime?
+  maturityDate      DateTime?
+  askingPrice       Float
+  foreclosureStatus ForeclosureStatus @default(NONE)
+  borrowerName      String            @default("")
+  memo              String            @default("")
+  tradeStatus       NoteTradeStatus   @default(AVAILABLE)
+  latitude          Float?
+  longitude         Float?
+  avmValue          Float?
+  avmProvider       String            @default("")
+  avmAsOf           DateTime?
+  inquiries         Inquiry[]
+  filings           CourtFiling[]
+  createdAt         DateTime          @default(now())
+
+  @@index([listingId])
+  @@index([state])
+  @@index([paymentStatus])
+}
+
+model Document {
+  id           String   @id @default(cuid()) @map("_id")
+  listingId    String
+  listing      Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  type         DocType
+  originalName String
+  storedName   String
+  mime         String
+  size         Int
+  createdAt    DateTime @default(now())
+}
+
+model Inquiry {
+  id        String        @id @default(cuid()) @map("_id")
+  listingId String
+  listing   Listing       @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  buyerId   String
+  buyer     User          @relation(fields: [buyerId], references: [id], onDelete: Cascade)
+  type      InquiryType
+  noteId    String?
+  note      Note?         @relation(fields: [noteId], references: [id], onDelete: SetNull)
+  amount    Float?
+  message   String        @default("")
+  status    InquiryStatus @default(OPEN)
+  messages  OfferMessage[]
+  createdAt DateTime      @default(now())
+
+  @@index([listingId])
+  @@index([buyerId])
+}
+
+model Favorite {
+  id        String   @id @default(cuid()) @map("_id")
+  userId    String
+  listingId String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, listingId])
+}
+
+model NdaAcknowledgment {
+  id             String    @id @default(cuid()) @map("_id")
+  userId         String
+  listingId      String
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  listing        Listing   @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  acknowledgedAt DateTime  @default(now())
+  signerName     String    @default("")
+  method         NdaMethod @default(LEGACY)
+  signatureKey   String    @default("")
+  ipAddress      String    @default("")
+  userAgent      String    @default("")
+  pdfKey         String    @default("")
+  documentId     String    @default("")
+  signatureProvider String @default("")
+  signatureRef   String    @default("")
+
+  @@unique([userId, listingId])
+}
+
+model BuyerProfile {
+  userId            String             @id @map("_id")
+  user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entityType        InvestorEntity     @default(INDIVIDUAL)
+  entityName        String             @default("")
+  jurisdiction      String             @default("")
+  accredited        Boolean            @default(false)
+  certificationText String             @default("")
+  proofKey          String             @default("")
+  proofName         String             @default("")
+  proofMime         String             @default("")
+  status            VerificationStatus @default(NOT_STARTED)
+  reviewerNote      String             @default("")
+  vendor            String             @default("")
+  vendorRef         String             @default("")
+  submittedAt       DateTime?
+  reviewedAt        DateTime?
+  updatedAt         DateTime           @updatedAt
+}
+
+model OfferMessage {
+  id        String           @id @default(cuid()) @map("_id")
+  inquiryId String
+  inquiry   Inquiry          @relation(fields: [inquiryId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User             @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  kind      OfferMessageKind
+  amount    Float?
+  body      String           @default("")
+  createdAt DateTime         @default(now())
+
+  @@index([inquiryId])
+}
+
+model Closing {
+  id                    String        @id @default(cuid()) @map("_id")
+  listingId             String
+  listing               Listing       @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  inquiryId             String?       @unique
+  deskBidId             String?       @unique
+  deskBid               DeskBid?      @relation(fields: [deskBidId], references: [id], onDelete: SetNull)
+  noteId                String?
+  status                ClosingStatus @default(OPEN)
+  salePrice             Float
+  buyerPremiumCents     Int
+  sellerCommissionCents Int
+  buyerTotalCents       Int
+  netToSellerCents      Int
+  provider              String        @default("manual")
+  providerRef           String        @default("")
+  wireInstructions      String        @default("")
+  openedAt              DateTime      @default(now())
+  closedAt              DateTime?
+  steps                 ClosingStep[]
+  boarding              ServicerBoarding?
+  funders               ClosingFunder[]
+  brokerFees            BrokerFee[]
+
+  @@index([listingId])
+  @@index([status])
+}
+
+model ClosingStep {
+  id          String            @id @default(cuid()) @map("_id")
+  closingId   String
+  closing     Closing           @relation(fields: [closingId], references: [id], onDelete: Cascade)
+  key         ClosingStepKey
+  status      ClosingStepStatus @default(PENDING)
+  note        String            @default("")
+  completedAt DateTime?
+  files       ClosingFile[]
+
+  @@unique([closingId, key])
+}
+
+model ClosingFile {
+  id           String      @id @default(cuid()) @map("_id")
+  stepId       String
+  step         ClosingStep @relation(fields: [stepId], references: [id], onDelete: Cascade)
+  originalName String
+  storageKey   String
+  mime         String
+  size         Int
+  uploadedById String?
+  createdAt    DateTime    @default(now())
+}
+
+model ServicerBoarding {
+  id           String    @id @default(cuid()) @map("_id")
+  closingId    String    @unique
+  closing      Closing   @relation(fields: [closingId], references: [id], onDelete: Cascade)
+  servicerName String
+  contactEmail String    @default("")
+  loanNumber   String    @default("")
+  boardedAt    DateTime?
+  notes        String    @default("")
+  updatedAt    DateTime  @updatedAt
+}
+
+model ServerSession {
+  id        String   @id @map("_id")
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model RateWindow {
+  key       String   @id @map("_id")
+  count     Int      @default(0)
+  expiresAt DateTime
+}
+
+model LoginCode {
+  id        String    @id @default(cuid()) @map("_id")
+  userId    String
+  codeHash  String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, expiresAt])
+}
+
+model DocumentTemplate {
+  key       String   @id @map("_id")
+  title     String
+  body      String
+  updatedAt DateTime @updatedAt
+}
+
+model ReviewComment {
+  id        String       @id @default(cuid()) @map("_id")
+  listingId String
+  listing   Listing      @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User         @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  action    ReviewAction
+  comment   String       @default("")
+  createdAt DateTime     @default(now())
+
+  @@index([listingId])
+}
+
+model SavedSearch {
+  id           String   @id @default(cuid()) @map("_id")
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name         String
+  filters      Json
+  alertEnabled Boolean  @default(true)
+  createdAt    DateTime @default(now())
+}
+
+model Notification {
+  id        String    @id @default(cuid()) @map("_id")
+  toEmail   String
+  userId    String?
+  user      User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  subject   String
+  body      String
+  delivery  String    @default("log")
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([toEmail])
+  @@index([userId])
+}
+
+model RevenueEvent {
+  id          String      @id @default(cuid()) @map("_id")
+  type        RevenueType
+  amountCents Int
+  listingId   String?
+  userId      String?
+  description String
+  mock        Boolean     @default(false)
+  externalId  String?     @unique
+  occurredAt  DateTime    @default(now())
+}
+
+model ListingView {
+  id        String   @id @default(cuid()) @map("_id")
+  listingId String
+  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  createdAt DateTime @default(now())
+
+  @@index([listingId])
+  @@index([userId])
+}
+
+enum LeadStatus {
+  NEW
+  CONTACTED
+  LISTING
+  PASSED
+}
+
+enum DeskBidStatus {
+  OPEN
+  ACCEPTED
+  DECLINED
+  WITHDRAWN
+}
+
+enum HoldingStatus {
+  CURRENT
+  WATCH
+  RESOLVED
+}
+
+model BuyBox {
+  id            String         @id @default(cuid()) @map("_id")
+  userId        String
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name          String
+  states        String         @default("")
+  liens         String         @default("")
+  statuses      String         @default("")
+  upbMin        Float?
+  upbMax        Float?
+  priceMin      Float?
+  priceMax      Float?
+  maxPriceToUpb Float?
+  targetYield   Float?
+  active        Boolean        @default(true)
+  createdAt     DateTime       @default(now())
+  matches       ListingMatch[]
+
+  @@index([userId])
+}
+
+model ListingMatch {
+  id        String   @id @default(cuid()) @map("_id")
+  listingId String
+  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  buyBoxId  String
+  buyBox    BuyBox   @relation(fields: [buyBoxId], references: [id], onDelete: Cascade)
+  userId    String
+  score     Int
+  reasons   String   @default("")
+  createdAt DateTime @default(now())
+
+  @@unique([listingId, buyBoxId])
+  @@index([listingId])
+  @@index([userId])
+}
+
+model SellerLead {
+  id             String        @id @default(cuid()) @map("_id")
+  name           String
+  email          String
+  phone          String        @default("")
+  city           String        @default("")
+  state          String
+  lienPosition   LienPosition
+  paymentStatus  PaymentStatus
+  upb            Float
+  estimatedValue Float
+  interestRate   Float
+  monthlyPi      Float
+  indicativeLow  Float
+  indicativeHigh Float
+  basis          String        @default("")
+  note           String        @default("")
+  status         LeadStatus    @default(NEW)
+  userId         String?
+  listingId      String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@index([status])
+  @@index([email])
+}
+
+model DeskBid {
+  id        String        @id @default(cuid()) @map("_id")
+  listingId String
+  listing   Listing       @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  noteId    String?
+  amount    Float
+  message   String        @default("")
+  status    DeskBidStatus @default(OPEN)
+  closing   Closing?
+  createdAt DateTime      @default(now())
+
+  @@index([listingId])
+  @@index([status])
+}
+
+model DeskHolding {
+  id         String         @id @default(cuid()) @map("_id")
+  listingId  String
+  listing    Listing        @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  noteId     String?
+  title      String
+  costBasis  Float
+  upb        Float
+  status     HoldingStatus  @default(CURRENT)
+  acquiredAt     DateTime           @default(now())
+  closingId      String?            @unique
+  payments       CashReceipt[]      @relation("DeskReceipts")
+  lossCase       LossCase?
+  participations Participation[]    @relation("DeskSlices")
+  allocations    CapitalAllocation[]
+  rehab          RehabEstimate?
+
+  @@index([status])
+}
+
+model BuyerHolding {
+  id                String        @id @default(cuid()) @map("_id")
+  userId            String
+  user              User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  closingId         String?
+  listingId         String?
+  title             String
+  costBasis         Float
+  upb               Float
+  sharePercent      Float?
+  underwrittenYield Float?
+  status            HoldingStatus @default(CURRENT)
+  acquiredAt        DateTime        @default(now())
+  payments          CashReceipt[]   @relation("BuyerReceipts")
+  participations    Participation[] @relation("BuyerSlices")
+
+  @@unique([closingId, userId])
+  @@index([userId])
+}
+
+enum GroupStatus {
+  GATHERING
+  OFFERED
+  COUNTERED
+  CLOSING
+  CLOSED
+  DISSOLVED
+}
+
+enum GroupStructure {
+  PRO_RATA
+  SENIOR_JUNIOR
+}
+
+enum PositionSlice {
+  PARI
+  SENIOR
+  JUNIOR
+}
+
+enum PositionStatus {
+  PLEDGED
+  RECONFIRM
+  DROPPED
+  FUNDED
+}
+
+enum FunderStatus {
+  PENDING
+  FUNDED
+}
+
+model GroupBuy {
+  id           String          @id @default(cuid()) @map("_id")
+  listingId    String
+  listing      Listing         @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  noteId       String?
+  openedById   String
+  openedBy     User            @relation("GroupsOpened", fields: [openedById], references: [id], onDelete: Cascade)
+  status       GroupStatus     @default(GATHERING)
+  minPosition  Float
+  deadline     DateTime
+  targetAmount Float
+  structure    GroupStructure  @default(PRO_RATA)
+  seniorYield  Float?
+  allowPartial Boolean         @default(false)
+  inquiryId    String?         @unique
+  closingId    String?         @unique
+  positions    GroupPosition[]
+  createdAt    DateTime        @default(now())
+
+  @@index([listingId, status])
+}
+
+model GroupPosition {
+  id        String         @id @default(cuid()) @map("_id")
+  groupId   String
+  group     GroupBuy       @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  seat      Int
+  amount    Float
+  percent   Float
+  slice     PositionSlice  @default(PARI)
+  status    PositionStatus @default(PLEDGED)
+  createdAt DateTime       @default(now())
+
+  @@unique([groupId, userId])
+  @@index([userId])
+}
+
+model ClosingFunder {
+  id           String        @id @default(cuid()) @map("_id")
+  closingId    String
+  closing      Closing       @relation(fields: [closingId], references: [id], onDelete: Cascade)
+  userId       String
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  amount       Float
+  premiumCents Int
+  percent      Float
+  slice        PositionSlice @default(PARI)
+  status       FunderStatus  @default(PENDING)
+  fundedAt     DateTime?
+
+  @@unique([closingId, userId])
+}
+
+model CashReceipt {
+  id             String        @id @default(cuid()) @map("_id")
+  buyerHoldingId String?
+  buyerHolding   BuyerHolding? @relation("BuyerReceipts", fields: [buyerHoldingId], references: [id], onDelete: Cascade)
+  deskHoldingId  String?
+  deskHolding    DeskHolding?  @relation("DeskReceipts", fields: [deskHoldingId], references: [id], onDelete: Cascade)
+  amount         Float
+  paidOn         DateTime
+  memo           String        @default("")
+  createdAt      DateTime      @default(now())
+}
+
+model DeskThread {
+  id        String         @id @default(cuid()) @map("_id")
+  subject   String
+  listingId String?
+  inquiryId String?        @unique
+  closingId String?        @unique
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+  members   ThreadMember[]
+  posts     ThreadPost[]
+
+  @@index([listingId])
+}
+
+model ThreadMember {
+  id         String     @id @default(cuid()) @map("_id")
+  threadId   String
+  userId     String
+  thread     DeskThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lastReadAt DateTime?
+
+  @@unique([threadId, userId])
+  @@index([userId])
+}
+
+model ThreadPost {
+  id        String       @id @default(cuid()) @map("_id")
+  threadId  String
+  thread    DeskThread   @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User         @relation("ThreadAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  body      String
+  createdAt DateTime     @default(now())
+  files     ThreadFile[]
+
+  @@index([threadId, createdAt])
+}
+
+model ThreadFile {
+  id           String     @id @default(cuid()) @map("_id")
+  postId       String
+  post         ThreadPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+  originalName String
+  storageKey   String
+  mime         String
+  size         Int
+  createdAt    DateTime   @default(now())
+}
+
+enum DigestFrequency {
+  OFF
+  DAILY
+  WEEKLY
+}
+
+enum LossStatus {
+  OUTREACH
+  REINSTATEMENT
+  FORBEARANCE
+  MODIFICATION
+  FORECLOSURE
+  REO
+  RESOLVED
+}
+
+enum PlanKind {
+  REINSTATEMENT
+  FORBEARANCE
+  MODIFICATION
+}
+
+enum ExitPath {
+  RESALE
+  RENTAL
+}
+
+enum SliceStatus {
+  DRAFT
+  LISTED
+  SOLD
+}
+
+model LossCase {
+  id           String                  @id @default(cuid()) @map("_id")
+  holdingId    String                  @unique
+  holding      DeskHolding             @relation(fields: [holdingId], references: [id], onDelete: Cascade)
+  status       LossStatus              @default(OUTREACH)
+  summary      String                  @default("")
+  outreach     LossOutreach[]
+  plans        LossPlan[]
+  milestones   ForeclosureMilestone[]
+  tasks        LossTask[]
+  property     ReoProperty?
+  updatedAt    DateTime                @updatedAt
+}
+
+model LossOutreach {
+  id          String   @id @default(cuid()) @map("_id")
+  caseId      String
+  case        LossCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  contactedAt DateTime
+  channel     String   @default("phone")
+  note        String
+  createdAt   DateTime @default(now())
+}
+
+model LossPlan {
+  id        String   @id @default(cuid()) @map("_id")
+  caseId    String
+  case      LossCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  kind      PlanKind
+  amount    Float
+  months    Int      @default(0)
+  rate      Float                     @default(0)
+  startOn   DateTime?
+  note      String   @default("")
+  createdAt DateTime @default(now())
+}
+
+model ForeclosureMilestone {
+  id        String    @id @default(cuid()) @map("_id")
+  caseId    String
+  case      LossCase  @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  label     String
+  attorney  String    @default("")
+  courtDate DateTime?
+  filedOn   DateTime?
+  note      String    @default("")
+  doneAt    DateTime?
+}
+
+model LossTask {
+  id     String    @id @default(cuid()) @map("_id")
+  caseId String
+  case   LossCase  @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  title  String
+  dueOn      DateTime
+  doneAt     DateTime?
+  remindedAt DateTime?
+
+  @@index([dueOn])
+}
+
+model ReoProperty {
+  id           String   @id @default(cuid()) @map("_id")
+  caseId       String   @unique
+  case         LossCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  address      String
+  rehabBudget  Float
+  exitPath     ExitPath
+  exitValue    Float                     @default(0)
+  monthlyRent  Float                     @default(0)
+  note         String   @default("")
+  createdAt    DateTime @default(now())
+}
+
+model Participation {
+  id              String        @id @default(cuid()) @map("_id")
+  deskHoldingId   String?
+  deskHolding     DeskHolding?  @relation("DeskSlices", fields: [deskHoldingId], references: [id], onDelete: Cascade)
+  buyerHoldingId  String?
+  buyerHolding    BuyerHolding? @relation("BuyerSlices", fields: [buyerHoldingId], references: [id], onDelete: Cascade)
+  listingId       String?
+  percent         Float
+  paymentCount    Int?
+  price           Float
+  status          SliceStatus   @default(DRAFT)
+  createdAt       DateTime      @default(now())
+}
+
+model Investor {
+  id          String              @id @default(cuid()) @map("_id")
+  name        String
+  email       String
+  entity      String              @default("")
+  commitments Commitment[]
+  allocations CapitalAllocation[]
+  createdAt   DateTime            @default(now())
+}
+
+model Commitment {
+  id         String   @id @default(cuid()) @map("_id")
+  investorId String
+  investor   Investor @relation(fields: [investorId], references: [id], onDelete: Cascade)
+  amount     Float
+  note       String   @default("")
+  committedOn DateTime @default(now())
+}
+
+model CapitalAllocation {
+  id            String      @id @default(cuid()) @map("_id")
+  investorId    String
+  investor      Investor    @relation(fields: [investorId], references: [id], onDelete: Cascade)
+  holdingId     String
+  holding       DeskHolding @relation(fields: [holdingId], references: [id], onDelete: Cascade)
+  amount        Float
+  createdAt     DateTime    @default(now())
+
+  @@index([holdingId])
+  @@index([investorId])
+}
+
+model StateDisclosure {
+  state     String   @id @map("_id")
+  license   String   @default("")
+  body      String
+  updatedAt DateTime @updatedAt
+}
+
+model OfacCheck {
+  id        String   @id @default(cuid()) @map("_id")
+  name      String
+  result    String
+  provider  String   @default("mock")
+  createdAt DateTime @default(now())
+}
+
+model PageHit {
+  id        String   @id @default(cuid()) @map("_id")
+  path      String
+  createdAt DateTime @default(now())
+
+  @@index([path, createdAt])
+}
+
+model UnitCost {
+  id        String @id @default(cuid()) @map("_id")
+  trade     String
+  unit      String
+  costCents Int
+  region    String @default("South Florida")
+
+  @@unique([region, trade, unit])
+}
+
+model RehabEstimate {
+  id            String          @id @default(cuid()) @map("_id")
+  holdingId     String          @unique
+  holding       DeskHolding     @relation(fields: [holdingId], references: [id], onDelete: Cascade)
+  arv           Float         @default(0)
+  holdingMonths Int             @default(6)
+  monthlyHold   Float         @default(2500)
+  monthlyRent   Float         @default(0)
+  expenseRatio  Float         @default(35)
+  exitPath      ExitPath        @default(RESALE)
+  lines         RehabLine[]
+  bids          ContractorBid[]
+  draws         RehabDraw[]
+  updatedAt     DateTime        @updatedAt
+}
+
+model RehabLine {
+  id           String        @id @default(cuid()) @map("_id")
+  estimateId   String
+  estimate     RehabEstimate @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+  room         String        @default("")
+  trade        String
+  quantity     Float
+  unitCostCents Int
+  note         String        @default("")
+
+  @@index([estimateId])
+}
+
+model ContractorBid {
+  id         String        @id @default(cuid()) @map("_id")
+  estimateId String
+  estimate   RehabEstimate @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+  contractor String
+  amount     Float
+  days       Int           @default(0)
+  note       String        @default("")
+  selected   Boolean       @default(false)
+  createdAt  DateTime      @default(now())
+
+  @@index([estimateId])
+}
+
+model RehabDraw {
+  id         String        @id @default(cuid()) @map("_id")
+  estimateId String
+  estimate   RehabEstimate @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+  label      String
+  percent    Float
+  fundedAt   DateTime?
+
+  @@index([estimateId])
+}
+
+enum FilingStatus {
+  NEW
+  CONTACTED
+  LISTING
+  PASSED
+}
+
+model CourtFiling {
+  id          String       @id @default(cuid()) @map("_id")
+  county      String
+  caseNumber  String
+  filedOn     DateTime?
+  defendant   String       @default("")
+  plaintiff   String       @default("")
+  street      String       @default("")
+  city        String       @default("")
+  state       String       @default("FL")
+  zip         String       @default("")
+  noteId      String?
+  note        Note?        @relation(fields: [noteId], references: [id], onDelete: SetNull)
+  status      FilingStatus @default(NEW)
+  outreach    String       @default("")
+  createdAt   DateTime     @default(now())
+
+  @@unique([county, caseNumber])
+  @@index([status])
+  @@index([noteId])
+}
+
+model Post {
+  id          String    @id @default(cuid()) @map("_id")
+  slug        String    @unique
+  title       String
+  excerpt     String    @default("")
+  body        String
+  publishedAt DateTime?
+  authorId    String?
+  author      User?     @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model Testimonial {
+  id        String  @id @default(cuid()) @map("_id")
+  quote     String
+  role      String
+  place     String  @default("")
+  published Boolean @default(true)
+  createdAt DateTime @default(now())
+}
+
+model ApiKey {
+  id         String    @id @default(cuid()) @map("_id")
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name       String
+  prefix     String
+  hash       String    @unique
+  lastUsedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId])
+  @@index([prefix])
+}
+
+model WebhookEndpoint {
+  id         String            @id @default(cuid()) @map("_id")
+  userId     String
+  user       User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  url        String
+  secret     String
+  events     String            @default("offer.created,offer.accepted,offer.declined,offer.countered")
+  createdAt  DateTime          @default(now())
+  deliveries WebhookDelivery[]
+
+  @@index([userId])
+}
+
+model WebhookDelivery {
+  id         String          @id @default(cuid()) @map("_id")
+  endpointId String
+  endpoint   WebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+  event      String
+  status     Int             @default(0)
+  detail     String          @default("")
+  createdAt  DateTime        @default(now())
+
+  @@index([endpointId])
+}
+
+model TapeDraft {
+  token     String   @id @map("_id")
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  filename  String
+  bytes     Bytes
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([createdAt])
+}
+
+model JobRun {
+  id         String    @id @default(cuid()) @map("_id")
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+  summary    String    @default("")
+}
+
+model AuditEvent {
+  id         String   @id @default(cuid()) @map("_id")
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  action     String
+  entityType String
+  entityId   String
+  detail     String   @default("")
+  createdAt  DateTime @default(now())
+
+  @@index([entityId])
+  @@index([createdAt])
+}
