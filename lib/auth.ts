@@ -1,5 +1,6 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { secureCookies } from "@/lib/deploy";
 import { prisma } from "@/lib/prisma";
 import { PENDING_COOKIE, SESSION_COOKIE, signPending, signSession, verifyPending, verifySession, type SessionToken } from "@/lib/session";
 import type { Role } from "@prisma/client";
@@ -13,7 +14,7 @@ export async function setSession(payload: SessionToken) {
   jar.set(SESSION_COOKIE, token, {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    secure: secureCookies(),
     path: "/",
     maxAge: 60 * 60 * 24 * 14,
   });
@@ -35,7 +36,7 @@ export async function setPending(sub: string) {
   jar.set(PENDING_COOKIE, token, {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    secure: secureCookies(),
     path: "/",
     maxAge: 60 * 10,
   });

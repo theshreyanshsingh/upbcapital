@@ -79,6 +79,7 @@ Create a **private** Blob store in the Vercel dashboard and connect it to this p
 | `AVM_PROVIDER` | `mock` or `attom`. | `mock` pins a city. |
 | `ATTOM_API_KEY` | ATTOM → API key. | Mock value estimate. |
 | `RATE_LIMIT_STORE` | `database` (default), `redis`, or `memory`. | The database. Use that on Vercel. `memory` is per instance. |
+| `ALLOW_HTTP_SESSIONS` | `1` only on an internal server reached over plain http, such as pm2 on port 3007 with no proxy. A release build refuses it. | Session cookies are https-only in production, so sign-in fails over plain http. |
 | `REDIS_URL` | Redis provider, only if `RATE_LIMIT_STORE=redis`. | Ignored. |
 | `DROPBOX_SIGN_API_KEY` | Dropbox Sign → API. | Signatures stay in the app. |
 | `DROPBOX_SIGN_TEST_MODE` | `1` or `0`. | Test mode when the key is set and this is blank or `1`. |

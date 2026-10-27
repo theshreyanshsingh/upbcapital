@@ -36,6 +36,12 @@ export function isReleaseBuild(env: Record<string, string | undefined>) {
   return env.VERCEL === "1" || env.UPB_RELEASE === "1";
 }
 
+// Production cookies are https-only. An internal server reached over plain http (pm2 on a port, no proxy)
+// opts out with ALLOW_HTTP_SESSIONS=1; release builds refuse that setting.
+export function secureCookies(env: Record<string, string | undefined> = process.env) {
+  return env.NODE_ENV === "production" && env.ALLOW_HTTP_SESSIONS !== "1";
+}
+
 export function showDemoDesk(env: Record<string, string | undefined>, demoAccounts: number) {
   return !isReleaseBuild(env) && demoAccounts > 0;
 }
@@ -97,4 +103,5 @@ export function assertReleaseEnv(env: Record<string, string | undefined>) {
   }
   const origin = env.NEXT_PUBLIC_APP_URL || "";
   if (!/^https:\/\//.test(origin)) throw new Error("NEXT_PUBLIC_APP_URL must be an https URL.");
+  if (env.ALLOW_HTTP_SESSIONS === "1") throw new Error("ALLOW_HTTP_SESSIONS is for an internal http server. A release build serves https.");
 }

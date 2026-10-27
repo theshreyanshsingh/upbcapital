@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assertDemoSeedAllowed, assertMongoUrl, assertReleaseEnv, DEMO_EMAILS, DEMO_LOGINS, demoSeedBlocked, showDemoDesk } from "../lib/deploy";
+import { assertDemoSeedAllowed, assertMongoUrl, assertReleaseEnv, DEMO_EMAILS, DEMO_LOGINS, demoSeedBlocked, secureCookies, showDemoDesk } from "../lib/deploy";
 import { planIndexes } from "../lib/mongo-indexes";
 
 const atlas = "mongodb+srv://upb:secret@cluster0.example.mongodb.net/upb_capital?retryWrites=true&w=majority";
@@ -20,6 +20,13 @@ test("the sign-in page lists demo accounts only when they exist outside a releas
   assert.equal(showDemoDesk({ VERCEL: "1" }, 8), false);
   assert.equal(showDemoDesk({ UPB_RELEASE: "1" }, 8), false);
   assert.ok(DEMO_LOGINS.every((login) => DEMO_EMAILS.includes(login.email)));
+});
+
+test("session cookies are https-only in production unless an internal http server opts out", () => {
+  assert.equal(secureCookies({}), false);
+  assert.equal(secureCookies({ NODE_ENV: "production" }), true);
+  assert.equal(secureCookies({ NODE_ENV: "production", ALLOW_HTTP_SESSIONS: "1" }), false);
+  assert.equal(secureCookies({ NODE_ENV: "production", ALLOW_HTTP_SESSIONS: "true" }), true);
 });
 
 test("the database URL names UPB's own MongoDB database", () => {
@@ -76,4 +83,5 @@ test("a release build requires the production env and refuses demo admin", () =>
   assert.throws(() => assertReleaseEnv({ ...env, ADMIN_PASSWORD: "Desk1847!" }), /demo password/);
   assert.throws(() => assertReleaseEnv({ ...env, BLOB_READ_WRITE_TOKEN: undefined }), /missing/i);
   assert.throws(() => assertReleaseEnv({ ...env, NEXT_PUBLIC_APP_URL: "http://127.0.0.1:4317" }), /https/);
+  assert.throws(() => assertReleaseEnv({ ...env, ALLOW_HTTP_SESSIONS: "1" }), /ALLOW_HTTP_SESSIONS/);
 });
