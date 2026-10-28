@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { deskRecipients, resolveMailTransport, type MailTransport } from "@/lib/mail-config";
+import { deliverable, deskRecipients, resolveMailTransport, type MailTransport } from "@/lib/mail-config";
 
 async function deliver(transport: MailTransport, toEmail: string, subject: string, body: string) {
   const from = process.env.EMAIL_FROM || "UPB Capital <desk@localhost>";
@@ -39,7 +39,7 @@ export async function notify(toEmail: string, subject: string, body: string) {
   const sendEmail = !user || user.notifyEmail;
   const keepInApp = !user || user.notifyInApp;
   if (!sendEmail && !keepInApp) return;
-  const transport = resolveMailTransport();
+  const transport = deliverable(toEmail) ? resolveMailTransport() : "log";
   let delivery: string = sendEmail ? transport : "skipped";
   if (sendEmail && transport === "log") {
     console.info(`[upb-mail] to=${toEmail} subject=${subject}\n${body}`);

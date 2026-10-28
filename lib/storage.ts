@@ -71,6 +71,12 @@ function localPath(key: string) {
   return full;
 }
 
+// A bucket shared with another app keeps UPB's files under one folder, e.g. S3_PREFIX="upb-capital".
+export function s3Key(key: string, env: Record<string, string | undefined> = process.env) {
+  const prefix = (env.S3_PREFIX || "").replace(/^\/+|\/+$/g, "");
+  return prefix ? `${prefix}/${key}` : key;
+}
+
 async function s3Client() {
   const { S3Client } = await import("@aws-sdk/client-s3");
   return new S3Client({
@@ -98,7 +104,7 @@ export async function putBytes(key: string, bytes: Buffer, mime = "application/o
     await client.send(
       new PutObjectCommand({
         Bucket: process.env.S3_BUCKET,
-        Key: key,
+        Key: s3Key(key),
         Body: bytes,
         ContentType: mime,
       }),
@@ -130,7 +136,7 @@ export async function getBytes(key: string) {
     try {
       const { GetObjectCommand } = await import("@aws-sdk/client-s3");
       const client = await s3Client();
-      const result = await client.send(new GetObjectCommand({ Bucket: process.env.S3_BUCKET, Key: key }));
+      const result = await client.send(new GetObjectCommand({ Bucket: process.env.S3_BUCKET, Key: s3Key(key) }));
       const body = result.Body;
       if (!body) throw new Error("Empty object");
       return Buffer.from(await body.transformToByteArray());

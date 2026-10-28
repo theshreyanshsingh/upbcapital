@@ -4,11 +4,11 @@ import { test } from "node:test";
 import { CLOSING_STEPS, canCompleteStep, closingTotals } from "../lib/closing";
 import { simulatedCheckout, stripeConfigured } from "../lib/billing";
 import { getEscrowProvider } from "../lib/escrow";
-import { deskRecipients, resolveMailTransport } from "../lib/mail-config";
+import { deliverable, deskRecipients, resolveMailTransport } from "../lib/mail-config";
 import { feeBreakdown } from "../lib/money";
 import { buildNdaPdf, pngFromDataUrl } from "../lib/nda-pdf";
 import { canCounter, threadLabel, workingAmount } from "../lib/offers";
-import { assertStorageKey, storageMode } from "../lib/storage";
+import { assertStorageKey, s3Key, storageMode } from "../lib/storage";
 import { priceNeedsReplace } from "../lib/stripe-sync";
 import { canSubmitOffer } from "../lib/verification";
 
@@ -55,6 +55,13 @@ test("mail, storage, and stripe price decisions follow env", () => {
   assert.deepEqual(deskRecipients(["ops@example.com"], " Ops@Example.com "), ["ops@example.com"]);
   assert.deepEqual(deskRecipients(["ops@example.com"], "desk@example.com"), ["ops@example.com", "desk@example.com"]);
   assert.deepEqual(deskRecipients([], ""), []);
+  assert.equal(deliverable("iris@upbcapital.test"), false);
+  assert.equal(deliverable("ops@example.com"), false);
+  assert.equal(deliverable("Desk@UPBCapital.com "), true);
+  assert.equal(deliverable("lead@contest.io"), true);
+  assert.equal(s3Key("closings/c1/a.pdf", {}), "closings/c1/a.pdf");
+  assert.equal(s3Key("closings/c1/a.pdf", { S3_PREFIX: "upb-capital" }), "upb-capital/closings/c1/a.pdf");
+  assert.equal(s3Key("closings/c1/a.pdf", { S3_PREFIX: "/upb-capital/" }), "upb-capital/closings/c1/a.pdf");
   assert.equal(storageMode({}), "local");
   assert.equal(storageMode({ S3_BUCKET: "b", S3_ACCESS_KEY_ID: "a", S3_SECRET_ACCESS_KEY: "s" }), "s3");
   assert.equal(storageMode({ BLOB_READ_WRITE_TOKEN: "vercel_blob_rw_test" }), "blob");

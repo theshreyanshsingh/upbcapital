@@ -6,6 +6,13 @@ export function resolveMailTransport(env: Record<string, string | undefined> = p
   return "log";
 }
 
+// Reserved names (RFC 2606 / 6761) never take mail. The demo desk signs in as @upbcapital.test, and sending
+// there through a real provider only bounces against the sending domain, so those stay in the log.
+export function deliverable(email: string) {
+  const domain = email.trim().toLowerCase().split("@").pop() ?? "";
+  return !/(^|\.)(test|example|invalid|localhost)$/.test(domain) && !/(^|\.)example\.(com|net|org)$/.test(domain);
+}
+
 export function deskRecipients(adminEmails: string[], deskEmail = "") {
   const seen = new Set<string>();
   return [...adminEmails, deskEmail]

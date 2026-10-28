@@ -57,7 +57,7 @@ If these three credentials are set, they win over Vercel Blob.
 
 Create a **private** Blob store in the Vercel dashboard and connect it to this project. Vercel adds `BLOB_READ_WRITE_TOKEN`. The app uploads and reads with `access: "private"`, so a public store will reject the calls. On Vercel the SDK can also use OIDC when `BLOB_STORE_ID` is present. Keys are the same paths the desk already stores. They are not given a random suffix, and a rewrite of the same key overwrites.
 
-`S3_REGION` is optional for AWS S3 (`us-east-1` if omitted) and required as `auto` for R2 only in the sense that R2 expects that value. Leave `S3_ENDPOINT` empty for AWS S3.
+`S3_REGION` is optional for AWS S3 (`us-east-1` if omitted) and required as `auto` for R2 only in the sense that R2 expects that value. Leave `S3_ENDPOINT` empty for AWS S3. In a bucket shared with another app, set `S3_PREFIX` (for example `upb-capital`) so UPB's files sit under that folder.
 
 ## Optional
 
