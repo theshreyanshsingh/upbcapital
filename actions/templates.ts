@@ -2,12 +2,13 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { audit } from "@/lib/audit";
 import { requireRole } from "@/lib/auth";
 import { isTemplateKey } from "@/lib/templates";
 import { prisma } from "@/lib/prisma";
 
 export async function saveTemplate(formData: FormData) {
-  await requireRole(["ADMIN"]);
+  const user = await requireRole(["ADMIN"]);
   const key = String(formData.get("key") || "");
   const title = String(formData.get("title") || "").trim();
   const body = String(formData.get("body") || "").trim();
@@ -19,6 +20,7 @@ export async function saveTemplate(formData: FormData) {
     update: { title, body },
     create: { key, title, body },
   });
+  await audit(user.id, "TEMPLATE", "template", key, title);
   revalidatePath("/admin/templates");
   revalidatePath("/closings");
   redirect("/admin/templates?notice=template");

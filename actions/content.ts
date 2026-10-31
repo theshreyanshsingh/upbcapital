@@ -1,6 +1,8 @@
 "use server";
 
+import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { audit } from "@/lib/audit";
 import { requireRole } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
@@ -25,11 +27,45 @@ export async function savePost(formData: FormData) {
 }
 
 export async function saveTestimonial(formData: FormData) {
-  await requireRole(["ADMIN"]);
+  const user = await requireRole(["ADMIN"]);
   const quote = String(formData.get("quote") || "").trim();
   const role = String(formData.get("role") || "").trim();
   const place = String(formData.get("place") || "").trim();
-  if (quote.length < 12 || role.length < 2) redirect("/admin/blog?error=A placeholder needs a quote and a role.");
-  await prisma.testimonial.create({ data: { quote, role, place, published: true } });
-  redirect("/admin/blog?notice=post");
+  if (quote.length < 12 || role.length < 2) redirect("/admin/blog?error=A testimonial needs a quote and a role.");
+  const row = await prisma.testimonial.create({ data: { quote, role, place, published: true } });
+  await audit(user.id, "TESTIMONIAL_ADD", "testimonial", row.id, role);
+  revalidatePath("/");
+  redirect("/admin/blog?notice=testimonial");
+}
+
+export async function updateTestimonial(formData: FormData) {
+  const user = await requireRole(["ADMIN"]);
+  const id = String(formData.get("id") || "");
+  const quote = String(formData.get("quote") || "").trim();
+  const role = String(formData.get("role") || "").trim();
+  const place = String(formData.get("place") || "").trim();
+  if (quote.length < 12 || role.length < 2) redirect("/admin/blog?error=A testimonial needs a quote and a role.");
+  await prisma.testimonial.update({ where: { id }, data: { quote, role, place } });
+  await audit(user.id, "TESTIMONIAL_EDIT", "testimonial", id, role);
+  revalidatePath("/");
+  redirect("/admin/blog?notice=testimonial");
+}
+
+export async function setTestimonialPublished(formData: FormData) {
+  const user = await requireRole(["ADMIN"]);
+  const id = String(formData.get("id") || "");
+  const published = formData.get("published") === "yes";
+  await prisma.testimonial.update({ where: { id }, data: { published } });
+  await audit(user.id, published ? "TESTIMONIAL_PUBLISH" : "TESTIMONIAL_UNPUBLISH", "testimonial", id);
+  revalidatePath("/");
+  redirect("/admin/blog?notice=testimonial");
+}
+
+export async function deleteTestimonial(formData: FormData) {
+  const user = await requireRole(["ADMIN"]);
+  const id = String(formData.get("id") || "");
+  await prisma.testimonial.deleteMany({ where: { id } });
+  await audit(user.id, "TESTIMONIAL_DELETE", "testimonial", id);
+  revalidatePath("/");
+  redirect("/admin/blog?notice=testimonial");
 }

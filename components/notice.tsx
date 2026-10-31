@@ -60,6 +60,17 @@ const COPY: Record<string, string> = {
   offered: "The group offer went to the seller as one bid.",
   dissolved: "The group is dissolved. Everyone was told.",
   funded: "That share is marked funded.",
+  reset_sent: "If that email has an account, a reset link is on its way. It lasts one hour.",
+  password_reset: "Your password is changed, and every device was signed out. Sign in with the new one.",
+  password: "Your password is changed. Other devices were signed out.",
+  session: "That device is signed out.",
+  sessions: "Every other device is signed out.",
+  signed_out: "That account is signed out everywhere.",
+  factor_reset: "Two-factor sign-in is cleared. They can sign in with a password and enroll again.",
+  closing_canceled: "The closing is canceled, and both sides were told. Nothing was posted to the ledger.",
+  ofac: "The OFAC decision is on file.",
+  testimonial: "The testimonial is updated.",
+  answered: "Your answer is with the desk.",
 };
 
 export function Notice({ notice, error }: { notice?: string; error?: string }) {

@@ -1,11 +1,11 @@
-import { getCurrentUser } from "@/lib/auth";
+import { getApiUser } from "@/lib/auth";
 import { toCsv } from "@/lib/csv";
 import { prisma } from "@/lib/prisma";
 
 export const runtime = "nodejs";
 
 export async function GET() {
-  const user = await getCurrentUser();
+  const user = await getApiUser();
   if (!user || user.role !== "ADMIN") return new Response("The desk only.", { status: 403 });
   const holdings = await prisma.deskHolding.findMany({ include: { payments: true }, orderBy: { acquiredAt: "desc" } });
   const rows = holdings.map((holding) => {

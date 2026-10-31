@@ -6,7 +6,7 @@ import type { AccountStatus, ListingStatus, ReviewAction } from "@prisma/client"
 import { alertMatchingSearches } from "@/actions/listings";
 import { deadlinePassed } from "@/lib/auction";
 import { audit } from "@/lib/audit";
-import { requireRole } from "@/lib/auth";
+import { endSessions, requireRole } from "@/lib/auth";
 import { notify } from "@/lib/email";
 import { openClosing } from "@/lib/closing-service";
 import { onGroupAccepted, onGroupDeclined } from "@/actions/group";
@@ -14,6 +14,7 @@ import { rescoreListing } from "@/lib/matching";
 import { feeBreakdown, percentToBps } from "@/lib/money";
 import { workingAmount } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
+import { OFAC_DOWN_MESSAGE, OFAC_HOLD_MESSAGE, ofacHold, screenListing, screenUser } from "@/lib/screening";
 import { clearSettingsCache, getSettings } from "@/lib/settings";
 import { syncProPrice } from "@/lib/stripe-sync";
 
@@ -53,6 +54,11 @@ export async function reviewListing(formData: FormData) {
   }
 
   if (action === "APPROVE") {
+    const screened = await screenListing(listingId, user.id);
+    if (screened.unavailable) redirect(`/admin/listings/${listingId}?error=${encodeURIComponent(OFAC_DOWN_MESSAGE)}`);
+    if (await ofacHold({ listingId, userIds: [listing.sellerId] })) {
+      redirect(`/admin/listings/${listingId}?error=${encodeURIComponent(OFAC_HOLD_MESSAGE)}`);
+    }
     await prisma.listing.update({
       where: { id: listingId },
       data: { status: "APPROVED", approvedAt: new Date() },
@@ -210,6 +216,11 @@ export async function decideInquiry(formData: FormData) {
   });
   if (!inquiry) redirect("/admin/offers");
   if (decision === "ACCEPT" && inquiry.type === "OFFER") {
+    if (inquiry.status === "DECLINED") redirect(`/admin/offers?error=${encodeURIComponent("That offer was declined or its closing was canceled. The buyer can send a new one.")}`);
+    if (inquiry.buyer.accountStatus !== "APPROVED") redirect(`/admin/offers?error=${encodeURIComponent("That buyer account is not approved.")}`);
+    if (await ofacHold({ listingId: inquiry.listingId, userIds: [inquiry.buyerId, inquiry.listing.sellerId] })) {
+      redirect(`/admin/offers?error=${encodeURIComponent(OFAC_HOLD_MESSAGE)}`);
+    }
     if (inquiry.listing.bidMode !== "NONE" && !deadlinePassed(inquiry.listing.bidDeadline)) {
       redirect(`/admin/offers?error=${encodeURIComponent("Award this after the bid deadline.")}`);
     }
@@ -255,15 +266,16 @@ export async function decideInquiry(formData: FormData) {
   } else {
     await prisma.inquiry.update({ where: { id: inquiry.id }, data: { status: "REVIEWED" } });
   }
+  // The seller reads every review comment, so the bidder stays out of it. The audit log keeps the name.
   await prisma.reviewComment.create({
     data: {
       listingId: inquiry.listingId,
       authorId: user.id,
       action: "COMMENT",
-      comment: `Inquiry ${decision.toLowerCase()} for ${inquiry.buyer.name}.`,
+      comment: decision === "ACCEPT" ? "An offer was accepted. The closing checklist is open." : decision === "DECLINE" ? "An inquiry was declined." : "An inquiry was reviewed.",
     },
   });
-  await audit(user.id, decision === "ACCEPT" ? "AWARD" : `INQUIRY_${decision}`, "inquiry", inquiry.id, inquiry.listing.title);
+  await audit(user.id, decision === "ACCEPT" ? "AWARD" : `INQUIRY_${decision}`, "inquiry", inquiry.id, `${inquiry.listing.title} · ${inquiry.buyer.name}`);
   revalidatePath("/admin/offers");
   revalidatePath(`/admin/listings/${inquiry.listingId}`);
   redirect(`/admin/offers?notice=${encodeURIComponent(decision.toLowerCase())}`);
@@ -274,16 +286,50 @@ export async function setAccountStatus(formData: FormData) {
   const userId = String(formData.get("userId") || "");
   const status = String(formData.get("status") || "") as AccountStatus;
   if (userId === actor.id) redirect("/admin/users?error=You cannot change your own account.");
-  if (status !== "APPROVED" && status !== "REJECTED" && status !== "PENDING") redirect("/admin/users");
+  if (status !== "APPROVED" && status !== "REJECTED" && status !== "PENDING" && status !== "SUSPENDED") redirect("/admin/users");
+  const target = await prisma.user.findUnique({ where: { id: userId } });
+  if (!target) redirect("/admin/users");
+  if (target.role === "ADMIN") redirect("/admin/users?error=Desk admins are not changed from here.");
+  if (status === "APPROVED") {
+    if ((await screenUser(userId, "Account approval")).unavailable) redirect(`/admin/users?error=${encodeURIComponent(OFAC_DOWN_MESSAGE)}`);
+    if (await ofacHold({ userIds: [userId] })) redirect(`/admin/users?error=${encodeURIComponent(OFAC_HOLD_MESSAGE)}`);
+  }
   const user = await prisma.user.update({ where: { id: userId }, data: { accountStatus: status } });
+  if (status === "REJECTED" || status === "SUSPENDED") await endSessions(user.id);
   await audit(actor.id, "ACCOUNT", "user", user.id, status);
   await notify(user.email, `Account ${status.toLowerCase()}`, `Your UPB Capital account is now ${status.toLowerCase()}.`);
   revalidatePath("/admin/users");
   redirect("/admin/users?notice=updated");
 }
 
+export async function forceSignOut(formData: FormData) {
+  const actor = await admin();
+  const userId = String(formData.get("userId") || "");
+  if (userId === actor.id) redirect("/admin/users?error=Use your security page for your own devices.");
+  await endSessions(userId);
+  await audit(actor.id, "FORCE_SIGN_OUT", "user", userId);
+  revalidatePath("/admin/users");
+  redirect("/admin/users?notice=signed_out");
+}
+
+// For a user who lost both the authenticator and the recovery codes. Their next sign-in is by password alone.
+export async function resetTwoFactor(formData: FormData) {
+  const actor = await admin();
+  const userId = String(formData.get("userId") || "");
+  if (userId === actor.id) redirect("/admin/users?error=You cannot clear your own second factor.");
+  const user = await prisma.user.update({
+    where: { id: userId },
+    data: { totpEnabled: false, totpSecret: "", recoveryHashes: "", recoveryReveal: "", emailOtpFallback: false },
+  });
+  await endSessions(userId);
+  await audit(actor.id, "TOTP_RESET", "user", userId);
+  await notify(user.email, "Two-factor sign-in was cleared", "The desk cleared the second factor on your account and signed you out. Set it up again from the security page. If you did not ask for this, write the desk now.");
+  revalidatePath("/admin/users");
+  redirect("/admin/users?notice=factor_reset");
+}
+
 export async function setMembership(formData: FormData) {
-  await admin();
+  const actor = await admin();
   const userId = String(formData.get("userId") || "");
   const tier = String(formData.get("tier") || "FREE");
   if (tier === "PRO") {
@@ -302,12 +348,14 @@ export async function setMembership(formData: FormData) {
       data: { subscriptionTier: "FREE", subscriptionStatus: "CANCELED", subscriptionComped: false },
     });
   }
+  await audit(actor.id, "MEMBERSHIP", "user", userId, tier === "PRO" ? "Comped Pro" : "Set to free");
   revalidatePath("/admin/users");
   redirect("/admin/users?notice=membership");
 }
 
 export async function saveSettings(formData: FormData) {
-  await admin();
+  const actor = await admin();
+  const before = await getSettings();
   const premium = Number(formData.get("buyerPremium"));
   const commission = Number(formData.get("sellerCommission"));
   const price = Number(formData.get("proPrice"));
@@ -387,6 +435,13 @@ export async function saveSettings(formData: FormData) {
       data: { stripeProductId: synced.productId, stripePriceId: synced.priceId },
     });
   }
+  await audit(
+    actor.id,
+    "FEE_SCHEDULE",
+    "settings",
+    "default",
+    `Premium ${premium}%, commission ${commission}%, Pro $${price}, early access ${Math.round(early)}h, free browse ${Math.round(limit)}. Default wires ${wireInstructions === before.wireInstructions ? "unchanged" : "changed"}.`,
+  );
   clearSettingsCache();
   revalidatePath("/admin/settings");
   revalidatePath("/marketplace");

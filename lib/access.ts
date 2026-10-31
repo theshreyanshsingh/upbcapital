@@ -1,13 +1,25 @@
 import type { ListingStatus, Role, SubscriptionStatus, SubscriptionTier } from "@prisma/client";
+import { deliverable } from "@/lib/mail-config";
 import { isEarlyAccess, isPro } from "@/lib/settings";
 
 export type Viewer = {
   id: string;
   role: Role;
-  accountStatus: "PENDING" | "APPROVED" | "REJECTED";
+  accountStatus: "PENDING" | "APPROVED" | "REJECTED" | "SUSPENDED";
   subscriptionTier: SubscriptionTier;
   subscriptionStatus: SubscriptionStatus;
 };
+
+// A declined or suspended account has no session at all, so every signed-in path stops at once.
+export function accountLocked(status: string) {
+  return status === "REJECTED" || status === "SUSPENDED";
+}
+
+// Real admins must have an authenticator. The demo desk's shared seats sit on an undeliverable address
+// and are exempt, because one visitor enrolling would lock out the rest. Bootstrap refuses them in a release.
+export function adminNeedsSecondFactor(user: { role: string; email: string; totpEnabled: boolean }) {
+  return user.role === "ADMIN" && !user.totpEnabled && deliverable(user.email);
+}
 
 export function canSeeMetrics(viewer: Viewer | null) {
   if (!viewer) return false;

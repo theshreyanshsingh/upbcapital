@@ -3,8 +3,10 @@
 import bcrypt from "bcryptjs";
 import { redirect } from "next/navigation";
 import { z } from "zod";
-import { clearSession, setPending, setSession } from "@/lib/auth";
+import { audit } from "@/lib/audit";
+import { clearSession, getCurrentUser, setPending, setSession } from "@/lib/auth";
 import { notifyDesk } from "@/lib/email";
+import { screenInBackground, screenUser } from "@/lib/screening";
 import { homeFor } from "@/lib/labels";
 import { prisma } from "@/lib/prisma";
 import { consumeRateLimit } from "@/lib/rate-limit";
@@ -86,6 +88,8 @@ export async function signup(_prev: { error: string }, formData: FormData) {
     await prisma.brokerProfile.create({ data: { userId: user.id, company: data.companyName || "" } });
   }
 
+  screenInBackground(() => screenUser(user.id, "Sign-up"));
+
   if (!approved) {
     await notifyDesk(
       `Account waiting: ${user.name}`,
@@ -116,21 +120,28 @@ export async function login(_prev: { error: string }, formData: FormData) {
   }
   const user = await prisma.user.findUnique({ where: { email } });
   if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+    if (user) await audit(user.id, "LOGIN_FAILED", "user", user.id, meta.ipAddress);
     return { error: "Those credentials are not on the desk." };
   }
   if (user.accountStatus === "REJECTED") {
     return { error: "This account was declined. Write the desk if that is a mistake." };
+  }
+  if (user.accountStatus === "SUSPENDED") {
+    return { error: "This account is suspended. Write the desk." };
   }
   if (user.totpEnabled && user.totpSecret) {
     await setPending(user.id);
     redirect("/login/verify");
   }
   await setSession({ sub: user.id, email: user.email, role: user.role, name: user.name });
+  await audit(user.id, "LOGIN", "user", user.id, meta.ipAddress);
   const fallback = user.role === "BUYER" && user.accountStatus !== "APPROVED" ? "/buyer/pending" : homeFor(user.role);
   redirect(safeNext(String(formData.get("next") || ""), fallback));
 }
 
 export async function logout() {
+  const user = await getCurrentUser();
   await clearSession();
+  if (user) await audit(user.id, "LOGOUT", "user", user.id);
   redirect("/");
 }

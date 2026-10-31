@@ -319,11 +319,11 @@ export async function onGroupAccepted(inquiryId: string, closingId: string, prem
   }
 }
 
-export async function onGroupDeclined(inquiryId: string) {
+export async function onGroupDeclined(inquiryId: string, message = "The seller did not take the group offer.") {
   const group = await prisma.groupBuy.findFirst({ where: { inquiryId }, include: { listing: true } });
   if (!group || group.status === "CLOSED") return;
   await prisma.groupBuy.update({ where: { id: group.id }, data: { status: "DISSOLVED" } });
-  await notifySeats(group.id, `Group declined · ${group.listing.title}`, "The seller did not take the group offer.");
+  await notifySeats(group.id, `Group declined · ${group.listing.title}`, message);
 }
 
 export async function markShareFunded(formData: FormData) {
@@ -331,8 +331,9 @@ export async function markShareFunded(formData: FormData) {
   const closingId = String(formData.get("closingId") || "");
   const userId = String(formData.get("userId") || user.id);
   if (userId !== user.id && user.role !== "ADMIN") redirect(`/closings/${closingId}?error=You can mark only your own share.`);
-  const funder = await prisma.closingFunder.findUnique({ where: { closingId_userId: { closingId, userId } } });
+  const funder = await prisma.closingFunder.findUnique({ where: { closingId_userId: { closingId, userId } }, include: { closing: true } });
   if (!funder) redirect(`/closings/${closingId}?error=That share is not on this closing.`);
+  if (funder.closing.status !== "OPEN") redirect(`/closings/${closingId}?error=This closing is already finished.`);
   await prisma.closingFunder.update({ where: { id: funder.id }, data: { status: "FUNDED", fundedAt: new Date() } });
   const pending = await prisma.closingFunder.count({ where: { closingId, status: "PENDING" } });
   if (pending === 0) {

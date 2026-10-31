@@ -23,7 +23,7 @@ First production host is Vercel, connected to the private Origin repo `gt-tharma
 - Builds the indexes from `prisma/schema.prisma` (`lib/mongo-indexes.ts`). Optional unique fields get partial indexes, so empty values never collide. Running it again changes nothing.
 - Runs the production bootstrap: one approved admin, the default fee-schedule row, and the Florida disclosure already in the source. No listings, buyers, or demo logins.
 
-Changing `ADMIN_PASSWORD` later does not reset the password. The bootstrap writes it only when that email is absent. Rotate it from the signed-in admin after the first deploy.
+Changing `ADMIN_PASSWORD` later does not reset the password. The bootstrap writes it only when that email is absent. Change it at `/account/security` after the first deploy. The desk also requires a real admin to set up an authenticator on that page before anything else opens. Keep the recovery codes: there is one admin, so if the authenticator and the codes are both lost, only a database edit gets back in.
 
 `prisma/seed.ts` throws if `NODE_ENV=production`, `VERCEL=1`, or `UPB_RELEASE=1`. Demo emails such as `iris@upbcapital.test` and `nora.vale@upbcapital.test` are rejected as `ADMIN_EMAIL`. The broker seat, its public profile, and its sample fees are demo data. They are not created by the production bootstrap. Broker compensation uses the fee schedule already in the database. There is no new environment variable for it. The payout note on a broker profile is a method only. The desk does not store account numbers.
 
@@ -66,8 +66,7 @@ Create a **private** Blob store in the Vercel dashboard and connect it to this p
 | `ADMIN_NAME` | Any display name. | The admin is named “Desk admin”. |
 | `DESK_EMAIL` | A shared desk inbox. Gets desk alerts alongside every approved admin and is shown in the public footer. Not a `@upbcapital.test` address. | Desk alerts go to approved admins only. The footer shows no address. |
 | `STRIPE_SECRET_KEY` | Stripe → Developers → API keys. | Pro checkout stays simulated. No card is charged. |
-| `STRIPE_WEBHOOK_SECRET` | Stripe → Webhooks → endpoint `https://<domain>/api/billing/webhook`. | Stripe events are not verified. |
-| `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` | Stripe → API keys. | Checkout UI falls back to the simulated path. |
+| `STRIPE_WEBHOOK_SECRET` | Stripe → Webhooks → endpoint `https://<domain>/api/billing/webhook`. | The webhook route answers 400 and processes nothing, so memberships do not update after checkout. |
 | `STRIPE_PRO_PRICE_ID` | Stripe → Products, only if you do not save the price from the fee schedule. | The fee schedule creates the Price when the secret key is set. |
 | `RESEND_API_KEY` | Resend → API keys. | |
 | `EMAIL_FROM` | A sender address on the Resend (or SMTP) domain. | Without Resend or SMTP, mail is written to the log and the in-app notice list. |
@@ -90,7 +89,8 @@ Create a **private** Blob store in the Vercel dashboard and connect it to this p
 | `PERSONA_TEMPLATE_ID` | Persona inquiry template. | |
 | `PARALLEL_API_KEY` | Parallel Markets. | |
 | `KYC_WEBHOOK_SECRET` | A secret you choose. Persona or Parallel posts to `/api/kyc/webhook` with header `x-kyc-secret`. | The webhook rejects calls. |
-| `OFAC_API_KEY` | The sanctions vendor. | Local SDN list and fuzzy match, including the planted test names. |
+| `OFAC_SDN_URL` | Treasury's free SDN list: `https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN.CSV`. Required in a release build unless a vendor is set. | A seven-name stand-in that is not real screening. |
+| `OFAC_API_KEY` | A paid sanctions vendor, instead of the Treasury list. | |
 | `OFAC_API_URL` | A URL that returns JSON names, a name column, or an OpenSanctions-style body. | |
 | `LLM_API_KEY` or `OPENAI_API_KEY` | OpenAI or a compatible host. | The desk assistant writes a local sketch. |
 | `LLM_BASE_URL` | Defaults to `https://api.openai.com/v1`. | |

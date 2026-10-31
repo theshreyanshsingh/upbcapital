@@ -1,5 +1,5 @@
 import { canReadClosingFile } from "@/lib/acl";
-import { getCurrentUser } from "@/lib/auth";
+import { getApiUser } from "@/lib/auth";
 import { buildClosingPdf, fillTemplate, type TemplateKey } from "@/lib/closing-docs";
 import { money } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
@@ -10,7 +10,7 @@ export const runtime = "nodejs";
 
 export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
-  const user = await getCurrentUser();
+  const user = await getApiUser();
   if (!user) return new Response("Sign in required.", { status: 401 });
   const kind = new URL(request.url).searchParams.get("kind") || "PSA";
   if (!isTemplateKey(kind)) return new Response("Unknown form.", { status: 400 });

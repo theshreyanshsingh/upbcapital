@@ -1,6 +1,7 @@
 import { notifyDesk } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
 import { rescoreListing } from "@/lib/matching";
+import { screenInBackground, screenListing } from "@/lib/screening";
 import { parseTapeBuffer, normalizeTapeRows } from "@/lib/tape";
 import { suggestMapping } from "@/lib/tape-fields";
 
@@ -23,6 +24,7 @@ export async function ingestTape(input: { sellerId: string; title: string; summa
     },
   });
   await notifyDesk(`API tape · ${title}`, `${loans.length} loans arrived through the seller API.`);
+  screenInBackground(() => screenListing(listing.id, input.sellerId));
   await rescoreListing(listing.id, false);
   return { listingId: listing.id, loans: loans.length };
 }

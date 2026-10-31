@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
+import { audit } from "@/lib/audit";
 import { prisma } from "@/lib/prisma";
+import { ofacHold } from "@/lib/screening";
 import { parseKycWebhook } from "@/lib/vendors";
 
 export const runtime = "nodejs";
@@ -17,13 +19,17 @@ export async function POST(request: Request) {
     ? await prisma.buyerProfile.findUnique({ where: { userId: parsed.userId } })
     : await prisma.buyerProfile.findFirst({ where: { vendorRef: parsed.reference } });
   if (!profile) return NextResponse.json({ ok: true, matched: false });
+  // A vendor pass does not clear a sanctions match, so that file waits for a person.
+  const held = parsed.status === "APPROVED" && (await ofacHold({ userIds: [profile.userId] }));
+  const status = held ? "SUBMITTED" : parsed.status;
   await prisma.buyerProfile.update({
     where: { userId: profile.userId },
     data: {
-      status: parsed.status,
+      status,
       vendorRef: parsed.reference || profile.vendorRef,
-      reviewedAt: parsed.status === "SUBMITTED" ? profile.reviewedAt : new Date(),
+      reviewedAt: status === "SUBMITTED" ? profile.reviewedAt : new Date(),
     },
   });
+  await audit(null, "KYC_WEBHOOK", "user", profile.userId, held ? `Vendor said ${parsed.status}. Held for an OFAC review.` : `Vendor said ${parsed.status}.`);
   return NextResponse.json({ ok: true });
 }

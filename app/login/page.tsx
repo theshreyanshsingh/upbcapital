@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { LoginPanel } from "@/components/auth-forms";
 import { Logo } from "@/components/logo";
+import { Notice } from "@/components/notice";
 import { DEMO_EMAILS, DEMO_LOGINS, DEV_DEMO_PASSWORD, showDemoDesk } from "@/lib/deploy";
 import { q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
@@ -22,9 +23,15 @@ export default async function LoginPage({
         <p className="eyebrow mt-6">Sign in</p>
         <h1 className="mt-1 text-[22px] font-semibold tracking-tight text-foreground">The desk is expecting you.</h1>
         <div className="mt-5">
+          <Notice notice={q(params, "notice")} error={q(params, "error")} />
+        </div>
+        <div className="mt-5">
           <LoginPanel next={q(params, "next")} demo={demo} />
         </div>
         <p className="mt-4 text-sm text-muted-foreground">
+          <Link href="/login/forgot" className="text-link">Forgot your password?</Link>
+        </p>
+        <p className="mt-2 text-sm text-muted-foreground">
           No account yet? <Link href="/signup" className="text-link">Request access</Link>
         </p>
       </div>

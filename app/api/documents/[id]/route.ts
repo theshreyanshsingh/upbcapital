@@ -1,5 +1,5 @@
 import { canReadDocument, isPrivateDocument } from "@/lib/acl";
-import { getCurrentUser } from "@/lib/auth";
+import { getApiUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { isPro } from "@/lib/settings";
 import { getBytes } from "@/lib/storage";
@@ -9,7 +9,7 @@ export const runtime = "nodejs";
 
 export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
-  const user = await getCurrentUser();
+  const user = await getApiUser();
   if (!user) return new Response("Sign in required.", { status: 401 });
   const document = await prisma.document.findUnique({ where: { id }, include: { listing: true } });
   if (!document) return new Response("Not found.", { status: 404 });

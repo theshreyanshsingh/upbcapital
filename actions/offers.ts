@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { onGroupCounter } from "@/actions/group";
 import { sealedFromSeller } from "@/lib/auction";
+import { audit } from "@/lib/audit";
 import { requireUser } from "@/lib/auth";
 import { notify, notifyDesk } from "@/lib/email";
 import { canCounter } from "@/lib/offers";
@@ -50,6 +51,7 @@ export async function postOfferMessage(formData: FormData) {
   if (inquiry.status === "OPEN" && desk) {
     await prisma.inquiry.update({ where: { id: inquiryId }, data: { status: "REVIEWED" } });
   }
+  if (amount != null) await audit(user.id, "OFFER_COUNTER", "inquiry", inquiryId, `${money(amount)} on ${inquiry.listing.title}`);
   const sealed = sealedFromSeller(inquiry.listing);
   if (desk && amount != null) {
     await onGroupCounter(inquiry.id, amount);

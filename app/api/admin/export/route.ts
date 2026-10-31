@@ -1,11 +1,11 @@
-import { getCurrentUser } from "@/lib/auth";
+import { getApiUser } from "@/lib/auth";
 import { toCsv } from "@/lib/csv";
 import { prisma } from "@/lib/prisma";
 
 export const runtime = "nodejs";
 
 export async function GET(request: Request) {
-  const user = await getCurrentUser();
+  const user = await getApiUser();
   if (!user || user.role !== "ADMIN") return new Response("The desk only.", { status: 403 });
   const kind = new URL(request.url).searchParams.get("kind") || "listings";
   let rows: Record<string, string | number | null>[] = [];
@@ -52,7 +52,7 @@ export async function GET(request: Request) {
       avm: row.avmValue == null ? "" : Number(row.avmValue),
     }));
   } else {
-    const listings = await prisma.listing.findMany({ include: { seller: true, _count: { select: { inquiries: true, notes: true } } }, orderBy: { createdAt: "desc" } });
+    const listings = await prisma.listing.findMany({ include: { seller: true, notes: { select: { askingPrice: true } }, _count: { select: { inquiries: true, notes: true } } }, orderBy: { createdAt: "desc" } });
     rows = listings.map((row) => ({
       id: row.id,
       title: row.title,
@@ -64,7 +64,8 @@ export async function GET(request: Request) {
       deadline: row.bidDeadline?.toISOString() ?? "",
       loans: row._count.notes,
       inquiries: row._count.inquiries,
-      ask: row.salePrice == null ? "" : Number(row.salePrice),
+      ask: row.notes.reduce((sum, note) => sum + Number(note.askingPrice), 0),
+      salePrice: row.salePrice == null ? "" : Number(row.salePrice),
     }));
   }
   const filename = kind === "users" || kind === "inquiries" || kind === "notes" || kind === "listings" ? kind : "listings";

@@ -3,6 +3,7 @@
 import { redirect } from "next/navigation";
 import { requireRole } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { screenAndRecord, screenInBackground } from "@/lib/screening";
 
 function money(raw: FormDataEntryValue | null) {
   const value = Number(String(raw || "").replace(/[$,\s]/g, ""));
@@ -16,6 +17,9 @@ export async function addInvestor(formData: FormData) {
   const entity = String(formData.get("entity") || "").trim();
   if (name.length < 2 || !email.includes("@")) redirect("/admin/capital?error=Name and email are required.");
   await prisma.investor.create({ data: { name, email, entity } });
+  screenInBackground(async () => {
+    for (const party of new Set([name, entity].filter(Boolean))) await screenAndRecord(party, { context: "Investor" });
+  });
   redirect("/admin/capital?notice=capital");
 }
 

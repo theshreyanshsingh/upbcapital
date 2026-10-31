@@ -45,7 +45,8 @@ export default async function HomePage() {
       })
     : null;
   await ensureStories();
-  const quotes = await prisma.testimonial.findMany({ where: { published: true }, orderBy: { createdAt: "asc" }, take: 2 });
+  // Rows labeled Placeholder came from an earlier seed. They never show here, and the journal page can delete them.
+  const quotes = await prisma.testimonial.findMany({ where: { published: true, NOT: { role: { startsWith: "Placeholder" } } }, orderBy: { createdAt: "desc" }, take: 2 });
   const premium = bpsToPercent(settings.buyerPremiumBps);
   const commission = bpsToPercent(settings.sellerCommissionBps);
 
@@ -233,18 +234,20 @@ export default async function HomePage() {
           </div>
         </section>
 
-        <section className="mx-auto max-w-6xl px-5 pb-24">
-          <p className="eyebrow">Placeholders</p>
-          <h2 className="mt-3 font-semibold tracking-tight text-5xl text-foreground">Quotes, once someone agrees to be named.</h2>
-          <div className="mt-10 grid gap-4 md:grid-cols-2">
-            {quotes.map((quote) => (
-              <blockquote key={quote.id} className="border border-border p-6 rounded-xl">
-                <p className="font-semibold tracking-tight text-2xl leading-snug text-foreground">“{quote.quote}”</p>
-                <footer className="mt-4 text-[13px] font-medium text-muted-foreground">{quote.role}{quote.place ? ` · ${quote.place}` : ""}</footer>
-              </blockquote>
-            ))}
-          </div>
-        </section>
+        {quotes.length > 0 && (
+          <section className="mx-auto max-w-6xl px-5 pb-24">
+            <p className="eyebrow">In their words</p>
+            <h2 className="mt-3 font-semibold tracking-tight text-5xl text-foreground">From the desk&rsquo;s clients.</h2>
+            <div className="mt-10 grid gap-4 md:grid-cols-2">
+              {quotes.map((quote) => (
+                <blockquote key={quote.id} className="border border-border p-6 rounded-xl">
+                  <p className="font-semibold tracking-tight text-2xl leading-snug text-foreground">“{quote.quote}”</p>
+                  <footer className="mt-4 text-[13px] font-medium text-muted-foreground">{quote.role}{quote.place ? ` · ${quote.place}` : ""}</footer>
+                </blockquote>
+              ))}
+            </div>
+          </section>
+        )}
       </main>
       <MarketingFooter />
     </div>

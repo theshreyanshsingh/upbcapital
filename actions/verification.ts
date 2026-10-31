@@ -7,6 +7,7 @@ import { audit } from "@/lib/audit";
 import { requireRole, requireUser } from "@/lib/auth";
 import { notify, notifyDesk } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
+import { OFAC_DOWN_MESSAGE, OFAC_HOLD_MESSAGE, ofacHold, screenInBackground, screenUser } from "@/lib/screening";
 import { extensionOf, mimeFor, putBytes, safeBasename } from "@/lib/storage";
 import { uploadProblem } from "@/lib/uploads";
 import { ACCREDITATION_TEXT } from "@/lib/verification";
@@ -78,6 +79,7 @@ export async function submitVerification(formData: FormData) {
       submittedAt: new Date(),
     },
   });
+  screenInBackground(() => screenUser(user.id, "Buyer file"));
   await notifyDesk(`Verification submitted · ${user.name}`, `${entityName} (${entityType}) in ${jurisdiction} is waiting on the desk.`);
   revalidatePath("/buyer/verification");
   revalidatePath("/admin/verification");
@@ -94,6 +96,10 @@ export async function reviewVerification(formData: FormData) {
   if (!status) redirect("/admin/verification");
   if (status !== "APPROVED" && reviewerNote.length < 3) {
     redirect("/admin/verification?error=Tell the buyer what to fix.");
+  }
+  if (status === "APPROVED") {
+    if ((await screenUser(userId, "Buyer file approval")).unavailable) redirect(`/admin/verification?error=${encodeURIComponent(OFAC_DOWN_MESSAGE)}`);
+    if (await ofacHold({ userIds: [userId] })) redirect(`/admin/verification?error=${encodeURIComponent(OFAC_HOLD_MESSAGE)}`);
   }
   const profile = await prisma.buyerProfile.update({
     where: { userId },

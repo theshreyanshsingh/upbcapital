@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getCurrentUser } from "@/lib/auth";
+import { getApiUser } from "@/lib/auth";
 import { parseTapeBuffer } from "@/lib/tape";
 import { readTapeDraft } from "@/lib/tape-draft";
 import { reviewTape } from "@/lib/tape-quality";
@@ -8,7 +8,7 @@ import type { TapeFieldKey } from "@/lib/tape-fields";
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
-  const user = await getCurrentUser();
+  const user = await getApiUser();
   if (!user || (user.role !== "INSTITUTIONAL_SELLER" && user.role !== "ADMIN")) {
     return NextResponse.json({ error: "Institutional access only." }, { status: 403 });
   }

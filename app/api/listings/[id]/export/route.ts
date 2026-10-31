@@ -1,6 +1,6 @@
 import * as XLSX from "xlsx";
 import { listingIsPublic } from "@/lib/access";
-import { getCurrentUser } from "@/lib/auth";
+import { getApiUser } from "@/lib/auth";
 import { toCsv } from "@/lib/csv";
 import { prisma } from "@/lib/prisma";
 import { isPro } from "@/lib/settings";
@@ -10,7 +10,7 @@ export const runtime = "nodejs";
 
 export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
-  const user = await getCurrentUser();
+  const user = await getApiUser();
   if (!user) return new Response("Sign in required.", { status: 401 });
   const listing = await prisma.listing.findUnique({
     where: { id },

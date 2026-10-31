@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { bulkReprice, duplicateListing } from "@/actions/desk";
+import { answerDeskBid } from "@/actions/desk-book";
 import { updateOwnListingMeta } from "@/actions/listings";
 import { AuctionForm } from "@/components/auction-form";
 import { ComplianceNote } from "@/components/compliance-note";
@@ -30,7 +31,7 @@ export default async function SellerListingPage({
   const query = await searchParams;
   const listing = await prisma.listing.findUnique({
     where: { id },
-    include: { notes: true, documents: true, seller: true, inquiries: { include: { buyer: true } }, reviews: { include: { author: true }, orderBy: { createdAt: "desc" } } },
+    include: { notes: true, documents: true, seller: true, inquiries: { include: { buyer: true } }, deskBids: { where: { status: "OPEN" }, orderBy: { createdAt: "desc" } }, reviews: { include: { author: true }, orderBy: { createdAt: "desc" } } },
   });
   if (!listing || (listing.sellerId !== user.id && user.role !== "ADMIN")) notFound();
   const settings = await getSettings();
@@ -69,6 +70,22 @@ export default async function SellerListingPage({
           </form>
         )}
         <section className="mt-10">
+          {listing.deskBids.map((bid) => (
+            <div key={bid.id} className="mb-6 border border-link/30 bg-link/5 p-4 rounded-xl">
+              <p className="eyebrow">The desk bid on this</p>
+              <p className="mt-1 font-semibold tracking-tight text-2xl">{money(num(bid.amount))}</p>
+              {bid.message && <p className="mt-1 text-sm text-muted-foreground">{bid.message}</p>}
+              <p className="mt-2 text-sm text-muted-foreground">Accepting opens a closing with UPB Capital as the buyer. Nothing happens without your answer.</p>
+              {listing.sellerId === user.id && (
+                <form action={answerDeskBid} className="mt-3 flex flex-wrap gap-2">
+                  {/* Not name="id": it shadows form.id in the DOM, and React then drops the clicked button's value. */}
+                  <input type="hidden" name="bidId" value={bid.id} />
+                  <button type="submit" name="answer" value="ACCEPTED" className="h-9 rounded-lg bg-foreground px-3 text-[13px] font-medium text-background">Accept</button>
+                  <button type="submit" name="answer" value="DECLINED" className="h-9 rounded-lg border border-border px-3 text-[13px] font-medium hover:bg-hover">Decline</button>
+                </form>
+              )}
+            </div>
+          ))}
           <p className="eyebrow">Inquiries</p>
           <ul className="mt-4 divide-y divide-border border border-border rounded-xl">
             {listing.inquiries.length === 0 && <li className="px-4 py-4 text-sm text-muted-foreground">No inquiries yet.</li>}

@@ -2,12 +2,15 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { onGroupDeclined } from "@/actions/group";
 import { audit } from "@/lib/audit";
 import { requireUser } from "@/lib/auth";
 import { notify } from "@/lib/email";
 import { canCompleteStep } from "@/lib/closing";
-import { finalizeClosing, isClosingStepKey } from "@/lib/closing-service";
+import { cancelOpenClosing, finalizeClosing, isClosingStepKey } from "@/lib/closing-service";
 import { prisma } from "@/lib/prisma";
+import { OFAC_HOLD_MESSAGE, ofacHold } from "@/lib/screening";
+import { emitWebhook } from "@/lib/webhooks";
 import { extensionOf, mimeFor, putBytes, safeBasename } from "@/lib/storage";
 import { uploadProblem } from "@/lib/uploads";
 
@@ -34,11 +37,22 @@ async function participant(closingId: string) {
 
 export async function saveWireInstructions(formData: FormData) {
   const closingId = String(formData.get("closingId") || "");
-  const { user } = await participant(closingId);
+  const { user, closing, inquiry } = await participant(closingId);
   if (user.role !== "ADMIN") redirect(`/closings/${closingId}?error=Only the desk edits wire instructions.`);
+  if (closing.status !== "OPEN") redirect(`/closings/${closingId}?error=This closing is already finished.`);
   const wireInstructions = String(formData.get("wireInstructions") || "").trim();
   const providerRef = String(formData.get("providerRef") || "").trim();
   await prisma.closing.update({ where: { id: closingId }, data: { wireInstructions, providerRef } });
+  if (wireInstructions !== closing.wireInstructions || providerRef !== closing.providerRef) {
+    await audit(user.id, "WIRE_EDIT", "closing", closingId, `Before: ${closing.wireInstructions.slice(0, 200)} (ref ${closing.providerRef || "none"}). After: ${wireInstructions.slice(0, 200)} (ref ${providerRef || "none"}).`);
+  }
+  if (wireInstructions !== closing.wireInstructions) {
+    // Changed wire details are the classic closing fraud, so each side hears about it from the desk.
+    const warning = "The desk changed the wire instructions on this closing. Before sending money, confirm them by phone on a number you already trust.";
+    const buyer = inquiry ? await prisma.user.findUnique({ where: { id: inquiry.buyerId } }) : null;
+    if (buyer) await notify(buyer.email, `Wires changed · ${closing.listing.title}`, warning);
+    await notify(closing.listing.seller.email, `Wires changed · ${closing.listing.title}`, warning);
+  }
   revalidatePath(`/closings/${closingId}`);
   redirect(`/closings/${closingId}?notice=wires`);
 }
@@ -47,6 +61,7 @@ export async function uploadClosingFile(formData: FormData) {
   const closingId = String(formData.get("closingId") || "");
   const stepKey = String(formData.get("stepKey") || "");
   const { user, closing } = await participant(closingId);
+  if (closing.status !== "OPEN") redirect(`/closings/${closingId}?error=This closing is already finished.`);
   if (!isClosingStepKey(stepKey)) redirect(`/closings/${closingId}?error=Unknown step.`);
   const step = closing.steps.find((item) => item.key === stepKey);
   if (!step) redirect(`/closings/${closingId}?error=Unknown step.`);
@@ -69,6 +84,7 @@ export async function uploadClosingFile(formData: FormData) {
       uploadedById: user.id,
     },
   });
+  await audit(user.id, "CLOSING_FILE", "closing", closingId, `${stepKey}: ${file.name.slice(0, 180)}`);
   revalidatePath(`/closings/${closingId}`);
   redirect(`/closings/${closingId}?notice=uploaded`);
 }
@@ -81,6 +97,10 @@ export async function completeClosingStep(formData: FormData) {
   if (user.role !== "ADMIN") redirect(`/closings/${closingId}?error=Only the desk advances a closing.`);
   if (!isClosingStepKey(stepKey)) redirect(`/closings/${closingId}?error=Unknown step.`);
   if (closing.status !== "OPEN") redirect(`/closings/${closingId}?error=This closing is already finished.`);
+  const funders = await prisma.closingFunder.findMany({ where: { closingId }, select: { userId: true } });
+  if (await ofacHold({ listingId: closing.listingId, userIds: [inquiry?.buyerId, closing.listing.sellerId, ...funders.map((row) => row.userId)] })) {
+    redirect(`/closings/${closingId}?error=${encodeURIComponent(OFAC_HOLD_MESSAGE)}`);
+  }
   if (!canCompleteStep(closing.steps, stepKey)) {
     redirect(`/closings/${closingId}?error=${encodeURIComponent("Finish the earlier steps before marking the file closed.")}`);
   }
@@ -100,4 +120,30 @@ export async function completeClosingStep(formData: FormData) {
   revalidatePath("/closings");
   revalidatePath("/admin");
   redirect(`/closings/${closingId}?notice=step`);
+}
+
+export async function cancelClosing(formData: FormData) {
+  const closingId = String(formData.get("closingId") || "");
+  const reason = String(formData.get("reason") || "").trim().slice(0, 500);
+  const { user, closing, inquiry } = await participant(closingId);
+  if (user.role !== "ADMIN") redirect(`/closings/${closingId}?error=Only the desk cancels a closing.`);
+  if (closing.status !== "OPEN") redirect(`/closings/${closingId}?error=This closing is already finished.`);
+  if (reason.length < 3) redirect(`/closings/${closingId}?error=${encodeURIComponent("Say why the closing is being canceled.")}`);
+  await cancelOpenClosing(closingId, reason);
+  await audit(user.id, "CLOSING_CANCELED", "closing", closingId, reason);
+  const message = `The desk canceled this closing. Reason: ${reason} Any money already wired has to be returned outside the app, so write the desk about it.`;
+  if (inquiry) {
+    await onGroupDeclined(inquiry.id, message);
+    await emitWebhook(closing.listing.sellerId, "offer.declined", { inquiryId: inquiry.id, listingId: closing.listingId });
+    const buyer = await prisma.user.findUnique({ where: { id: inquiry.buyerId } });
+    if (buyer) await notify(buyer.email, `Closing canceled · ${closing.listing.title}`, message);
+  }
+  await notify(closing.listing.seller.email, `Closing canceled · ${closing.listing.title}`, message);
+  const thread = await prisma.deskThread.findUnique({ where: { closingId } });
+  if (thread) await prisma.threadPost.create({ data: { threadId: thread.id, authorId: user.id, body: message } });
+  revalidatePath(`/closings/${closingId}`);
+  revalidatePath("/closings");
+  revalidatePath("/admin");
+  revalidatePath("/marketplace");
+  redirect(`/closings/${closingId}?notice=closing_canceled`);
 }

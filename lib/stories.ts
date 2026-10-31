@@ -9,18 +9,11 @@ const POSTS = [
   },
 ];
 
-const QUOTES = [
-  { role: "Placeholder · note seller", place: "Miami", quote: "Placeholder. A seller quote will sit here once a real client agrees to be named." },
-  { role: "Placeholder · buyer", place: "Fort Lauderdale", quote: "Placeholder. A buyer quote will sit here once a real client agrees to be named." },
-];
-
 export async function ensureStories() {
   if ((await prisma.post.count()) === 0) {
-    await prisma.post.createMany({
-      data: POSTS.map((post) => ({ ...post, publishedAt: new Date("2026-10-01") })),
-    });
-  }
-  if ((await prisma.testimonial.count()) === 0) {
-    await prisma.testimonial.createMany({ data: QUOTES });
+    // Two first visits can race here, and the loser only hits the unique slug. That must not fail the home page.
+    await prisma.post
+      .createMany({ data: POSTS.map((post) => ({ ...post, publishedAt: new Date("2026-10-01") })) })
+      .catch(() => undefined);
   }
 }

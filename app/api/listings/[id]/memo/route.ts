@@ -1,5 +1,5 @@
 import { listingIsPublic } from "@/lib/access";
-import { getCurrentUser } from "@/lib/auth";
+import { getApiUser } from "@/lib/auth";
 import { foreclosureFor } from "@/lib/foreclosure";
 import { buildMemoPdf } from "@/lib/memo-pdf";
 import { prisma } from "@/lib/prisma";
@@ -10,7 +10,7 @@ export const runtime = "nodejs";
 
 export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
-  const user = await getCurrentUser();
+  const user = await getApiUser();
   if (!user) return new Response("Sign in required.", { status: 401 });
   const listing = await prisma.listing.findUnique({ where: { id }, include: { notes: true } });
   if (!listing || listing.notes.length === 0) return new Response("Not found.", { status: 404 });

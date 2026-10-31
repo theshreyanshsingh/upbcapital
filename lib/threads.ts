@@ -1,3 +1,4 @@
+import { sealedFromSeller } from "@/lib/auction";
 import { notify } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
 
@@ -18,9 +19,15 @@ export async function ensureInquiryThread(inquiryId: string) {
     include: { buyer: true, listing: { include: { seller: true } }, messages: { orderBy: { createdAt: "asc" }, take: 1 } },
   });
   if (!inquiry) return null;
+  // The bid thread holds the bidder's own words, so a seller joins it only once a sealed round opens.
+  const sealed = inquiry.type === "OFFER" && sealedFromSeller(inquiry.listing);
+  const seats = sealed ? [inquiry.buyerId] : [inquiry.buyerId, inquiry.listing.sellerId];
   const existing = await prisma.deskThread.findUnique({ where: { inquiryId } });
   if (existing) {
-    await seatMembers(existing.id, [inquiry.buyerId, inquiry.listing.sellerId]);
+    await seatMembers(existing.id, seats);
+    if (sealed && inquiry.listing.sellerId !== inquiry.buyerId) {
+      await prisma.threadMember.deleteMany({ where: { threadId: existing.id, userId: inquiry.listing.sellerId } });
+    }
     return existing;
   }
   const opener = inquiry.messages[0];
@@ -30,7 +37,7 @@ export async function ensureInquiryThread(inquiryId: string) {
       subject: `${inquiry.type === "OFFER" ? "Offer" : "Inquiry"} · ${inquiry.listing.title}`,
       listingId: inquiry.listingId,
       inquiryId,
-      members: { create: [...new Set([inquiry.buyerId, inquiry.listing.sellerId])].map((userId) => ({ userId })) },
+      members: { create: [...new Set(seats)].map((userId) => ({ userId })) },
       posts: { create: { authorId: opener?.authorId || inquiry.buyerId, body, createdAt: opener?.createdAt || inquiry.createdAt } },
     },
   });

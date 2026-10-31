@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { accountLocked } from "@/lib/access";
 import { prisma } from "@/lib/prisma";
 
 export function hashKey(token: string) {
@@ -14,7 +15,7 @@ export async function userForApiKey(header: string | null) {
   const token = header?.replace(/^Bearer\s+/i, "").trim() ?? "";
   if (!token.startsWith("upb_")) return null;
   const key = await prisma.apiKey.findUnique({ where: { hash: hashKey(token) }, include: { user: true } });
-  if (!key) return null;
+  if (!key || accountLocked(key.user.accountStatus)) return null;
   await prisma.apiKey.update({ where: { id: key.id }, data: { lastUsedAt: new Date() } });
   return key.user;
 }

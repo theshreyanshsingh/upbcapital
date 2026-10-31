@@ -193,7 +193,7 @@ Security shows a QR code for an authenticator, eight one-time recovery codes, an
 | Concern | Env | Fallback |
 | --- | --- | --- |
 | Value estimate | `AVM_PROVIDER=attom` and `ATTOM_API_KEY`. Calls ATTOM AVM detail with street or city. | Mock pin and value |
-| NDA and purchase agreement | `DROPBOX_SIGN_API_KEY` (HelloSign send, test mode unless `DROPBOX_SIGN_TEST_MODE=0`) or `DOCUSIGN_ACCESS_TOKEN` plus `DOCUSIGN_ACCOUNT_ID` (optional `DOCUSIGN_BASE_URL`) | Signed in the app |
+| NDA | `DROPBOX_SIGN_API_KEY` (HelloSign send, test mode unless `DROPBOX_SIGN_TEST_MODE=0`) or `DOCUSIGN_ACCESS_TOKEN` plus `DOCUSIGN_ACCOUNT_ID` (optional `DOCUSIGN_BASE_URL`). The purchase agreement can be sent the same way through its packet link with `?send=1`, but no screen offers that yet, and no signature status comes back. | Signed in the app |
 | Buyer file | `PERSONA_API_KEY` and `PERSONA_TEMPLATE_ID`, or `PARALLEL_API_KEY` | Desk form and proof upload |
 
 `POST /api/kyc/webhook` expects `x-kyc-secret: $KYC_WEBHOOK_SECRET`. The body can be `{ "userId", "reference", "status" }` or a Persona inquiry event. Status `approved` or `completed` approves the buyer file.
@@ -220,7 +220,7 @@ An admin can place a desk bid on a listing. Accepting it opens the same closing 
 
 Tape upload checks the mapped rows even with no model: missing fields, coupons outside the usual band, LTV over 100%, a city or ZIP that disagrees with the state, and the formats the importer will rewrite (`$228,000`, `Florida`, `0.065`, `1st`, ZIP+4). Problem rows are highlighted. The pool is still rejected on hard errors at submit.
 
-`/admin/assistant` summarizes a tape, explains those issues, or drafts a listing. An institutional seller can attach only its own listings. Set `LLM_API_KEY` or `OPENAI_API_KEY` (optional `LLM_BASE_URL` and `LLM_MODEL`) for an OpenAI-compatible model. With no key, the desk writes a sketch from the rows.
+`/admin/assistant` summarizes a tape, explains those issues, or drafts a listing. It is for the desk only. Set `LLM_API_KEY` or `OPENAI_API_KEY` (optional `LLM_BASE_URL` and `LLM_MODEL`) for an OpenAI-compatible model. With no key, the desk writes a sketch from the rows.
 
 `/admin/analytics` is the funnel (visits, signups, verified buyers, offers, closings, closed), mean days from filing to sold, top buyers by offer volume, and listing views. Send match digest emails the buyers whose preference is daily or weekly and who have new live matches since the last digest.
 
@@ -236,7 +236,13 @@ Relist, on the desk file or a buyer holding, copies the loan facts, the stored d
 
 `/admin/compliance` stores a per-state license note and disclosure. Florida is seeded. Those notes render on marketplace listings, the public listing, the seller desk, and the closing checklist. Seller-financed notes, including every individual-seller filing, also show Dodd-Frank and SAFE Act reminders. They are reminders, not advice.
 
-OFAC screening uses a local SDN list and a fuzzy match. Planted strings “blocked test” and “ofac sample” still go to review, including a close misspelling. Set `OFAC_API_KEY` and `OFAC_API_URL` and the desk fetches that URL, parses JSON names or an OpenSanctions-style body, and screens against those names as well. If the vendor body cannot be parsed, the local list is used. Retention removes old page visits and read notices. Loan files stay.
+OFAC screening is a fuzzy name match, in either word order. Set `OFAC_SDN_URL` to read Treasury's SDN list and aliases, at most every six hours (vessels and aircraft are skipped). Or set `OFAC_API_KEY` and `OFAC_API_URL` for a vendor, parsed as JSON names or an OpenSanctions-style body. With neither, the desk uses a seven-name stand-in that is not real screening, says so on `/admin/compliance`, and a release build refuses to start. The planted strings “blocked test” and “ofac sample” always go to review, including a close misspelling.
+
+The desk screens at sign-up, on a buyer file, on an investor, and when a note or tape arrives, covering the seller, a broker's client, and every named borrower. It screens again at approval. A match goes to `/admin/compliance`, where a person clears it or confirms it with a reason. Until then it stops account approval, listing approval, awards, desk bids, and closing steps, and the party is told nothing. A decision carries forward for that name and that list entry. Retention removes old page visits and read notices. Loan files stay. Nothing deletes accounts or their files yet, because the retention periods need a lawyer's answer first.
+
+Anyone can reset a forgotten password from the sign-in page. The link lasts an hour, works once, and signs every device out. `/account/security` changes the password and lists signed-in devices. Real admins must use an authenticator. The demo seats on `@upbcapital.test` are exempt, keep the shared password, and their mail stays in the server log.
+
+On `/admin/users` the desk can suspend or reinstate an account, sign a user out everywhere, or clear a lost second factor. Declining or suspending ends the user's sessions at once and also stops their API keys. A closing can be canceled with a reason from its page. The note goes back on the book, nothing posts to the ledger, and the buyer must send a new offer.
 
 `/account/notifications` sets email, in-app notices, and digest frequency per user. Turning both channels off skips the message.
 

@@ -1,7 +1,7 @@
 import { notFound, redirect } from "next/navigation";
 import { markShareFunded } from "@/actions/group";
 import { saveBoarding } from "@/actions/boarding";
-import { completeClosingStep, saveWireInstructions, uploadClosingFile } from "@/actions/closing";
+import { cancelClosing, completeClosingStep, saveWireInstructions, uploadClosingFile } from "@/actions/closing";
 import { ComplianceNote } from "@/components/compliance-note";
 import { Notice } from "@/components/notice";
 import { SubmitButton } from "@/components/submit-button";
@@ -61,6 +61,11 @@ export default async function ClosingPage({
             : `${inquiry?.buyer.name ?? "Buyer"} buying from ${closing.listing.seller.companyName || closing.listing.seller.name}`}
           {inquiry?.note ? ` · ${inquiry.note.city}, ${inquiry.note.state}` : " · whole listing"}
         </p>
+        {closing.status === "CANCELED" && (
+          <p role="status" className="mt-4 border border-bad/40 bg-bad/10 px-4 py-3 text-sm text-foreground rounded-xl">
+            Canceled{closing.canceledAt ? ` ${prettyDate(closing.canceledAt)}` : ""}.{closing.cancelReason ? ` ${closing.cancelReason}` : ""} Nothing was posted to the ledger.
+          </p>
+        )}
         <ComplianceNote
           states={closing.listing.notes.map((note) => note.state)}
           sellerFinanced={closing.listing.sellerFinanced}
@@ -239,6 +244,15 @@ export default async function ClosingPage({
             <p className="mt-4 text-sm text-muted-foreground">Wire instructions go to the buyer and the seller only.</p>
           )}
         </div>
+        {user.role === "ADMIN" && closing.status === "OPEN" && (
+          <form action={cancelClosing} className="glass space-y-3 p-6">
+            <input type="hidden" name="closingId" value={closing.id} />
+            <p className="eyebrow">Cancel this closing</p>
+            <p className="text-sm text-muted-foreground">The deal ends and the note goes back on the book. It cannot be reopened, and the buyer would need to send a new offer. Money already wired has to be returned outside the app.</p>
+            <Textarea name="reason" aria-label="Why this closing is being canceled" placeholder="Why, in a sentence. Both sides see this." className="min-h-20 bg-card" required minLength={3} />
+            <SubmitButton variant="outline" className="h-9 text-[13px] font-medium" pendingLabel="Canceling…">Cancel closing</SubmitButton>
+          </form>
+        )}
       </aside>
     </div>
   );

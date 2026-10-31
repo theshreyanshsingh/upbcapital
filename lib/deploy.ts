@@ -82,6 +82,7 @@ export function assertReleaseEnv(env: Record<string, string | undefined>) {
   if (!env.ADMIN_PASSWORD) missing.push("ADMIN_PASSWORD");
   if (!env.CRON_SECRET) missing.push("CRON_SECRET");
   if (!remoteStorageConfigured(env)) missing.push("S3_BUCKET + S3_ACCESS_KEY_ID + S3_SECRET_ACCESS_KEY, or BLOB_READ_WRITE_TOKEN");
+  if (!env.OFAC_SDN_URL && !(env.OFAC_API_URL && env.OFAC_API_KEY)) missing.push("OFAC_SDN_URL, or OFAC_API_URL + OFAC_API_KEY");
   if (missing.length) throw new Error(`Production build is missing ${missing.join(", ")}.`);
   assertMongoUrl(env.DATABASE_URL);
   if ((env.AUTH_SECRET || "").length < 16 || env.AUTH_SECRET === DEV_AUTH_SECRET) {

@@ -6,7 +6,7 @@ import { requireRole, requireUser } from "@/lib/auth";
 import { modelParticipation } from "@/lib/participation";
 import { rescoreListing } from "@/lib/matching";
 import { prisma } from "@/lib/prisma";
-import { screenParty } from "@/lib/ofac";
+import { screenAndRecord } from "@/lib/screening";
 
 async function caseFor(holdingId: string) {
   const holding = await prisma.deskHolding.findUnique({ where: { id: holdingId }, include: { listing: { include: { notes: true } } } });
@@ -40,9 +40,8 @@ export async function logOutreach(formData: FormData) {
   const { file, holding } = await caseFor(holdingId);
   const borrower = holding.listing.notes[0]?.borrowerName || "";
   if (borrower) {
-    const screen = await screenParty(borrower);
-    await prisma.ofacCheck.create({ data: { name: borrower, result: screen.result, provider: screen.provider } });
-    if (screen.result === "REVIEW") redirect(`/admin/book/${holdingId}?error=OFAC mock matched the borrower. Clear it before logging outreach.`);
+    const { blocked, unavailable } = await screenAndRecord(borrower, { context: "Loss outreach", listingId: holding.listingId });
+    if (blocked) redirect(`/admin/book/${holdingId}?error=${encodeURIComponent(unavailable ? "The sanctions list could not be read just now. Try again in a few minutes." : "An OFAC review is open on the borrower. Decide it under Compliance before logging outreach.")}`);
   }
   await prisma.lossOutreach.create({
     data: { caseId: file.id, note, channel, contactedAt: new Date(`${when}T00:00:00Z`) },

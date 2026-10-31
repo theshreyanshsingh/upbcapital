@@ -1,4 +1,4 @@
-import { savePost, saveTestimonial } from "@/actions/content";
+import { deleteTestimonial, savePost, saveTestimonial, setTestimonialPublished, updateTestimonial } from "@/actions/content";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { SubmitButton } from "@/components/submit-button";
@@ -19,7 +19,7 @@ export default async function BlogAdminPage({ searchParams }: { searchParams: Pr
   ]);
   return (
     <div>
-      <PageIntro eyebrow="Journal" title="Posts and placeholders." lede="Published posts appear at /blog. Testimonials on the home page are labeled placeholders until a real client is named." />
+      <PageIntro eyebrow="Journal" title="Posts and testimonials." lede="Published posts appear at /blog. The two newest published testimonials appear on the home page. Add one only when a real client agrees to be quoted. Rows whose role starts with Placeholder never show publicly." />
       <Notice notice={q(query, "notice")} error={q(query, "error")} />
       <form action={savePost} className="mt-8 grid max-w-2xl gap-3">
         <input name="title" className="desk-input" aria-label="Post title" placeholder="Title" required />
@@ -35,14 +35,37 @@ export default async function BlogAdminPage({ searchParams }: { searchParams: Pr
         ))}
       </ul>
       <form action={saveTestimonial} className="mt-10 grid max-w-2xl gap-3">
-        <p className="eyebrow">Testimonial placeholder</p>
+        <p className="eyebrow">New testimonial</p>
         <input name="role" className="desk-input" aria-label="Role" placeholder="Role" required />
         <input name="place" className="desk-input" aria-label="Place" placeholder="City" />
         <textarea name="quote" className="desk-input min-h-24" aria-label="Quote" placeholder="Quote" required />
-        <SubmitButton variant="outline" className="h-11 text-[13px] font-medium">Add placeholder</SubmitButton>
+        <SubmitButton variant="outline" className="h-11 text-[13px] font-medium">Add testimonial</SubmitButton>
       </form>
-      <ul className="mt-6 space-y-2 text-sm text-muted-foreground">
-        {quotes.map((quote) => <li key={quote.id}>{quote.role} · {quote.place}</li>)}
+      <ul className="mt-6 max-w-2xl space-y-4">
+        {quotes.length === 0 && <li className="text-sm text-muted-foreground">No testimonials yet. The home page leaves the section out.</li>}
+        {quotes.map((quote) => (
+          <li key={quote.id} className="border border-border p-4 rounded-xl">
+            <p className="text-[13px] font-medium text-muted-foreground">{quote.role.startsWith("Placeholder") ? "Placeholder, never shown" : quote.published ? "Live" : "Hidden"}</p>
+            <form action={updateTestimonial} className="mt-2 grid gap-2">
+              <input type="hidden" name="id" value={quote.id} />
+              <input name="role" defaultValue={quote.role} className="desk-input" aria-label="Role" required />
+              <input name="place" defaultValue={quote.place} className="desk-input" aria-label="Place" />
+              <textarea name="quote" defaultValue={quote.quote} className="desk-input min-h-20" aria-label="Quote" required />
+              <SubmitButton variant="outline" className="h-9 w-fit text-[13px] font-medium">Save changes</SubmitButton>
+            </form>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <form action={setTestimonialPublished}>
+                <input type="hidden" name="id" value={quote.id} />
+                <input type="hidden" name="published" value={quote.published ? "no" : "yes"} />
+                <SubmitButton variant="ghost" className="h-9 text-[13px] font-medium">{quote.published ? "Hide" : "Publish"}</SubmitButton>
+              </form>
+              <form action={deleteTestimonial}>
+                <input type="hidden" name="id" value={quote.id} />
+                <SubmitButton variant="ghost" className="h-9 text-[13px] font-medium text-bad">Delete</SubmitButton>
+              </form>
+            </div>
+          </li>
+        ))}
       </ul>
     </div>
   );

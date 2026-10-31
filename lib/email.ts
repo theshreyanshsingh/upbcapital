@@ -31,6 +31,20 @@ async function deliver(transport: MailTransport, toEmail: string, subject: strin
   }
 }
 
+// For mail that carries a secret, such as a reset link: no in-app copy, and a failure never logs the body.
+export async function sendSecret(toEmail: string, subject: string, body: string) {
+  const transport = deliverable(toEmail) ? resolveMailTransport() : "log";
+  if (transport === "log") {
+    console.info(`[upb-mail] to=${toEmail} subject=${subject}\n${body}`);
+    return;
+  }
+  try {
+    await deliver(transport, toEmail, subject, body);
+  } catch (error) {
+    console.error(`[upb-mail] ${transport} failed for ${toEmail}:`, error instanceof Error ? error.message : "unknown error");
+  }
+}
+
 export async function notify(toEmail: string, subject: string, body: string) {
   const user = await prisma.user.findUnique({
     where: { email: toEmail },

@@ -1,5 +1,5 @@
 import { canReadClosingFile } from "@/lib/acl";
-import { getCurrentUser } from "@/lib/auth";
+import { getApiUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { getBytes } from "@/lib/storage";
 import { attachmentName } from "@/lib/uploads";
@@ -8,7 +8,7 @@ export const runtime = "nodejs";
 
 export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
-  const user = await getCurrentUser();
+  const user = await getApiUser();
   if (!user) return new Response("Sign in required.", { status: 401 });
   const file = await prisma.closingFile.findUnique({
     where: { id },

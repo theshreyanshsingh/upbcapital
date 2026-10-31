@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
-import { getCurrentUser } from "@/lib/auth";
+import { getApiUser } from "@/lib/auth";
 import { brokerRoleLabel } from "@/lib/broker-fees";
 import { prisma } from "@/lib/prisma";
 
 export async function GET() {
-  const user = await getCurrentUser();
+  const user = await getApiUser();
   if (!user || user.role !== "BROKER") return new NextResponse("Sign in as a broker.", { status: 401 });
   const fees = await prisma.brokerFee.findMany({
     where: { brokerId: user.id },

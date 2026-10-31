@@ -1,11 +1,11 @@
-import { getCurrentUser } from "@/lib/auth";
+import { getApiUser } from "@/lib/auth";
 import { toCsv } from "@/lib/csv";
 import { prisma } from "@/lib/prisma";
 
 export const runtime = "nodejs";
 
 export async function GET() {
-  const user = await getCurrentUser();
+  const user = await getApiUser();
   if (!user || user.role !== "BUYER") return new Response("Buyers only.", { status: 403 });
   const holdings = await prisma.buyerHolding.findMany({
     where: { userId: user.id },

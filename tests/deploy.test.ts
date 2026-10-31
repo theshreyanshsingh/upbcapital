@@ -73,8 +73,10 @@ test("a release build requires the production env and refuses demo admin", () =>
     ADMIN_PASSWORD: "correct horse battery",
     CRON_SECRET: "another-long-cron-secret",
     BLOB_READ_WRITE_TOKEN: "vercel_blob_rw_test",
+    OFAC_SDN_URL: "https://example.org/SDN.CSV",
   };
   assert.doesNotThrow(() => assertReleaseEnv(env));
+  assert.throws(() => assertReleaseEnv({ ...env, OFAC_SDN_URL: "" }), /OFAC_SDN_URL/);
   assert.throws(() => assertReleaseEnv({ ...env, DATABASE_URL: atlas.replace("/upb_capital", "/synergifund") }), /synergifund/);
   assert.throws(() => assertReleaseEnv({ ...env, ADMIN_EMAIL: "iris@upbcapital.test" }), /demo/);
   assert.doesNotThrow(() => assertReleaseEnv({ ...env, DESK_EMAIL: "desk@example.com" }));

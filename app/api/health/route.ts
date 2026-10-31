@@ -4,6 +4,7 @@ import { limitStore } from "@/lib/rate-limit";
 import { storageMode } from "@/lib/storage";
 import { aiMode } from "@/lib/desk-ai";
 import { kycMode, signatureMode } from "@/lib/vendors";
+import { ofacMode } from "@/lib/ofac";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,7 +28,7 @@ export async function GET() {
     signature: signatureMode(),
     kyc: kycMode(),
     assistant: aiMode(),
-    ofac: process.env.OFAC_API_KEY ? "configured" : "mock",
+    ofac: ofacMode(),
     time: new Date().toISOString(),
   };
   return Response.json(body, { status: db === "ok" ? 200 : 503 });

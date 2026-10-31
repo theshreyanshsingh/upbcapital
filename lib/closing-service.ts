@@ -171,6 +171,26 @@ export async function finalizeClosing(closingId: string) {
   return prisma.closing.findUnique({ where: { id: closingId } });
 }
 
+// Nothing posts to the ledger until a closing completes, so a cancel has no money entries to reverse.
+// A listing an admin never approved goes back to review rather than live.
+export async function cancelOpenClosing(closingId: string, reason: string) {
+  const closing = await prisma.closing.findUnique({ where: { id: closingId }, include: { listing: true } });
+  if (!closing || closing.status !== "OPEN") return null;
+  await prisma.closing.update({ where: { id: closingId }, data: { status: "CANCELED", canceledAt: new Date(), cancelReason: reason } });
+  if (closing.noteId) await prisma.note.update({ where: { id: closing.noteId }, data: { tradeStatus: "AVAILABLE" } });
+  if (closing.inquiryId) await prisma.inquiry.update({ where: { id: closing.inquiryId }, data: { status: "DECLINED" } });
+  if (closing.deskBidId) await prisma.deskBid.update({ where: { id: closing.deskBidId }, data: { status: "WITHDRAWN" } });
+  const others = await prisma.closing.count({ where: { listingId: closing.listingId, status: "OPEN", id: { not: closingId } } });
+  await prisma.listing.update({
+    where: { id: closing.listingId },
+    data: {
+      ...(closing.listing.status === "PENDING" && others === 0 ? { status: closing.listing.approvedAt ? ("APPROVED" as const) : ("UNDER_REVIEW" as const) } : {}),
+      ...(closing.listing.acceptedInquiryId === closing.inquiryId ? { acceptedInquiryId: null } : {}),
+    },
+  });
+  return closing;
+}
+
 export function isClosingStepKey(value: string): value is ClosingStepKey {
   return CLOSING_STEPS.some((step) => step.key === value);
 }

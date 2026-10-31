@@ -48,10 +48,11 @@ export default async function DeskBookPage({
                 <Link href={`/admin/listings/${bid.listingId}`} className="font-semibold tracking-tight text-2xl text-foreground">{bid.listing.title}</Link>
                 <p className="mt-1 text-sm text-muted-foreground">{money(Number(bid.amount))}{bid.message ? ` · ${bid.message}` : ""}</p>
               </div>
-              <div className="flex gap-2">
-                <form action={decideDeskBid}>
+              <div className="flex flex-wrap items-center gap-2">
+                <form action={decideDeskBid} className="flex flex-wrap items-center gap-2">
                   <input type="hidden" name="id" value={bid.id} />
                   <input type="hidden" name="decision" value="ACCEPTED" />
+                  <input name="consent" className="desk-input w-56" aria-label={`How the seller agreed to the bid on ${bid.listing.title}`} placeholder="How the seller agreed" required minLength={3} />
                   <SubmitButton className="h-10 text-[13px] font-medium">Take it</SubmitButton>
                 </form>
                 <form action={decideDeskBid}>

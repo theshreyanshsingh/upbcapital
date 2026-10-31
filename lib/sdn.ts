@@ -36,26 +36,110 @@ export function levenshtein(left: string, right: string) {
   return row[b.length];
 }
 
-export function nameSimilarity(left: string, right: string) {
-  const a = normalizeName(left);
-  const b = normalizeName(right);
-  if (!a || !b) return 0;
-  if (a === b) return 1;
-  if (a.length >= 8 && (a.includes(b) || b.includes(a))) return 0.96;
-  const distance = levenshtein(a, b);
-  return 1 - distance / Math.max(a.length, b.length);
+export type SanctionEntry = { entry: string; norm: string; sorted: string; padded: string; letters: Uint8Array };
+
+// OFAC lists people as "HERNANDEZ, Jose", so names also compare with their words in order.
+function sortTokens(norm: string) {
+  return norm.split(" ").sort().join(" ");
 }
 
-export function fuzzyHit(name: string, list: string[], threshold = 0.82) {
-  const cleaned = normalizeName(name);
-  if (cleaned.length < 3) return null;
+function letterCounts(norm: string) {
+  const counts = new Uint8Array(36);
+  for (let at = 0; at < norm.length; at += 1) {
+    const code = norm.charCodeAt(at);
+    if (code >= 97 && code <= 122) counts[code - 97] += 1;
+    else if (code >= 48 && code <= 57) counts[code - 22] += 1;
+  }
+  return counts;
+}
+
+export function indexNames(list: string[]): SanctionEntry[] {
+  return list.flatMap((entry) => {
+    const norm = normalizeName(entry);
+    return norm ? [{ entry, norm, sorted: sortTokens(norm), padded: ` ${norm} `, letters: letterCounts(norm) }] : [];
+  });
+}
+
+type Candidate = { norm: string; sorted: string; padded: string; tokens: string[]; letters: Uint8Array };
+
+function similarity(name: Candidate, item: SanctionEntry, threshold: number) {
+  if (name.norm === item.norm || name.sorted === item.sorted) return 1;
+  // Every word of one name inside the other, in any order: "Nicolas Maduro" and "MADURO MOROS, Nicolas".
+  // The length floor keeps short list entries such as "CIMEX" from matching anyone who merely contains them.
+  // Two-thirds coverage keeps a common pair from matching any long name that happens to hold both words.
+  if (Math.min(name.norm.length, item.norm.length) >= 8) {
+    const itemTokens = item.norm.split(" ");
+    const covers = (shorter: string[], longer: string[], padded: string) =>
+      shorter.length <= longer.length && (shorter.length === 1 || shorter.length / longer.length >= 2 / 3) && shorter.every((token) => padded.includes(` ${token} `));
+    if (covers(name.tokens, itemTokens, item.padded) || covers(itemTokens, name.tokens, name.padded)) return 0.96;
+  }
+  const longest = Math.max(name.norm.length, item.norm.length);
+  const allowed = (1 - threshold) * longest;
+  // Both checks bound the edit distance from below, so most of a long list never pays for computing it.
+  if (Math.abs(name.norm.length - item.norm.length) > allowed) return 0;
+  let gap = 0;
+  for (let at = 0; at < 36; at += 1) gap += Math.abs(name.letters[at] - item.letters[at]);
+  if (gap / 2 > allowed) return 0;
+  const ratio = (left: string, right: string) => 1 - levenshtein(left, right) / longest;
+  return Math.max(ratio(name.norm, item.norm), ratio(name.sorted, item.sorted));
+}
+
+export function bestHit(name: string, index: SanctionEntry[], threshold = 0.82) {
+  const norm = normalizeName(name);
+  if (norm.length < 3) return null;
+  const candidate: Candidate = { norm, sorted: sortTokens(norm), padded: ` ${norm} `, tokens: norm.split(" "), letters: letterCounts(norm) };
   let best: { entry: string; score: number } | null = null;
-  for (const entry of list) {
-    const score = nameSimilarity(cleaned, entry);
-    if (!best || score > best.score) best = { entry, score };
+  for (const item of index) {
+    const score = similarity(candidate, item, threshold);
+    if (!best || score > best.score) best = { entry: item.entry, score };
   }
   if (!best || best.score < threshold) return null;
   return best;
+}
+
+export function fuzzyHit(name: string, list: string[], threshold = 0.82) {
+  return bestHit(name, indexNames(list), threshold);
+}
+
+function csvCells(line: string) {
+  const cells: string[] = [];
+  let current = "";
+  let quoted = false;
+  for (let at = 0; at < line.length; at += 1) {
+    const char = line[at];
+    if (char === '"') {
+      if (quoted && line[at + 1] === '"') {
+        current += '"';
+        at += 1;
+      } else quoted = !quoted;
+    } else if (char === "," && !quoted) {
+      cells.push(current.trim());
+      current = "";
+    } else current += char;
+  }
+  cells.push(current.trim());
+  return cells;
+}
+
+// OFAC's SDN.CSV has no header: id, name, type, program. ALT.CSV adds aliases: id, alias id, kind, alias.
+// Vessels and aircraft are skipped. They are not parties to a note, and their short names match real people.
+export function parseTreasuryLists(sdnCsv: string, altCsv = "") {
+  const names: string[] = [];
+  const skipped = new Set<string>();
+  for (const line of sdnCsv.split(/\r?\n/)) {
+    const [id, name, type] = csvCells(line);
+    if (!id || !name || name === "-0-") continue;
+    if (type === "vessel" || type === "aircraft") {
+      skipped.add(id);
+      continue;
+    }
+    names.push(name);
+  }
+  for (const line of altCsv.split(/\r?\n/)) {
+    const [id, , , alias] = csvCells(line);
+    if (id && alias && alias !== "-0-" && !skipped.has(id)) names.push(alias);
+  }
+  return names;
 }
 
 export function parseSanctionNames(payload: string) {

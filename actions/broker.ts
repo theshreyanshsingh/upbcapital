@@ -4,10 +4,10 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import type { BrokerDealRole, DocType, FeeBasis } from "@prisma/client";
 import { payoutNoteProblem, splitStates } from "@/lib/broker-fees";
-import { requireRole } from "@/lib/auth";
+import { endSessions, requireRole } from "@/lib/auth";
 import { notify, notifyDesk } from "@/lib/email";
 import { rescoreListing } from "@/lib/matching";
-import { screenParty } from "@/lib/ofac";
+import { OFAC_DOWN_MESSAGE, OFAC_HOLD_MESSAGE, ofacHold, screenInBackground, screenListing, screenUser } from "@/lib/screening";
 import { prisma } from "@/lib/prisma";
 import { extensionOf, mimeFor, putBytes, safeBasename } from "@/lib/storage";
 import { parseTapeBuffer, normalizeTapeRows } from "@/lib/tape";
@@ -238,10 +238,6 @@ export async function submitBrokerDeal(formData: FormData) {
       },
     ],
   });
-  if (note.borrowerName) {
-    const screen = await screenParty(note.borrowerName);
-    await prisma.ofacCheck.create({ data: { name: note.borrowerName, result: screen.result, provider: screen.provider } });
-  }
   redirect(`/broker/deals/${listing.id}?notice=submitted`);
 }
 
@@ -257,7 +253,6 @@ async function createBrokerListing(input: {
   authorization: { key: string; name: string; size: number; mime: string };
   loans: Record<string, unknown>[];
 }) {
-  const screen = await screenParty(input.clientSellerName);
   const listing = await prisma.listing.create({
     data: {
       kind: input.kind,
@@ -285,9 +280,7 @@ async function createBrokerListing(input: {
         create: {
           authorId: input.userId,
           action: "COMMENT",
-          comment: screen.result === "REVIEW"
-            ? `Filed by the broker for ${input.clientSellerName}. OFAC needs a look: ${screen.detail}`
-            : `Filed by ${input.userName} for ${input.clientSellerName}.`,
+          comment: `Filed by ${input.userName} for ${input.clientSellerName}.`,
         },
       },
     },
@@ -296,6 +289,7 @@ async function createBrokerListing(input: {
     `Broker file · ${input.title}`,
     `${input.userName} filed ${input.title} for ${input.clientSellerName} as ${input.role === "AFFILIATE" ? "a referring affiliate" : "seller's broker"}.`,
   );
+  screenInBackground(() => screenListing(listing.id, input.userId));
   await rescoreListing(listing.id, false);
   revalidatePath("/admin/queue");
   revalidatePath("/broker");
@@ -341,7 +335,12 @@ export async function setBrokerStatus(formData: FormData) {
   if (status !== "APPROVED" && status !== "REJECTED" && status !== "PENDING") {
     redirect("/admin/brokers?error=Unknown status.");
   }
+  if (status === "APPROVED") {
+    if ((await screenUser(userId, "Broker approval")).unavailable) redirect(`/admin/brokers?error=${encodeURIComponent(OFAC_DOWN_MESSAGE)}`);
+    if (await ofacHold({ userIds: [userId] })) redirect(`/admin/brokers?error=${encodeURIComponent(OFAC_HOLD_MESSAGE)}`);
+  }
   const user = await prisma.user.update({ where: { id: userId }, data: { accountStatus: status } });
+  if (status === "REJECTED") await endSessions(user.id);
   if (user.role === "BROKER") {
     await notify(user.email, status === "APPROVED" ? "Your seat is open" : "Your broker seat", status === "APPROVED"
       ? `${user.name}, the desk approved your seat. Sign in and the welcome is waiting.`

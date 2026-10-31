@@ -19,6 +19,7 @@ enum AccountStatus {
   PENDING
   APPROVED
   REJECTED
+  SUSPENDED
 }
 
 enum CompanyType {
@@ -540,6 +541,8 @@ model Closing {
   wireInstructions      String        @default("")
   openedAt              DateTime      @default(now())
   closedAt              DateTime?
+  canceledAt            DateTime?
+  cancelReason          String?
   steps                 ClosingStep[]
   boarding              ServicerBoarding?
   funders               ClosingFunder[]
@@ -592,9 +595,21 @@ model ServerSession {
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   expiresAt DateTime
   createdAt DateTime @default(now())
+  ipAddress String?
+  userAgent String?
 
   @@index([userId])
   @@index([expiresAt])
+}
+
+model PasswordReset {
+  id        String   @id @default(cuid()) @map("_id")
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
 }
 
 model RateWindow {
@@ -1132,11 +1147,26 @@ model StateDisclosure {
 }
 
 model OfacCheck {
-  id        String   @id @default(cuid()) @map("_id")
-  name      String
-  result    String
-  provider  String   @default("mock")
-  createdAt DateTime @default(now())
+  id           String    @id @default(cuid()) @map("_id")
+  name         String
+  result       String
+  provider     String    @default("mock")
+  createdAt    DateTime  @default(now())
+  context      String?
+  detail       String?
+  matched      String?
+  userId       String?
+  listingId    String?
+  // OPEN, CLEARED, or CONFIRMED on a REVIEW result. Rows from before this field count as OPEN.
+  status       String?
+  reviewedById String?
+  reviewedAt   DateTime?
+  reviewNote   String?
+
+  @@index([name])
+  @@index([result, createdAt])
+  @@index([userId])
+  @@index([listingId])
 }
 
 model PageHit {

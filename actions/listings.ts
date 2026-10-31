@@ -8,7 +8,7 @@ import { notify, notifyDesk } from "@/lib/email";
 import { noteMatches, type BookFilters } from "@/lib/filters";
 import { isPro } from "@/lib/settings";
 import { rescoreListing } from "@/lib/matching";
-import { screenParty } from "@/lib/ofac";
+import { screenInBackground, screenListing } from "@/lib/screening";
 import { prisma } from "@/lib/prisma";
 import { extensionOf, mimeFor, putBytes, safeBasename } from "@/lib/storage";
 import { deleteTapeDraft, readTapeDraft } from "@/lib/tape-draft";
@@ -126,15 +126,7 @@ export async function createNoteListing(formData: FormData) {
       notes: { create: noteData(input) },
     },
   });
-  if (input.borrowerName) {
-    const screen = await screenParty(input.borrowerName);
-    await prisma.ofacCheck.create({ data: { name: input.borrowerName, result: screen.result, provider: screen.provider } });
-    if (screen.result === "REVIEW") {
-      await prisma.reviewComment.create({
-        data: { listingId: listing.id, authorId: user.id, action: "COMMENT", comment: `OFAC mock matched the borrower. ${screen.detail}` },
-      });
-    }
-  }
+  screenInBackground(() => screenListing(listing.id, user.id));
   await saveDocuments(listing.id, formData);
   await prisma.reviewComment.create({
     data: { listingId: listing.id, authorId: user.id, action: "COMMENT", comment: "Submitted to the desk." },
@@ -264,6 +256,7 @@ export async function createPoolListing(formData: FormData) {
     `${user.companyName || user.name} submitted ${loans.length} loans in ${title}.`,
   );
   await deleteTapeDraft(token);
+  screenInBackground(() => screenListing(listing.id, user.id));
   await rescoreListing(listing.id, false);
   revalidatePath("/admin/queue");
   redirect(`/seller/listings/${listing.id}?notice=submitted`);

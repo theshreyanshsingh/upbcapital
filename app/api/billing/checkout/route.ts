@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import Stripe from "stripe";
-import { getCurrentUser } from "@/lib/auth";
+import { getApiUser } from "@/lib/auth";
 import { appOrigin, simulatedCheckout, stripeConfigured, UNPRICED_NOTE } from "@/lib/billing";
 import { shouldApplyReferralCredit } from "@/lib/acl";
 import { getSettings } from "@/lib/settings";
@@ -8,7 +8,7 @@ import { getSettings } from "@/lib/settings";
 export const runtime = "nodejs";
 
 export async function POST() {
-  const user = await getCurrentUser();
+  const user = await getApiUser();
   if (!user || user.role !== "BUYER" || user.accountStatus !== "APPROVED") {
     return NextResponse.redirect(new URL("/login", appOrigin()));
   }

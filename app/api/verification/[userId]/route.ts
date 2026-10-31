@@ -1,5 +1,5 @@
 import { canReadProof } from "@/lib/acl";
-import { getCurrentUser } from "@/lib/auth";
+import { getApiUser } from "@/lib/auth";
 import { attachmentName } from "@/lib/uploads";
 import { prisma } from "@/lib/prisma";
 import { getBytes } from "@/lib/storage";
@@ -8,7 +8,7 @@ export const runtime = "nodejs";
 
 export async function GET(_request: Request, context: { params: Promise<{ userId: string }> }) {
   const { userId } = await context.params;
-  const user = await getCurrentUser();
+  const user = await getApiUser();
   if (!user) return new Response("Sign in required.", { status: 401 });
   if (!canReadProof(user, userId)) return new Response("Closed.", { status: 403 });
   const profile = await prisma.buyerProfile.findUnique({ where: { userId } });
