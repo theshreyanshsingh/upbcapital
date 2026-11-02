@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { notFound, redirect } from "next/navigation";
+import { notFound } from "next/navigation";
 import { Notice } from "@/components/notice";
 import { requireRole } from "@/lib/auth";
 import { brokerRoleLabel } from "@/lib/broker-fees";

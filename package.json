@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev -p 4317 -H 0.0.0.0",
-    "build": "tsx scripts/release.ts && next build",
+    "build": "prisma generate && tsx scripts/release.ts && next build",
     "db:bootstrap": "tsx scripts/bootstrap.ts",
     "start": "next start -p 4317 -H 0.0.0.0",
     "lint": "eslint",
