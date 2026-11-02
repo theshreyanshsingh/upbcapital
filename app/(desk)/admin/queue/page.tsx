@@ -16,6 +16,11 @@ const TABS = [
 
 export const metadata = { title: "Review queue" };
 
+function Waiting({ days }: { days: number }) {
+  const tone = days >= 5 ? "text-bad" : days >= 2 ? "text-foreground" : "text-muted-foreground";
+  return <span className={`text-[13px] font-medium ${tone}`}>{days === 0 ? "Today" : `${days} day${days === 1 ? "" : "s"} waiting`}</span>;
+}
+
 export default async function QueuePage({
   searchParams,
 }: {
@@ -27,8 +32,10 @@ export default async function QueuePage({
   const listings = await prisma.listing.findMany({
     where: { status: { in: [...tab.statuses] } },
     include: { seller: true, broker: true, notes: true, inquiries: true, _count: { select: { matches: true } } },
-    orderBy: { updatedAt: "desc" },
+    // The review column runs oldest first, so nothing waits behind newer paper.
+    orderBy: tab.id === "review" ? { submittedAt: "asc" } : { updatedAt: "desc" },
   });
+  const now = Date.now();
   return (
     <div>
       <PageIntro eyebrow="Review" title="The queue." lede="Nothing reaches buyers until the desk releases it." />
@@ -53,7 +60,12 @@ export default async function QueuePage({
                   {" · "}{listing.kind === "POOL" ? `${listing.notes.length} loans` : listing.notes[0]?.city} · {listing.inquiries.length} inquiries · {listing._count.matches} buy-box matches
                 </p>
               </div>
-              <StatusPill status={listing.status} />
+              <div className="flex items-center gap-3">
+                {tab.id === "review" && (listing.status === "CHANGES_REQUESTED"
+                  ? <span className="text-[13px] font-medium text-muted-foreground">With the seller</span>
+                  : <Waiting days={Math.floor((now - listing.submittedAt.getTime()) / 86400000)} />)}
+                <StatusPill status={listing.status} />
+              </div>
             </Link>
           </li>
         ))}

@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { PageIntro } from "@/components/page-intro";
 import { requireUser } from "@/lib/auth";
+import { closingClock, targetDays } from "@/lib/closing-clock";
+import { getSettings } from "@/lib/settings";
 import { money, prettyDate } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 
@@ -34,6 +36,7 @@ export default async function ClosingsPage() {
     include: { listing: true, steps: true },
     orderBy: { openedAt: "desc" },
   });
+  const days = targetDays((await getSettings()).closingTargetDays);
   return (
     <div>
       <PageIntro eyebrow="Closing" title="Files in motion." lede="Each accepted offer has a checklist. The buyer’s all-in includes the premium. The seller’s net is after commission." />
@@ -41,13 +44,22 @@ export default async function ClosingsPage() {
         {closings.length === 0 && <li className="px-5 py-8 text-sm text-muted-foreground">No closings yet.</li>}
         {closings.map((closing) => {
           const done = closing.steps.filter((step) => step.status === "COMPLETE").length;
+          const clock = closingClock(closing, closing.steps, days);
           return (
             <li key={closing.id} className="flex flex-wrap items-baseline justify-between gap-3 px-5 py-5">
               <div>
                 <Link href={`/closings/${closing.id}`} className="font-semibold tracking-tight text-3xl text-foreground">{closing.listing.title}</Link>
                 <p className="mt-1 text-sm text-muted-foreground">
                   {closing.status.toLowerCase()} · {done}/{closing.steps.length} steps · opened {prettyDate(closing.openedAt)}
+                  {closing.status === "OPEN" ? ` · target ${prettyDate(clock.target)}` : ""}
                 </p>
+                {(clock.overdue > 0 || clock.late) && (
+                  <p className="mt-1 text-[13px] font-medium text-bad">
+                    {clock.overdue > 0 ? `${clock.overdue} step${clock.overdue === 1 ? "" : "s"} late` : ""}
+                    {clock.overdue > 0 && clock.late ? " · " : ""}
+                    {clock.late ? "past the target close" : ""}
+                  </p>
+                )}
               </div>
               <p className="text-sm text-foreground">All-in {money(closing.buyerTotalCents / 100)}</p>
             </li>

@@ -7,6 +7,7 @@ import { simulatedCheckout, stripeConfigured } from "@/lib/billing";
 import { q } from "@/lib/format";
 import { bpsToPercent } from "@/lib/money";
 import { getSettings } from "@/lib/settings";
+import { targetDays } from "@/lib/closing-clock";
 
 export const metadata = { title: "Fee schedule" };
 
@@ -53,6 +54,11 @@ export default async function SettingsPage({
         <label className="block">
           <span className="text-[13px] text-muted-foreground">Free listings a buyer can open</span>
           <input name="freeBrowseLimit" defaultValue={settings.freeBrowseLimit} className="desk-input mt-2" />
+        </label>
+        <label className="block">
+          <span className="text-[13px] text-muted-foreground">Days from an accepted offer to the target close</span>
+          <input name="closingTargetDays" defaultValue={targetDays(settings.closingTargetDays)} className="desk-input mt-2" />
+          <span className="mt-1 block text-xs text-muted-foreground">Sets the step due dates on new closings. Open closings keep their dates.</span>
         </label>
         <fieldset className="space-y-3 border-t border-border pt-5">
           <legend className="eyebrow">Broker compensation</legend>

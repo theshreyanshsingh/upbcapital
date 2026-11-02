@@ -2,6 +2,8 @@ import Link from "next/link";
 import { PageIntro } from "@/components/page-intro";
 import { RevenueBars } from "@/components/charts";
 import { requireRole } from "@/lib/auth";
+import { targetDays } from "@/lib/closing-clock";
+import { deskToday } from "@/lib/desk-today";
 import { money } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 import { getSettings } from "@/lib/settings";
@@ -10,8 +12,9 @@ export const metadata = { title: "Revenue" };
 
 export default async function AdminHome() {
   await requireRole(["ADMIN"]);
-  const [settings, events, subscribers, notices] = await Promise.all([
-    getSettings(),
+  const settings = await getSettings();
+  const [today, events, subscribers, notices] = await Promise.all([
+    deskToday(settings.closingTargetDays),
     prisma.revenueEvent.findMany({ orderBy: { occurredAt: "desc" } }),
     prisma.user.findMany({ where: { subscriptionTier: "PRO", subscriptionStatus: "ACTIVE" } }),
     prisma.notification.findMany({ orderBy: { createdAt: "desc" }, take: 6 }),
@@ -29,6 +32,22 @@ export default async function AdminHome() {
   return (
     <div>
       <PageIntro eyebrow="Desk ledger" title="What the desk has earned." lede="Premiums and commissions post when a listing is marked sold. Membership cash posts from Stripe, or from the simulated checkout." />
+      <section className="mb-10 glass p-6" aria-labelledby="today-heading">
+        <p id="today-heading" className="eyebrow">Desk today</p>
+        <ul className="mt-4 grid gap-x-6 gap-y-3 sm:grid-cols-2 lg:grid-cols-4">
+          <Waiting href="/admin/queue" k="Listings to review" v={today.review} hint={today.oldestReviewDays != null ? `oldest ${today.oldestReviewDays} day${today.oldestReviewDays === 1 ? "" : "s"}` : undefined} urgent={(today.oldestReviewDays ?? 0) >= 5} />
+          <Waiting href="/admin/offers" k="Open bids" v={today.offers} hint={today.toAward ? `${today.toAward} listing${today.toAward === 1 ? "" : "s"} ready to award` : undefined} urgent={today.toAward > 0} />
+          <Waiting href="/closings" k="Open closings" v={today.openClosings} hint={today.lateClosings ? `${today.lateClosings} running late` : undefined} urgent={today.lateClosings > 0} />
+          <Waiting href="/admin/compliance" k="OFAC reviews" v={today.ofac} urgent={today.ofac > 0} />
+          <Waiting href="/admin/verification" k="Buyer files waiting" v={today.files} />
+          <Waiting href="/admin/users" k="Accounts waiting" v={today.accounts} />
+        </ul>
+        <dl className="mt-6 grid gap-4 border-t border-border pt-4 sm:grid-cols-3">
+          <Kpi k="Close rate, 180 days" v={today.stats.closeRate == null ? "—" : `${Math.round(today.stats.closeRate * 100)}%`} hint={`${today.stats.complete} closed · ${today.stats.canceled} canceled`} />
+          <Kpi k="Average days to close" v={today.stats.averageDays == null ? "—" : today.stats.averageDays.toFixed(0)} hint={`Target ${targetDays(settings.closingTargetDays)} days`} />
+          <Kpi k="Bids per live listing" v={today.bidsPerListing == null ? "—" : today.bidsPerListing.toFixed(1)} hint={`${today.liveListings} live`} />
+        </dl>
+      </section>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Figure k="Buyer premiums" v={money(sum("BUYER_PREMIUM") / 100)} />
         <Figure k="Seller commissions" v={money(sum("SELLER_COMMISSION") / 100)} />
@@ -78,6 +97,28 @@ export default async function AdminHome() {
           ))}
         </ul>
       </section>
+    </div>
+  );
+}
+
+function Waiting({ href, k, v, hint, urgent }: { href: string; k: string; v: number; hint?: string; urgent?: boolean }) {
+  return (
+    <li>
+      <Link href={href} className="group block">
+        <span className="text-[13px] text-muted-foreground group-hover:text-foreground">{k}</span>
+        <span className={`block text-2xl font-semibold tracking-tight ${v > 0 && urgent ? "text-bad" : "text-foreground"}`}>{v}</span>
+        {hint && <span className={`block text-xs ${urgent ? "text-bad" : "text-muted-foreground"}`}>{hint}</span>}
+      </Link>
+    </li>
+  );
+}
+
+function Kpi({ k, v, hint }: { k: string; v: string; hint: string }) {
+  return (
+    <div>
+      <dt className="text-[13px] text-muted-foreground">{k}</dt>
+      <dd className="mt-1 text-2xl font-semibold tracking-tight text-foreground">{v}</dd>
+      <dd className="text-xs text-muted-foreground">{hint}</dd>
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import type { ClosingStepKey } from "@prisma/client";
 import { CLOSING_STEPS, canCompleteStep, closingTotals } from "@/lib/closing";
+import { closingSchedule, targetDays } from "@/lib/closing-clock";
 import { deskFeeBps } from "@/lib/desk-fees";
 import { getEscrowProvider } from "@/lib/escrow";
 import { postRevenueOnce } from "@/lib/ledger";
@@ -39,6 +40,7 @@ export async function openClosing(input: {
     netToSellerCents: fees.netToSellerCents,
     wireInstructions: settings.wireInstructions,
   });
+  const schedule = closingSchedule(new Date(), targetDays(settings.closingTargetDays));
   const created = await prisma.closing.create({
     data: {
       listingId: input.listingId,
@@ -53,8 +55,9 @@ export async function openClosing(input: {
       provider: preview.provider,
       providerRef: preview.providerRef,
       wireInstructions: preview.instructions,
+      targetCloseAt: schedule.targetCloseAt,
       steps: {
-        create: CLOSING_STEPS.map((step) => ({ key: step.key })),
+        create: CLOSING_STEPS.map((step) => ({ key: step.key, dueAt: schedule.due[step.key] })),
       },
     },
   });

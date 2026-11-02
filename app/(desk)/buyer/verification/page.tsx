@@ -5,7 +5,7 @@ import { PageIntro } from "@/components/page-intro";
 import { SubmitButton } from "@/components/submit-button";
 import { Input } from "@/components/ui/input";
 import { requireUser } from "@/lib/auth";
-import { q } from "@/lib/format";
+import { money, prettyDate, q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 import { ACCREDITATION_TEXT } from "@/lib/verification";
 import { redirect } from "next/navigation";
@@ -50,6 +50,13 @@ export default async function VerificationPage({
           {profile.reviewerNote ? ` · ${profile.reviewerNote}` : ""}
         </p>
       )}
+      {profile?.proofVerifiedAt && profile.proofAmount != null && (
+        <p className="mt-2 text-sm text-muted-foreground">
+          The desk verified {money(profile.proofAmount)} in funds
+          {profile.proofExpiresAt ? `, good through ${prettyDate(profile.proofExpiresAt)}` : ""}.
+          {profile.proofExpiresAt && profile.proofExpiresAt.getTime() < Date.now() ? " That has passed, so send a fresh statement before your next bid." : " A bid whose all-in runs above that is flagged to the desk."}
+        </p>
+      )}
       {profile?.proofKey && (
         <a className="mt-3 inline-block text-sm text-link" href={`/api/verification/${user.id}`}>
           Download proof on file
@@ -75,6 +82,10 @@ export default async function VerificationPage({
         <label className="block">
           <span className="text-[13px] text-muted-foreground">Proof of funds</span>
           <input name="proof" type="file" className="mt-2 block text-sm text-muted-foreground" />
+        </label>
+        <label className="block">
+          <span className="text-[13px] text-muted-foreground">Amount the proof shows, in dollars</span>
+          <Input name="proofAmount" inputMode="decimal" defaultValue={profile?.proofAmount ?? ""} placeholder="250000" className="mt-2 h-11 bg-card" required />
         </label>
         <label className="flex items-start gap-3 text-sm leading-relaxed text-muted-foreground">
           <input type="checkbox" name="accredited" value="yes" defaultChecked={profile?.accredited} className="mt-1" />

@@ -17,7 +17,7 @@ export default async function NotificationPrefsPage({
   const params = await searchParams;
   const prefs = await prisma.user.findUnique({
     where: { id: user.id },
-    select: { notifyEmail: true, notifyInApp: true, digest: true },
+    select: { notifyEmail: true, notifyInApp: true, digest: true, dealAlerts: true, role: true },
   });
   return (
     <div className="max-w-xl">
@@ -36,6 +36,12 @@ export default async function NotificationPrefsPage({
           <input type="checkbox" name="notifyInApp" value="on" defaultChecked={prefs?.notifyInApp ?? true} />
           In-app notices
         </label>
+        {prefs?.role === "BUYER" && (
+          <label className="flex items-start gap-3 text-sm text-foreground">
+            <input type="checkbox" name="dealAlerts" value="on" defaultChecked={prefs.dealAlerts !== false} className="mt-1" />
+            <span>Desk picks: listings and bid deadlines the desk sends you because they fit a buy box</span>
+          </label>
+        )}
         <label className="block">
           <span className="text-[13px] text-muted-foreground">Match digest</span>
           <select name="digest" defaultValue={prefs?.digest || "WEEKLY"} className="desk-input mt-2" aria-label="Digest frequency">

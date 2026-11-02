@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { isPrivateDocument } from "@/lib/acl";
 import { audit } from "@/lib/audit";
 import { requireUser } from "@/lib/auth";
+import { sendAudience, sendListing } from "@/lib/outreach";
 import { prisma } from "@/lib/prisma";
 
 async function ownerOrDesk(listingId: string) {
@@ -36,11 +37,21 @@ export async function setAuction(formData: FormData) {
     },
   });
   await audit(user.id, "AUCTION", "listing", listingId, `${bidMode} ${deadline ? deadline.toISOString() : "open"}`);
+  let announced = "";
+  if (user.role === "ADMIN" && formData.get("announce") === "on" && bidMode !== "NONE") {
+    const audience = (await sendAudience(listingId)).filter((row) => row.eligible).map((row) => row.userId);
+    const result = await sendListing({ listingId, userIds: audience, kind: "DEADLINE", note: "", actorId: user.id });
+    if (result.problem) announced = ` Not announced: ${result.problem}`;
+    else {
+      announced = ` Announced to ${result.sent} buyer${result.sent === 1 ? "" : "s"}.`;
+      await audit(user.id, "SEND_DEADLINE", "listing", listingId, `Sent to ${result.sent}. Skipped ${result.skipped}.`);
+    }
+  }
   revalidatePath(`/marketplace/${listingId}`);
   revalidatePath(`/seller/listings/${listingId}`);
   revalidatePath(`/admin/listings/${listingId}`);
   const back = user.role === "ADMIN" && listing.sellerId !== user.id ? `/admin/listings/${listingId}` : `/seller/listings/${listingId}`;
-  redirect(`${back}?notice=auction`);
+  redirect(`${back}?notice=${announced ? encodeURIComponent(`Bid terms saved.${announced}`) : "auction"}`);
 }
 
 export async function duplicateListing(formData: FormData) {

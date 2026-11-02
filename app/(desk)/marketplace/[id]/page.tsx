@@ -64,7 +64,8 @@ export default async function ListingPage({
     sellerId: listing.sellerId,
     brokerId: listing.brokerId,
   });
-  if (listing.sellerId !== user.id) await rememberView(listing.id, user.id);
+  // Desk opens are not buyer interest, so they stay out of the counts sellers and the desk read.
+  if (listing.sellerId !== user.id && user.role !== "ADMIN") await rememberView(listing.id, user.id);
   if (!access.ok) {
     const copy = access.reason === "early"
       ? `This listing is inside the ${settings.earlyAccessHours}-hour early-access window.`

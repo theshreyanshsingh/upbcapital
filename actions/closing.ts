@@ -147,3 +147,66 @@ export async function cancelClosing(formData: FormData) {
   revalidatePath("/marketplace");
   redirect(`/closings/${closingId}?notice=closing_canceled`);
 }
+
+function dateInput(raw: FormDataEntryValue | null) {
+  const value = String(raw || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const date = new Date(`${value}T23:59:00Z`);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+export async function setClosingDates(formData: FormData) {
+  const closingId = String(formData.get("closingId") || "");
+  const { user, closing } = await participant(closingId);
+  if (user.role !== "ADMIN") redirect(`/closings/${closingId}?error=Only the desk sets closing dates.`);
+  if (closing.status !== "OPEN") redirect(`/closings/${closingId}?error=This closing is already finished.`);
+  const target = dateInput(formData.get("targetCloseAt"));
+  if (!target) redirect(`/closings/${closingId}?error=${encodeURIComponent("Set a target close date.")}`);
+  const changed: string[] = [];
+  for (const step of closing.steps) {
+    const due = dateInput(formData.get(`due_${step.key}`));
+    if (due && due.getTime() !== step.dueAt?.getTime()) {
+      await prisma.closingStep.update({ where: { id: step.id }, data: { dueAt: due, remindedAt: null } });
+      changed.push(`${step.key} ${due.toISOString().slice(0, 10)}`);
+    }
+  }
+  await prisma.closing.update({ where: { id: closingId }, data: { targetCloseAt: target } });
+  await audit(user.id, "CLOSING_DATES", "closing", closingId, `Target ${target.toISOString().slice(0, 10)}${changed.length ? `. ${changed.join(", ")}` : ""}`);
+  revalidatePath(`/closings/${closingId}`);
+  revalidatePath("/closings");
+  redirect(`/closings/${closingId}?notice=dates`);
+}
+
+// Escrow is manual, so the desk records each wire by hand and both sides can see it landed.
+export async function recordSettlement(formData: FormData) {
+  const closingId = String(formData.get("closingId") || "");
+  const side = String(formData.get("side") || "");
+  const { user, closing, inquiry } = await participant(closingId);
+  if (user.role !== "ADMIN") redirect(`/closings/${closingId}?error=Only the desk records money movement.`);
+  if (closing.status === "CANCELED") redirect(`/closings/${closingId}?error=This closing was canceled.`);
+  if (side !== "funds" && side !== "proceeds") redirect(`/closings/${closingId}?error=Choose which wire this is.`);
+  const amount = Number(String(formData.get("amount") || "").replace(/[$,\s]/g, ""));
+  const at = dateInput(formData.get("at"));
+  const reference = String(formData.get("reference") || "").trim().slice(0, 120);
+  if (!Number.isFinite(amount) || amount <= 0 || amount > 1_000_000_000) redirect(`/closings/${closingId}?error=${encodeURIComponent("Enter the wire amount in dollars.")}`);
+  if (!at) redirect(`/closings/${closingId}?error=${encodeURIComponent("Enter the date the wire landed or went out.")}`);
+  const cents = Math.round(amount * 100);
+  const before = side === "funds" ? closing.fundsReceivedCents : closing.proceedsSentCents;
+  await prisma.closing.update({
+    where: { id: closingId },
+    data: side === "funds"
+      ? { fundsReceivedCents: cents, fundsReceivedAt: at, fundsReference: reference }
+      : { proceedsSentCents: cents, proceedsSentAt: at, proceedsReference: reference },
+  });
+  const label = side === "funds" ? "Buyer funds received" : "Seller proceeds sent";
+  const dollars = `$${amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  await audit(user.id, side === "funds" ? "FUNDS_RECEIVED" : "PROCEEDS_SENT", "closing", closingId, `${label}: ${before == null ? "none" : `$${(before / 100).toFixed(2)}`} to ${dollars} on ${at.toISOString().slice(0, 10)}${reference ? ` · ${reference}` : ""}`);
+  const message = `The desk recorded ${label.toLowerCase()} of ${dollars} on ${at.toISOString().slice(0, 10)}${reference ? ` (reference ${reference})` : ""} for ${closing.listing.title}. If that does not match your records, reply on the closing thread.`;
+  if (side === "proceeds") await notify(closing.listing.seller.email, `${label} · ${closing.listing.title}`, message);
+  if (side === "funds" && inquiry) {
+    const buyer = await prisma.user.findUnique({ where: { id: inquiry.buyerId } });
+    if (buyer) await notify(buyer.email, `${label} · ${closing.listing.title}`, message);
+  }
+  revalidatePath(`/closings/${closingId}`);
+  redirect(`/closings/${closingId}?notice=settlement`);
+}

@@ -17,8 +17,13 @@ export default async function UsersPage({
 }) {
   const actor = await requireRole(["ADMIN"]);
   const params = await searchParams;
+  const filter = q(params, "q").trim().slice(0, 80);
+  const text = { contains: filter, mode: "insensitive" as const };
   const [users, reviews] = await Promise.all([
-    prisma.user.findMany({ orderBy: { createdAt: "desc" } }),
+    prisma.user.findMany({
+      where: filter ? { OR: [{ name: text }, { email: text }, { companyName: text }] } : undefined,
+      orderBy: { createdAt: "desc" },
+    }),
     prisma.ofacCheck.findMany({ where: { result: "REVIEW" }, select: { userId: true, result: true, status: true } }),
   ]);
   const held = new Set(reviews.filter(ofacBlocks).map((row) => row.userId));
@@ -26,7 +31,12 @@ export default async function UsersPage({
     <div>
       <PageIntro eyebrow="Accounts" title="Who is allowed in." lede="Buyers and institutions wait here until you approve them. Pro can be comped without a charge." />
       <Notice notice={q(params, "notice")} error={q(params, "error")} />
-      <div className="mt-8 overflow-x-auto border border-border rounded-xl">
+      <form action="/admin/users" role="search" className="mt-6 flex max-w-md gap-2">
+        <input name="q" type="search" defaultValue={filter} aria-label="Filter accounts" placeholder="Name, email, or company" className="desk-input" />
+        <button type="submit" className="h-11 shrink-0 rounded-lg border border-border px-4 text-[13px] font-medium">Filter</button>
+      </form>
+      {filter && <p className="mt-2 text-sm text-muted-foreground">{users.length} account{users.length === 1 ? "" : "s"} match “{filter}”. <a href="/admin/users" className="text-link">Show all</a></p>}
+      <div className="mt-6 overflow-x-auto border border-border rounded-xl">
         <table className="min-w-full text-left text-sm">
           <thead className="text-xs font-medium text-muted-foreground">
             <tr>

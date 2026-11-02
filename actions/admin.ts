@@ -9,6 +9,7 @@ import { audit } from "@/lib/audit";
 import { endSessions, requireRole } from "@/lib/auth";
 import { notify } from "@/lib/email";
 import { openClosing } from "@/lib/closing-service";
+import { DEFAULT_CLOSING_DAYS } from "@/lib/closing-clock";
 import { onGroupAccepted, onGroupDeclined } from "@/actions/group";
 import { rescoreListing } from "@/lib/matching";
 import { feeBreakdown, percentToBps } from "@/lib/money";
@@ -370,6 +371,8 @@ export async function saveSettings(formData: FormData) {
   if (price < 0 || price > 5000) redirect("/admin/settings?error=Pro price must be between $0 and $5,000.");
   if (early < 0 || early > 336) redirect("/admin/settings?error=Early access can run from 0 to 336 hours.");
   if (limit < 1 || limit > 100) redirect("/admin/settings?error=Free browse limit must be between 1 and 100.");
+  const closingDays = Number(formData.get("closingTargetDays") || DEFAULT_CLOSING_DAYS);
+  if (!Number.isFinite(closingDays) || closingDays < 5 || closingDays > 180) redirect("/admin/settings?error=Keep the target close between 5 and 180 days.");
   const brokerBasis = String(formData.get("brokerFeeBasis") || "PERCENT");
   const affiliateBasis = String(formData.get("affiliateFeeBasis") || "PERCENT");
   const brokerPercent = Number(formData.get("brokerFeePercent"));
@@ -397,6 +400,7 @@ export async function saveSettings(formData: FormData) {
       proMonthlyPriceCents: cents,
       earlyAccessHours: Math.round(early),
       freeBrowseLimit: Math.round(limit),
+      closingTargetDays: Math.round(closingDays),
       wireInstructions,
       chargeDeskFees: formData.get("chargeDeskFees") === "on",
       brokerFeeBasis: brokerBasis as "PERCENT" | "FLAT",
@@ -413,6 +417,7 @@ export async function saveSettings(formData: FormData) {
       proMonthlyPriceCents: cents,
       earlyAccessHours: Math.round(early),
       freeBrowseLimit: Math.round(limit),
+      closingTargetDays: Math.round(closingDays),
       wireInstructions,
       chargeDeskFees: formData.get("chargeDeskFees") === "on",
       brokerFeeBasis: brokerBasis as "PERCENT" | "FLAT",
@@ -440,7 +445,7 @@ export async function saveSettings(formData: FormData) {
     "FEE_SCHEDULE",
     "settings",
     "default",
-    `Premium ${premium}%, commission ${commission}%, Pro $${price}, early access ${Math.round(early)}h, free browse ${Math.round(limit)}. Default wires ${wireInstructions === before.wireInstructions ? "unchanged" : "changed"}.`,
+    `Premium ${premium}%, commission ${commission}%, Pro $${price}, early access ${Math.round(early)}h, free browse ${Math.round(limit)}, target close ${Math.round(closingDays)} days. Default wires ${wireInstructions === before.wireInstructions ? "unchanged" : "changed"}.`,
   );
   clearSettingsCache();
   revalidatePath("/admin/settings");

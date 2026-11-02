@@ -11,10 +11,12 @@ export function AuctionForm({
   listingId,
   bidMode,
   deadline,
+  canAnnounce = false,
 }: {
   listingId: string;
   bidMode: string;
   deadline: Date | null;
+  canAnnounce?: boolean;
 }) {
   return (
     <form action={setAuction} className="mt-6 space-y-3 border border-border p-4 rounded-xl">
@@ -23,7 +25,7 @@ export function AuctionForm({
       <label className="block">
         <span className="text-[13px] text-muted-foreground">Style</span>
         <select name="bidMode" defaultValue={bidMode} className="desk-input mt-2" aria-label="Bid style">
-          <option value="NONE">Open — bids stay visible</option>
+          <option value="NONE">Open — no deadline</option>
           <option value="SEALED">Sealed — competing bids stay hidden</option>
           <option value="BEST_AND_FINAL">Best and final — one bid</option>
         </select>
@@ -32,6 +34,12 @@ export function AuctionForm({
         <span className="text-[13px] text-muted-foreground">Deadline (UTC)</span>
         <input name="bidDeadline" type="datetime-local" defaultValue={localInput(deadline)} className="desk-input mt-2" aria-label="Bid deadline" />
       </label>
+      {canAnnounce && (
+        <label className="flex items-start gap-2 text-sm text-muted-foreground">
+          <input type="checkbox" name="announce" value="on" className="mt-1" />
+          <span>Announce the deadline to every matched buyer who can bid</span>
+        </label>
+      )}
       <SubmitButton className="h-10 text-[13px] font-medium">Save bid terms</SubmitButton>
     </form>
   );

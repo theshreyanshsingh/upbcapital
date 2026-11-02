@@ -1,3 +1,5 @@
+import { stepLabel } from "@/lib/closing";
+import { STEP_OWNER, effectiveDue, stepClock, stepNeedsReminder, targetDays } from "@/lib/closing-clock";
 import { retentionCutoff } from "@/lib/compliance";
 import { digestBody, digestSince } from "@/lib/digest";
 import { notify, notifyDesk } from "@/lib/email";
@@ -7,17 +9,18 @@ import { bidNeedsReminder, taskNeedsReminder } from "@/lib/schedule";
 import { purgeTapeDrafts } from "@/lib/tape-draft";
 
 export async function runJobs(now = new Date()) {
-  const [digests, tasks, bids, auctions, retention, drafts] = await Promise.all([
+  const [digests, tasks, bids, steps, auctions, retention, drafts] = await Promise.all([
     sendDueDigests(now),
     remindTasks(now),
     remindBidDeadlines(now),
+    remindClosingSteps(now),
     notifyClosedAuctions().then(() => "closed auctions checked"),
     cleanRetention(now),
     purgeTapeDrafts(now),
   ]);
-  const summary = `Digests ${digests}. Task reminders ${tasks}. Bid reminders ${bids}. ${auctions}. ${retention}. Abandoned tapes ${drafts}.`;
+  const summary = `Digests ${digests}. Task reminders ${tasks}. Bid reminders ${bids}. Closing reminders ${steps}. ${auctions}. ${retention}. Abandoned tapes ${drafts}.`;
   await prisma.jobRun.create({ data: { finishedAt: new Date(), summary } });
-  return { digests, tasks, bids, retention, summary };
+  return { digests, tasks, bids, steps, retention, summary };
 }
 
 export async function sendDueDigests(now = new Date()) {
@@ -75,6 +78,38 @@ async function remindBidDeadlines(now: Date) {
     await notifyDesk(`Bid deadline · ${listing.title}`, body);
     for (const inquiry of listing.inquiries) await notify(inquiry.buyer.email, `Bid deadline · ${listing.title}`, body);
     await prisma.listing.update({ where: { id: listing.id }, data: { bidReminderAt: now } });
+    sent += 1;
+  }
+  return sent;
+}
+
+// One message per closing and party, listing every step that is late or due within two days.
+export async function remindClosingSteps(now = new Date()) {
+  const settings = await prisma.platformSettings.findUnique({ where: { id: "default" } });
+  const days = targetDays(settings?.closingTargetDays);
+  const closings = await prisma.closing.findMany({
+    where: { status: "OPEN" },
+    include: { steps: true, listing: { include: { seller: true } }, funders: { include: { user: true } } },
+  });
+  let sent = 0;
+  for (const closing of closings) {
+    const due = closing.steps
+      .map((step) => ({ step, at: effectiveDue(step, closing, days) }))
+      .filter(({ step, at }) => stepNeedsReminder(step, at, now));
+    if (!due.length) continue;
+    const inquiry = closing.inquiryId ? await prisma.inquiry.findUnique({ where: { id: closing.inquiryId }, include: { buyer: true } }) : null;
+    const buyers = closing.funders.length ? closing.funders.map((funder) => funder.user.email) : inquiry ? [inquiry.buyer.email] : [];
+    const line = ({ step, at }: (typeof due)[number]) =>
+      `${stepLabel(step.key)}: ${stepClock(step.status, at, now) === "overdue" ? "late, was due" : "due"} ${at?.toISOString().slice(0, 10) ?? ""}`;
+    const link = `${process.env.NEXT_PUBLIC_APP_URL || ""}/closings/${closing.id}`;
+    const subject = `Closing dates · ${closing.listing.title}`;
+    const forParty = (party: "buyer" | "seller") => due.filter(({ step }) => STEP_OWNER[step.key] === party || STEP_OWNER[step.key] === "both");
+    const sellerSteps = forParty("seller");
+    if (sellerSteps.length) await notify(closing.listing.seller.email, subject, `${sellerSteps.map(line).join("\n")}\n\nThe checklist: ${link}`);
+    const buyerSteps = forParty("buyer");
+    if (buyerSteps.length) for (const email of buyers) await notify(email, subject, `${buyerSteps.map(line).join("\n")}\n\nThe checklist: ${link}`);
+    await notifyDesk(subject, `${due.map(line).join("\n")}\n\n${link}`);
+    await prisma.closingStep.updateMany({ where: { id: { in: due.map(({ step }) => step.id) } }, data: { remindedAt: now } });
     sent += 1;
   }
   return sent;

@@ -100,9 +100,13 @@ Approved buyers with an approved buyer file can bid the whole listing or, inside
 
 Both sides upload documents. A broker who filed the listing acts for the seller and sees what the seller sees. An approved broker who referred the buyer can follow the steps and the fee without seeing wire instructions, files, or other group members. The desk marks steps complete and edits wire instructions. The checklist shows the sale price, buyer premium, all-in, commission, and net to seller. Marking the file closed posts those two ledger lines once. Escrow is a manual wire provider today. `registerEscrowProvider()` in `lib/escrow.ts` is the hook for a later provider, selected with `ESCROW_PROVIDER`.
 
+Each closing has a target close date and a due date on every step, set from the fee schedule's target (30 days by default: 3, 6, 15, 21, 27, 30). The desk can move any date. Late steps show on the closing, the closings list, and the desk home, and the daily job reminds the side that owes the step two days before it is due and each day it runs late. Because escrow is manual, the desk records buyer funds received and seller proceeds sent, with date and wire reference; each is checked against the expected total and the party is told. Every party can download a settlement statement PDF showing its own side. The desk's copy shows both sides and its revenue.
+
 ## Buyer file
 
-Before an offer, a buyer submits entity type, legal name, jurisdiction, an accredited-investor self-certification, and a proof-of-funds file. The desk approves, declines, or asks for changes at `/admin/verification`. Browsing does not require this file. Offering does.
+Before an offer, a buyer submits entity type, legal name, jurisdiction, an accredited-investor self-certification, and a proof-of-funds file. The desk approves, declines, or asks for changes at `/admin/verification`. Browsing does not require this file. Offering does. The buyer states the amount the proof shows. The desk confirms it, with an expiry (90 days unless set), before approving.
+
+Each listing's admin page has a bid sheet: live bids ranked by price, with the all-in against verified funds, the buyer's record of closed and canceled closings, and flags for expired proof, an unapproved file, or an open OFAC review. It informs the award and blocks nothing.
 
 ## Mail, files, health
 
@@ -175,6 +179,10 @@ A seller or the desk can set a sealed-bid or best-and-final deadline on a listin
 The seller home shows views, inquiries, offers, and a suggested price from comparable live notes in the same state and performance band. A pool can be repriced as a percent of UPB. Duplicate listing files a fresh copy into review.
 
 `/admin/contacts` is the buyer and seller book, with saved-search demand. `/admin/audit` is the status-change log. CSV exports for users, listings, notes, and inquiries are linked from contacts.
+
+The admin listing page shows buyer activity: who opened the listing, who signed the NDA (with IP and method), who saved it, and bids. Opens by the seller and the desk are not counted. Sellers see the same activity as counts only, with no names. From the same page the desk can send a live listing, or its bid deadline, to approved buyers whose buy box matches. The email carries the title, loan count, states, and a link, never an address or borrower name. A buyer is not sent the same listing twice in seven days, and buyers can turn off desk picks under notice settings. The activity panel then shows how many of those buyers opened it and bid afterward.
+
+The admin home opens with what is waiting on the desk (listings to review and the oldest wait, open bids and listings ready to award, late closings, OFAC reviews, buyer files, accounts) and the 180-day close rate, average days to close, and bids per live listing. The search box in the sidebar finds accounts, listings, borrowers and addresses, closings, and leads. Listings and closings take desk-only notes. The review queue runs oldest first and shows how long each listing has waited.
 
 ## Public pages, referrals, and sign-in
 
@@ -256,7 +264,7 @@ Accepting the offer opens one closing. Each member funds their share. The premiu
 
 ## Jobs
 
-`GET` or `POST /api/cron` with `Authorization: Bearer $CRON_SECRET` runs the daily jobs: buy-box digests that are due, loss-task reminders inside 48 hours, bid-deadline notices inside 24 hours, the existing closed-auction notice, and retention cleanup. `vercel.json` schedules that path at 13:00 UTC. If the host has no cron, run `npm run jobs` from a worker. The HTTP route stays closed until `CRON_SECRET` is set.
+`GET` or `POST /api/cron` with `Authorization: Bearer $CRON_SECRET` runs the daily jobs: buy-box digests that are due, loss-task reminders inside 48 hours, bid-deadline notices inside 24 hours, closing steps due within two days or running late, the existing closed-auction notice, and retention cleanup. `vercel.json` schedules that path at 13:00 UTC. If the host has no cron, run `npm run jobs` from a worker. The HTTP route stays closed until `CRON_SECRET` is set.
 
 ## Rehab, filings, and the public site
 

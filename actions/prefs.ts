@@ -15,6 +15,7 @@ export async function saveNotificationPrefs(formData: FormData) {
       notifyEmail: formData.get("notifyEmail") === "on",
       notifyInApp: formData.get("notifyInApp") === "on",
       digest: digest as "WEEKLY",
+      ...(user.role === "BUYER" ? { dealAlerts: formData.get("dealAlerts") === "on" } : {}),
     },
   });
   redirect("/account/notifications?notice=prefs");

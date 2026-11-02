@@ -67,6 +67,7 @@ export default async function AdminOffersPage({
               )}
               {inquiry.message && <p className="mt-2 text-sm text-foreground/85">{inquiry.message}</p>}
               {closingId && <Link href={`/closings/${closingId}`} className="mt-3 inline-block text-[13px] font-medium text-link">Open closing</Link>}
+              {inquiry.type === "OFFER" && !closingId && <Link href={`/admin/listings/${inquiry.listingId}#bids`} className="mt-3 inline-block text-[13px] font-medium text-link">Compare on the bid sheet</Link>}
               {inquiry.type === "OFFER" && (
                 <OfferThread
                   inquiryId={inquiry.id}

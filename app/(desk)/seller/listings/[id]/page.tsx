@@ -9,6 +9,7 @@ import { Countdown } from "@/components/countdown";
 import { Notice } from "@/components/notice";
 import { StatusPill } from "@/components/status-pill";
 import { SubmitButton } from "@/components/submit-button";
+import { listingActivity, sellerReport } from "@/lib/activity";
 import { requireRole } from "@/lib/auth";
 import { hideCompetingBids } from "@/lib/auction";
 import { docLabel } from "@/lib/labels";
@@ -40,6 +41,9 @@ export default async function SellerListingPage({
   const net = listing.netToSellerCents != null ? listing.netToSellerCents / 100 : ask - commission;
   const editable = listing.status === "SUBMITTED" || listing.status === "CHANGES_REQUESTED";
   const sealed = hideCompetingBids({ bidMode: listing.bidMode, deadline: listing.bidDeadline, isDesk: user.role === "ADMIN" });
+  const report = listing.status === "SUBMITTED" || listing.status === "UNDER_REVIEW" || listing.status === "CHANGES_REQUESTED"
+    ? null
+    : sellerReport(await listingActivity(listing.id, listing.sellerId));
 
   return (
     <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_300px]">
@@ -119,7 +123,22 @@ export default async function SellerListingPage({
           <div className="flex justify-between"><dt className="text-muted-foreground">Commission {bpsToPercent(settings.sellerCommissionBps).toFixed(2)}%</dt><dd>{money(commission)}</dd></div>
           <div className="flex justify-between border-t border-border pt-2"><dt>Estimated net</dt><dd className="font-semibold tracking-tight text-xl">{money(net)}</dd></div>
         </dl>
-        <p className="mt-4 text-sm text-muted-foreground">{listing.viewCount} views · {listing.inquiries.length} inquiries</p>
+        {report ? (
+          <div className="mt-5 border-t border-border pt-4">
+            <p className="eyebrow">Buyer interest</p>
+            <dl className="mt-3 space-y-1.5 text-sm">
+              {report.map((row) => (
+                <div key={row.label} className="flex justify-between gap-4">
+                  <dt className="text-muted-foreground">{row.label}</dt>
+                  <dd className="text-foreground">{row.value}</dd>
+                </div>
+              ))}
+            </dl>
+            <p className="mt-2 text-xs text-muted-foreground">Counts only. Opens by you and by the desk are left out.</p>
+          </div>
+        ) : (
+          <p className="mt-4 text-sm text-muted-foreground">Buyer interest shows here once the desk releases the listing.</p>
+        )}
         {listing.bidDeadline && listing.bidMode !== "NONE" && (
           <div className="mt-4"><Countdown deadline={listing.bidDeadline.toISOString()} mode={listing.bidMode} /></div>
         )}

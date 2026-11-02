@@ -244,6 +244,8 @@ model User {
   notifyEmail                  Boolean            @default(true)
   notifyInApp                  Boolean            @default(true)
   digest                       DigestFrequency    @default(WEEKLY)
+  // Listings the desk sends by hand. Missing counts as on, so older accounts keep receiving them.
+  dealAlerts                   Boolean?
   lastDigestAt                 DateTime?
   createdAt                    DateTime           @default(now())
   sessions                     ServerSession[]
@@ -272,6 +274,8 @@ model User {
   brokerProfile                BrokerProfile?
   brokeredListings             Listing[]          @relation("BrokeredListings")
   brokerFees                   BrokerFee[]
+  listingSends                 ListingSend[]
+  deskNotes                    DeskNote[]
 }
 
 model PlatformSettings {
@@ -292,6 +296,8 @@ model PlatformSettings {
   affiliateFeeBasis    FeeBasis @default(PERCENT)
   affiliateFeeBps      Int      @default(1000)
   affiliateFeeCents    Int      @default(25000)
+  // Days from an accepted offer to the target close. Missing means the default in lib/closing-clock.ts.
+  closingTargetDays    Int?
   updatedAt            DateTime @updatedAt
 }
 
@@ -377,6 +383,7 @@ model Listing {
   matches              ListingMatch[]
   deskBids             DeskBid[]
   deskHoldings         DeskHolding[]
+  sends                ListingSend[]
   createdAt            DateTime      @default(now())
   updatedAt            DateTime      @updatedAt
 
@@ -499,6 +506,10 @@ model BuyerProfile {
   proofKey          String             @default("")
   proofName         String             @default("")
   proofMime         String             @default("")
+  // The buyer states the amount. The desk confirms or corrects it, and sets an expiry, when it approves the file.
+  proofAmount       Float?
+  proofExpiresAt    DateTime?
+  proofVerifiedAt   DateTime?
   status            VerificationStatus @default(NOT_STARTED)
   reviewerNote      String             @default("")
   vendor            String             @default("")
@@ -543,6 +554,14 @@ model Closing {
   closedAt              DateTime?
   canceledAt            DateTime?
   cancelReason          String?
+  targetCloseAt         DateTime?
+  // Money movement the desk records by hand while escrow is manual. Compared with the expected totals above.
+  fundsReceivedCents    Int?
+  fundsReceivedAt       DateTime?
+  fundsReference        String?
+  proceedsSentCents     Int?
+  proceedsSentAt        DateTime?
+  proceedsReference     String?
   steps                 ClosingStep[]
   boarding              ServicerBoarding?
   funders               ClosingFunder[]
@@ -560,6 +579,8 @@ model ClosingStep {
   status      ClosingStepStatus @default(PENDING)
   note        String            @default("")
   completedAt DateTime?
+  dueAt       DateTime?
+  remindedAt  DateTime?
   files       ClosingFile[]
 
   @@unique([closingId, key])
@@ -1348,6 +1369,37 @@ model JobRun {
   startedAt  DateTime  @default(now())
   finishedAt DateTime?
   summary    String    @default("")
+}
+
+// One row per buyer each time the desk sends them a listing or a bid deadline.
+model ListingSend {
+  id        String   @id @default(cuid()) @map("_id")
+  listingId String
+  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sentById  String?
+  // LISTING or DEADLINE
+  kind      String
+  createdAt DateTime @default(now())
+
+  @@index([listingId, createdAt])
+  @@index([userId])
+}
+
+// Desk-only notes on a listing or closing. Never shown to a party.
+model DeskNote {
+  id          String   @id @default(cuid()) @map("_id")
+  // listing or closing today; the action also accepts user
+  subjectType String
+  subjectId   String
+  authorId    String
+  author      User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  body        String
+  createdAt   DateTime @default(now())
+
+  @@index([subjectType, subjectId])
+  @@index([authorId])
 }
 
 model AuditEvent {

@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import type { InvestorEntity, VerificationStatus } from "@prisma/client";
 import { audit } from "@/lib/audit";
+import { proofExpiry } from "@/lib/bid-sheet";
 import { requireRole, requireUser } from "@/lib/auth";
 import { notify, notifyDesk } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
@@ -27,6 +28,10 @@ export async function submitVerification(formData: FormData) {
     redirect("/buyer/verification?error=Name the investing entity and where it is formed.");
   }
   if (!accredited) redirect("/buyer/verification?error=Offers require the accredited-investor certification.");
+  const proofAmount = Number(String(formData.get("proofAmount") || "").replace(/[$,\s]/g, ""));
+  if (!Number.isFinite(proofAmount) || proofAmount <= 0 || proofAmount > 10_000_000_000) {
+    redirect("/buyer/verification?error=Enter the amount your proof of funds shows.");
+  }
   const file = formData.get("proof");
   let proofKey = "";
   let proofName = "";
@@ -61,6 +66,9 @@ export async function submitVerification(formData: FormData) {
       proofKey,
       proofName,
       proofMime,
+      proofAmount,
+      proofExpiresAt: null,
+      proofVerifiedAt: null,
       status: "SUBMITTED",
       submittedAt: new Date(),
       reviewerNote: "",
@@ -75,6 +83,7 @@ export async function submitVerification(formData: FormData) {
       proofKey,
       proofName,
       proofMime,
+      proofAmount,
       status: "SUBMITTED",
       submittedAt: new Date(),
     },
@@ -97,16 +106,27 @@ export async function reviewVerification(formData: FormData) {
   if (status !== "APPROVED" && reviewerNote.length < 3) {
     redirect("/admin/verification?error=Tell the buyer what to fix.");
   }
+  const verified = Number(String(formData.get("proofAmount") || "").replace(/[$,\s]/g, ""));
+  if (status === "APPROVED" && (!Number.isFinite(verified) || verified <= 0)) {
+    redirect(`/admin/verification?error=${encodeURIComponent("Enter the funds amount the proof supports before approving.")}`);
+  }
   if (status === "APPROVED") {
     if ((await screenUser(userId, "Buyer file approval")).unavailable) redirect(`/admin/verification?error=${encodeURIComponent(OFAC_DOWN_MESSAGE)}`);
     if (await ofacHold({ userIds: [userId] })) redirect(`/admin/verification?error=${encodeURIComponent(OFAC_HOLD_MESSAGE)}`);
   }
+  const now = new Date();
+  const expires = status === "APPROVED" ? proofExpiry(String(formData.get("proofExpiresAt") || ""), now) : null;
   const profile = await prisma.buyerProfile.update({
     where: { userId },
-    data: { status, reviewerNote, reviewedAt: new Date() },
+    data: {
+      status,
+      reviewerNote,
+      reviewedAt: now,
+      ...(status === "APPROVED" && expires ? { proofAmount: verified, proofExpiresAt: expires, proofVerifiedAt: now } : {}),
+    },
     include: { user: true },
   });
-  await audit(reviewer.id, "VERIFICATION", "user", userId, status);
+  await audit(reviewer.id, "VERIFICATION", "user", userId, status === "APPROVED" && expires ? `APPROVED · funds $${verified.toLocaleString("en-US")} through ${expires.toISOString().slice(0, 10)}` : status);
   await notify(
     profile.user.email,
     `Verification ${status === "APPROVED" ? "approved" : status === "REJECTED" ? "declined" : "needs changes"}`,

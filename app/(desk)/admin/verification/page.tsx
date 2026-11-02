@@ -2,7 +2,7 @@ import { reviewVerification } from "@/actions/verification";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { requireRole } from "@/lib/auth";
-import { prettyDate, q } from "@/lib/format";
+import { isoDate, money, prettyDate, q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 
 export const metadata = { title: "Verification" };
@@ -33,12 +33,30 @@ export default async function AdminVerificationPage({
               <p className="text-[13px] font-medium text-link">{profile.status.replaceAll("_", " ").toLowerCase()}</p>
             </div>
             <p className="mt-2 text-xs text-muted-foreground">Submitted {prettyDate(profile.submittedAt)}</p>
+            <p className="mt-1 text-sm text-foreground">
+              {profile.proofVerifiedAt && profile.proofAmount != null
+                ? `Verified funds ${money(profile.proofAmount)} through ${prettyDate(profile.proofExpiresAt)}${profile.proofExpiresAt && profile.proofExpiresAt.getTime() < Date.now() ? " · expired" : ""}`
+                : profile.proofAmount != null
+                  ? `Buyer states ${money(profile.proofAmount)} · not verified yet`
+                  : "No funds amount stated"}
+            </p>
             {profile.proofKey && (
               <a className="mt-3 inline-block text-sm text-link" href={`/api/verification/${profile.userId}`}>Download proof</a>
             )}
             <form action={reviewVerification} className="mt-4 space-y-3">
               <input type="hidden" name="userId" value={profile.userId} />
               <input name="reviewerNote" placeholder="Note to the buyer" className="desk-input" />
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block">
+                  <span className="text-[13px] text-muted-foreground">Funds the proof supports</span>
+                  <input name="proofAmount" inputMode="decimal" defaultValue={profile.proofAmount ?? ""} className="desk-input mt-2" aria-label="Verified funds amount" />
+                </label>
+                <label className="block">
+                  <span className="text-[13px] text-muted-foreground">Good through</span>
+                  <input name="proofExpiresAt" type="date" defaultValue={isoDate(profile.proofExpiresAt) ?? ""} className="desk-input mt-2" aria-label="Proof of funds expiry" />
+                </label>
+              </div>
+              <p className="text-xs text-muted-foreground">Needed to approve. With no date, the proof is good for 90 days. Bids whose all-in runs above it are flagged on the bid sheet.</p>
               <div className="flex flex-wrap gap-2">
                 <button type="submit" name="decision" value="APPROVED" className="h-9 bg-primary px-3 text-[13px] font-medium text-primary-foreground rounded-lg">Approve</button>
                 <button type="submit" name="decision" value="CHANGES_REQUESTED" className="h-9 border border-border px-3 text-[13px] font-medium text-foreground rounded-lg">Request changes</button>

@@ -81,6 +81,7 @@ export function AppShell({ user, children }: { user: ShellUser; children: React.
         <div className="px-2 pt-1 pb-3">
           <Logo href={homeFor(user.role)} />
         </div>
+        {user.role === "ADMIN" && <DeskSearch />}
         <SideNav items={items} />
         <Account user={user} />
       </aside>
@@ -92,6 +93,7 @@ export function AppShell({ user, children }: { user: ShellUser; children: React.
               <Menu className="size-4" />
             </SheetTrigger>
             <SheetContent side="left" className="flex flex-col bg-sidebar px-3 pt-10 pb-3">
+              {user.role === "ADMIN" && <DeskSearch />}
               <SideNav items={items} />
               <Account user={user} />
             </SheetContent>
@@ -101,6 +103,17 @@ export function AppShell({ user, children }: { user: ShellUser; children: React.
         <OnboardingTour role={user.role} />
       </div>
     </div>
+  );
+}
+
+function DeskSearch() {
+  return (
+    <form action="/admin/search" role="search" className="mb-2 px-0.5">
+      <label className="flex h-8 items-center gap-2 rounded-lg border border-border bg-card px-2.5 text-[13px]">
+        <Search className="size-3.5 shrink-0 text-muted-foreground" />
+        <input name="q" type="search" placeholder="Search the desk" aria-label="Search the desk" className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-faint" />
+      </label>
+    </form>
   );
 }
 
