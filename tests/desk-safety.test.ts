@@ -8,7 +8,7 @@ import { cancelOpenClosing, openClosing } from "../lib/closing-service";
 import { ofacBlocks, ofacMode, ofacOpen, screenParty } from "../lib/ofac";
 import { prisma } from "../lib/prisma";
 import { ofacHold, screenAndRecord, screenListing } from "../lib/screening";
-import { bestHit, indexNames, parseTreasuryLists } from "../lib/sdn";
+import { bestHit, coreName, distinctPart, indexNames, parseTreasuryLists } from "../lib/sdn";
 
 test("a declined or suspended account is locked, a pending one is not", () => {
   assert.equal(accountLocked("REJECTED"), true);
@@ -57,6 +57,26 @@ test("the match handles word order and double surnames without flagging every co
   assert.equal(bestHit("James Wilson", index), null);
   assert.equal(bestHit("Cimex Road Partners", index), null);
   assert.equal(bestHit("Jane Borrower", index), null);
+});
+
+test("legal forms come off both names, so a shared LLC is not a match and a different suffix is", () => {
+  assert.equal(coreName("ortiz capital llc"), "ortiz capital");
+  assert.equal(coreName("anglo caribbean co ltd"), "anglo caribbean");
+  assert.equal(coreName("banco ejemplo s a de c v"), "banco ejemplo");
+  assert.equal(coreName("the acme co"), "acme");
+  assert.equal(coreName("kala limted"), "kala");
+  assert.equal(coreName("co"), "co");
+  assert.equal(distinctPart("jones investments"), "jones");
+  assert.equal(distinctPart("bonum investmnts"), "bonum");
+  assert.equal(distinctPart("global trading"), "global trading");
+  const index = indexNames(["RT-CAPITAL LLC", "ROSNEFT", "ANGLO-CARIBBEAN CO., LTD.", "BONUM INVESTMENTS OOO", "KALA LIMITED", "ALPHA TRADING INVESTMENTS LIMITED"]);
+  assert.equal(bestHit("Ortiz Capital LLC", index), null);
+  assert.equal(bestHit("Jones Investments Inc", index), null);
+  assert.equal(bestHit("Rosneft LLC", index)?.entry, "ROSNEFT");
+  assert.equal(bestHit("Anglo Caribbean Company Limited", index)?.entry, "ANGLO-CARIBBEAN CO., LTD.");
+  assert.equal(bestHit("Bonum Investmnts LLC", index)?.entry, "BONUM INVESTMENTS OOO");
+  assert.equal(bestHit("Kala Limted", index)?.entry, "KALA LIMITED");
+  assert.equal(bestHit("Alxha Trading Investments LLC", index)?.entry, "ALPHA TRADING INVESTMENTS LIMITED");
 });
 
 test("screening says when it had to fall back, and which mode it is in", async () => {

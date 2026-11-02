@@ -19,6 +19,81 @@ export function normalizeName(value: string) {
     .trim();
 }
 
+// Legal forms say what kind of company a name belongs to, not which one. Left in, they count as shared letters:
+// "Ortiz Capital LLC" scored 82% against "RT-CAPITAL LLC". So both sides lose them before comparing, which also
+// lets "Rosneft LLC" find "ROSNEFT". Multi-letter forms appear once punctuation is gone ("S.A." is "s a").
+const TRAILING_FORMS = [
+  "llc", "l l c", "inc", "incorporated", "corp", "corporation", "co", "company", "ltd", "limited",
+  "lp", "l p", "llp", "lllp", "pllc", "plc", "gmbh", "ag", "sa", "s a", "sas", "sarl", "srl", "spa", "s p a",
+  "bv", "b v", "nv", "n v", "pte", "pty", "sa de cv", "s a de c v", "de cv", "sapi de cv", "fze", "fzco", "fzc",
+  "jsc", "pjsc", "ojsc", "cjsc", "ooo",
+]
+  .map((form) => form.split(" "))
+  .sort((a, b) => b.length - a.length);
+const LEADING_FORMS = new Set(["the", "ooo", "oao", "zao", "pao", "jsc", "pjsc", "ojsc", "cjsc"]);
+// Long single-word forms also come off when mistyped by one letter ("Limted", "Compnay").
+const LONG_FORMS = ["incorporated", "corporation", "company", "limited"];
+
+// A word of five or more letters one edit from a listed word counts as that word, so a typo cannot
+// turn "Trading" or "Limited" into the part of the name that has to match.
+const nearCache = new Map<string, boolean>();
+function nearAny(token: string, words: Iterable<string>, key: string) {
+  const cached = nearCache.get(`${key}:${token}`);
+  if (cached !== undefined) return cached;
+  let near = false;
+  if (token.length >= 5) {
+    for (const word of words) {
+      if (word.length >= 5 && Math.abs(word.length - token.length) <= 1 && levenshtein(word, token) <= 1) {
+        near = true;
+        break;
+      }
+    }
+  }
+  if (nearCache.size > 50_000) nearCache.clear();
+  nearCache.set(`${key}:${token}`, near);
+  return near;
+}
+
+export function coreName(norm: string) {
+  const tokens = norm.split(" ");
+  let stripped = true;
+  while (stripped) {
+    stripped = false;
+    for (const form of TRAILING_FORMS) {
+      // At least one word always stays, so a company called just "Co" is still compared as "co".
+      if (form.length >= tokens.length) continue;
+      const tail = tokens.length - form.length;
+      if (form.every((token, at) => tokens[tail + at] === token)) {
+        tokens.length = tail;
+        stripped = true;
+        break;
+      }
+    }
+    if (!stripped && tokens.length > 1 && nearAny(tokens[tokens.length - 1], LONG_FORMS, "form")) {
+      tokens.length -= 1;
+      stripped = true;
+    }
+  }
+  while (tokens.length > 1 && LEADING_FORMS.has(tokens[0])) tokens.shift();
+  const core = tokens.join(" ");
+  return core.length >= 3 ? core : norm;
+}
+
+// Words that say what a business does, not who it is. "Jones Investments" and "BONUM INVESTMENTS" are mostly the
+// same letters, so a near-spelling only counts when the rest of the names are near too.
+const GENERIC_WORDS = new Set([
+  "capital", "holding", "holdings", "investment", "investments", "partner", "partners", "property", "properties",
+  "realty", "real", "estate", "group", "funding", "fund", "funds", "management", "asset", "assets", "advisors",
+  "advisory", "venture", "ventures", "enterprise", "enterprises", "international", "global", "trading", "trade",
+  "financial", "finance", "service", "services", "solutions", "industries", "development", "equity", "equities",
+  "lending", "mortgage", "credit", "family", "trust", "and", "of",
+]);
+
+export function distinctPart(core: string) {
+  const kept = core.split(" ").filter((token) => !GENERIC_WORDS.has(token) && !nearAny(token, GENERIC_WORDS, "generic")).join(" ");
+  return kept.length >= 3 ? kept : core;
+}
+
 export function levenshtein(left: string, right: string) {
   const a = left;
   const b = right;
@@ -36,7 +111,7 @@ export function levenshtein(left: string, right: string) {
   return row[b.length];
 }
 
-export type SanctionEntry = { entry: string; norm: string; sorted: string; padded: string; letters: Uint8Array };
+export type SanctionEntry = { entry: string; norm: string; sorted: string; padded: string; letters: Uint8Array; distinct: string };
 
 // OFAC lists people as "HERNANDEZ, Jose", so names also compare with their words in order.
 function sortTokens(norm: string) {
@@ -55,12 +130,14 @@ function letterCounts(norm: string) {
 
 export function indexNames(list: string[]): SanctionEntry[] {
   return list.flatMap((entry) => {
-    const norm = normalizeName(entry);
-    return norm ? [{ entry, norm, sorted: sortTokens(norm), padded: ` ${norm} `, letters: letterCounts(norm) }] : [];
+    const full = normalizeName(entry);
+    if (!full) return [];
+    const norm = coreName(full);
+    return [{ entry, norm, sorted: sortTokens(norm), padded: ` ${norm} `, letters: letterCounts(norm), distinct: distinctPart(norm) }];
   });
 }
 
-type Candidate = { norm: string; sorted: string; padded: string; tokens: string[]; letters: Uint8Array };
+type Candidate = { norm: string; sorted: string; padded: string; tokens: string[]; letters: Uint8Array; distinct: string };
 
 function similarity(name: Candidate, item: SanctionEntry, threshold: number) {
   if (name.norm === item.norm || name.sorted === item.sorted) return 1;
@@ -81,13 +158,19 @@ function similarity(name: Candidate, item: SanctionEntry, threshold: number) {
   for (let at = 0; at < 36; at += 1) gap += Math.abs(name.letters[at] - item.letters[at]);
   if (gap / 2 > allowed) return 0;
   const ratio = (left: string, right: string) => 1 - levenshtein(left, right) / longest;
-  return Math.max(ratio(name.norm, item.norm), ratio(name.sorted, item.sorted));
+  const score = Math.max(ratio(name.norm, item.norm), ratio(name.sorted, item.sorted));
+  if (score < threshold || (name.distinct === name.norm && item.distinct === item.norm)) return score;
+  const apart = Math.max(name.distinct.length, item.distinct.length);
+  const edits = Math.min(levenshtein(name.distinct, item.distinct), levenshtein(sortTokens(name.distinct), sortTokens(item.distinct)));
+  // One wrong letter is a typo even in a short name ("Alxha" for "ALPHA"). "Jones" against "BONUM" is three.
+  return edits <= 1 ? score : Math.min(score, 1 - edits / apart);
 }
 
 export function bestHit(name: string, index: SanctionEntry[], threshold = 0.82) {
-  const norm = normalizeName(name);
-  if (norm.length < 3) return null;
-  const candidate: Candidate = { norm, sorted: sortTokens(norm), padded: ` ${norm} `, tokens: norm.split(" "), letters: letterCounts(norm) };
+  const full = normalizeName(name);
+  if (full.length < 3) return null;
+  const norm = coreName(full);
+  const candidate: Candidate = { norm, sorted: sortTokens(norm), padded: ` ${norm} `, tokens: norm.split(" "), letters: letterCounts(norm), distinct: distinctPart(norm) };
   let best: { entry: string; score: number } | null = null;
   for (const item of index) {
     const score = similarity(candidate, item, threshold);
