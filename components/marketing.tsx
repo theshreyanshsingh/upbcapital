@@ -5,8 +5,9 @@ import { Menu } from "lucide-react";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 
 const links = [
-  { href: "/#book", label: "The book" },
+  { href: "/#how", label: "How it works" },
   { href: "/sell", label: "Sell a note" },
+  { href: "/#pricing", label: "Pricing" },
   { href: "/learn", label: "Learn" },
   { href: "/faq", label: "FAQ" },
   { href: "/blog", label: "Journal" },
@@ -26,15 +27,15 @@ export function MarketingHeader({ authed }: { authed: boolean }) {
         </nav>
         <div className="hidden items-center gap-3 md:flex">
           {authed ? (
-            <Button render={<Link href="/marketplace" />} className="h-10 px-4 text-[13px] font-medium">
+            <Button nativeButton={false} render={<Link href="/marketplace" />} className="h-10 px-4 text-[13px] font-medium">
               Enter the desk
             </Button>
           ) : (
             <>
-              <Button variant="ghost" render={<Link href="/login" />} className="h-10 px-3 text-[13px] font-medium">
+              <Button variant="ghost" nativeButton={false} render={<Link href="/login" />} className="h-10 px-3 text-[13px] font-medium">
                 Sign in
               </Button>
-              <Button render={<Link href="/signup" />} className="h-10 px-4 text-[13px] font-medium">
+              <Button nativeButton={false} render={<Link href="/signup" />} className="h-10 px-4 text-[13px] font-medium">
                 Request access
               </Button>
             </>

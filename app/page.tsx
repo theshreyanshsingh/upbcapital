@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { ArrowRight, BadgeCheck, CalendarClock, Eye, FileSearch, Lock, ShieldCheck } from "lucide-react";
 import { MarketingFooter, MarketingHeader } from "@/components/marketing";
 import { getCurrentUser } from "@/lib/auth";
 import { recordHit } from "@/lib/hits";
@@ -10,9 +11,11 @@ import { prisma } from "@/lib/prisma";
 import { getSettings } from "@/lib/settings";
 import { ensureStories } from "@/lib/stories";
 import { bpsToPercent } from "@/lib/money";
-import { Button } from "@/components/ui/button";
 
 export const dynamic = "force-dynamic";
+
+const solid = "inline-flex h-12 items-center justify-center gap-2 rounded-lg bg-primary px-6 text-[14px] font-medium text-primary-foreground transition hover:opacity-90";
+const outline = "inline-flex h-12 items-center justify-center gap-2 rounded-lg border border-border bg-card px-6 text-[14px] font-medium text-foreground transition hover:bg-hover";
 
 export default async function HomePage() {
   await recordHit("/");
@@ -33,8 +36,13 @@ export default async function HomePage() {
   ]);
   const upb = notes.reduce((sum, note) => sum + num(note.upb), 0);
   const states = new Set(notes.map((note) => note.state)).size;
-  const featured = notes.find((note) => note.listing.kind === "SINGLE" && note.listing.status === "APPROVED") ?? notes[0];
-  const featuredMetrics = featured
+  const single = notes.filter((note) => note.listing.kind === "SINGLE" && note.listing.status === "APPROVED");
+  // A performing note shows a yield, so it makes the clearer example.
+  const featured = single.find((note) => note.paymentStatus === "PERFORMING") ?? single[0] ?? notes[0];
+  const ask = featured ? num(featured.askingPrice) : 78000;
+  // Sample bids sit around the featured ask, so the illustration never shows a bid that makes no sense for the price.
+  const sample = [1.03, 0.99, 1.07].map((factor) => money(Math.round((ask * factor) / 250) * 250));
+  const metrics = featured
     ? noteMetrics({
         upb: num(featured.upb),
         askingPrice: num(featured.askingPrice),
@@ -49,235 +57,359 @@ export default async function HomePage() {
   const quotes = await prisma.testimonial.findMany({ where: { published: true, NOT: { role: { startsWith: "Placeholder" } } }, orderBy: { createdAt: "desc" }, take: 2 });
   const premium = bpsToPercent(settings.buyerPremiumBps);
   const commission = bpsToPercent(settings.sellerCommissionBps);
+  const pro = (settings.proMonthlyPriceCents / 100).toLocaleString("en-US");
+  const browse = user ? "/marketplace" : "/signup";
 
   return (
-    <div className="relative">
+    <div className="relative overflow-x-clip">
       <MarketingHeader authed={Boolean(user)} />
       <main id="desk" className="relative z-10">
-        <section className="mx-auto grid min-h-screen max-w-6xl items-center gap-16 px-5 pb-20 pt-32 lg:grid-cols-[1.15fr_0.85fr]">
-          <div>
-            <p className="eyebrow rise">Private market · Mortgage notes</p>
-            <h1 className="rise mt-6 font-semibold tracking-tight text-6xl leading-[0.88] text-foreground sm:text-7xl lg:text-[6.4rem]" style={{ animationDelay: "80ms" }}>
-              The paper,
-              <span className="block italic text-foreground">priced in</span>
-              daylight.
-            </h1>
-            <p className="rise mt-8 max-w-xl text-lg font-light leading-relaxed text-muted-foreground" style={{ animationDelay: "160ms" }}>
-              UPB Capital is a South Florida desk for performing and non-performing mortgage notes. Sellers bring one loan or a whole tape. Buyers underwrite against unpaid principal balance, with the premium and the yield stated before anyone asks for the file.
-            </p>
-            <div className="rise mt-10 flex flex-wrap gap-3" style={{ animationDelay: "240ms" }}>
-              <Button render={<Link href={user ? "/marketplace" : "/signup"} />} className="h-12 px-6 text-[13px] font-medium">
-                {user ? "Enter the book" : "Request access"}
-              </Button>
-              <Button variant="outline" render={<Link href="/login" />} className="h-12 px-6 text-[13px] font-medium">
-                Sign in
-              </Button>
-            </div>
-            <dl className="rise mt-14 grid max-w-lg grid-cols-3 gap-6 border-t border-border pt-6" style={{ animationDelay: "320ms" }}>
-              <Stat k="On the book" v={moneyCompact(upb)} />
-              <Stat k="Live listings" v={String(liveCount)} />
-              <Stat k="States" v={String(states)} />
-            </dl>
-          </div>
-          {featured && featuredMetrics && (
-            <div className="floaty relative">
-              <div className="glass relative p-7 md:p-9">
-                <span className="absolute left-3 top-3 size-3 border-l border-t border-link/70" />
-                <span className="absolute right-3 top-3 size-3 border-r border-t border-link/70" />
-                <span className="absolute bottom-3 left-3 size-3 border-b border-l border-link/70" />
-                <span className="absolute bottom-3 right-3 size-3 border-b border-r border-link/70" />
-                <p className="eyebrow">Live on the desk</p>
-                <h2 className="mt-4 font-semibold tracking-tight text-4xl text-foreground">{featured.city}, {featured.state}</h2>
-                <p className="mt-2 text-sm text-muted-foreground">
-                  {labelOf("lien", featured.lienPosition)} lien · {labelOf("property", featured.propertyType)} · {labelOf("payment", featured.paymentStatus)}
-                </p>
-                <p className="mt-8 font-semibold tracking-tight text-7xl leading-none text-foreground">{pct(featuredMetrics.priceToUpb, 0)}</p>
-                <p className="mt-2 text-[13px] font-medium text-muted-foreground">of unpaid principal</p>
-                <div className="mt-8 grid grid-cols-3 gap-4 border-t border-border pt-5 text-sm">
-                  <Mini k="LTV" v={pct(featuredMetrics.ltv)} />
-                  <Mini k="Yield" v={featuredMetrics.currentYield == null ? "n/a" : pct(featuredMetrics.currentYield)} />
-                  <Mini k="Ask" v={money(num(featured.askingPrice))} />
-                </div>
-                <p className="mt-6 text-xs leading-relaxed text-muted-foreground">Street address withheld. Buyer premium {premium.toFixed(2)}% sits on top of an accepted bid.</p>
+        <section className="relative">
+          <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-[720px] bg-[radial-gradient(60%_50%_at_70%_20%,color-mix(in_srgb,var(--link)_14%,transparent),transparent_70%)]" />
+          <div className="relative mx-auto grid max-w-6xl items-center gap-14 px-5 pb-16 pt-32 md:pt-40 lg:grid-cols-[1.05fr_0.95fr] lg:pb-24">
+            <div>
+              <p className="rise inline-flex items-center gap-2 rounded-full border border-border bg-card px-3 py-1 text-[13px] font-medium text-muted-foreground">
+                <span className="size-1.5 rounded-full bg-good" /> The private desk for mortgage notes
+              </p>
+              <h1 className="rise rise-1 mt-6 text-[3.4rem] font-semibold leading-[0.95] tracking-[-0.04em] text-foreground sm:text-7xl lg:text-[5.6rem]">
+                Paper in.
+                <span className="block text-link">Wire out.</span>
+              </h1>
+              <p className="rise rise-2 mt-7 max-w-xl text-lg leading-relaxed text-muted-foreground">
+                List one mortgage note or a full tape. A person reviews every file, buyers prove their funds before they bid, and every closing runs on a dated checklist until it&rsquo;s done.
+              </p>
+              <div className="rise rise-3 mt-9 flex flex-wrap gap-3">
+                <Link href="/sell" className={solid}>Sell a note <ArrowRight className="size-4" /></Link>
+                <Link href={browse} className={outline}>{user ? "Open the book" : "Browse as a buyer"}</Link>
               </div>
-            </div>
-          )}
-        </section>
-
-        <div className="overflow-hidden border-y border-border py-4">
-          <div className="ticker-track flex w-[200%] gap-10 whitespace-nowrap text-[13px] font-medium text-muted-foreground">
-            {Array.from({ length: 2 }).map((_, index) => (
-              <span key={index}>Coral Gables · Fort Lauderdale · Tampa · Miami Beach · Sarasota · Savannah · Charlotte · Dallas · Naples · Boca Raton · </span>
-            ))}
-          </div>
-        </div>
-
-        <section id="book" className="mx-auto max-w-6xl px-5 py-24">
-          <p className="eyebrow">The book</p>
-          <h2 className="mt-3 max-w-xl font-semibold tracking-tight text-5xl text-foreground md:text-6xl">Three kinds of paper. One set of numbers.</h2>
-          <div className="mt-12 grid gap-4 md:grid-cols-3">
-            {[
-              ["Performing", "Current loans, priced at a discount to UPB. Yield is the contractual payment against your basis."],
-              ["Sub-performing", "Behind, but not abandoned. Delinquency, last paid, and the story sit next to the price."],
-              ["Non-performing", "The bid is for the collateral and the process. Foreclosure status is on the card, not in a footnote."],
-            ].map(([title, copy]) => (
-              <article key={title} className="glass p-7">
-                <h3 className="font-semibold tracking-tight text-3xl text-foreground">{title}</h3>
-                <p className="mt-4 text-sm leading-relaxed text-muted-foreground">{copy}</p>
-              </article>
-            ))}
-          </div>
-        </section>
-
-        <section id="sell" className="border-y border-border bg-card">
-          <div className="mx-auto grid max-w-6xl gap-10 px-5 py-24 lg:grid-cols-2">
-            <div>
-              <p className="eyebrow">Sell side</p>
-              <h2 className="mt-3 font-semibold tracking-tight text-5xl text-foreground">One note, or the whole tape.</h2>
-            </div>
-            <div className="grid gap-4">
-              <article className="glass p-7">
-                <h3 className="font-semibold tracking-tight text-3xl text-foreground">A guided note</h3>
-                <p className="mt-3 text-sm leading-relaxed text-muted-foreground">Address, lien, UPB, rate, payment, delinquency, value, and ask. Upload the note, mortgage, pay history, BPO, and title. The desk reviews it before it is live.</p>
-              </article>
-              <article className="glass p-7">
-                <h3 className="font-semibold tracking-tight text-3xl text-foreground">An institutional tape</h3>
-                <p className="mt-3 text-sm leading-relaxed text-muted-foreground">Banks, funds, and servicers upload CSV or Excel, map columns to the note fields, and list a pool. A template is on the desk.</p>
-              </article>
-            </div>
-          </div>
-        </section>
-
-        <section id="membership" className="mx-auto max-w-6xl px-5 py-24">
-          <p className="eyebrow">Membership</p>
-          <h2 className="mt-3 font-semibold tracking-tight text-5xl text-foreground">Free to look. Pro to underwrite.</h2>
-          <div className="mt-12 grid gap-4 md:grid-cols-2">
-            <article className="border border-border p-8 rounded-xl">
-              <p className="eyebrow">Free</p>
-              <p className="mt-4 font-semibold tracking-tight text-5xl text-foreground">$0</p>
-              <ul className="mt-6 space-y-3 text-sm text-muted-foreground">
-                <li>Approved buyers can browse a limited slice of the book.</li>
-                <li>Balances, prices, and yields stay veiled.</li>
-                <li>New listings are held for Pro during early access.</li>
+              <p className="rise rise-4 mt-4 text-[13px] text-muted-foreground">Free to list. Sellers pay only when the note sells.</p>
+              <ul className="rise rise-4 mt-10 grid gap-3 text-sm text-foreground sm:grid-cols-3">
+                <Proof icon={<FileSearch className="size-4" />} text="Every file read by a person" />
+                <Proof icon={<BadgeCheck className="size-4" />} text="Buyers show funds first" />
+                <Proof icon={<ShieldCheck className="size-4" />} text="Every party OFAC-screened" />
               </ul>
-            </article>
-            <article className="glass p-8">
-              <p className="eyebrow">Pro</p>
-              <p className="mt-4 font-semibold tracking-tight text-5xl text-foreground">${(settings.proMonthlyPriceCents / 100).toLocaleString("en-US")}<span className="text-lg text-muted-foreground"> / month</span></p>
-              <ul className="mt-6 space-y-3 text-sm text-muted-foreground">
-                <li>Full metrics, including price to UPB, LTV, and yield.</li>
-                <li>Data room after a signed confidentiality agreement.</li>
-                <li>Early access to new listings and saved-search alerts.</li>
-              </ul>
-            </article>
+            </div>
+            <DeskPreview
+              place={featured ? `${featured.city}, ${featured.state}` : "Tampa, FL"}
+              detail={featured ? `${labelOf("lien", featured.lienPosition)} lien · ${labelOf("payment", featured.paymentStatus)}` : "First lien · Performing"}
+              ofUpb={metrics ? pct(metrics.priceToUpb, 0) : "78%"}
+              ltv={metrics ? pct(metrics.ltv) : "52.0%"}
+              yieldPct={metrics?.currentYield == null ? "n/a" : pct(metrics.currentYield)}
+              ask={money(ask)}
+              bids={sample}
+              live={Boolean(featured)}
+            />
           </div>
         </section>
 
-        <section className="border-y border-border">
+        {liveCount > 0 && (
+          <section aria-label="The book today" className="border-y border-border bg-card">
+            <dl className="mx-auto grid max-w-6xl grid-cols-3 divide-x divide-border px-5">
+              <Figure k="UPB on the book" v={moneyCompact(upb)} />
+              <Figure k="Live listings" v={String(liveCount)} />
+              <Figure k="States" v={String(states)} />
+            </dl>
+          </section>
+        )}
+
+        <section id="how" className="mx-auto max-w-6xl scroll-mt-24 px-5 py-24">
+          <p className="eyebrow">How it works</p>
+          <h2 className="mt-3 max-w-2xl text-4xl font-semibold tracking-[-0.03em] text-foreground md:text-5xl">Two sides of the trade. One desk keeping it honest.</h2>
+          <div className="mt-12 grid gap-5 lg:grid-cols-2">
+            <Track
+              label="If you're selling"
+              cta={{ href: "/sell", text: "Get a quote on your note" }}
+              steps={[
+                ["List it in minutes", "One note through a guided form, or a whole tape from CSV or Excel with your columns mapped for you."],
+                ["The desk reads it", "A person checks the note, the pay history, and the numbers before any buyer sees a thing. Gaps come back to you, not to the market."],
+                ["It finds its buyers", "The desk sends it to buyers whose buy box fits. You watch opens, NDAs, saves, and bids come in."],
+                ["You close on a clock", "A dated checklist, your net shown up front, and a settlement statement when the wire goes out."],
+              ]}
+            />
+            <Track
+              label="If you're buying"
+              cta={{ href: browse, text: user ? "Open the book" : "Request buyer access" }}
+              steps={[
+                ["Set your buy box", "States, lien, performance, balance, price to UPB, target yield. New paper that fits comes to you."],
+                ["Underwrite in daylight", "Pro puts price to UPB, LTV, yield, and a value estimate on every listing. Sign the NDA and the address and file open up."],
+                ["Bid your way", "Open offers, sealed rounds, or one best-and-final. Sealed amounts stay hidden, even from the seller, until the deadline."],
+                ["Close without chasing", "Purchase agreement, assignment, and allonge drafted from the deal, plus a boarding package ready for your servicer."],
+              ]}
+            />
+          </div>
+        </section>
+
+        <section className="border-y border-border bg-card">
           <div className="mx-auto max-w-6xl px-5 py-24">
-            <p className="eyebrow">How a trade clears</p>
-            <ol className="mt-10 grid gap-6 md:grid-cols-4">
-              {[
-                ["01", "Submitted", "A seller files a note or a pool."],
-                ["02", "Reviewed", "The desk approves, declines, or asks for changes."],
-                ["03", "Live", "Approved buyers see it. Offers and questions come in."],
-                ["04", "Closed", "Checklist, wires, then sold. Premium and commission post to the ledger."],
-              ].map(([n, title, copy]) => (
-                <li key={n}>
-                  <p className="font-semibold tracking-tight text-4xl text-link">{n}</p>
-                  <h3 className="mt-3 font-semibold tracking-tight text-2xl text-foreground">{title}</h3>
-                  <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{copy}</p>
-                </li>
-              ))}
-            </ol>
-          </div>
-        </section>
-
-        <section id="fees" className="mx-auto max-w-6xl px-5 py-24">
-          <p className="eyebrow">Economics, in the open</p>
-          <h2 className="mt-3 max-w-2xl font-semibold tracking-tight text-5xl text-foreground">The desk is paid when paper trades, and when a buyer stays.</h2>
-          <div className="mt-12 grid gap-4 md:grid-cols-3">
-            <Fee n={`${premium.toFixed(2)}%`} title="Buyer premium" copy="Added on top of the accepted price. Shown on every listing and inside the offer." />
-            <Fee n={`${commission.toFixed(2)}%`} title="Seller commission" copy="Deducted from the sale price. Shown while you list, and again on your desk." />
-            <Fee n={`$${(settings.proMonthlyPriceCents / 100).toLocaleString("en-US")}`} title="Pro membership" copy="Monthly. Stripe in test mode when keys are set, otherwise a simulated checkout." />
-          </div>
-        </section>
-
-        <section className="border-t border-border bg-card">
-          <div className="mx-auto grid max-w-6xl gap-10 px-5 py-24 lg:grid-cols-[1.1fr_0.9fr] lg:items-end">
-            <div>
-              <p className="eyebrow">The desk</p>
-              <h2 className="mt-3 font-semibold tracking-tight text-5xl leading-none text-foreground md:text-6xl">Founded by a South Florida investor, realtor, and general contractor.</h2>
+            <p className="eyebrow">Why a desk</p>
+            <h2 className="mt-3 max-w-2xl text-4xl font-semibold tracking-[-0.03em] text-foreground md:text-5xl">Bulletin boards list notes. A desk gets them closed.</h2>
+            <div className="mt-12 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              <Feature icon={<FileSearch className="size-5" />} title="A person reads every file" copy="Nothing goes live until the desk has checked it. Thin files get sent back with notes instead of published and hoped for." />
+              <Feature icon={<BadgeCheck className="size-5" />} title="Bidders who can actually close" copy="Buyers file an entity and proof of funds before they bid. The bid sheet checks every all-in against verified funds and each buyer's record." />
+              <Feature icon={<ShieldCheck className="size-5" />} title="Screened before anyone signs" copy="Sellers, buyers, and every named borrower on a tape are checked against Treasury's SDN list. A possible match holds the deal until the desk decides it." />
+              <Feature icon={<Lock className="size-5" />} title="Sealed when it should be" copy="Run the book open, sealed, or best-and-final. Sealed amounts stay with the desk until the clock runs out." />
+              <Feature icon={<CalendarClock className="size-5" />} title="Closings with a deadline" copy="Every step has a due date and an owner. Late steps get chased daily, and both sides get a settlement statement with the wires on it." />
+              <Feature icon={<Eye className="size-5" />} title="See who's looking" copy="Sellers see opens, NDAs, saves, and bids on their listing as they come in. No guessing whether anyone cares." />
             </div>
-            <p className="text-base leading-relaxed text-muted-foreground">
-              The file and the house get the same reading. Listings stay in review until the desk releases them. Borrower names never sit on the open book. This demo uses fictional loans, fictional people, and a ledger you can reset.
-            </p>
           </div>
         </section>
 
         <section className="mx-auto max-w-6xl px-5 py-24">
-          <p className="eyebrow">Open book</p>
-          <h2 className="mt-3 font-semibold tracking-tight text-5xl text-foreground">Live paper, without the file.</h2>
-          <div className="mt-10 grid gap-4 md:grid-cols-3">
-            {publicListings.map((listing) => {
-              const note = listing.notes[0];
-              if (!note) return null;
-              const upb = listing.notes.reduce((sum, row) => sum + num(row.upb), 0);
-              return (
-                <Link key={listing.id} href={`/open/${listing.id}`} className="glass block p-6">
-                  <p className="text-[13px] font-medium text-link">{note.city}, {note.state}</p>
-                  <h3 className="mt-3 font-semibold tracking-tight text-3xl text-foreground">{listing.kind === "POOL" ? `${listing.notes.length} loans` : labelOf("payment", note.paymentStatus)}</h3>
-                  <p className="mt-3 text-sm text-muted-foreground">{labelOf("lien", note.lienPosition)} · {upbBucket(listing.kind === "POOL" ? upb : num(note.upb))}</p>
-                </Link>
-              );
-            })}
+          <div className="grid gap-12 lg:grid-cols-[0.9fr_1.1fr] lg:items-start">
+            <div>
+              <p className="eyebrow">The paper</p>
+              <h2 className="mt-3 text-4xl font-semibold tracking-[-0.03em] text-foreground md:text-5xl">Performing, sub, or non. Same honest numbers.</h2>
+              <p className="mt-5 text-base leading-relaxed text-muted-foreground">Everything is priced against unpaid principal balance, so a buyer can compare a current first in Tampa with a defaulted second in Charlotte on one scale.</p>
+            </div>
+            <div className="grid gap-3">
+              {[
+                ["Performing", "Current loans at a discount to UPB. Yield is the contractual payment against your price, stated before you ask."],
+                ["Sub-performing", "Behind, not abandoned. Months delinquent and last paid date sit right next to the price."],
+                ["Non-performing", "You're buying the collateral and the process. Foreclosure status is on the card, not buried in a footnote."],
+              ].map(([title, copy]) => (
+                <article key={title} className="glass flex gap-5 p-6">
+                  <span className="mt-1 h-10 w-1 shrink-0 rounded-full bg-link/70" />
+                  <div>
+                    <h3 className="text-xl font-semibold tracking-tight text-foreground">{title}</h3>
+                    <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{copy}</p>
+                  </div>
+                </article>
+              ))}
+            </div>
           </div>
         </section>
+
+        <section className="border-y border-border bg-card">
+          <div className="mx-auto grid max-w-6xl gap-10 px-5 py-20 lg:grid-cols-2 lg:items-center">
+            <div>
+              <p className="eyebrow">Banks, funds, and servicers</p>
+              <h2 className="mt-3 text-4xl font-semibold tracking-[-0.03em] text-foreground md:text-5xl">Bring the whole tape.</h2>
+            </div>
+            <ul className="grid gap-3 text-sm text-muted-foreground sm:grid-cols-2">
+              <li className="glass p-5"><strong className="block text-foreground">Your columns, mapped for you</strong>Upload CSV or Excel. Headers are matched to the desk&rsquo;s fields, and you confirm.</li>
+              <li className="glass p-5"><strong className="block text-foreground">Data checks before buyers</strong>Missing balances, LTVs over 100%, odd coupons, and ZIPs in the wrong state get flagged at upload.</li>
+              <li className="glass p-5"><strong className="block text-foreground">Loan-level bids</strong>Buyers can bid the pool or single loans inside it.</li>
+              <li className="glass p-5"><strong className="block text-foreground">An API if you want one</strong>File tapes by API and hear about every offer through signed webhooks.</li>
+            </ul>
+          </div>
+        </section>
+
+        <section id="pricing" className="mx-auto max-w-6xl scroll-mt-24 px-5 py-24">
+          <p className="eyebrow">Pricing</p>
+          <h2 className="mt-3 max-w-2xl text-4xl font-semibold tracking-[-0.03em] text-foreground md:text-5xl">Sellers pay when it trades. Buyers pay for the edge.</h2>
+          <div className="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <Price n="$0" title="To list" copy="Listing and the desk review cost nothing. No upfront fees, no monthly fee for sellers." />
+            <Price n={`${commission.toFixed(2)}%`} title="Seller commission" copy="Only when it sells. Taken from the price, and shown before you list." />
+            <Price n={`${premium.toFixed(2)}%`} title="Buyer premium" copy="On top of the accepted price. Printed on every listing and every bid." />
+            <Price n={`$${pro}`} unit="/mo" title="Buyer Pro" copy="Full metrics on every listing, data rooms after NDA, and first look at new paper." highlight />
+          </div>
+        </section>
+
+        <section className="border-y border-border bg-card">
+          <div className="mx-auto grid max-w-6xl gap-10 px-5 py-20 lg:grid-cols-[1.1fr_0.9fr] lg:items-end">
+            <div>
+              <p className="eyebrow">Who runs the desk</p>
+              <h2 className="mt-3 text-4xl font-semibold leading-tight tracking-[-0.03em] text-foreground md:text-5xl">Founded by a South Florida investor, realtor, and general contractor.</h2>
+            </div>
+            <p className="text-base leading-relaxed text-muted-foreground">
+              So the file and the house get the same hard read. Listings stay in review until the desk releases them, and borrower names never sit on the open book.
+            </p>
+          </div>
+        </section>
+
+        {publicListings.length > 0 && (
+          <section id="book" className="mx-auto max-w-6xl scroll-mt-24 px-5 py-24">
+            <div className="flex flex-wrap items-end justify-between gap-4">
+              <div>
+                <p className="eyebrow">On the book now</p>
+                <h2 className="mt-3 text-4xl font-semibold tracking-[-0.03em] text-foreground md:text-5xl">Live paper, file held back.</h2>
+              </div>
+              <Link href={browse} className="inline-flex items-center gap-1 text-[14px] font-medium text-link">See the full book <ArrowRight className="size-4" /></Link>
+            </div>
+            <div className="mt-10 grid gap-4 md:grid-cols-3">
+              {publicListings.map((listing) => {
+                const note = listing.notes[0];
+                if (!note) return null;
+                const balance = listing.notes.reduce((sum, row) => sum + num(row.upb), 0);
+                return (
+                  <Link key={listing.id} href={`/open/${listing.id}`} className="glass group block p-6 transition hover:-translate-y-0.5 hover:shadow-[var(--shadow)]">
+                    <p className="text-[13px] font-medium text-link">{note.city}, {note.state}</p>
+                    <h3 className="mt-3 text-2xl font-semibold tracking-tight text-foreground">{listing.kind === "POOL" ? `${listing.notes.length} loans` : labelOf("payment", note.paymentStatus)}</h3>
+                    <p className="mt-3 text-sm text-muted-foreground">{labelOf("lien", note.lienPosition)} lien · {upbBucket(listing.kind === "POOL" ? balance : num(note.upb))}</p>
+                    <p className="mt-5 inline-flex items-center gap-1 text-[13px] font-medium text-foreground opacity-70 transition group-hover:opacity-100">Preview <ArrowRight className="size-3.5" /></p>
+                  </Link>
+                );
+              })}
+            </div>
+          </section>
+        )}
 
         {quotes.length > 0 && (
           <section className="mx-auto max-w-6xl px-5 pb-24">
             <p className="eyebrow">In their words</p>
-            <h2 className="mt-3 font-semibold tracking-tight text-5xl text-foreground">From the desk&rsquo;s clients.</h2>
-            <div className="mt-10 grid gap-4 md:grid-cols-2">
+            <div className="mt-6 grid gap-4 md:grid-cols-2">
               {quotes.map((quote) => (
-                <blockquote key={quote.id} className="border border-border p-6 rounded-xl">
-                  <p className="font-semibold tracking-tight text-2xl leading-snug text-foreground">“{quote.quote}”</p>
+                <blockquote key={quote.id} className="glass p-7">
+                  <p className="text-xl font-semibold leading-snug tracking-tight text-foreground">&ldquo;{quote.quote}&rdquo;</p>
                   <footer className="mt-4 text-[13px] font-medium text-muted-foreground">{quote.role}{quote.place ? ` · ${quote.place}` : ""}</footer>
                 </blockquote>
               ))}
             </div>
           </section>
         )}
+
+        <section className="px-5 pb-24">
+          <div className="mx-auto max-w-6xl overflow-hidden rounded-[28px] bg-primary px-8 py-16 text-primary-foreground md:px-14">
+            <div className="grid gap-8 lg:grid-cols-[1.3fr_0.7fr] lg:items-center">
+              <div>
+                <h2 className="text-4xl font-semibold tracking-[-0.03em] md:text-5xl">Holding a note you&rsquo;d rather hold cash?</h2>
+                <p className="mt-4 max-w-xl text-base leading-relaxed opacity-75">Tell the desk about it. Get a quote back, and if you list, get in front of buyers who&rsquo;ve already shown they can close.</p>
+              </div>
+              <div className="flex flex-wrap gap-3 lg:justify-end">
+                <Link href="/sell" className="inline-flex h-12 items-center gap-2 rounded-lg bg-primary-foreground px-6 text-[14px] font-medium text-primary transition hover:opacity-90">Get a quote <ArrowRight className="size-4" /></Link>
+                <Link href={browse} className="inline-flex h-12 items-center rounded-lg border border-primary-foreground/30 px-6 text-[14px] font-medium transition hover:bg-primary-foreground/10">I&rsquo;m a buyer</Link>
+              </div>
+            </div>
+          </div>
+        </section>
       </main>
       <MarketingFooter />
     </div>
   );
 }
 
-function Stat({ k, v }: { k: string; v: string }) {
+// The desk's own view of a trade: the live listing on top, with a sample bid sheet and closing clock behind it.
+function DeskPreview({ place, detail, ofUpb, ltv, yieldPct, ask, bids, live }: { place: string; detail: string; ofUpb: string; ltv: string; yieldPct: string; ask: string; bids: string[]; live: boolean }) {
   return (
-    <div>
-      <dt className="text-xs font-medium text-muted-foreground">{k}</dt>
-      <dd className="mt-2 font-semibold tracking-tight text-3xl text-foreground">{v}</dd>
+    <figure className="rise rise-2 relative mx-auto w-full max-w-md lg:max-w-none">
+      <div className="relative lg:pl-10">
+        <div className="glass relative z-10 p-6 shadow-[var(--shadow)] md:p-7">
+          <div className="flex items-center justify-between">
+            <p className="text-[13px] font-medium text-muted-foreground">{live ? "Live on the desk" : "Sample listing"}</p>
+            <span className="rounded-full bg-good/12 px-2.5 py-0.5 text-xs font-medium text-good">Reviewed</span>
+          </div>
+          <p className="mt-4 text-3xl font-semibold tracking-tight text-foreground">{place}</p>
+          <p className="mt-1 text-sm text-muted-foreground">{detail}</p>
+          <p className="mt-6 text-6xl font-semibold leading-none tracking-[-0.04em] text-foreground">{ofUpb}</p>
+          <p className="mt-2 text-[13px] text-muted-foreground">of unpaid principal</p>
+          <div className="mt-6 grid grid-cols-3 gap-4 border-t border-border pt-4 text-sm">
+            <Mini k="LTV" v={ltv} />
+            <Mini k="Yield" v={yieldPct} />
+            <Mini k="Ask" v={ask} />
+          </div>
+        </div>
+        <div className="glass relative z-20 -mt-6 ml-6 p-5 shadow-[var(--shadow)] sm:ml-16 lg:-mt-8 lg:ml-24">
+          <div className="flex items-center justify-between">
+            <p className="text-[13px] font-semibold text-foreground">Bid sheet</p>
+            <p className="text-xs text-muted-foreground">Sealed · closes Fri 5pm</p>
+          </div>
+          <ul className="mt-3 space-y-2 text-sm">
+            <BidRow who="Buyer C" amount={bids[2]} tag="Over funds" />
+            <BidRow who="Buyer A" amount={bids[0]} tag="Covered" good />
+            <BidRow who="Buyer B" amount={bids[1]} tag="Covered" good />
+          </ul>
+        </div>
+        <div className="glass relative z-0 -mt-4 mr-10 hidden p-5 shadow-[var(--shadow)] sm:block lg:-ml-2 lg:mr-28">
+          <p className="text-[13px] font-semibold text-foreground">Closing · day 9 of 30</p>
+          <ol className="mt-3 space-y-1.5 text-sm">
+            <Step done text="Purchase agreement" />
+            <Step done text="Buyer deposit" />
+            <Step text="Collateral file transfer" due="Due in 6 days" />
+          </ol>
+        </div>
+      </div>
+      <figcaption className="mt-4 text-center text-xs text-muted-foreground lg:pl-10">What the desk sees. Bid and closing figures are samples.</figcaption>
+    </figure>
+  );
+}
+
+function Proof({ icon, text }: { icon: React.ReactNode; text: string }) {
+  return (
+    <li className="flex items-center gap-2">
+      <span className="grid size-7 shrink-0 place-items-center rounded-full bg-card text-link ring-1 ring-border">{icon}</span>
+      {text}
+    </li>
+  );
+}
+
+function Figure({ k, v }: { k: string; v: string }) {
+  return (
+    <div className="px-3 py-7 text-center sm:px-6">
+      <dd className="text-3xl font-semibold tracking-tight text-foreground md:text-4xl">{v}</dd>
+      <dt className="mt-1 text-xs text-muted-foreground sm:text-[13px]">{k}</dt>
     </div>
+  );
+}
+
+function Track({ label, steps, cta }: { label: string; steps: string[][]; cta: { href: string; text: string } }) {
+  return (
+    <div className="glass p-7 md:p-8">
+      <p className="text-[13px] font-semibold uppercase tracking-[0.08em] text-link">{label}</p>
+      <ol className="mt-6 space-y-6">
+        {steps.map(([title, copy], index) => (
+          <li key={title} className="flex gap-4">
+            <span className="grid size-8 shrink-0 place-items-center rounded-full bg-muted text-[13px] font-semibold text-foreground">{index + 1}</span>
+            <div>
+              <h3 className="text-lg font-semibold tracking-tight text-foreground">{title}</h3>
+              <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{copy}</p>
+            </div>
+          </li>
+        ))}
+      </ol>
+      <Link href={cta.href} className="mt-7 inline-flex items-center gap-1 text-[14px] font-medium text-link">{cta.text} <ArrowRight className="size-4" /></Link>
+    </div>
+  );
+}
+
+function Feature({ icon, title, copy }: { icon: React.ReactNode; title: string; copy: string }) {
+  return (
+    <article className="rounded-2xl border border-border bg-background p-6">
+      <span className="grid size-10 place-items-center rounded-xl bg-card text-link ring-1 ring-border">{icon}</span>
+      <h3 className="mt-5 text-lg font-semibold tracking-tight text-foreground">{title}</h3>
+      <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{copy}</p>
+    </article>
+  );
+}
+
+function Price({ n, unit, title, copy, highlight }: { n: string; unit?: string; title: string; copy: string; highlight?: boolean }) {
+  return (
+    <article className={highlight ? "rounded-2xl bg-primary p-7 text-primary-foreground" : "glass p-7"}>
+      <p className={`text-[13px] font-semibold ${highlight ? "opacity-70" : "text-muted-foreground"}`}>{title}</p>
+      <p className="mt-3 text-4xl font-semibold tracking-tight">{n}<span className="text-base font-medium opacity-60">{unit}</span></p>
+      <p className={`mt-3 text-sm leading-relaxed ${highlight ? "opacity-75" : "text-muted-foreground"}`}>{copy}</p>
+    </article>
   );
 }
 
 function Mini({ k, v }: { k: string; v: string }) {
   return (
     <div>
-      <p className="text-xs font-medium text-muted-foreground">{k}</p>
-      <p className="mt-1 text-foreground">{v}</p>
+      <p className="text-xs text-muted-foreground">{k}</p>
+      <p className="mt-1 font-medium text-foreground">{v}</p>
     </div>
   );
 }
 
-function Fee({ n, title, copy }: { n: string; title: string; copy: string }) {
+function BidRow({ who, amount, tag, good }: { who: string; amount: string; tag: string; good?: boolean }) {
   return (
-    <article className="glass p-7">
-      <p className="font-semibold tracking-tight text-5xl text-foreground">{n}</p>
-      <h3 className="mt-4 font-semibold tracking-tight text-2xl text-foreground">{title}</h3>
-      <p className="mt-3 text-sm leading-relaxed text-muted-foreground">{copy}</p>
-    </article>
+    <li className="flex items-center justify-between gap-3">
+      <span className="whitespace-nowrap text-foreground">{who}</span>
+      <span className="flex items-center gap-3">
+        <span className="font-medium text-foreground">{amount}</span>
+        <span className={`w-[78px] whitespace-nowrap rounded-full px-2 py-0.5 text-center text-xs ${good ? "bg-good/12 text-good" : "bg-bad/10 text-bad"}`}>{tag}</span>
+      </span>
+    </li>
+  );
+}
+
+function Step({ text, done, due }: { text: string; done?: boolean; due?: string }) {
+  return (
+    <li className="flex items-center justify-between gap-3">
+      <span className={`flex items-center gap-2 ${done ? "text-muted-foreground" : "text-foreground"}`}>
+        <span className={`grid size-4 place-items-center rounded-full text-[10px] ${done ? "bg-good text-white" : "border border-border"}`}>{done ? "✓" : ""}</span>
+        {text}
+      </span>
+      {due && <span className="text-xs text-warn">{due}</span>}
+    </li>
   );
 }
