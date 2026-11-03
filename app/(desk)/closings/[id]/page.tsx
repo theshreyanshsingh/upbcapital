@@ -64,7 +64,7 @@ export default async function ClosingPage({
   const deposit = closing.depositCents != null ? variance(closing.depositCents, closing.depositReceivedCents) : null;
   const depositLate = Boolean(closing.depositDueAt && closing.depositReceivedCents == null && closing.status === "OPEN" && closing.depositDueAt.getTime() < Date.now());
   return (
-    <div className="grid gap-10 lg:grid-cols-[minmax(0,1fr)_320px]">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-10 lg:grid-cols-[minmax(0,1fr)_320px]">
       <div>
         <Notice notice={q(query, "notice")} error={q(query, "error")} />
         <p className="eyebrow mt-4">Closing · {closing.deskBidId ? "Desk purchase" : closing.provider}</p>

@@ -47,7 +47,7 @@ export default async function SellerListingPage({
     : sellerReport(await listingActivity(listing.id, listing.sellerId));
 
   return (
-    <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_300px]">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-8 lg:grid-cols-[minmax(0,1fr)_300px]">
       <div>
         <Notice notice={q(query, "notice")} error={q(query, "error")} />
         <div className="mt-4 flex flex-wrap items-center gap-3">

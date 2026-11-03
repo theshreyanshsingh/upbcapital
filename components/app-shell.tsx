@@ -109,7 +109,7 @@ export function AppShell({ user, children }: { user: ShellUser; children: React.
 function DeskSearch() {
   return (
     <form action="/admin/search" role="search" className="mb-2 px-0.5">
-      <label className="flex h-8 items-center gap-2 rounded-lg border border-border bg-card px-2.5 text-[13px]">
+      <label className="flex h-8 items-center gap-2 rounded-lg border border-input bg-card px-2.5 text-[13px] focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/40">
         <Search className="size-3.5 shrink-0 text-muted-foreground" />
         <input name="q" type="search" placeholder="Search the desk" aria-label="Search the desk" className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-faint" />
       </label>

@@ -90,7 +90,7 @@ export default async function BrokerHome() {
         <FeeCard k="Pipeline" v={money(pipeline)} hint={`${open.length} open file${open.length === 1 ? "" : "s"}.`} delay="rise-3" />
       </section>
 
-      <section className="mt-6 grid gap-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,0.7fr)]">
+      <section className="mt-6 grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,0.7fr)]">
         <div className="glass p-5 md:p-6">
           <div className="flex items-baseline justify-between gap-3">
             <p className="eyebrow">Earnings</p>

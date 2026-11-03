@@ -151,7 +151,7 @@ export default async function ListingPage({
   })));
 
   return (
-    <div className="grid gap-10 lg:grid-cols-[minmax(0,1fr)_320px]">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-10 lg:grid-cols-[minmax(0,1fr)_320px]">
       <div>
         <Notice notice={q(query, "notice")} error={q(query, "error")} />
         <div className="mt-4 flex flex-wrap items-center gap-3">

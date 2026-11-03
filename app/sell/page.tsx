@@ -4,6 +4,7 @@ import { Logo } from "@/components/logo";
 import { SubmitButton } from "@/components/submit-button";
 import { recordHit } from "@/lib/hits";
 import { LIEN_POSITIONS, PAYMENT_STATUSES, US_STATES } from "@/lib/labels";
+import { safeNoticeText } from "@/lib/notice-text";
 
 export const metadata = { title: "Sell your note" };
 export const dynamic = "force-dynamic";
@@ -15,7 +16,8 @@ export default async function SellPage({
 }) {
   await recordHit("/sell");
   const params = await searchParams;
-  const error = typeof params.error === "string" ? params.error : "";
+  // The same rule as Notice: text from the address bar shows only as a plain sentence.
+  const error = typeof params.error === "string" ? (safeNoticeText(params.error) ?? "That didn't go through. Check the form and try again.") : "";
   return (
     <main id="desk" className="mx-auto max-w-3xl px-5 py-16">
       <Logo />

@@ -7,7 +7,7 @@ import { SubmitButton } from "@/components/submit-button";
 export function AssistantPanel({ listings }: { listings: { id: string; title: string }[] }) {
   const [state, action] = useActionState(askDesk, { answer: "", provider: "" });
   return (
-    <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
       <form action={action} className="glass space-y-4 p-5">
         <label className="block">
           <span className="text-[13px] text-muted-foreground">Task</span>

@@ -1,3 +1,5 @@
+import { safeNoticeText } from "@/lib/notice-text";
+
 const COPY: Record<string, string> = {
   submitted: "The file is with the desk.",
   resubmitted: "Updated and sent back to review.",
@@ -80,17 +82,22 @@ const COPY: Record<string, string> = {
   desk_note: "The desk note is saved. Only the desk sees it.",
   desk_note_removed: "The desk note is removed.",
   dates: "The closing dates are saved. Reminders follow the new dates.",
-  settlement: "The wire is recorded, and that side of the deal was told."
+  settlement: "The wire is recorded, and that side of the deal was told.",
+  accept: "The bid is awarded. The closing checklist is open, and the other bidders were told.",
+  decline: "The inquiry is declined, and the buyer was told.",
+  review: "The inquiry is marked reviewed.",
 };
 
 export function Notice({ notice, error }: { notice?: string; error?: string }) {
   if (error) {
-    return <p role="alert" className="border border-bad/40 bg-bad/10 px-4 py-3 text-sm text-bad rounded-xl">{error}</p>;
+    return <p role="alert" className="border border-bad/40 bg-bad/10 px-4 py-3 text-sm text-bad rounded-xl">{safeNoticeText(error) ?? "That didn't go through. Try again, or write to the desk."}</p>;
   }
   if (!notice) return null;
+  const text = COPY[notice] ?? safeNoticeText(notice);
+  if (!text) return null;
   return (
     <p role="status" className="border border-link/30 bg-link/10 px-4 py-3 text-sm text-foreground rounded-xl">
-      {COPY[notice] ?? decodeURIComponent(notice)}
+      {text}
     </p>
   );
 }

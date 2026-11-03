@@ -69,15 +69,17 @@
   --secondary: #eef0f3;
   --secondary-foreground: #111827;
   --muted: #eef0f3;
-  --muted-foreground: #6b7280;
+  /* Text tokens clear WCAG AA (4.5:1) on the grey page, white panels, and the pale secondary fill. */
+  --muted-foreground: #5b6371;
   --accent: #e7e8ec;
   --accent-foreground: #111827;
   --destructive: #b42318;
   --border: #e6e7eb;
-  --input: #e6e7eb;
+  /* Field edges need 3:1 against their panel, which the hairline border can't give. */
+  --input: #868e9a;
   --ring: #1a73e8;
-  --link: #1a73e8;
-  --faint: #9ca3af;
+  --link: #1764d4;
+  --faint: #646b79;
   --good: #17803d;
   --warn: #92710c;
   --bad: #b42318;
@@ -119,10 +121,10 @@
   --accent-foreground: #f4f4f5;
   --destructive: #f87171;
   --border: #2c3038;
-  --input: #2c3038;
+  --input: #646a76;
   --ring: #4c8dff;
   --link: #4c8dff;
-  --faint: #71717a;
+  --faint: #909099;
   --good: #4ade80;
   --warn: #f5d061;
   --bad: #f87171;
@@ -182,7 +184,7 @@
   height: 2.5rem;
   width: 100%;
   border-radius: 10px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--input);
   background: var(--card);
   padding: 0 0.7rem;
   font-size: 0.875rem;
