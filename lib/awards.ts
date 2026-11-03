@@ -1,6 +1,12 @@
-import { onGroupDeclined } from "@/actions/group";
+import type { ListingStatus } from "@prisma/client";
+import { onGroupAccepted, onGroupDeclined } from "@/actions/group";
+import { deadlinePassed } from "@/lib/auction";
+import { audit } from "@/lib/audit";
+import { openClosing, tradeConflict } from "@/lib/closing-service";
 import { notify } from "@/lib/email";
+import { workingAmount } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
+import { OFAC_HOLD_MESSAGE, ofacHold } from "@/lib/screening";
 
 // Once a bid wins, the others on the same loans can't, so they close now: an award, a desk purchase, or a
 // manual sale. Each bidder hears it without the price or the winner. A one-loan sale also ends offers on the
@@ -33,4 +39,101 @@ export async function declineLosingBids(winner: { id: string | null; listingId: 
 export async function claimLoan(noteId: string) {
   const claimed = await prisma.note.updateMany({ where: { id: noteId, tradeStatus: "AVAILABLE" }, data: { tradeStatus: "IN_CONTRACT" } });
   return claimed.count === 1;
+}
+
+// The seller's word on a price: a standing reserve at or below it, or an approval of exactly this amount.
+// Without one there is no sale, because nothing binds the seller to it.
+export function sellerAgreed(input: { price: number; reserve: number | null | undefined; approvedAmount: number | null | undefined }) {
+  if (input.reserve != null && input.reserve > 0 && input.price >= input.reserve) return "reserve" as const;
+  if (input.approvedAmount != null && Math.abs(input.approvedAmount - input.price) < 0.005) return "approved" as const;
+  return null;
+}
+
+// A bid waits on the seller when the desk asked and the seller hasn't answered since.
+export function awaitingSeller(offer: { sellerAskedAt: Date | null; sellerAnsweredAt: Date | null }) {
+  return Boolean(offer.sellerAskedAt && (!offer.sellerAnsweredAt || offer.sellerAnsweredAt < offer.sellerAskedAt));
+}
+
+function loadOffer(inquiryId: string) {
+  return prisma.inquiry.findUnique({ where: { id: inquiryId }, include: { buyer: true, listing: { include: { seller: true } } } });
+}
+
+type Offer = NonNullable<Awaited<ReturnType<typeof loadOffer>>>;
+
+// Every check an award needs, before any write. It runs again at the moment of award, because a seller may
+// approve days after the desk asked and the deal can change in between.
+export async function checkAward(inquiryId: string) {
+  const offer = await loadOffer(inquiryId);
+  if (!offer || offer.type !== "OFFER") return { error: "That offer no longer exists." } as const;
+  if (offer.status === "DECLINED") return { error: "That offer was declined or its closing was canceled. The buyer can send a new one." } as const;
+  const awarded = await prisma.closing.findUnique({ where: { inquiryId } });
+  if (awarded) return { error: "That offer already has a closing.", closingId: awarded.id } as const;
+  if (offer.buyer.accountStatus !== "APPROVED") return { error: "That buyer account is not approved." } as const;
+  if (await ofacHold({ listingId: offer.listingId, userIds: [offer.buyerId, offer.listing.sellerId] })) return { error: OFAC_HOLD_MESSAGE } as const;
+  if (offer.listing.bidMode !== "NONE" && !deadlinePassed(offer.listing.bidDeadline)) return { error: "Award this after the bid deadline." } as const;
+  const conflict = await tradeConflict(offer.listingId, offer.noteId);
+  if (conflict) return { error: conflict } as const;
+  const messages = await prisma.offerMessage.findMany({ where: { inquiryId } });
+  const price = workingAmount(
+    offer.amount ? Number(offer.amount) : null,
+    messages.map((message) => ({ kind: message.kind, amount: message.amount ? Number(message.amount) : null, createdAt: message.createdAt })),
+  );
+  if (!price || price <= 0) return { error: "That offer has no amount." } as const;
+  const agreed = sellerAgreed({ price, reserve: offer.listing.reservePrice, approvedAmount: offer.sellerApprovedAmount });
+  return { error: null, offer, price, agreed } as const;
+}
+
+// Where the seller of record answers: a broker who filed the listing answers from the deal page.
+export function sellerPage(listing: { id: string; sellerId: string; brokerId: string | null }) {
+  return listing.brokerId && listing.brokerId === listing.sellerId ? `/broker/deals/${listing.id}` : `/seller/listings/${listing.id}`;
+}
+
+export async function askSeller(offer: Offer, price: number) {
+  await prisma.inquiry.update({
+    where: { id: offer.id },
+    data: { sellerAskedAt: new Date(), sellerAskedAmount: price, sellerAnsweredAt: null, sellerDeclined: null },
+  });
+  const link = `${process.env.NEXT_PUBLIC_APP_URL || ""}${sellerPage(offer.listing)}`;
+  await notify(
+    offer.listing.seller.email,
+    `Approve a sale · ${offer.listing.title}`,
+    `The desk recommends accepting $${price.toLocaleString("en-US")} from a verified buyer${offer.noteId ? " for one loan" : ""}. Nothing is sold until you approve. Approve or decline here: ${link}`,
+  );
+}
+
+// The award: the loan or listing goes into contract, the closing opens, and the other bids close. It refuses
+// without the seller's agreement, whatever path called it.
+export async function awardOffer(inquiryId: string, actorId: string) {
+  const check = await checkAward(inquiryId);
+  if (check.error !== null) return check;
+  const { offer, price } = check;
+  if (!check.agreed) return { error: "The seller hasn't approved this price." } as const;
+  if (offer.noteId && !(await claimLoan(offer.noteId))) return { error: "That loan went into contract a moment ago. Check its open closing." } as const;
+  await prisma.inquiry.update({ where: { id: offer.id }, data: { status: "ACCEPTED", amount: price } });
+  if (!offer.noteId && offer.listing.status !== "SOLD") {
+    await prisma.listing.update({
+      where: { id: offer.listingId },
+      data: { status: "PENDING" satisfies ListingStatus, acceptedInquiryId: offer.id },
+    });
+  }
+  const closing = await openClosing({ listingId: offer.listingId, inquiryId: offer.id, noteId: offer.noteId, salePrice: price, title: offer.listing.title });
+  await onGroupAccepted(offer.id, closing.id, closing.buyerPremiumCents);
+  const { emitWebhook } = await import("@/lib/webhooks");
+  await emitWebhook(offer.listing.sellerId, "offer.accepted", { inquiryId: offer.id, listingId: offer.listingId, closingId: closing.id, amount: price });
+  const link = `${process.env.NEXT_PUBLIC_APP_URL || ""}/closings/${closing.id}`;
+  await notify(offer.buyer.email, `Offer accepted · ${offer.listing.title}`, `Your bid of $${price.toLocaleString("en-US")} was accepted. The closing checklist is open: ${link}`);
+  await notify(offer.listing.seller.email, `Offer accepted · ${offer.listing.title}`, `${offer.buyer.name}'s offer was accepted. Closing checklist: ${link}`);
+  const declined = await declineLosingBids(offer, offer.listing.title);
+  // The seller reads every review comment, so the bidder stays out of it. The audit log keeps the name.
+  await prisma.reviewComment.create({
+    data: { listingId: offer.listingId, authorId: actorId, action: "COMMENT", comment: "An offer was accepted. The closing checklist is open." },
+  });
+  await audit(
+    actorId,
+    "AWARD",
+    "inquiry",
+    offer.id,
+    `${offer.listing.title} · ${offer.buyer.name} · ${check.agreed === "reserve" ? "within the seller's reserve" : "approved by the seller"}${declined ? ` · ${declined} other bid${declined === 1 ? "" : "s"} declined` : ""}`,
+  );
+  return { error: null, closingId: closing.id, declined, price } as const;
 }

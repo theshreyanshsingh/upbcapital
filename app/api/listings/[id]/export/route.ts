@@ -5,6 +5,7 @@ import { audit } from "@/lib/audit";
 import { getApiUser } from "@/lib/auth";
 import { toCsv } from "@/lib/csv";
 import { dealAccess } from "@/lib/data-room";
+import { showableAvm } from "@/lib/enrichment";
 import { prisma } from "@/lib/prisma";
 import { isPro } from "@/lib/settings";
 import { couponBucket, ltvBucket, stratify, upbBucket } from "@/lib/strata";
@@ -47,7 +48,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       upbBucket: upbBucket(upb),
       ltvBucket: ltvBucket(upb, value),
       couponBucket: couponBucket(Number(note.interestRate)),
-      avm: note.avmValue == null ? "" : Number(note.avmValue),
+      avm: showableAvm({ avmValue: note.avmValue == null ? null : Number(note.avmValue), avmProvider: note.avmProvider }) ?? "",
     };
   });
   const strata = stratify(loans.map((loan) => ({

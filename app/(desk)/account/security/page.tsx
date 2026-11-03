@@ -3,8 +3,8 @@ import { acknowledgeRecovery, beginTotp, changePassword, confirmTotp, disableTot
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { SubmitButton } from "@/components/submit-button";
-import { adminNeedsSecondFactor } from "@/lib/access";
-import { currentSessionId, requireUser } from "@/lib/auth";
+import { needsSecondFactor } from "@/lib/access";
+import { currentSessionId, requireUser, twoStepRequired } from "@/lib/auth";
 import { prettyDate, q } from "@/lib/format";
 import { deliverable } from "@/lib/mail-config";
 import { prisma } from "@/lib/prisma";
@@ -18,12 +18,13 @@ export default async function SecurityPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const user = await requireUser({ secondFactorSetup: true });
+  const required = await twoStepRequired();
   const params = await searchParams;
   const [sessions, thisSession] = await Promise.all([
     prisma.serverSession.findMany({ where: { userId: user.id, expiresAt: { gt: new Date() } }, orderBy: { createdAt: "desc" } }),
     currentSessionId(),
   ]);
-  const setupRequired = adminNeedsSecondFactor(user);
+  const setupRequired = needsSecondFactor(user, required);
   const pending = Boolean(user.totpSecret) && !user.totpEnabled;
   const qr = pending ? await QRCode.toString(otpauthUrl(user.totpSecret, user.email), { type: "svg", margin: 1, width: 180, color: { dark: "#111111", light: "#ffffff" } }) : "";
   const codes = user.recoveryReveal.split("\n").filter(Boolean);
@@ -37,7 +38,7 @@ export default async function SecurityPage({
       <Notice notice={q(params, "notice")} error={q(params, "error")} />
       {setupRequired && (
         <p role="alert" className="mt-4 border border-bad/40 bg-bad/10 px-4 py-3 text-sm text-bad rounded-xl">
-          Desk admins need an authenticator. Set it up here and the desk opens.
+          {user.role === "ADMIN" ? "Desk admins need an authenticator." : "Your account can see borrower data, so the desk asks for an authenticator."} Set it up here and the desk opens.
         </p>
       )}
       {codes.length > 0 && (

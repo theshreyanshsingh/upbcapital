@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { bulkReprice, duplicateListing } from "@/actions/desk";
 import { answerDeskBid } from "@/actions/desk-book";
+import { SaleApproval } from "@/components/sale-approval";
 import { updateOwnListingMeta } from "@/actions/listings";
 import { AuctionForm } from "@/components/auction-form";
 import { ComplianceNote } from "@/components/compliance-note";
@@ -73,6 +74,7 @@ export default async function SellerListingPage({
             <SubmitButton className="h-11 text-[13px] font-medium">Save and resubmit</SubmitButton>
           </form>
         )}
+        <SaleApproval listing={listing} offers={listing.inquiries} canAnswer={listing.sellerId === user.id} />
         <section className="mt-10">
           {listing.deskBids.map((bid) => (
             <div key={bid.id} className="mb-6 border border-link/30 bg-link/5 p-4 rounded-xl">

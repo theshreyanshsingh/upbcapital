@@ -8,6 +8,7 @@ export type Viewer = {
   accountStatus: "PENDING" | "APPROVED" | "REJECTED" | "SUSPENDED";
   subscriptionTier: SubscriptionTier;
   subscriptionStatus: SubscriptionStatus;
+  subscriptionCurrentPeriodEnd?: Date | null;
 };
 
 // A declined or suspended account has no session at all, so every signed-in path stops at once.
@@ -19,6 +20,13 @@ export function accountLocked(status: string) {
 // and are exempt, because one visitor enrolling would lock out the rest. Bootstrap refuses them in a release.
 export function adminNeedsSecondFactor(user: { role: string; email: string; totpEnabled: boolean }) {
   return user.role === "ADMIN" && !user.totpEnabled && deliverable(user.email);
+}
+
+// When the desk requires it, every approved account that can see borrower data enrolls an authenticator too.
+// Pending accounts can't see that data yet, and the same demo exemption applies.
+export function needsSecondFactor(user: { role: string; email: string; totpEnabled: boolean; accountStatus?: string }, requireAll: boolean) {
+  if (adminNeedsSecondFactor(user)) return true;
+  return requireAll && user.role !== "ADMIN" && user.accountStatus === "APPROVED" && !user.totpEnabled && deliverable(user.email);
 }
 
 export function canSeeMetrics(viewer: Viewer | null) {

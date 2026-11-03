@@ -1,9 +1,10 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { accountLocked, adminNeedsSecondFactor } from "@/lib/access";
+import { accountLocked, needsSecondFactor } from "@/lib/access";
 import { secureCookies } from "@/lib/deploy";
 import { prisma } from "@/lib/prisma";
 import { requestMeta } from "@/lib/request-meta";
+import { getSettings } from "@/lib/settings";
 import { PENDING_COOKIE, SESSION_COOKIE, signPending, signSession, verifyPending, verifySession, type SessionToken } from "@/lib/session";
 import type { Role } from "@prisma/client";
 
@@ -82,18 +83,24 @@ export async function endSessions(userId: string, exceptSid?: string | null) {
   await prisma.serverSession.deleteMany({ where: exceptSid ? { userId, id: { not: exceptSid } } : { userId } });
 }
 
-// secondFactorSetup is only for the security page and its actions, the one place a real admin can go before enrolling.
+// The desk's setting, on unless it was turned off. Settings are cached in the process, so this is cheap.
+export async function twoStepRequired() {
+  return (await getSettings()).requireTwoStep !== false;
+}
+
+// secondFactorSetup is only for the security page and its actions, the one place an account that must enroll
+// can go before it has.
 export async function requireUser(options?: { secondFactorSetup?: boolean }) {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
-  if (!options?.secondFactorSetup && adminNeedsSecondFactor(user)) redirect("/account/security?setup=1");
+  if (!options?.secondFactorSetup && needsSecondFactor(user, await twoStepRequired())) redirect("/account/security?setup=1");
   return user;
 }
 
-// For API routes, which answer 401 rather than redirect: an admin with no authenticator gets nothing yet.
+// For API routes, which answer 401 rather than redirect: an account that must enroll gets nothing until it has.
 export async function getApiUser() {
   const user = await getCurrentUser();
-  return user && adminNeedsSecondFactor(user) ? null : user;
+  return user && needsSecondFactor(user, await twoStepRequired()) ? null : user;
 }
 
 export async function requireRole(roles: Role[]) {

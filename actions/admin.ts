@@ -2,20 +2,17 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import type { AccountStatus, ListingStatus, ReviewAction } from "@prisma/client";
+import type { AccountStatus, ReviewAction } from "@prisma/client";
 import { alertMatchingSearches } from "@/actions/listings";
-import { deadlinePassed } from "@/lib/auction";
 import { audit } from "@/lib/audit";
-import { claimLoan, declineLosingBids } from "@/lib/awards";
+import { askSeller, awardOffer, checkAward, declineLosingBids } from "@/lib/awards";
 import { endSessions, requireRole } from "@/lib/auth";
 import { notify } from "@/lib/email";
-import { openClosing, tradeConflict } from "@/lib/closing-service";
-import { DEFAULT_CLOSING_DAYS } from "@/lib/closing-clock";
-import { onGroupAccepted, onGroupDeclined } from "@/actions/group";
+import { DEFAULT_CLOSING_DAYS, DEFAULT_DEPOSIT_BPS, DEFAULT_DEPOSIT_DAYS } from "@/lib/closing-clock";
+import { onGroupDeclined } from "@/actions/group";
 import { rescoreListing } from "@/lib/matching";
 import { postRevenueOnce } from "@/lib/ledger";
 import { feeBreakdown, percentToBps } from "@/lib/money";
-import { workingAmount } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
 import { OFAC_DOWN_MESSAGE, OFAC_HOLD_MESSAGE, ofacHold, screenListing, screenUser } from "@/lib/screening";
 import { clearSettingsCache, getSettings } from "@/lib/settings";
@@ -217,55 +214,21 @@ export async function decideInquiry(formData: FormData) {
     include: { buyer: true, listing: { include: { seller: true } } },
   });
   if (!inquiry) redirect("/admin/offers");
-  let declined = 0;
   if (decision === "ACCEPT" && inquiry.type === "OFFER") {
-    if (inquiry.status === "DECLINED") redirect(`/admin/offers?error=${encodeURIComponent("That offer was declined or its closing was canceled. The buyer can send a new one.")}`);
-    if (inquiry.buyer.accountStatus !== "APPROVED") redirect(`/admin/offers?error=${encodeURIComponent("That buyer account is not approved.")}`);
-    if (await ofacHold({ listingId: inquiry.listingId, userIds: [inquiry.buyerId, inquiry.listing.sellerId] })) {
-      redirect(`/admin/offers?error=${encodeURIComponent(OFAC_HOLD_MESSAGE)}`);
+    const check = await checkAward(inquiry.id);
+    if (check.error !== null) redirect("closingId" in check && check.closingId ? `/closings/${check.closingId}` : `/admin/offers?error=${encodeURIComponent(check.error)}`);
+    // No sale without the seller's word on the price. A reserve that covers it counts; otherwise the seller is asked.
+    if (!check.agreed) {
+      await askSeller(check.offer, check.price);
+      await audit(user.id, "SELLER_ASKED", "inquiry", inquiry.id, `${inquiry.listing.title} · $${check.price.toLocaleString("en-US")}`);
+      revalidatePath("/admin/offers");
+      redirect("/admin/offers?notice=sent_to_seller");
     }
-    if (inquiry.listing.bidMode !== "NONE" && !deadlinePassed(inquiry.listing.bidDeadline)) {
-      redirect(`/admin/offers?error=${encodeURIComponent("Award this after the bid deadline.")}`);
-    }
-    const awarded = await prisma.closing.findUnique({ where: { inquiryId: inquiry.id } });
-    if (awarded) redirect(`/closings/${awarded.id}`);
-    const conflict = await tradeConflict(inquiry.listingId, inquiry.noteId);
-    if (conflict) redirect(`/admin/offers?error=${encodeURIComponent(conflict)}`);
-    const messages = await prisma.offerMessage.findMany({ where: { inquiryId: inquiry.id } });
-    const price = workingAmount(
-      inquiry.amount ? Number(inquiry.amount) : null,
-      messages.map((message) => ({ kind: message.kind, amount: message.amount ? Number(message.amount) : null, createdAt: message.createdAt })),
-    );
-    if (!price || price <= 0) redirect("/admin/offers?error=That offer has no amount.");
-    if (inquiry.noteId && !(await claimLoan(inquiry.noteId))) {
-      redirect(`/admin/offers?error=${encodeURIComponent("That loan went into contract a moment ago. Check its open closing.")}`);
-    }
-    await prisma.inquiry.update({ where: { id: inquiry.id }, data: { status: "ACCEPTED", amount: price } });
-    if (!inquiry.noteId && inquiry.listing.status !== "SOLD") {
-      await prisma.listing.update({
-        where: { id: inquiry.listingId },
-        data: { status: "PENDING" satisfies ListingStatus, acceptedInquiryId: inquiry.id },
-      });
-    }
-    const closing = await openClosing({
-      listingId: inquiry.listingId,
-      inquiryId: inquiry.id,
-      noteId: inquiry.noteId,
-      salePrice: price,
-      title: inquiry.listing.title,
-    });
-    await onGroupAccepted(inquiry.id, closing.id, closing.buyerPremiumCents);
-    const { emitWebhook } = await import("@/lib/webhooks");
-    await emitWebhook(inquiry.listing.sellerId, "offer.accepted", {
-      inquiryId: inquiry.id,
-      listingId: inquiry.listingId,
-      closingId: closing.id,
-      amount: price,
-    });
-    const link = `${process.env.NEXT_PUBLIC_APP_URL || ""}/closings/${closing.id}`;
-    await notify(inquiry.buyer.email, `Offer accepted · ${inquiry.listing.title}`, `The desk accepted $${price.toLocaleString("en-US")}. The closing checklist is open: ${link}`);
-    await notify(inquiry.listing.seller.email, `Offer accepted · ${inquiry.listing.title}`, `${inquiry.buyer.name}'s offer was accepted. Closing checklist: ${link}`);
-    declined = await declineLosingBids(inquiry, inquiry.listing.title);
+    const result = await awardOffer(inquiry.id, user.id);
+    if (result.error !== null) redirect(`/admin/offers?error=${encodeURIComponent(result.error)}`);
+    revalidatePath("/admin/offers");
+    revalidatePath(`/admin/listings/${inquiry.listingId}`);
+    redirect("/admin/offers?notice=accept");
   } else if (decision === "DECLINE") {
     await prisma.inquiry.update({ where: { id: inquiry.id }, data: { status: "DECLINED" } });
     await onGroupDeclined(inquiry.id);
@@ -281,10 +244,10 @@ export async function decideInquiry(formData: FormData) {
       listingId: inquiry.listingId,
       authorId: user.id,
       action: "COMMENT",
-      comment: decision === "ACCEPT" ? "An offer was accepted. The closing checklist is open." : decision === "DECLINE" ? "An inquiry was declined." : "An inquiry was reviewed.",
+      comment: decision === "DECLINE" ? "An inquiry was declined." : "An inquiry was reviewed.",
     },
   });
-  await audit(user.id, decision === "ACCEPT" ? "AWARD" : `INQUIRY_${decision}`, "inquiry", inquiry.id, `${inquiry.listing.title} · ${inquiry.buyer.name}${declined ? ` · ${declined} other bid${declined === 1 ? "" : "s"} declined` : ""}`);
+  await audit(user.id, `INQUIRY_${decision}`, "inquiry", inquiry.id, `${inquiry.listing.title} · ${inquiry.buyer.name}`);
   revalidatePath("/admin/offers");
   revalidatePath(`/admin/listings/${inquiry.listingId}`);
   redirect(`/admin/offers?notice=${encodeURIComponent(decision.toLowerCase())}`);
@@ -348,7 +311,8 @@ export async function setMembership(formData: FormData) {
         subscriptionTier: "PRO",
         subscriptionStatus: "ACTIVE",
         subscriptionComped: true,
-        subscriptionCurrentPeriodEnd: new Date(Date.now() + 30 * 86400000),
+        // A desk comp runs until the desk sets the account back to free.
+        subscriptionCurrentPeriodEnd: null,
       },
     });
   } else {
@@ -381,6 +345,11 @@ export async function saveSettings(formData: FormData) {
   if (limit < 1 || limit > 100) redirect("/admin/settings?error=Free browse limit must be between 1 and 100.");
   const closingDays = Number(formData.get("closingTargetDays") || DEFAULT_CLOSING_DAYS);
   if (!Number.isFinite(closingDays) || closingDays < 5 || closingDays > 180) redirect("/admin/settings?error=Keep the target close between 5 and 180 days.");
+  const depositPercent = Number(formData.get("depositPercent") ?? DEFAULT_DEPOSIT_BPS / 100);
+  const depositDays = Number(formData.get("depositDays") ?? DEFAULT_DEPOSIT_DAYS);
+  if (!Number.isFinite(depositPercent) || depositPercent < 0 || depositPercent > 50) redirect("/admin/settings?error=Keep the deposit between 0% and 50%.");
+  if (!Number.isFinite(depositDays) || depositDays < 1 || depositDays > 30) redirect("/admin/settings?error=Give buyers between 1 and 30 days to wire the deposit.");
+  const requireTwoStep = formData.get("requireTwoStep") === "on";
   const brokerBasis = String(formData.get("brokerFeeBasis") || "PERCENT");
   const affiliateBasis = String(formData.get("affiliateFeeBasis") || "PERCENT");
   const brokerPercent = Number(formData.get("brokerFeePercent"));
@@ -409,6 +378,9 @@ export async function saveSettings(formData: FormData) {
       earlyAccessHours: Math.round(early),
       freeBrowseLimit: Math.round(limit),
       closingTargetDays: Math.round(closingDays),
+      depositBps: percentToBps(depositPercent),
+      depositDays: Math.round(depositDays),
+      requireTwoStep,
       wireInstructions,
       chargeDeskFees: formData.get("chargeDeskFees") === "on",
       brokerFeeBasis: brokerBasis as "PERCENT" | "FLAT",
@@ -426,6 +398,9 @@ export async function saveSettings(formData: FormData) {
       earlyAccessHours: Math.round(early),
       freeBrowseLimit: Math.round(limit),
       closingTargetDays: Math.round(closingDays),
+      depositBps: percentToBps(depositPercent),
+      depositDays: Math.round(depositDays),
+      requireTwoStep,
       wireInstructions,
       chargeDeskFees: formData.get("chargeDeskFees") === "on",
       brokerFeeBasis: brokerBasis as "PERCENT" | "FLAT",

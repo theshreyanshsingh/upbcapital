@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { answerDeskBid } from "@/actions/desk-book";
+import { SaleApproval } from "@/components/sale-approval";
 import { Notice } from "@/components/notice";
 import { requireRole } from "@/lib/auth";
 import { brokerRoleLabel } from "@/lib/broker-fees";
@@ -37,7 +38,7 @@ export default async function BrokerDealPage({
   const query = await searchParams;
   const listing = await prisma.listing.findUnique({
     where: { id },
-    include: { notes: true, closings: { include: { brokerFees: true } }, deskBids: { where: { status: "OPEN" }, orderBy: { createdAt: "desc" } } },
+    include: { notes: true, closings: { include: { brokerFees: true } }, deskBids: { where: { status: "OPEN" }, orderBy: { createdAt: "desc" } }, inquiries: { where: { type: "OFFER" }, include: { buyer: true } } },
   });
   if (!listing || listing.brokerId !== user.id) notFound();
   const ask = listing.notes.reduce((sum, note) => sum + num(note.askingPrice), 0);
@@ -62,6 +63,7 @@ export default async function BrokerDealPage({
         <Stat k="Filed" v={prettyDate(listing.submittedAt)} />
       </dl>
       {listing.summary && <p className="mt-6 text-sm leading-relaxed text-foreground/85">{listing.summary}</p>}
+      {listing.status !== "REJECTED" && <SaleApproval listing={listing} offers={listing.inquiries} canAnswer={listing.sellerId === user.id} />}
       {listing.deskBids.map((bid) => (
         <div key={bid.id} className="mt-6 border border-link/30 bg-link/5 p-4 rounded-xl">
           <p className="eyebrow">The desk bid on this</p>

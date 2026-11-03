@@ -1,3 +1,4 @@
+import { isReleaseBuild } from "@/lib/deploy";
 const CITIES: Record<string, [number, number]> = {
   "FL:MIAMI": [25.7617, -80.1918],
   "FL:MIAMI BEACH": [25.7907, -80.13],
@@ -126,4 +127,12 @@ export function projectUs(latitude: number, longitude: number) {
   const x = ((longitude + 125) / 59) * 1000;
   const y = ((49 - latitude) / 25) * 560;
   return { x: Math.max(8, Math.min(992, x)), y: Math.max(8, Math.min(552, y)) };
+}
+
+// A stand-in value is the seller's own figure nudged a few percent. The demo desk shows it, labelled mock;
+// a release never shows it to buyers as an estimate.
+export function showableAvm(note: { avmValue: number | null; avmProvider: string }, release = isReleaseBuild(process.env)) {
+  if (note.avmValue == null) return null;
+  if (release && (!note.avmProvider || note.avmProvider === "mock")) return null;
+  return note.avmValue;
 }

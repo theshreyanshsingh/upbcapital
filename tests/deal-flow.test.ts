@@ -6,7 +6,7 @@ import { closingSchedule, closingStats, effectiveDue, stepClock, stepNeedsRemind
 import { cancelOpenClosing, openClosing, tradeConflict } from "../lib/closing-service";
 import { deskSearch, searchTerm } from "../lib/desk-search";
 import { unset } from "../lib/db-filters";
-import { claimLoan, declineLosingBids } from "../lib/awards";
+import { awardOffer, claimLoan, declineLosingBids } from "../lib/awards";
 import { dealAccess } from "../lib/data-room";
 import { remindClosingSteps, remindSaleNotices } from "../lib/jobs";
 import { recentlySent, sendBody, sendFunnel, sendListing } from "../lib/outreach";
@@ -405,6 +405,47 @@ test("a one-loan sale out of a pool ends bids on that loan and on the whole pool
     assert.equal(loser.whole || loser.loans.size > 0, false);
   } finally {
     await prisma.auditEvent.deleteMany({ where: { entityId: deal.listing.id } });
+    await cleanDeal(deal);
+  }
+});
+
+test("no award without the seller's word, and the award sets the buyer's deposit and its due date", async () => {
+  const deal = await makeDeal(crypto.randomUUID().slice(0, 8));
+  try {
+    const offer = await prisma.inquiry.create({ data: { listingId: deal.listing.id, buyerId: deal.buyer.id, type: "OFFER", status: "OPEN", amount: 80000 } });
+    const refused = await awardOffer(offer.id, deal.desk.id);
+    assert.equal(refused.error, "The seller hasn't approved this price.");
+    assert.equal(await prisma.closing.count({ where: { inquiryId: offer.id } }), 0);
+
+    // An approval of a different amount doesn't count. The exact price does.
+    await prisma.inquiry.update({ where: { id: offer.id }, data: { sellerApprovedAmount: 79000 } });
+    assert.equal((await awardOffer(offer.id, deal.desk.id)).error, "The seller hasn't approved this price.");
+    await prisma.inquiry.update({ where: { id: offer.id }, data: { sellerApprovedAmount: 80000 } });
+    const awarded = await awardOffer(offer.id, deal.desk.id);
+    assert.equal(awarded.error, null);
+    const closing = await prisma.closing.findUniqueOrThrow({ where: { inquiryId: offer.id }, include: { steps: true } });
+    assert.equal(closing.depositCents, 800000);
+    assert.ok(closing.depositDueAt);
+    const days = (closing.depositDueAt!.getTime() - closing.openedAt.getTime()) / DAY;
+    assert.ok(days > 2.9 && days < 3.1);
+    const step = closing.steps.find((item) => item.key === "BUYER_DEPOSIT")!;
+    assert.equal(step.dueAt?.getTime(), closing.depositDueAt!.getTime());
+    assert.match((await prisma.auditEvent.findFirstOrThrow({ where: { entityId: offer.id, action: "AWARD" } })).detail, /approved by the seller/);
+  } finally {
+    await prisma.auditEvent.deleteMany({ where: { entityId: { in: [deal.listing.id] } } });
+    await cleanDeal(deal);
+  }
+});
+
+test("a reserve the price clears is the seller's standing approval", async () => {
+  const deal = await makeDeal(crypto.randomUUID().slice(0, 8));
+  try {
+    await prisma.listing.update({ where: { id: deal.listing.id }, data: { reservePrice: 75000 } });
+    const offer = await prisma.inquiry.create({ data: { listingId: deal.listing.id, buyerId: deal.buyer.id, type: "OFFER", status: "OPEN", amount: 80000 } });
+    const awarded = await awardOffer(offer.id, deal.desk.id);
+    assert.equal(awarded.error, null);
+    assert.match((await prisma.auditEvent.findFirstOrThrow({ where: { entityId: offer.id, action: "AWARD" } })).detail, /within the seller's reserve/);
+  } finally {
     await cleanDeal(deal);
   }
 });

@@ -1,3 +1,4 @@
+import { isReleaseBuild } from "@/lib/deploy";
 import { prisma } from "@/lib/prisma";
 
 type SettingsRow = Awaited<ReturnType<typeof loadSettings>>;
@@ -20,8 +21,19 @@ export function clearSettingsCache() {
   cached = null;
 }
 
-export function isPro(user: { subscriptionTier: string; subscriptionStatus: string }) {
-  return user.subscriptionTier === "PRO" && user.subscriptionStatus === "ACTIVE";
+// In a release, Pro lapses at the end of its paid or referral month, after a three-day grace for a late renewal
+// webhook. A desk comp has no end date and lasts until the desk sets the account back to free. The demo desk
+// doesn't expire memberships, so its seeded Pro seats keep working between reseeds.
+const PRO_GRACE_MS = 3 * 24 * 60 * 60 * 1000;
+
+export function isPro(
+  user: { subscriptionTier: string; subscriptionStatus: string; subscriptionCurrentPeriodEnd?: Date | null },
+  now = new Date(),
+  expire = isReleaseBuild(process.env),
+) {
+  if (user.subscriptionTier !== "PRO" || user.subscriptionStatus !== "ACTIVE") return false;
+  const end = user.subscriptionCurrentPeriodEnd;
+  return !expire || !end || end.getTime() + PRO_GRACE_MS > now.getTime();
 }
 
 export function isEarlyAccess(approvedAt: Date | null, hours: number, now = new Date()) {

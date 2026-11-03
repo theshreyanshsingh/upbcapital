@@ -1,5 +1,6 @@
 import { decideInquiry } from "@/actions/admin";
 import { deadlinePassed } from "@/lib/auction";
+import { awaitingSeller, sellerAgreed } from "@/lib/awards";
 import { notifyClosedAuctions } from "@/lib/listing-intel";
 import { Notice } from "@/components/notice";
 import { OfferThread } from "@/components/offer-thread";
@@ -35,7 +36,7 @@ export default async function AdminOffersPage({
   const premium = bpsToPercent(settings.buyerPremiumBps);
   return (
     <div>
-      <PageIntro eyebrow="Offers" title="Bids and counters." lede={`Accepting a bid opens a closing. If it trades at the working price, the buyer also pays ${premium.toFixed(2)}% on top. Loan bids do not take the rest of the pool off the book.`} />
+      <PageIntro eyebrow="Offers" title="Bids and counters." lede={`A bid goes to the seller for approval unless their reserve covers it. Approval opens a closing. If it trades at the working price, the buyer also pays ${premium.toFixed(2)}% on top. Loan bids do not take the rest of the pool off the book.`} />
       <Notice notice={q(params, "notice")} error={q(params, "error")} />
       <ul className="mt-8 space-y-3">
         {inquiries.map((inquiry) => {
@@ -46,6 +47,17 @@ export default async function AdminOffersPage({
           }));
           const amount = workingAmount(inquiry.amount ? num(inquiry.amount) : null, messages);
           const closingId = closingFor.get(inquiry.id);
+          const agreed = amount ? sellerAgreed({ price: amount, reserve: inquiry.listing.reservePrice, approvedAmount: inquiry.sellerApprovedAmount }) : null;
+          const live = inquiry.type === "OFFER" && (inquiry.status === "OPEN" || inquiry.status === "REVIEWED");
+          const sellerLine = awaitingSeller(inquiry)
+            ? `Waiting on the seller since ${prettyDate(inquiry.sellerAskedAt)}`
+            : agreed === "reserve"
+              ? `Within the seller's reserve of ${money(Number(inquiry.listing.reservePrice))}`
+              : agreed === "approved"
+                ? "The seller approved this price"
+                : inquiry.sellerDeclined
+                  ? `The seller declined ${money(Number(inquiry.sellerAskedAmount))} on ${prettyDate(inquiry.sellerAnsweredAt)}`
+                  : "Accepting sends this to the seller for approval first";
           return (
             <li key={inquiry.id} className="glass p-5">
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -65,6 +77,7 @@ export default async function AdminOffersPage({
                   Working bid {money(amount)} · premium {money((amount * settings.buyerPremiumBps) / 10000)} · all-in {money(amount + (amount * settings.buyerPremiumBps) / 10000)}
                 </p>
               )}
+              {live && <p className={`mt-2 text-[13px] ${agreed ? "text-good" : "text-muted-foreground"}`}>{sellerLine}</p>}
               {inquiry.message && <p className="mt-2 text-sm text-foreground/85">{inquiry.message}</p>}
               {closingId && <Link href={`/closings/${closingId}`} className="mt-3 inline-block text-[13px] font-medium text-link">Open closing</Link>}
               {inquiry.type === "OFFER" && !closingId && <Link href={`/admin/listings/${inquiry.listingId}#bids`} className="mt-3 inline-block text-[13px] font-medium text-link">Compare on the bid sheet</Link>}
@@ -92,7 +105,7 @@ export default async function AdminOffersPage({
                       <input type="hidden" name="inquiryId" value={inquiry.id} />
                       <input type="hidden" name="decision" value="ACCEPT" />
                       <SubmitButton className="h-9 text-[13px] font-medium">
-                        {inquiry.listing.bidMode === "NONE" ? "Accept working price" : "Award"}
+                        {!agreed ? (awaitingSeller(inquiry) ? "Ask the seller again" : "Send to the seller") : inquiry.listing.bidMode === "NONE" ? "Accept working price" : "Award"}
                       </SubmitButton>
                     </form>
                   )}

@@ -1,6 +1,6 @@
 import type { ClosingStepKey } from "@prisma/client";
 import { CLOSING_STEPS, canCompleteStep, closingTotals } from "@/lib/closing";
-import { closingSchedule, targetDays } from "@/lib/closing-clock";
+import { closingSchedule, depositCents, depositTerms, targetDays } from "@/lib/closing-clock";
 import { deskFeeBps } from "@/lib/desk-fees";
 import { getEscrowProvider } from "@/lib/escrow";
 import { postRevenueOnce } from "@/lib/ledger";
@@ -62,6 +62,10 @@ export async function openClosing(input: {
     wireInstructions: settings.wireInstructions,
   });
   const schedule = closingSchedule(new Date(), targetDays(settings.closingTargetDays));
+  // A buyer's deposit is set at award. The desk buying for its own book owes none.
+  const deposit = depositTerms(settings);
+  const depositDue = !input.deskBidId && deposit.bps > 0 ? new Date(Date.now() + deposit.days * 24 * 60 * 60 * 1000) : null;
+  if (depositDue) schedule.due.BUYER_DEPOSIT = depositDue;
   const created = await prisma.closing.create({
     data: {
       listingId: input.listingId,
@@ -77,6 +81,7 @@ export async function openClosing(input: {
       providerRef: preview.providerRef,
       wireInstructions: preview.instructions,
       targetCloseAt: schedule.targetCloseAt,
+      ...(depositDue ? { depositCents: depositCents(input.salePrice, deposit.bps), depositDueAt: depositDue } : {}),
       steps: {
         create: CLOSING_STEPS.map((step) => ({ key: step.key, dueAt: schedule.due[step.key] })),
       },

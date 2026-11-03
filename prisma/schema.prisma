@@ -298,6 +298,11 @@ model PlatformSettings {
   affiliateFeeCents    Int      @default(25000)
   // Days from an accepted offer to the target close. Missing means the default in lib/closing-clock.ts.
   closingTargetDays    Int?
+  // Deposit at award, as a share of the price, and the days the buyer has to wire it. Missing means the defaults.
+  depositBps           Int?
+  depositDays          Int?
+  // Two-step sign-in for every account that can see borrower data. Missing means on.
+  requireTwoStep       Boolean?
   updatedAt            DateTime @updatedAt
 }
 
@@ -370,6 +375,8 @@ model Listing {
   bidDeadline          DateTime?
   auctionNotifiedAt    DateTime?
   bidReminderAt        DateTime?
+  // The seller's standing approval: a bid at or above this needs no further sign-off. Buyers never see it.
+  reservePrice         Float?
   sellerFinanced       Boolean       @default(false)
   notes                Note[]
   documents            Document[]
@@ -459,6 +466,12 @@ model Inquiry {
   status    InquiryStatus @default(OPEN)
   messages  OfferMessage[]
   createdAt DateTime      @default(now())
+  // The seller's sign-off on this bid's price, when the reserve doesn't already cover it.
+  sellerAskedAt        DateTime?
+  sellerAskedAmount    Float?
+  sellerApprovedAmount Float?
+  sellerAnsweredAt     DateTime?
+  sellerDeclined       Boolean?
 
   @@index([listingId])
   @@index([buyerId])
@@ -562,6 +575,12 @@ model Closing {
   proceedsSentCents     Int?
   proceedsSentAt        DateTime?
   proceedsReference     String?
+  // The deposit set at award and what the desk recorded against it.
+  depositCents          Int?
+  depositDueAt          DateTime?
+  depositReceivedCents  Int?
+  depositReceivedAt     DateTime?
+  depositReference      String?
   // Borrower notices. The new owner sends the sale notice (12 CFR 1026.39); UPB only dates and drafts it.
   transferAt            DateTime?
   loanPurpose           String?

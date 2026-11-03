@@ -4,9 +4,9 @@ import bcrypt from "bcryptjs";
 import { createHash, randomInt } from "crypto";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { accountLocked, adminNeedsSecondFactor } from "@/lib/access";
+import { accountLocked, needsSecondFactor } from "@/lib/access";
 import { audit } from "@/lib/audit";
-import { clearPending, currentSessionId, endSessions, pendingUserId, requireUser, setSession } from "@/lib/auth";
+import { clearPending, currentSessionId, endSessions, pendingUserId, requireUser, setSession, twoStepRequired } from "@/lib/auth";
 import { notify } from "@/lib/email";
 import { homeFor } from "@/lib/labels";
 import { deliverable } from "@/lib/mail-config";
@@ -47,8 +47,8 @@ export async function acknowledgeRecovery() {
 
 export async function disableTotp(formData: FormData) {
   const user = await requireUser({ secondFactorSetup: true });
-  if (adminNeedsSecondFactor({ ...user, totpEnabled: false })) {
-    redirect("/account/security?error=" + encodeURIComponent("Desk admins keep two-factor sign-in on."));
+  if (needsSecondFactor({ ...user, totpEnabled: false }, await twoStepRequired())) {
+    redirect("/account/security?error=" + encodeURIComponent("The desk requires two-step sign-in on this account, so it stays on."));
   }
   if (!(await consumeRateLimit(`totp:${user.id}`, 5, 15 * 60 * 1000))) {
     redirect("/account/security?error=" + encodeURIComponent("Too many codes. Wait fifteen minutes and try again."));

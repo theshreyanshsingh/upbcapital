@@ -61,6 +61,8 @@ export default async function ClosingPage({
   const isBuyer = user.id === inquiry?.buyerId || closing.funders.some((funder) => funder.userId === user.id);
   const funds = variance(closing.buyerTotalCents, closing.fundsReceivedCents);
   const proceeds = variance(closing.netToSellerCents, closing.proceedsSentCents);
+  const deposit = closing.depositCents != null ? variance(closing.depositCents, closing.depositReceivedCents) : null;
+  const depositLate = Boolean(closing.depositDueAt && closing.depositReceivedCents == null && closing.status === "OPEN" && closing.depositDueAt.getTime() < Date.now());
   return (
     <div className="grid gap-10 lg:grid-cols-[minmax(0,1fr)_320px]">
       <div>
@@ -283,6 +285,14 @@ export default async function ClosingPage({
           <div className="glass p-6">
             <p className="eyebrow">Settlement</p>
             <dl className="mt-4 space-y-3 text-sm">
+              {(isAdmin || isBuyer) && deposit && closing.depositCents != null && (
+                <div>
+                  <WireRow label="Buyer deposit received" expected={closing.depositCents} recorded={closing.depositReceivedCents ?? null} at={closing.depositReceivedAt} reference={closing.depositReference} check={deposit} />
+                  {closing.depositDueAt && closing.depositReceivedCents == null && (
+                    <p className={`text-xs ${depositLate ? "text-bad" : "text-muted-foreground"}`}>Due {prettyDate(closing.depositDueAt)}{depositLate ? " · late" : ""}</p>
+                  )}
+                </div>
+              )}
               {(isAdmin || isBuyer) && (
                 <WireRow label="Buyer funds received" expected={closing.buyerTotalCents} recorded={closing.fundsReceivedCents} at={closing.fundsReceivedAt} reference={closing.fundsReference} check={funds} />
               )}
@@ -293,6 +303,9 @@ export default async function ClosingPage({
             <a className="mt-4 inline-block text-[13px] font-medium text-link" href={`/api/closings/${closing.id}/statement`}>Settlement statement (PDF)</a>
             {isAdmin && closing.status !== "CANCELED" && (
               <div className="mt-5 space-y-5 border-t border-border pt-4">
+                {closing.depositCents != null && (
+                  <SettlementForm closingId={closing.id} side="deposit" title="Record buyer deposit" amount={closing.depositReceivedCents ?? closing.depositCents} at={closing.depositReceivedAt} reference={closing.depositReference} />
+                )}
                 <SettlementForm closingId={closing.id} side="funds" title="Record buyer funds" amount={closing.fundsReceivedCents ?? closing.buyerTotalCents} at={closing.fundsReceivedAt} reference={closing.fundsReference} />
                 <SettlementForm closingId={closing.id} side="proceeds" title="Record seller proceeds" amount={closing.proceedsSentCents ?? closing.netToSellerCents} at={closing.proceedsSentAt} reference={closing.proceedsReference} />
               </div>
@@ -375,7 +388,7 @@ function WireRow({ label, expected, recorded, at, reference, check }: { label: s
   );
 }
 
-function SettlementForm({ closingId, side, title, amount, at, reference }: { closingId: string; side: "funds" | "proceeds"; title: string; amount: number; at: Date | null; reference: string | null }) {
+function SettlementForm({ closingId, side, title, amount, at, reference }: { closingId: string; side: "funds" | "proceeds" | "deposit"; title: string; amount: number; at: Date | null; reference: string | null }) {
   return (
     <form action={recordSettlement} className="space-y-2">
       <input type="hidden" name="closingId" value={closingId} />

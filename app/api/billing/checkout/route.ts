@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import Stripe from "stripe";
 import { getApiUser } from "@/lib/auth";
-import { appOrigin, simulatedCheckout, stripeConfigured, UNPRICED_NOTE } from "@/lib/billing";
+import { appOrigin, checkoutUnavailableNote, simulatedCheckout, stripeConfigured } from "@/lib/billing";
 import { shouldApplyReferralCredit } from "@/lib/acl";
 import { getSettings } from "@/lib/settings";
 
@@ -15,7 +15,7 @@ export async function POST() {
   const settings = await getSettings();
   const priceId = settings.stripePriceId || process.env.STRIPE_PRO_PRICE_ID;
   if (!stripeConfigured(priceId) || !priceId) {
-    const back = simulatedCheckout() ? "?notice=mock" : `?error=${encodeURIComponent(UNPRICED_NOTE)}`;
+    const back = simulatedCheckout() ? "?notice=mock" : `?error=${encodeURIComponent(checkoutUnavailableNote())}`;
     return NextResponse.redirect(new URL(`/buyer/subscription${back}`, appOrigin()));
   }
   const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);

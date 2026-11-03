@@ -7,7 +7,8 @@ import { simulatedCheckout, stripeConfigured } from "@/lib/billing";
 import { q } from "@/lib/format";
 import { bpsToPercent } from "@/lib/money";
 import { getSettings } from "@/lib/settings";
-import { targetDays } from "@/lib/closing-clock";
+import { depositTerms, targetDays } from "@/lib/closing-clock";
+import { launchReadiness } from "@/lib/readiness";
 
 export const metadata = { title: "Fee schedule" };
 
@@ -19,6 +20,7 @@ export default async function SettingsPage({
   await requireRole(["ADMIN"]);
   const params = await searchParams;
   const settings = await getSettings();
+  const readiness = await launchReadiness(settings);
   return (
     <div className="max-w-2xl">
       <PageIntro
@@ -32,8 +34,29 @@ export default async function SettingsPage({
           ? `Stripe price ${settings.stripePriceId || process.env.STRIPE_PRO_PRICE_ID}.`
           : simulatedCheckout()
             ? "Simulated checkout. Set STRIPE_SECRET_KEY to create the Pro price from this page."
-            : "Stripe secret is set but there is no Pro price yet. Buyers cannot check out until you save the price below."}
+            : process.env.STRIPE_SECRET_KEY
+              ? "Stripe secret is set but there is no Pro price yet. Buyers cannot check out until you save the price below."
+              : "Checkout is closed. A release needs STRIPE_SECRET_KEY before buyers can pay for Pro."}
       </p>
+      <section className="mt-6 glass p-6" aria-labelledby="readiness-heading">
+        <p id="readiness-heading" className="eyebrow">Launch readiness</p>
+        <p className="mt-2 text-sm text-muted-foreground">
+          {readiness.ready ? "Every service runs for real." : "Stand-ins are fine for the demo desk. Each one is a decision to make before real users arrive."}
+        </p>
+        <ul className="mt-4 divide-y divide-border">
+          {readiness.items.map((item) => (
+            <li key={item.label} className="flex flex-wrap items-baseline justify-between gap-3 py-2.5">
+              <div className="min-w-0 flex-1">
+                <p className="text-sm text-foreground">{item.label}</p>
+                <p className="text-xs text-muted-foreground">{item.detail}</p>
+              </div>
+              <span className={`whitespace-nowrap text-[13px] font-medium ${item.state === "live" ? "text-good" : item.state === "off" ? "text-bad" : "text-muted-foreground"}`}>
+                {item.state === "live" ? "Live" : item.state === "off" ? "Off" : "Stand-in"}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </section>
       <form action={saveSettings} className="mt-8 space-y-5 glass p-6">
         <label className="block">
           <span className="text-[13px] text-muted-foreground">Buyer premium (%)</span>
@@ -59,6 +82,19 @@ export default async function SettingsPage({
           <span className="text-[13px] text-muted-foreground">Days from an accepted offer to the target close</span>
           <input name="closingTargetDays" defaultValue={targetDays(settings.closingTargetDays)} className="desk-input mt-2" />
           <span className="mt-1 block text-xs text-muted-foreground">Sets the step due dates on new closings. Open closings keep their dates.</span>
+        </label>
+        <label className="block">
+          <span className="text-[13px] text-muted-foreground">Buyer deposit at award (% of price)</span>
+          <input name="depositPercent" defaultValue={depositTerms(settings).bps / 100} className="desk-input mt-2" />
+        </label>
+        <label className="block">
+          <span className="text-[13px] text-muted-foreground">Days to wire the deposit</span>
+          <input name="depositDays" defaultValue={depositTerms(settings).days} className="desk-input mt-2" />
+          <span className="mt-1 block text-xs text-muted-foreground">Set on each new closing. Zero percent means no deposit. The desk records the wire in the closing room.</span>
+        </label>
+        <label className="flex items-start gap-3">
+          <input type="checkbox" name="requireTwoStep" defaultChecked={settings.requireTwoStep !== false} className="mt-1" />
+          <span className="text-sm text-foreground">Require two-step sign-in for every buyer, seller, and broker<span className="mt-1 block text-xs text-muted-foreground">They can see borrower data, so they enroll an authenticator before using the desk, as admins already do. Demo seats on undeliverable addresses are exempt.</span></span>
         </label>
         <fieldset className="space-y-3 border-t border-border pt-5">
           <legend className="eyebrow">Broker compensation</legend>

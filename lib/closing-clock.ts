@@ -23,6 +23,21 @@ export const STEP_OWNER: Record<string, "both" | "buyer" | "seller" | "desk"> = 
   CLOSED: "desk",
 };
 
+// The buyer's deposit at award: a share of the price, due within a few days. Agency loan sales ask for one within
+// two business days of the win; three calendar days covers a Friday award.
+export const DEFAULT_DEPOSIT_BPS = 1000;
+export const DEFAULT_DEPOSIT_DAYS = 3;
+
+export function depositTerms(settings: { depositBps?: number | null; depositDays?: number | null }) {
+  const bps = settings.depositBps != null && settings.depositBps >= 0 && settings.depositBps <= 5000 ? Math.round(settings.depositBps) : DEFAULT_DEPOSIT_BPS;
+  const days = settings.depositDays != null && settings.depositDays >= 1 && settings.depositDays <= 30 ? Math.round(settings.depositDays) : DEFAULT_DEPOSIT_DAYS;
+  return { bps, days };
+}
+
+export function depositCents(salePrice: number, bps: number) {
+  return Math.round((salePrice * bps) / 100);
+}
+
 export function targetDays(setting: number | null | undefined) {
   return setting && setting >= 5 && setting <= 180 ? Math.round(setting) : DEFAULT_CLOSING_DAYS;
 }

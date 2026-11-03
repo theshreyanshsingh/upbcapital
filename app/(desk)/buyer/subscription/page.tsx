@@ -4,7 +4,7 @@ import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { SubmitButton } from "@/components/submit-button";
 import { requireRole } from "@/lib/auth";
-import { simulatedCheckout, stripeConfigured, UNPRICED_NOTE } from "@/lib/billing";
+import { checkoutUnavailableNote, simulatedCheckout, stripeConfigured } from "@/lib/billing";
 import { q } from "@/lib/format";
 import { ensureReferralCode } from "@/lib/referral";
 import { getSettings, isPro } from "@/lib/settings";
@@ -29,7 +29,7 @@ export default async function SubscriptionPage({
       <PageIntro
         eyebrow="Membership"
         title={pro ? "You are on Pro." : "The free desk, and the full one."}
-        lede={stripe ? "Checkout runs through Stripe in test mode." : simulated ? "Stripe keys are not set. Checkout is simulated and written to the revenue ledger as a mock charge." : UNPRICED_NOTE}
+        lede={stripe ? "Checkout runs through Stripe in test mode." : simulated ? "Stripe keys are not set. Checkout is simulated and written to the revenue ledger as a mock charge." : checkoutUnavailableNote()}
       />
       <Notice notice={q(params, "notice")} error={q(params, "error")} />
       {q(params, "reason") === "dataroom" && <p className="mt-4 text-sm text-foreground">The data room is part of Pro.</p>}
@@ -82,7 +82,7 @@ export default async function SubscriptionPage({
                 <SubmitButton className="h-11 text-[13px] font-medium">Activate Pro · simulated</SubmitButton>
               </form>
             ) : (
-              <p className="text-sm text-muted-foreground">{UNPRICED_NOTE}</p>
+              <p className="text-sm text-muted-foreground">{checkoutUnavailableNote()}</p>
             )}
           </div>
         </article>

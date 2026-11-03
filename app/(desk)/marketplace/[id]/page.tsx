@@ -26,6 +26,7 @@ import { bpsToPercent } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
 import { getSettings, isPro } from "@/lib/settings";
 import { canSubmitOffer } from "@/lib/verification";
+import { showableAvm } from "@/lib/enrichment";
 
 export const metadata = { title: "Listing" };
 
@@ -127,7 +128,7 @@ export default async function ListingPage({
     tradeStatus: note.tradeStatus,
     latitude: note.latitude,
     longitude: note.longitude,
-    avm: note.avmValue == null ? null : num(note.avmValue),
+    avm: showableAvm({ avmValue: note.avmValue == null ? null : num(note.avmValue), avmProvider: note.avmProvider }),
   }));
   const economics = listing.kind === "POOL" ? poolMetrics(notes) : noteMetrics(notes[0]);
   const asking = listing.kind === "POOL" ? poolMetrics(notes).totalAsk : notes[0].askingPrice;
