@@ -14,7 +14,7 @@ export async function listingActivity(listingId: string, sellerId: string, now =
     prisma.inquiry.findMany({ where: { listingId }, select: { buyerId: true, type: true, createdAt: true } }),
     prisma.listingSend.findMany({ where: { listingId }, select: { userId: true, createdAt: true, kind: true } }),
     prisma.listingMatch.findMany({ where: { listingId }, select: { userId: true } }),
-    prisma.auditEvent.findMany({ where: { entityId: listingId, action: "DOCUMENT_DOWNLOAD" }, include: { actor: { select: { id: true, name: true, companyName: true, role: true } } }, orderBy: { createdAt: "desc" } }),
+    prisma.auditEvent.findMany({ where: { entityId: listingId, action: { in: ["DOCUMENT_DOWNLOAD", "TAPE_EXPORT", "MEMO_DOWNLOAD"] } }, include: { actor: { select: { id: true, name: true, companyName: true, role: true } } }, orderBy: { createdAt: "desc" } }),
   ]);
   const buyer = (user: Viewer | null): user is Viewer => Boolean(user && user.id !== sellerId && user.role !== "ADMIN");
   const buyerViews = views.filter((view) => buyer(view.user));

@@ -36,6 +36,15 @@ export function dataRoomOpenTo(input: { listingStatus: string; signedNda: boolea
   return false;
 }
 
+// One loan's street and borrower. A loan still for sale follows the listing's room. A loan in contract or sold
+// is open only to whoever is buying it, even while the rest of the pool is still on the book.
+export function loanOpenTo(input: { tradeStatus: string; listingStatus: string; signedNda: boolean; wholeParty: boolean; loanParty: boolean }) {
+  const party = dataRoomOpenTo({ listingStatus: input.listingStatus, signedNda: input.signedNda, closingParty: true });
+  if (input.wholeParty) return party;
+  if (input.tradeStatus !== "AVAILABLE") return input.loanParty && party;
+  return dataRoomOpenTo({ listingStatus: input.listingStatus, signedNda: input.signedNda, closingParty: input.loanParty });
+}
+
 export function canReadDocument(input: {
   owner: boolean;
   admin: boolean;

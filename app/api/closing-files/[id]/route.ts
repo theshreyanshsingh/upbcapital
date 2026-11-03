@@ -1,4 +1,5 @@
 import { canReadClosingFile } from "@/lib/acl";
+import { audit } from "@/lib/audit";
 import { getApiUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { getBytes } from "@/lib/storage";
@@ -28,6 +29,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   if (!allowed) return new Response("Closed.", { status: 403 });
   try {
     const bytes = await getBytes(file.storageKey);
+    await audit(user.id, "CLOSING_FILE_DOWNLOAD", "closing", closing.id, file.originalName);
     return new Response(bytes, {
       headers: {
         "Content-Type": file.mime,

@@ -38,26 +38,34 @@ export function fillTemplate(body: string, vars: Record<string, string>) {
   return body.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_match, key: string) => vars[key] ?? "");
 }
 
-export async function buildClosingPdf(input: { title: string; body: string; fields: { name: string; value: string }[] }) {
+// One part per instrument: a pool's assignment or allonge is one part per loan. The first page of each part
+// carries its editable fields, and a part longer than a page continues on the next ones instead of being cut.
+export async function buildClosingPdf(input: { title: string; body?: string; pages?: string[]; fields: { name: string; value: string }[] }) {
   const pdf = await PDFDocument.create();
-  const page = pdf.addPage([612, 792]);
   const font = await pdf.embedFont(StandardFonts.TimesRoman);
   const gold = rgb(0.776, 0.643, 0.431);
   const ink = rgb(0.12, 0.11, 0.09);
-  page.drawRectangle({ x: 0, y: 742, width: 612, height: 50, color: rgb(0.03, 0.03, 0.04) });
-  page.drawText("UPB CAPITAL", { x: 48, y: 762, size: 11, font, color: gold });
-  page.drawText(input.title.slice(0, 70), { x: 48, y: 700, size: 20, font, color: ink });
-  const paragraphs = input.body.split(/\n+/).flatMap((line) => wrap(line, 90));
-  paragraphs.slice(0, 22).forEach((line, index) => {
-    page.drawText(line, { x: 48, y: 660 - index * 16, size: 11, font, color: ink });
-  });
   const form = pdf.getForm();
-  input.fields.slice(0, 6).forEach((field, index) => {
-    const box = form.createTextField(field.name);
-    box.setText(field.value.slice(0, 80));
-    box.addToPage(page, { x: 48, y: 160 - index * 28, width: 360, height: 18 });
+  const parts = input.pages ?? [input.body ?? ""];
+  parts.forEach((body, part) => {
+    const lines = body.split(/\n+/).flatMap((line) => wrap(line, 90));
+    const chunks = [lines.slice(0, 22)];
+    for (let start = 22; start < lines.length; start += 38) chunks.push(lines.slice(start, start + 38));
+    chunks.forEach((rows, index) => {
+      const page = pdf.addPage([612, 792]);
+      page.drawRectangle({ x: 0, y: 742, width: 612, height: 50, color: rgb(0.03, 0.03, 0.04) });
+      page.drawText("UPB CAPITAL", { x: 48, y: 762, size: 11, font, color: gold });
+      page.drawText(`${input.title}${index > 0 ? " (continued)" : ""}`.slice(0, 70), { x: 48, y: 700, size: 20, font, color: ink });
+      rows.forEach((line, row) => page.drawText(line, { x: 48, y: 660 - row * 16, size: 11, font, color: ink }));
+      if (index > 0) return;
+      input.fields.slice(0, 6).forEach((field, fieldIndex) => {
+        const box = form.createTextField(part === 0 ? field.name : `${field.name}_${part + 1}`);
+        box.setText(field.value.slice(0, 80));
+        box.addToPage(page, { x: 48, y: 160 - fieldIndex * 28, width: 360, height: 18 });
+      });
+      page.drawText("Fields below stay editable.", { x: 48, y: 200, size: 9, font, color: rgb(0.4, 0.38, 0.34) });
+    });
   });
-  page.drawText("Fields below stay editable.", { x: 48, y: 200, size: 9, font, color: rgb(0.4, 0.38, 0.34) });
   return Buffer.from(await pdf.save());
 }
 

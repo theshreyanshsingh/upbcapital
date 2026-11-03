@@ -6,6 +6,7 @@ import { SubmitButton } from "@/components/submit-button";
 import { requireUser } from "@/lib/auth";
 import { q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
+import { webhookUrlProblem } from "@/lib/webhooks";
 import { redirect } from "next/navigation";
 
 export const metadata = { title: "Seller API" };
@@ -50,6 +51,10 @@ export default async function SellerApiPage({ searchParams }: { searchParams: Pr
               </form>
             </div>
             <p className="mt-2 text-muted-foreground">{hook.events}</p>
+            {/* Endpoints saved before the https and public-host rule would otherwise fail without a word. */}
+            {webhookUrlProblem(hook.url) && (
+              <p className="mt-1 text-xs text-bad">This address can&apos;t receive webhooks: {webhookUrlProblem(hook.url)} Remove it and add an https URL on a public host.</p>
+            )}
             {hook.deliveries.map((delivery) => (
               <p key={delivery.id} className="mt-1 text-xs text-muted-foreground">{delivery.event} · {delivery.status || "failed"}</p>
             ))}

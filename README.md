@@ -85,11 +85,11 @@ MRR is the count of paid active Pro members times the current monthly price. Com
 
 ## Confidentiality
 
-A buyer signs per listing, by typing a name or drawing on the pad. The record stores the time, IP address, user agent, and a PDF. The seller, the desk, and the signer can download that PDF; other buyers never see it in the data room. A broker's seller authorization is kept the same way. Street, borrower, and files stay closed until that signature exists. Only a live listing takes a signature. Once a listing goes to contract or sells, the data room closes to everyone except the deal's own buyers, the seller, and the desk, because Reg P limits a bidder's use of borrower data to the sale. A canceled closing puts the listing back on the book and reopens the room. Every file download is logged, and the desk's listing page shows the log. Sellers see how many buyers took a file, not who.
+A buyer signs per listing, by typing a name or drawing on the pad. The record stores the time, IP address, user agent, and a PDF. The seller, the desk, and the signer can download that PDF; other buyers never see it in the data room. A broker's seller authorization is kept the same way. Street, borrower, and files stay closed until that signature exists. Only a live listing takes a signature. Once a listing goes to contract or sells, the data room closes to everyone except the deal's own buyers, the seller, and the desk, because Reg P limits a bidder's use of borrower data to the sale. A canceled closing puts the listing back on the book and reopens the room. In a pool, each loan follows the same rule on its own: a loan in contract or sold shows its street and borrower only to its buyer, while the rest of the pool stays open to NDA signers. Pool files cover every loan, so they stay open until the whole listing is in contract, and a one-loan relist starts without them. File downloads, tape exports, and memos are logged on the listing, closing-file downloads on the closing, and the desk's listing page shows the log. Sellers see how many buyers took a file, not who.
 
 ## Offers and closing
 
-Approved buyers with an approved buyer file can bid the whole listing or, inside a pool, a single loan. The desk and the buyer can counter and message on the same thread. Accepting the working price opens a closing checklist. A listing or loan can have one open closing at a time: an award, a desk bid taken from the book, or a seller's acceptance of a desk bid is refused while another closing covers the same loans. When a bid wins, every other open bid on the same loans is declined and each bidder is told, without the price or the winner. A one-loan award also ends bids on the whole pool.
+Approved buyers with an approved buyer file can bid the whole listing or, inside a pool, a single loan. The desk and the buyer can counter and message on the same thread. Accepting the working price opens a closing checklist. A listing or loan can have one open closing at a time: an award, a desk bid taken from the book, or a seller's acceptance of a desk bid is refused while another closing covers the same loans. When a bid wins, every other open bid on the same loans is declined and each bidder is told, without the price or the winner. A one-loan award also ends bids on the whole pool. A desk purchase declines open bids the same way. A one-loan award claims the loan in one write, so two awards at once can't both take it. A group's first offer meets the same deadline and listing-open rules as a single buyer's. A pool closing gives each loan its own assignment and allonge page and its own boarding row, and the purchase agreement carries a loan schedule.
 
 1. Purchase agreement
 2. Buyer deposit
@@ -280,7 +280,7 @@ An institutional seller, or the desk, mints a key at `/seller/api`. The token is
 
 ## Limits
 
-- Wires are instructions, not a payment processor. Sold means the desk marked the checklist closed.
+- Wires are instructions, not a payment processor. Sold means the desk marked the checklist closed, or marked a listing sold by hand outside a closing.
 - The in-app signature is stored here. Dropbox Sign or DocuSign runs only when those keys are set. The forms are desk templates, not legal advice.
 - Accreditation is a self-certification plus a file, unless Persona or Parallel Markets is configured.
 - Mail is delivered only when Resend or SMTP is configured.

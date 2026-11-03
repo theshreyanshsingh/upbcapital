@@ -13,8 +13,8 @@ import { StatusPill } from "@/components/status-pill";
 import { StrataPanel } from "@/components/strata-panel";
 import { UsMap } from "@/components/us-map";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { dataRoomOpenTo, isPrivateDocument } from "@/lib/acl";
-import { isClosingParty } from "@/lib/data-room";
+import { dataRoomOpenTo, isPrivateDocument, loanOpenTo } from "@/lib/acl";
+import { dealAccess } from "@/lib/data-room";
 import { requireUser } from "@/lib/auth";
 import { canOpenListing, openableListingIds } from "@/lib/access";
 import { enrichListing, notifyIfAuctionClosed, rememberView } from "@/lib/listing-intel";
@@ -90,18 +90,24 @@ export default async function ListingPage({
     accountStatus: user.accountStatus,
     verificationStatus: profile?.status ?? null,
   }).ok;
-  const closingParty = user.role === "BUYER" ? await isClosingParty(listing.id, user.id) : false;
+  const deal = user.role === "BUYER" ? await dealAccess(listing.id, user.id) : { whole: false, loans: new Set<string>() };
+  const closingParty = deal.whole || deal.loans.size > 0;
   const unlocked = user.role === "ADMIN" || dataRoomOpenTo({ listingStatus: listing.status, signedNda: listing.ndas.length > 0, closingParty });
   // A buyer who signed but didn't win sees the room as closed, not an NDA prompt they can no longer use.
   const roomClosed = user.role === "BUYER" && !unlocked && listing.status !== "APPROVED";
   const ownNdaId = listing.ndas[0]?.documentId;
   const dataRoom = listing.documents.filter((document) => document.id === ownNdaId || !isPrivateDocument(document, listing));
+  // Street and borrower are decided per loan: one sold out of a pool closes to everyone but its buyer.
+  const loanOpen = (note: { id: string; tradeStatus: string }) =>
+    user.role === "ADMIN" ||
+    loanOpenTo({ tradeStatus: note.tradeStatus, listingStatus: listing.status, signedNda: listing.ndas.length > 0, wholeParty: deal.whole, loanParty: deal.loans.has(note.id) });
   const notes = listing.notes.map((note) => ({
     id: note.id,
-    streetAddress: unlocked ? note.streetAddress : "",
+    open: loanOpen(note),
+    streetAddress: loanOpen(note) ? note.streetAddress : "",
     city: note.city,
     state: note.state,
-    zip: unlocked ? note.zip : "",
+    zip: loanOpen(note) ? note.zip : "",
     propertyType: note.propertyType,
     occupancy: note.occupancy,
     estimatedValue: num(note.estimatedValue),
@@ -116,7 +122,7 @@ export default async function ListingPage({
     maturityDate: note.maturityDate?.toISOString() ?? null,
     askingPrice: num(note.askingPrice),
     foreclosureStatus: note.foreclosureStatus,
-    borrowerName: unlocked ? note.borrowerName : "",
+    borrowerName: loanOpen(note) ? note.borrowerName : "",
     memo: note.memo,
     tradeStatus: note.tradeStatus,
     latitude: note.latitude,
@@ -185,9 +191,9 @@ export default async function ListingPage({
           <p className="eyebrow">Collateral</p>
           {listing.kind === "SINGLE" ? (
             <>
-              <p className="mt-3 font-semibold tracking-tight text-3xl text-foreground">{unlocked ? lead.streetAddress : "Street withheld"}</p>
-              <p className="mt-2 text-muted-foreground">{lead.city}, {lead.state}{unlocked && lead.zip ? ` ${lead.zip}` : ""}</p>
-              <p className="mt-4 text-sm text-muted-foreground">Borrower: {unlocked ? lead.borrowerName || "Not provided" : "Withheld until confidentiality"}</p>
+              <p className="mt-3 font-semibold tracking-tight text-3xl text-foreground">{lead.open ? lead.streetAddress : "Street withheld"}</p>
+              <p className="mt-2 text-muted-foreground">{lead.city}, {lead.state}{lead.open && lead.zip ? ` ${lead.zip}` : ""}</p>
+              <p className="mt-4 text-sm text-muted-foreground">Borrower: {lead.open ? lead.borrowerName || "Not provided" : "Withheld until confidentiality"}</p>
               {!unlocked && !roomClosed && user.role === "BUYER" && <div className="mt-5"><NdaDialog listingId={listing.id} listingTitle={listing.title} /></div>}
               {unlocked && listing.ndas[0]?.signerName && (
                 <p className="mt-4 text-sm text-muted-foreground">Signed by {listing.ndas[0].signerName} on {prettyDate(listing.ndas[0].acknowledgedAt)}.</p>
@@ -307,7 +313,7 @@ export default async function ListingPage({
                   <tbody>
                     {notes.map((note) => (
                       <tr key={note.id} className="border-t border-border">
-                        <td className="px-3 py-3 text-foreground">{unlocked ? note.streetAddress : "Withheld"}<span className="block text-xs text-muted-foreground">{note.city}, {note.state}</span></td>
+                        <td className="px-3 py-3 text-foreground">{note.open ? note.streetAddress : "Withheld"}<span className="block text-xs text-muted-foreground">{note.city}, {note.state}</span></td>
                         <td className="px-3 py-3">{labelOf("lien", note.lienPosition)}</td>
                         <td className="px-3 py-3">{labelOf("payment", note.paymentStatus)}</td>
                         <td className="px-3 py-3">{pro ? money(note.upb) : "—"}</td>

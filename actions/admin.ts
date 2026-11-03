@@ -6,6 +6,7 @@ import type { AccountStatus, ListingStatus, ReviewAction } from "@prisma/client"
 import { alertMatchingSearches } from "@/actions/listings";
 import { deadlinePassed } from "@/lib/auction";
 import { audit } from "@/lib/audit";
+import { claimLoan, declineLosingBids } from "@/lib/awards";
 import { endSessions, requireRole } from "@/lib/auth";
 import { notify } from "@/lib/email";
 import { openClosing, tradeConflict } from "@/lib/closing-service";
@@ -133,7 +134,7 @@ export async function reviewListing(formData: FormData) {
       { type: "SELLER_COMMISSION", amountCents: fees.commissionCents, listingId, description: `Seller commission on ${listing.title}`, externalId: `listing:${listingId}:commission` },
     ]);
     await prisma.note.updateMany({ where: { listingId }, data: { tradeStatus: "SOLD" } });
-    await declineLosingBids({ id: "", listingId, noteId: null }, listing.title);
+    await declineLosingBids({ id: null, listingId, noteId: null }, listing.title);
     await record(user.id, listingId, "MARK_SOLD", comment || `Sold at $${salePrice.toLocaleString("en-US")}.`);
     await notify(
       listing.seller.email,
@@ -236,10 +237,11 @@ export async function decideInquiry(formData: FormData) {
       messages.map((message) => ({ kind: message.kind, amount: message.amount ? Number(message.amount) : null, createdAt: message.createdAt })),
     );
     if (!price || price <= 0) redirect("/admin/offers?error=That offer has no amount.");
+    if (inquiry.noteId && !(await claimLoan(inquiry.noteId))) {
+      redirect(`/admin/offers?error=${encodeURIComponent("That loan went into contract a moment ago. Check its open closing.")}`);
+    }
     await prisma.inquiry.update({ where: { id: inquiry.id }, data: { status: "ACCEPTED", amount: price } });
-    if (inquiry.noteId) {
-      await prisma.note.update({ where: { id: inquiry.noteId }, data: { tradeStatus: "IN_CONTRACT" } });
-    } else if (inquiry.listing.status !== "SOLD") {
+    if (!inquiry.noteId && inquiry.listing.status !== "SOLD") {
       await prisma.listing.update({
         where: { id: inquiry.listingId },
         data: { status: "PENDING" satisfies ListingStatus, acceptedInquiryId: inquiry.id },
@@ -286,31 +288,6 @@ export async function decideInquiry(formData: FormData) {
   revalidatePath("/admin/offers");
   revalidatePath(`/admin/listings/${inquiry.listingId}`);
   redirect(`/admin/offers?notice=${encodeURIComponent(decision.toLowerCase())}`);
-}
-
-// Once a bid wins, the others on the same loans can't, so they close now. Each bidder hears it without the
-// price or the winner. A one-loan award also ends offers on the whole listing, which can no longer trade whole.
-async function declineLosingBids(winner: { id: string; listingId: string; noteId: string | null }, title: string) {
-  const open = await prisma.inquiry.findMany({
-    where: { listingId: winner.listingId, id: { not: winner.id }, type: "OFFER", status: { in: ["OPEN", "REVIEWED"] } },
-    include: { buyer: { select: { email: true } } },
-  });
-  const losers = winner.noteId ? open.filter((offer) => !offer.noteId || offer.noteId === winner.noteId) : open;
-  const { emitWebhook } = await import("@/lib/webhooks");
-  const sellerId = (await prisma.listing.findUnique({ where: { id: winner.listingId }, select: { sellerId: true } }))?.sellerId;
-  for (const loser of losers) {
-    await prisma.inquiry.update({ where: { id: loser.id }, data: { status: "DECLINED" } });
-    await onGroupDeclined(loser.id, "The desk accepted another bid, so the group offer closed.");
-    if (sellerId) await emitWebhook(sellerId, "offer.declined", { inquiryId: loser.id, listingId: winner.listingId, reason: "another_bid_accepted" });
-    await notify(
-      loser.buyer.email,
-      `Bid not selected · ${title}`,
-      winner.noteId && !loser.noteId
-        ? "A loan in this pool was sold on its own, so the pool can no longer trade whole. Thank you for bidding."
-        : "The desk accepted another bid. Thank you for bidding.",
-    );
-  }
-  return losers.length;
 }
 
 export async function setAccountStatus(formData: FormData) {

@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireRole, requireUser } from "@/lib/auth";
-import { sealedFromSeller } from "@/lib/auction";
+import { canSubmitBid, sealedFromSeller } from "@/lib/auction";
 import { notify, notifyDesk } from "@/lib/email";
 import { fillState, resolvePositionAmount, scaleToTarget, splitPremium } from "@/lib/group-buy";
 import { prisma } from "@/lib/prisma";
@@ -41,7 +41,7 @@ async function publishOffer(groupId: string) {
     where: { id: groupId },
     include: { positions: { include: { user: true } }, listing: { include: { seller: true } } },
   });
-  if (!group) return;
+  if (!group || group.status === "CLOSING" || group.status === "CLOSED" || group.status === "DISSOLVED") return;
   const live = group.positions.filter((seat) => seat.status === "PLEDGED");
   const state = fillState(Number(group.targetAmount), live.map((seat) => ({ amount: Number(seat.amount), status: seat.status })));
   if (!state.complete) return;
@@ -49,11 +49,28 @@ async function publishOffer(groupId: string) {
   if (!lead) return;
   const message = `Group offer from ${live.length} buyers. One contract for $${Math.round(state.filled).toLocaleString("en-US")}.`;
   if (group.inquiryId) {
+    // Reconfirming after a counter keeps negotiating the same bid. A declined or won bid isn't reopened.
+    const current = await prisma.inquiry.findUnique({ where: { id: group.inquiryId }, select: { status: true } });
+    if (!current || current.status === "DECLINED" || current.status === "ACCEPTED") return;
     await prisma.inquiry.update({ where: { id: group.inquiryId }, data: { amount: group.targetAmount, status: "OPEN" } });
     await prisma.offerMessage.create({
       data: { inquiryId: group.inquiryId, authorId: lead.userId, kind: "OFFER", amount: group.targetAmount, body: "Every seat reconfirmed the group offer." },
     });
   } else {
+    // A group's first offer is a new bid, so it meets the same rules as one buyer's: the listing or loan must
+    // still be for sale and the deadline must not have passed.
+    const note = group.noteId ? await prisma.note.findUnique({ where: { id: group.noteId }, select: { tradeStatus: true } }) : null;
+    const gate = canSubmitBid({ bidMode: group.listing.bidMode, deadline: group.listing.bidDeadline, alreadyBid: false });
+    const closed = group.listing.status !== "APPROVED" || (group.noteId && note?.tradeStatus !== "AVAILABLE");
+    if (closed || !gate.ok) {
+      await prisma.groupBuy.update({ where: { id: group.id }, data: { status: "DISSOLVED" } });
+      await notifySeats(
+        group.id,
+        `Group closed · ${group.listing.title}`,
+        closed ? "The listing was no longer open for bids when the group filled, so no offer went in." : "The bid deadline passed before the group filled, so no offer went in.",
+      );
+      return;
+    }
     const inquiry = await prisma.inquiry.create({
       data: {
         listingId: group.listingId,

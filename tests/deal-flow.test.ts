@@ -6,6 +6,8 @@ import { closingSchedule, closingStats, effectiveDue, stepClock, stepNeedsRemind
 import { cancelOpenClosing, openClosing, tradeConflict } from "../lib/closing-service";
 import { deskSearch, searchTerm } from "../lib/desk-search";
 import { unset } from "../lib/db-filters";
+import { claimLoan, declineLosingBids } from "../lib/awards";
+import { dealAccess } from "../lib/data-room";
 import { remindClosingSteps, remindSaleNotices } from "../lib/jobs";
 import { recentlySent, sendBody, sendFunnel, sendListing } from "../lib/outreach";
 import { prisma } from "../lib/prisma";
@@ -366,5 +368,43 @@ test("a field nothing has written yet counts as empty, which a plain null filter
     assert.equal(await prisma.notification.count({ where: { toEmail, ...unset("readAt") } }), 1);
   } finally {
     await prisma.notification.deleteMany({ where: { toEmail } });
+  }
+});
+
+test("a one-loan sale out of a pool ends bids on that loan and on the whole pool, and only its buyer gets the loan", async () => {
+  const deal = await makeDeal(crypto.randomUUID().slice(0, 8));
+  try {
+    const listingId = deal.listing.id;
+    const first = await prisma.note.findFirstOrThrow({ where: { listingId } });
+    const fields: Record<string, unknown> = { ...first, streetAddress: "2 Second St" };
+    delete fields.id;
+    delete fields.createdAt;
+    const second = await prisma.note.create({ data: fields as never });
+    await prisma.listing.update({ where: { id: listingId }, data: { kind: "POOL" } });
+    const offer = (buyerId: string, noteId: string | null) => prisma.inquiry.create({ data: { listingId, buyerId, type: "OFFER", status: "OPEN", amount: 50000, ...(noteId ? { noteId } : {}) } });
+    const sameLoan = await offer(deal.quiet.id, first.id);
+    const wholePool = await offer(deal.quiet.id, null);
+    const otherLoan = await offer(deal.quiet.id, second.id);
+
+    // Two awards of the same loan at once: only one claim wins.
+    assert.equal(await claimLoan(first.id), true);
+    assert.equal(await claimLoan(first.id), false);
+    const declined = await declineLosingBids({ id: null, listingId, noteId: first.id }, deal.listing.title);
+    assert.equal(declined, 2);
+    const status = async (id: string) => (await prisma.inquiry.findUniqueOrThrow({ where: { id } })).status;
+    assert.equal(await status(sameLoan.id), "DECLINED");
+    assert.equal(await status(wholePool.id), "DECLINED");
+    assert.equal(await status(otherLoan.id), "OPEN");
+
+    const won = await prisma.inquiry.create({ data: { listingId, buyerId: deal.buyer.id, type: "OFFER", status: "ACCEPTED", amount: 50000, noteId: first.id } });
+    await openClosing({ listingId, inquiryId: won.id, noteId: first.id, salePrice: 50000, title: deal.listing.title });
+    const buyer = await dealAccess(listingId, deal.buyer.id);
+    assert.equal(buyer.whole, false);
+    assert.deepEqual([...buyer.loans], [first.id]);
+    const loser = await dealAccess(listingId, deal.quiet.id);
+    assert.equal(loser.whole || loser.loans.size > 0, false);
+  } finally {
+    await prisma.auditEvent.deleteMany({ where: { entityId: deal.listing.id } });
+    await cleanDeal(deal);
   }
 });

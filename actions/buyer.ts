@@ -15,6 +15,7 @@ import { ensureInquiryThread } from "@/lib/threads";
 import { sendForSignature } from "@/lib/vendors";
 import { canSubmitOffer } from "@/lib/verification";
 import type { BookFilters } from "@/lib/filters";
+import { unset } from "@/lib/db-filters";
 
 async function requireBuyer() {
   const user = await requireUser();
@@ -154,7 +155,8 @@ export async function submitInquiry(formData: FormData) {
       }
     }
     const existing = await prisma.inquiry.findFirst({
-      where: { listingId, buyerId: user.id, type: "OFFER", noteId: noteId || null, status: { in: ["OPEN", "REVIEWED", "ACCEPTED"] } },
+      // A whole-listing offer may have no noteId field at all, which `noteId: null` alone would miss.
+      where: { listingId, buyerId: user.id, type: "OFFER", ...(noteId ? { noteId } : unset("noteId")), status: { in: ["OPEN", "REVIEWED", "ACCEPTED"] } },
     });
     const gateBid = canSubmitBid({ bidMode: listing.bidMode, deadline: listing.bidDeadline, alreadyBid: Boolean(existing) });
     if (!gateBid.ok) {

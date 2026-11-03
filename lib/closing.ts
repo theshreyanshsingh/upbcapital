@@ -27,3 +27,8 @@ export function canCompleteStep(steps: { key: string; status: string }[], key: s
 export function closingIsComplete(steps: { status: string }[]) {
   return steps.length > 0 && steps.every((step) => step.status === "COMPLETE");
 }
+
+// The loans a closing covers: its one loan, or every loan on the listing for a whole-listing sale.
+export function closingLoans<T extends { id: string }>(closing: { noteId: string | null }, notes: T[]) {
+  return closing.noteId ? notes.filter((note) => note.id === closing.noteId) : notes;
+}

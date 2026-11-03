@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { canReadClosingFile, canReadDocument, canReadProof, closingAccess, isPrivateDocument, shouldApplyReferralCredit } from "../lib/acl";
+import { canReadClosingFile, canReadDocument, canReadProof, closingAccess, isPrivateDocument, loanOpenTo, shouldApplyReferralCredit } from "../lib/acl";
 import { fillTemplate } from "../lib/closing-docs";
 import { parseKycWebhook } from "../lib/vendors";
 import { consumeRateLimit, limitStore, rateLimit, resetRateLimits } from "../lib/rate-limit";
@@ -101,4 +101,17 @@ test("limits use memory or the database from the env", async () => {
   assert.equal(await consumeRateLimit(key, 1, 60_000), false);
   await prisma.rateWindow.deleteMany({ where: { key: { startsWith: key } } });
   process.env.RATE_LIMIT_STORE = previous;
+});
+
+test("a loan sold out of a live pool shows its street only to its buyer, while the rest stays open", () => {
+  const base = { listingStatus: "APPROVED", signedNda: true, wholeParty: false, loanParty: false };
+  assert.equal(loanOpenTo({ ...base, tradeStatus: "AVAILABLE" }), true);
+  assert.equal(loanOpenTo({ ...base, tradeStatus: "IN_CONTRACT" }), false);
+  assert.equal(loanOpenTo({ ...base, tradeStatus: "SOLD" }), false);
+  assert.equal(loanOpenTo({ ...base, tradeStatus: "IN_CONTRACT", loanParty: true }), true);
+  assert.equal(loanOpenTo({ ...base, tradeStatus: "AVAILABLE", signedNda: false }), false);
+  // A whole-listing contract closes every loan to losing bidders and opens every loan to its buyer.
+  assert.equal(loanOpenTo({ ...base, listingStatus: "PENDING", tradeStatus: "AVAILABLE" }), false);
+  assert.equal(loanOpenTo({ ...base, listingStatus: "PENDING", tradeStatus: "AVAILABLE", signedNda: false, wholeParty: true }), true);
+  assert.equal(loanOpenTo({ ...base, listingStatus: "REJECTED", tradeStatus: "SOLD", wholeParty: true }), false);
 });

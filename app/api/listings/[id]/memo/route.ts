@@ -1,4 +1,5 @@
 import { listingIsPublic } from "@/lib/access";
+import { audit } from "@/lib/audit";
 import { getApiUser } from "@/lib/auth";
 import { foreclosureFor } from "@/lib/foreclosure";
 import { buildMemoPdf } from "@/lib/memo-pdf";
@@ -22,6 +23,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
 
   const bid = Number(new URL(request.url).searchParams.get("bid"));
   if (!Number.isFinite(bid) || bid <= 0) return new Response("Enter a bid.", { status: 400 });
+  await audit(user.id, "MEMO_DOWNLOAD", "listing", listing.id, `Underwriting memo at $${Math.round(bid).toLocaleString("en-US")}`);
   const notes = listing.notes;
   const upb = notes.reduce((sum, note) => sum + Number(note.upb), 0);
   const value = notes.reduce((sum, note) => sum + Number(note.estimatedValue), 0);

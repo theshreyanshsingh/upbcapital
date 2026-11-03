@@ -1,8 +1,10 @@
 "use server";
 
 import { redirect } from "next/navigation";
+import { alertMatchingSearches } from "@/actions/listings";
 import { isPrivateDocument } from "@/lib/acl";
 import { requireRole, requireUser } from "@/lib/auth";
+import { closingLoans } from "@/lib/closing";
 import { modelParticipation } from "@/lib/participation";
 import { rescoreListing } from "@/lib/matching";
 import { prisma } from "@/lib/prisma";
@@ -179,6 +181,8 @@ async function relistFrom(input: {
     },
   });
   await rescoreListing(listing.id, input.live);
+  // A relist that goes straight onto the book reaches saved searches the way a desk approval does.
+  if (input.live) await alertMatchingSearches(listing.id);
   return listing;
 }
 
@@ -218,7 +222,8 @@ export async function relistDeskNote(formData: FormData) {
       borrowerName: note.borrowerName,
       memo: note.memo,
     })),
-    documents: holding.listing.documents.filter((doc) => !isPrivateDocument(doc, holding.listing)).map((doc) => ({
+    // Pool files cover every loan, so a one-loan relist starts without them.
+    documents: (notes.length === holding.listing.notes.length ? holding.listing.documents.filter((doc) => !isPrivateDocument(doc, holding.listing)) : []).map((doc) => ({
       type: doc.type,
       originalName: doc.originalName,
       storedName: doc.storedName,
@@ -239,8 +244,13 @@ export async function relistBuyerNote(formData: FormData) {
   const source = holding.listingId
     ? await prisma.listing.findUnique({ where: { id: holding.listingId }, include: { notes: true, documents: true } })
     : null;
-  const notes = source?.notes ?? [];
+  // Only the loans this buyer bought. A holding with no closing can't say which loans of a pool it covers,
+  // so it copies a single-loan listing and nothing else.
+  const closing = holding.closingId ? await prisma.closing.findUnique({ where: { id: holding.closingId }, select: { noteId: true } }) : null;
+  const notes = !source ? [] : closing ? closingLoans(closing, source.notes) : source.notes.length === 1 ? source.notes : [];
   if (!notes.length) redirect("/buyer/portfolio?error=This holding has no loan file to copy. Add the property facts on a new listing.");
+  // The source's files cover every loan on it, so they come along only when the buyer bought all of them.
+  const wholeSource = Boolean(source) && notes.length === source!.notes.length;
   const history = holding.payments.map((payment) => `${payment.paidOn.toISOString().slice(0, 10)} ${Number(payment.amount)}`).join("; ");
   const yieldText = holding.underwrittenYield == null ? "" : ` Underwritten yield ${Number(holding.underwrittenYield).toFixed(1)}%.`;
   const share = holding.sharePercent == null ? 1 : Number(holding.sharePercent) / 100;
@@ -271,7 +281,7 @@ export async function relistBuyerNote(formData: FormData) {
       borrowerName: note.borrowerName,
       memo: fractional ? `${Number(holding.sharePercent).toFixed(1)}% participation.` : note.memo,
     })),
-    documents: (source ? source.documents.filter((doc) => !isPrivateDocument(doc, source)) : []).map((doc) => ({
+    documents: (source && wholeSource ? source.documents.filter((doc) => !isPrivateDocument(doc, source)) : []).map((doc) => ({
       type: doc.type,
       originalName: doc.originalName,
       storedName: doc.storedName,
@@ -368,7 +378,8 @@ export async function listSlice(formData: FormData) {
       borrowerName: note.borrowerName,
       memo: slice.paymentCount ? `Payment stream of ${slice.paymentCount} months.` : `${Number(slice.percent)}% participation.`,
     })),
-    documents: holding.listing.documents.filter((doc) => !isPrivateDocument(doc, holding.listing)).map((doc) => ({
+    // Pool files cover every loan, so a one-loan relist starts without them.
+    documents: (notes.length === holding.listing.notes.length ? holding.listing.documents.filter((doc) => !isPrivateDocument(doc, holding.listing)) : []).map((doc) => ({
       type: doc.type,
       originalName: doc.originalName,
       storedName: doc.storedName,

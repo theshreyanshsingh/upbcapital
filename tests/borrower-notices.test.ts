@@ -3,6 +3,8 @@ import test from "node:test";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import { borrowerNotices, loanScope, loansInScope, looksLikeCompany, saleNoticeNeedsReminder, transferDate } from "../lib/borrower-notices";
 import { buildSaleNoticePdf, wrap } from "../lib/sale-notice";
+import { closingLoans } from "../lib/closing";
+import { buildClosingPdf } from "../lib/closing-docs";
 
 const at = (iso: string) => new Date(`${iso}T12:00:00Z`);
 const day = (value: Date | null) => value?.toISOString().slice(0, 10) ?? null;
@@ -75,4 +77,21 @@ test("typed line breaks stay line breaks in the notice, and long lines wrap", as
   const font = await (await PDFDocument.create()).embedFont(StandardFonts.Helvetica);
   assert.deepEqual(wrap("Fund One LLC\r\n200 Bay St\n(904) 555-0100", font, 10, 500), ["Fund One LLC", "200 Bay St", "(904) 555-0100"]);
   assert.ok(wrap("word ".repeat(80), font, 10, 200).length > 5);
+});
+
+test("a closing covers its one loan, or every loan for a whole-listing sale", () => {
+  const notes = [{ id: "a" }, { id: "b" }, { id: "c" }];
+  assert.deepEqual(closingLoans({ noteId: "b" }, notes), [{ id: "b" }]);
+  assert.equal(closingLoans({ noteId: null }, notes).length, 3);
+});
+
+test("closing paper gives each loan its own page and carries long text onto more pages", async () => {
+  const fields = [{ name: "buyer", value: "Fund" }, { name: "price", value: "$1" }];
+  const perLoan = await PDFDocument.load(await buildClosingPdf({ title: "Allonge", pages: ["Loan one", "Loan two", "Loan three"], fields }));
+  assert.equal(perLoan.getPageCount(), 3);
+  assert.deepEqual(perLoan.getForm().getFields().map((field) => field.getName()).sort(), ["buyer", "buyer_2", "buyer_3", "price", "price_2", "price_3"]);
+  const schedule = Array.from({ length: 60 }, (_, index) => `${index + 1}. 9 Hidden Ln, Tampa, FL. Unpaid principal $100,000.`).join("\n");
+  const long = await PDFDocument.load(await buildClosingPdf({ title: "Purchase and sale agreement", body: `Terms.\n\nLoan schedule\n${schedule}`, fields }));
+  assert.ok(long.getPageCount() >= 2);
+  assert.equal(long.getForm().getFields().length, 2);
 });
