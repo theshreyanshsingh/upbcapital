@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { SignupForm } from "@/components/auth-forms";
 import { Logo } from "@/components/logo";
+import { prisma } from "@/lib/prisma";
 
 export const metadata = { title: "Request access" };
 
@@ -11,7 +12,9 @@ export default async function SignupPage({
 }) {
   const params = await searchParams;
   const lead = typeof params.lead === "string" ? params.lead : "";
-  const email = typeof params.email === "string" ? params.email : "";
+  // The quote page links with the lead id only, so the address never sits in a URL, log or browser history.
+  const leadEmail = lead ? (await prisma.sellerLead.findUnique({ where: { id: lead }, select: { email: true } }))?.email : undefined;
+  const email = typeof params.email === "string" ? params.email : leadEmail ?? "";
   const referral = typeof params.ref === "string" ? params.ref : typeof params.referral === "string" ? params.referral : "";
   return (
     <main id="desk" className="mx-auto max-w-4xl px-5 py-16">

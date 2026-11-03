@@ -13,7 +13,8 @@ import { StatusPill } from "@/components/status-pill";
 import { StrataPanel } from "@/components/strata-panel";
 import { UsMap } from "@/components/us-map";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { isPrivateDocument } from "@/lib/acl";
+import { dataRoomOpenTo, isPrivateDocument } from "@/lib/acl";
+import { isClosingParty } from "@/lib/data-room";
 import { requireUser } from "@/lib/auth";
 import { canOpenListing, openableListingIds } from "@/lib/access";
 import { enrichListing, notifyIfAuctionClosed, rememberView } from "@/lib/listing-intel";
@@ -89,7 +90,10 @@ export default async function ListingPage({
     accountStatus: user.accountStatus,
     verificationStatus: profile?.status ?? null,
   }).ok;
-  const unlocked = user.role === "ADMIN" || listing.ndas.length > 0;
+  const closingParty = user.role === "BUYER" ? await isClosingParty(listing.id, user.id) : false;
+  const unlocked = user.role === "ADMIN" || dataRoomOpenTo({ listingStatus: listing.status, signedNda: listing.ndas.length > 0, closingParty });
+  // A buyer who signed but didn't win sees the room as closed, not an NDA prompt they can no longer use.
+  const roomClosed = user.role === "BUYER" && !unlocked && listing.status !== "APPROVED";
   const ownNdaId = listing.ndas[0]?.documentId;
   const dataRoom = listing.documents.filter((document) => document.id === ownNdaId || !isPrivateDocument(document, listing));
   const notes = listing.notes.map((note) => ({
@@ -184,7 +188,7 @@ export default async function ListingPage({
               <p className="mt-3 font-semibold tracking-tight text-3xl text-foreground">{unlocked ? lead.streetAddress : "Street withheld"}</p>
               <p className="mt-2 text-muted-foreground">{lead.city}, {lead.state}{unlocked && lead.zip ? ` ${lead.zip}` : ""}</p>
               <p className="mt-4 text-sm text-muted-foreground">Borrower: {unlocked ? lead.borrowerName || "Not provided" : "Withheld until confidentiality"}</p>
-              {!unlocked && user.role === "BUYER" && <div className="mt-5"><NdaDialog listingId={listing.id} listingTitle={listing.title} /></div>}
+              {!unlocked && !roomClosed && user.role === "BUYER" && <div className="mt-5"><NdaDialog listingId={listing.id} listingTitle={listing.title} /></div>}
               {unlocked && listing.ndas[0]?.signerName && (
                 <p className="mt-4 text-sm text-muted-foreground">Signed by {listing.ndas[0].signerName} on {prettyDate(listing.ndas[0].acknowledgedAt)}.</p>
               )}
@@ -193,7 +197,7 @@ export default async function ListingPage({
             <p className="mt-3 text-sm text-muted-foreground">{notes.length} loans. {unlocked ? "Addresses are open." : "Street addresses open after confidentiality."}</p>
           )}
           {listing.kind === "SINGLE" && !unlocked && user.role === "ADMIN" ? null : null}
-          {listing.kind === "POOL" && !unlocked && user.role === "BUYER" && <div className="mt-5"><NdaDialog listingId={listing.id} listingTitle={listing.title} /></div>}
+          {listing.kind === "POOL" && !unlocked && !roomClosed && user.role === "BUYER" && <div className="mt-5"><NdaDialog listingId={listing.id} listingTitle={listing.title} /></div>}
           {pro && lead.avm != null && (
             <p className="mt-4 text-sm text-muted-foreground">Value estimate {money(lead.avm)} · {listing.notes[0]?.avmProvider || "mock"}</p>
           )}
@@ -334,6 +338,7 @@ export default async function ListingPage({
         <section className="mt-10">
           <p className="eyebrow">Data room</p>
           <ul className="mt-4 divide-y divide-border border border-border rounded-xl">
+            {roomClosed && <li className="px-4 py-4 text-sm text-muted-foreground">The data room closed when this listing went to contract. Only the buyer on the deal can open these files now.</li>}
             {dataRoom.length === 0 && <li className="px-4 py-4 text-sm text-muted-foreground">No documents uploaded.</li>}
             {dataRoom.map((document) => (
               <li key={document.id} className="flex items-center justify-between gap-3 px-4 py-4">
@@ -341,10 +346,10 @@ export default async function ListingPage({
                   <p className="text-sm text-foreground">{document.originalName}</p>
                   <p className="text-[13px] font-medium text-muted-foreground">{docLabel(document.type)}</p>
                 </div>
-                {(pro && unlocked) || document.id === ownNdaId ? (
+                {((pro || closingParty) && unlocked) || document.id === ownNdaId ? (
                   <a className="text-[13px] font-medium text-link" href={`/api/documents/${document.id}`}>Download</a>
                 ) : (
-                  <span className="text-[13px] font-medium text-muted-foreground">{pro ? "NDA required" : "Pro"}</span>
+                  <span className="text-[13px] font-medium text-muted-foreground">{roomClosed ? "Closed" : pro ? "NDA required" : "Pro"}</span>
                 )}
               </li>
             ))}

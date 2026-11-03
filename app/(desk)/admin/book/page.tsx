@@ -8,6 +8,7 @@ import { ensureAcceptedDeskClosings } from "@/lib/closing-service";
 import { money, prettyDate, q } from "@/lib/format";
 import { bookReturn } from "@/lib/holdings";
 import { prisma } from "@/lib/prisma";
+import { unset } from "@/lib/db-filters";
 
 export const metadata = { title: "Desk book" };
 
@@ -24,7 +25,7 @@ export default async function DeskBookPage({
     prisma.deskHolding.findMany({ include: { payments: true, listing: true }, orderBy: { acquiredAt: "desc" } }),
     prisma.closing.findMany({ where: { deskBidId: { not: null } }, select: { id: true, listingId: true, noteId: true, status: true } }),
     prisma.lossTask.findMany({
-      where: { doneAt: null, dueOn: { lte: new Date(Date.now() + 7 * 86400000) } },
+      where: { ...unset("doneAt"), dueOn: { lte: new Date(Date.now() + 7 * 86400000) } },
       include: { case: { include: { holding: true } } },
       orderBy: { dueOn: "asc" },
       take: 8,

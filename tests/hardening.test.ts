@@ -35,8 +35,8 @@ test("file access stays with the parties", () => {
   assert.equal(canReadProof({ id: "a", role: "ADMIN" }, "b"), true);
   assert.equal(canReadClosingFile({ role: "BUYER", userId: "b", sellerId: "s", buyerId: "b" }), true);
   assert.equal(canReadClosingFile({ role: "BUYER", userId: "x", sellerId: "s", buyerId: "b" }), false);
-  assert.equal(canReadDocument({ owner: false, admin: false, ownNda: false, privateFile: false, proBuyer: true, signedNda: false, listingVisible: true }), false);
-  assert.equal(canReadDocument({ owner: false, admin: false, ownNda: true, privateFile: true, proBuyer: false, signedNda: false, listingVisible: false }), true);
+  assert.equal(canReadDocument({ owner: false, admin: false, ownNda: false, privateFile: false, proBuyer: true, signedNda: false, listingStatus: "APPROVED", closingParty: false }), false);
+  assert.equal(canReadDocument({ owner: false, admin: false, ownNda: true, privateFile: true, proBuyer: false, signedNda: false, listingStatus: "SUBMITTED", closingParty: false }), true);
 });
 
 test("signed NDAs and the seller authorization stay out of the data room", () => {
@@ -45,11 +45,18 @@ test("signed NDAs and the seller authorization stay out of the data room", () =>
   assert.equal(isPrivateDocument({ type: "OTHER", storedName: "auth-letter.pdf" }, broker), true);
   assert.equal(isPrivateDocument({ type: "OTHER", storedName: "photos.pdf" }, broker), false);
   assert.equal(isPrivateDocument({ type: "OTHER", storedName: "" }, { authorizationKey: "" }), false);
-  const proBuyer = { owner: false, admin: false, ownNda: false, proBuyer: true, signedNda: true, listingVisible: true };
+  const proBuyer = { owner: false, admin: false, ownNda: false, proBuyer: true, signedNda: true, listingStatus: "APPROVED", closingParty: false };
   assert.equal(canReadDocument({ ...proBuyer, privateFile: false }), true);
   assert.equal(canReadDocument({ ...proBuyer, privateFile: true }), false);
   assert.equal(canReadDocument({ ...proBuyer, privateFile: true, owner: true }), true);
   assert.equal(canReadDocument({ ...proBuyer, privateFile: true, admin: true }), true);
+  // After an award the room closes to everyone but the deal's buyers, Pro or not, and reopens if the closing is canceled.
+  assert.equal(canReadDocument({ ...proBuyer, privateFile: false, listingStatus: "PENDING" }), false);
+  assert.equal(canReadDocument({ ...proBuyer, privateFile: false, listingStatus: "SOLD" }), false);
+  assert.equal(canReadDocument({ ...proBuyer, privateFile: false, listingStatus: "PENDING", closingParty: true }), true);
+  assert.equal(canReadDocument({ ...proBuyer, privateFile: false, proBuyer: false, signedNda: false, listingStatus: "SOLD", closingParty: true }), true);
+  assert.equal(canReadDocument({ ...proBuyer, privateFile: true, listingStatus: "SOLD", closingParty: true }), false);
+  assert.equal(canReadDocument({ ...proBuyer, privateFile: false, listingStatus: "REJECTED", closingParty: true }), false);
 });
 
 test("a referrer follows a closing only as an approved broker", () => {

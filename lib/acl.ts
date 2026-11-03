@@ -27,6 +27,15 @@ export function isPrivateDocument(document: { type: string; storedName: string }
   return document.type === "NDA" || (listing.authorizationKey !== "" && document.storedName === listing.authorizationKey);
 }
 
+// Before an award, a buyer who signed the NDA may work the file. Once the listing is in contract or sold, only
+// the deal's own buyers may. Reg P limits a bidder's use of borrower data to the sale (12 CFR 1016.11), and a
+// losing bidder has no sale left. A canceled closing puts the listing back on the book and reopens the room.
+export function dataRoomOpenTo(input: { listingStatus: string; signedNda: boolean; closingParty: boolean }) {
+  if (input.listingStatus === "APPROVED") return input.signedNda || input.closingParty;
+  if (input.listingStatus === "PENDING" || input.listingStatus === "SOLD") return input.closingParty;
+  return false;
+}
+
 export function canReadDocument(input: {
   owner: boolean;
   admin: boolean;
@@ -34,11 +43,13 @@ export function canReadDocument(input: {
   privateFile: boolean;
   proBuyer: boolean;
   signedNda: boolean;
-  listingVisible: boolean;
+  listingStatus: string;
+  closingParty: boolean;
 }) {
   if (input.owner || input.admin || input.ownNda) return true;
   if (input.privateFile) return false;
-  return input.proBuyer && input.signedNda && input.listingVisible;
+  // A buyer on the deal needs the file to close it, Pro or not.
+  return (input.proBuyer || input.closingParty) && dataRoomOpenTo(input);
 }
 
 export function canReadThreadFile(input: { role: string; userId: string; memberIds: string[] }) {

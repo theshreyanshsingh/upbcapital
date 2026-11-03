@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { AppShell } from "@/components/app-shell";
 import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { unset } from "@/lib/db-filters";
 
 export const dynamic = "force-dynamic";
 
@@ -9,7 +10,7 @@ export default async function DeskLayout({ children }: { children: React.ReactNo
   const user = await getCurrentUser();
   if (!user) redirect("/login");
   const unread = await prisma.notification.count({
-    where: { readAt: null, OR: [{ userId: user.id }, { toEmail: user.email }] },
+    where: { AND: [unset("readAt"), { OR: [{ userId: user.id }, { toEmail: user.email }] }] },
   });
   return (
     <AppShell

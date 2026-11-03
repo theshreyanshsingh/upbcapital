@@ -8,10 +8,11 @@ import { deadlinePassed } from "@/lib/auction";
 import { audit } from "@/lib/audit";
 import { endSessions, requireRole } from "@/lib/auth";
 import { notify } from "@/lib/email";
-import { openClosing } from "@/lib/closing-service";
+import { openClosing, tradeConflict } from "@/lib/closing-service";
 import { DEFAULT_CLOSING_DAYS } from "@/lib/closing-clock";
 import { onGroupAccepted, onGroupDeclined } from "@/actions/group";
 import { rescoreListing } from "@/lib/matching";
+import { postRevenueOnce } from "@/lib/ledger";
 import { feeBreakdown, percentToBps } from "@/lib/money";
 import { workingAmount } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
@@ -85,6 +86,11 @@ export async function reviewListing(formData: FormData) {
     back(listingId, "Changes requested");
   }
 
+  // Marking in contract or sold by hand skips the award and closing paths, so it checks the same OFAC hold they do.
+  if ((action === "MARK_PENDING" || action === "MARK_SOLD") && (await ofacHold({ listingId, userIds: [listing.sellerId] }))) {
+    redirect(`/admin/listings/${listingId}?error=${encodeURIComponent(OFAC_HOLD_MESSAGE)}`);
+  }
+
   if (action === "MARK_PENDING") {
     await prisma.listing.update({ where: { id: listingId }, data: { status: "PENDING" } });
     await record(user.id, listingId, "MARK_PENDING", comment || "Marked in contract.");
@@ -99,6 +105,9 @@ export async function reviewListing(formData: FormData) {
     const openClosingRow = await prisma.closing.findFirst({ where: { listingId, status: "OPEN" } });
     if (openClosingRow) {
       redirect(`/closings/${openClosingRow.id}?error=${encodeURIComponent("This listing has an open closing. Mark it closed there so the ledger posts once.")}`);
+    }
+    if (listing.brokerId) {
+      redirect(`/admin/listings/${listingId}?error=${encodeURIComponent("A broker filed this listing. Award the offer and close it in the closing room, so the broker's fee posts.")}`);
     }
     const salePrice = Number(String(formData.get("salePrice") || "").replace(/[$,]/g, ""));
     if (!Number.isFinite(salePrice) || salePrice <= 0) {
@@ -118,22 +127,13 @@ export async function reviewListing(formData: FormData) {
         netToSellerCents: fees.netToSellerCents,
       },
     });
-    await prisma.revenueEvent.create({
-      data: {
-        type: "BUYER_PREMIUM",
-        amountCents: fees.premiumCents,
-        listingId,
-        description: `Buyer premium on ${listing.title}`,
-      },
-    });
-    await prisma.revenueEvent.create({
-      data: {
-        type: "SELLER_COMMISSION",
-        amountCents: fees.commissionCents,
-        listingId,
-        description: `Seller commission on ${listing.title}`,
-      },
-    });
+    // Keyed like the closing path's rows, so marking the same sale twice leaves one entry each.
+    await postRevenueOnce([
+      { type: "BUYER_PREMIUM", amountCents: fees.premiumCents, listingId, description: `Buyer premium on ${listing.title}`, externalId: `listing:${listingId}:premium` },
+      { type: "SELLER_COMMISSION", amountCents: fees.commissionCents, listingId, description: `Seller commission on ${listing.title}`, externalId: `listing:${listingId}:commission` },
+    ]);
+    await prisma.note.updateMany({ where: { listingId }, data: { tradeStatus: "SOLD" } });
+    await declineLosingBids({ id: "", listingId, noteId: null }, listing.title);
     await record(user.id, listingId, "MARK_SOLD", comment || `Sold at $${salePrice.toLocaleString("en-US")}.`);
     await notify(
       listing.seller.email,
@@ -216,6 +216,7 @@ export async function decideInquiry(formData: FormData) {
     include: { buyer: true, listing: { include: { seller: true } } },
   });
   if (!inquiry) redirect("/admin/offers");
+  let declined = 0;
   if (decision === "ACCEPT" && inquiry.type === "OFFER") {
     if (inquiry.status === "DECLINED") redirect(`/admin/offers?error=${encodeURIComponent("That offer was declined or its closing was canceled. The buyer can send a new one.")}`);
     if (inquiry.buyer.accountStatus !== "APPROVED") redirect(`/admin/offers?error=${encodeURIComponent("That buyer account is not approved.")}`);
@@ -225,6 +226,10 @@ export async function decideInquiry(formData: FormData) {
     if (inquiry.listing.bidMode !== "NONE" && !deadlinePassed(inquiry.listing.bidDeadline)) {
       redirect(`/admin/offers?error=${encodeURIComponent("Award this after the bid deadline.")}`);
     }
+    const awarded = await prisma.closing.findUnique({ where: { inquiryId: inquiry.id } });
+    if (awarded) redirect(`/closings/${awarded.id}`);
+    const conflict = await tradeConflict(inquiry.listingId, inquiry.noteId);
+    if (conflict) redirect(`/admin/offers?error=${encodeURIComponent(conflict)}`);
     const messages = await prisma.offerMessage.findMany({ where: { inquiryId: inquiry.id } });
     const price = workingAmount(
       inquiry.amount ? Number(inquiry.amount) : null,
@@ -258,6 +263,7 @@ export async function decideInquiry(formData: FormData) {
     const link = `${process.env.NEXT_PUBLIC_APP_URL || ""}/closings/${closing.id}`;
     await notify(inquiry.buyer.email, `Offer accepted · ${inquiry.listing.title}`, `The desk accepted $${price.toLocaleString("en-US")}. The closing checklist is open: ${link}`);
     await notify(inquiry.listing.seller.email, `Offer accepted · ${inquiry.listing.title}`, `${inquiry.buyer.name}'s offer was accepted. Closing checklist: ${link}`);
+    declined = await declineLosingBids(inquiry, inquiry.listing.title);
   } else if (decision === "DECLINE") {
     await prisma.inquiry.update({ where: { id: inquiry.id }, data: { status: "DECLINED" } });
     await onGroupDeclined(inquiry.id);
@@ -276,10 +282,35 @@ export async function decideInquiry(formData: FormData) {
       comment: decision === "ACCEPT" ? "An offer was accepted. The closing checklist is open." : decision === "DECLINE" ? "An inquiry was declined." : "An inquiry was reviewed.",
     },
   });
-  await audit(user.id, decision === "ACCEPT" ? "AWARD" : `INQUIRY_${decision}`, "inquiry", inquiry.id, `${inquiry.listing.title} · ${inquiry.buyer.name}`);
+  await audit(user.id, decision === "ACCEPT" ? "AWARD" : `INQUIRY_${decision}`, "inquiry", inquiry.id, `${inquiry.listing.title} · ${inquiry.buyer.name}${declined ? ` · ${declined} other bid${declined === 1 ? "" : "s"} declined` : ""}`);
   revalidatePath("/admin/offers");
   revalidatePath(`/admin/listings/${inquiry.listingId}`);
   redirect(`/admin/offers?notice=${encodeURIComponent(decision.toLowerCase())}`);
+}
+
+// Once a bid wins, the others on the same loans can't, so they close now. Each bidder hears it without the
+// price or the winner. A one-loan award also ends offers on the whole listing, which can no longer trade whole.
+async function declineLosingBids(winner: { id: string; listingId: string; noteId: string | null }, title: string) {
+  const open = await prisma.inquiry.findMany({
+    where: { listingId: winner.listingId, id: { not: winner.id }, type: "OFFER", status: { in: ["OPEN", "REVIEWED"] } },
+    include: { buyer: { select: { email: true } } },
+  });
+  const losers = winner.noteId ? open.filter((offer) => !offer.noteId || offer.noteId === winner.noteId) : open;
+  const { emitWebhook } = await import("@/lib/webhooks");
+  const sellerId = (await prisma.listing.findUnique({ where: { id: winner.listingId }, select: { sellerId: true } }))?.sellerId;
+  for (const loser of losers) {
+    await prisma.inquiry.update({ where: { id: loser.id }, data: { status: "DECLINED" } });
+    await onGroupDeclined(loser.id, "The desk accepted another bid, so the group offer closed.");
+    if (sellerId) await emitWebhook(sellerId, "offer.declined", { inquiryId: loser.id, listingId: winner.listingId, reason: "another_bid_accepted" });
+    await notify(
+      loser.buyer.email,
+      `Bid not selected · ${title}`,
+      winner.noteId && !loser.noteId
+        ? "A loan in this pool was sold on its own, so the pool can no longer trade whole. Thank you for bidding."
+        : "The desk accepted another bid. Thank you for bidding.",
+    );
+  }
+  return losers.length;
 }
 
 export async function setAccountStatus(formData: FormData) {

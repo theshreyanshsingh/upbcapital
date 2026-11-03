@@ -2,6 +2,7 @@ import { notFound, redirect } from "next/navigation";
 import { markShareFunded } from "@/actions/group";
 import { saveBoarding } from "@/actions/boarding";
 import { cancelClosing, completeClosingStep, recordSettlement, saveWireInstructions, setClosingDates, uploadClosingFile } from "@/actions/closing";
+import { BorrowerNotices } from "@/components/borrower-notices";
 import { ComplianceNote } from "@/components/compliance-note";
 import { DeskNotes } from "@/components/desk-notes";
 import { Notice } from "@/components/notice";
@@ -183,6 +184,21 @@ export default async function ClosingPage({
             </div>
           </section>
         )}
+        {party && (
+          <BorrowerNotices
+            closing={closing}
+            boarding={closing.boarding}
+            notes={closing.noteId ? closing.listing.notes.filter((note) => note.id === closing.noteId) : closing.listing.notes}
+            canEdit={isAdmin || isBuyer}
+            owner={
+              closing.deskBidId
+                ? { kind: "desk", buyerId: null, label: "UPB Capital" }
+                : closing.funders.length > 1
+                  ? { kind: "group", buyerId: null, label: "The buying group" }
+                  : { kind: "buyer", buyerId: inquiry?.buyerId ?? null, label: inquiry?.buyer.companyName || inquiry?.buyer.name || "The buyer" }
+            }
+          />
+        )}
         {party && (closing.status === "COMPLETE" || user.role === "ADMIN") && (
           <section className="mt-6 glass p-6">
             <p className="eyebrow">Servicer boarding</p>
@@ -201,8 +217,17 @@ export default async function ClosingPage({
                 <input name="loanNumber" defaultValue={closing.boarding?.loanNumber || ""} className="desk-input mt-2" aria-label="Servicer loan number" />
               </label>
               <label className="block">
-                <span className="text-[13px] text-muted-foreground">Boarded on</span>
-                <input name="boardedAt" type="date" defaultValue={closing.boarding?.boardedAt ? closing.boarding.boardedAt.toISOString().slice(0, 10) : ""} className="desk-input mt-2" aria-label="Boarding date" />
+                <span className="text-[13px] text-muted-foreground">Servicing transfer date</span>
+                <input name="boardedAt" type="date" defaultValue={closing.boarding?.boardedAt ? closing.boarding.boardedAt.toISOString().slice(0, 10) : ""} className="desk-input mt-2" aria-label="Servicing transfer date" />
+                <span className="mt-1 block text-xs text-muted-foreground">The day the new servicer starts taking payments.</span>
+              </label>
+              <label className="block">
+                <span className="text-[13px] text-muted-foreground">Old servicer&apos;s letter sent</span>
+                <input name="goodbyeSentAt" type="date" defaultValue={closing.boarding?.goodbyeSentAt ? closing.boarding.goodbyeSentAt.toISOString().slice(0, 10) : ""} className="desk-input mt-2" aria-label="Old servicer's letter sent" />
+              </label>
+              <label className="block">
+                <span className="text-[13px] text-muted-foreground">New servicer&apos;s letter sent</span>
+                <input name="helloSentAt" type="date" defaultValue={closing.boarding?.helloSentAt ? closing.boarding.helloSentAt.toISOString().slice(0, 10) : ""} className="desk-input mt-2" aria-label="New servicer's letter sent" />
               </label>
               <label className="block sm:col-span-2">
                 <span className="text-[13px] text-muted-foreground">Notes</span>

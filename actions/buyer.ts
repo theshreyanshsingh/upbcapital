@@ -52,6 +52,9 @@ export async function signNda(formData: FormData) {
   if (method !== "TYPED" && method !== "DRAWN") redirect(`${back}?error=Choose how you are signing.`);
   const listing = await prisma.listing.findUnique({ where: { id: listingId }, include: { seller: true } });
   if (!listing) redirect("/marketplace");
+  // Only a live listing takes NDAs. Anything else would tell a buyer, and email the seller, about a file
+  // the desk hasn't released, or reopen one that has gone to contract.
+  if (listing.status !== "APPROVED") redirect(`${back}?error=${encodeURIComponent("This listing isn't open for diligence.")}`);
   const meta = await requestMeta();
   const signedAt = new Date();
   const signatureKey = drawn ? `signatures/${user.id}/${listingId}.png` : "";

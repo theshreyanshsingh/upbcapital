@@ -122,6 +122,18 @@ export default async function AdminListingPage({
               )}
             </div>
           </div>
+          <div className="mt-4">
+            <p className="text-[13px] font-medium text-foreground">Data room log</p>
+            {activity.downloads.length === 0 ? (
+              <p className="mt-1 text-sm text-muted-foreground">No buyer has downloaded a file.</p>
+            ) : (
+              <ul className="mt-1 space-y-1 text-sm text-muted-foreground">
+                {activity.downloads.slice(0, 25).map((row) => (
+                  <li key={row.id}>{row.actor?.companyName || row.actor?.name} · {row.detail} · {prettyDate(row.createdAt)}</li>
+                ))}
+              </ul>
+            )}
+          </div>
         </section>
 
         <section className="mt-6 border border-border p-5 rounded-xl" aria-labelledby="send-heading">

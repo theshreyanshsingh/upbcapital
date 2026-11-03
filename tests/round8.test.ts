@@ -6,7 +6,7 @@ import { lineCost, rehabPicture } from "../lib/rehab";
 import { bidNeedsReminder, taskNeedsReminder } from "../lib/schedule";
 import { fuzzyHit, parseSanctionNames } from "../lib/sdn";
 import { projectFlows, performingCase } from "../lib/underwriting";
-import { signWebhook } from "../lib/webhooks";
+import { isPrivateAddress, publicLookup, signWebhook, webhookUrlProblem } from "../lib/webhooks";
 
 test("fuzzy screening catches a near miss and parses a vendor body", () => {
   const hit = fuzzyHit("AEROCARIBBEAN AIRLINE", ["AEROCARIBBEAN AIRLINES"]);
@@ -73,4 +73,25 @@ test("api keys hash and webhooks sign", () => {
   assert.ok(minted.token.startsWith("upb_"));
   assert.equal(hashKey(minted.token), minted.hash);
   assert.equal(signWebhook("secret", "{\"a\":1}").length, 64);
+});
+
+test("webhooks reach only public https hosts, checked again on the dialed address", async () => {
+  assert.equal(webhookUrlProblem("https://hooks.example.com/upb"), null);
+  assert.match(webhookUrlProblem("http://hooks.example.com/upb") ?? "", /https URLs only/);
+  assert.match(webhookUrlProblem("not a url") ?? "", /full https URL/);
+  assert.match(webhookUrlProblem("https://user:pw@hooks.example.com/") ?? "", /credentials/);
+  for (const url of ["https://localhost/x", "https://api.internal/x", "https://169.254.169.254/latest/meta-data", "https://10.0.0.5/", "https://[::1]/", "https://[::ffff:127.0.0.1]/"]) {
+    assert.ok(webhookUrlProblem(url), url);
+  }
+  assert.equal(isPrivateAddress("8.8.8.8"), false);
+  assert.equal(isPrivateAddress("2606:4700:4700::1111"), false);
+  assert.equal(isPrivateAddress("172.32.0.1"), false);
+  assert.equal(isPrivateAddress("172.20.1.1"), true);
+  assert.equal(isPrivateAddress("::ffff:10.1.2.3"), true);
+  assert.equal(isPrivateAddress("::ffff:7f00:1"), true);
+  assert.equal(isPrivateAddress("::ffff:808:808"), false);
+  assert.equal(isPrivateAddress("fd00::1"), true);
+  // A name that resolves inside the network is refused at dial time, whatever the URL check said.
+  const refused = await new Promise<NodeJS.ErrnoException | null>((resolve) => publicLookup("localhost", {}, (error) => resolve(error)));
+  assert.equal(refused?.code, "EPRIVATE");
 });

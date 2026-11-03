@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireRole, requireUser } from "@/lib/auth";
-import { openClosing } from "@/lib/closing-service";
+import { openClosing, tradeConflict } from "@/lib/closing-service";
 import { notify, notifyDesk } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
@@ -76,6 +76,8 @@ export async function decideDeskBid(formData: FormData) {
   if (decision !== "ACCEPTED") redirect("/admin/book?error=Unknown decision.");
   if (consent.length < 3) redirect(`/admin/book?error=${encodeURIComponent("Record how the seller agreed, such as the email and its date.")}`);
   if (await ofacHold({ listingId: bid.listingId, userIds: [bid.listing.sellerId] })) redirect(`/admin/book?error=${encodeURIComponent(OFAC_HOLD_MESSAGE)}`);
+  const conflict = await tradeConflict(bid.listingId, bid.noteId);
+  if (conflict) redirect(`/admin/book?error=${encodeURIComponent(conflict)}`);
   const closing = await acceptDeskBid(bid);
   const price = `$${Number(bid.amount).toLocaleString("en-US")}`;
   await audit(user.id, "DESK_BID_ACCEPTED", "listing", bid.listingId, `Closing ${closing.id} at ${price}. Seller agreement: ${consent}`);
@@ -92,8 +94,10 @@ export async function answerDeskBid(formData: FormData) {
   const id = String(formData.get("bidId") || "");
   const answer = String(formData.get("answer") || "");
   const bid = await prisma.deskBid.findUnique({ where: { id }, include: { listing: true } });
-  if (!bid || bid.listing.sellerId !== user.id) redirect("/seller");
-  const back = `/seller/listings/${bid.listingId}`;
+  const home = user.role === "BROKER" ? "/broker" : "/seller";
+  if (!bid || bid.listing.sellerId !== user.id) redirect(home);
+  // A broker files on the client's behalf and is the seller of record, but answers from the deal page.
+  const back = user.role === "BROKER" ? `/broker/deals/${bid.listingId}` : `/seller/listings/${bid.listingId}`;
   if (bid.status !== "OPEN") redirect(`${back}?error=${encodeURIComponent("That bid is already decided.")}`);
   const price = `$${Number(bid.amount).toLocaleString("en-US")}`;
   if (answer === "DECLINED") {
@@ -108,6 +112,8 @@ export async function answerDeskBid(formData: FormData) {
     await notifyDesk(`Seller accepted · ${bid.listing.title}`, `${user.name} accepted the desk bid of ${price}, but an OFAC review is open. Decide it, then take the bid from the book.`);
     redirect(`${back}?notice=answered`);
   }
+  const conflict = await tradeConflict(bid.listingId, bid.noteId);
+  if (conflict) redirect(`${back}?error=${encodeURIComponent(conflict)}`);
   const closing = await acceptDeskBid(bid);
   await audit(user.id, "DESK_BID_ACCEPTED", "listing", bid.listingId, `Closing ${closing.id} at ${price}. Accepted by the seller.`);
   await notifyDesk(`Seller accepted · ${bid.listing.title}`, `${user.name} accepted the desk bid of ${price}. The closing is open.`);

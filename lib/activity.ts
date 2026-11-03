@@ -7,13 +7,14 @@ type Viewer = { id: string; name: string; companyName: string; role: string };
 
 // Buyer interest in one listing. Views from the seller and the desk are left out, because neither is a bidder.
 export async function listingActivity(listingId: string, sellerId: string, now = new Date()) {
-  const [views, ndas, favorites, inquiries, sends, matches] = await Promise.all([
+  const [views, ndas, favorites, inquiries, sends, matches, downloads] = await Promise.all([
     prisma.listingView.findMany({ where: { listingId }, include: { user: { select: { id: true, name: true, companyName: true, role: true } } }, orderBy: { createdAt: "desc" } }),
     prisma.ndaAcknowledgment.findMany({ where: { listingId }, include: { user: { select: { id: true, name: true, companyName: true, role: true } } }, orderBy: { acknowledgedAt: "desc" } }),
     prisma.favorite.findMany({ where: { listingId }, include: { user: { select: { id: true, name: true, companyName: true, role: true } } } }),
     prisma.inquiry.findMany({ where: { listingId }, select: { buyerId: true, type: true, createdAt: true } }),
     prisma.listingSend.findMany({ where: { listingId }, select: { userId: true, createdAt: true, kind: true } }),
     prisma.listingMatch.findMany({ where: { listingId }, select: { userId: true } }),
+    prisma.auditEvent.findMany({ where: { entityId: listingId, action: "DOCUMENT_DOWNLOAD" }, include: { actor: { select: { id: true, name: true, companyName: true, role: true } } }, orderBy: { createdAt: "desc" } }),
   ]);
   const buyer = (user: Viewer | null): user is Viewer => Boolean(user && user.id !== sellerId && user.role !== "ADMIN");
   const buyerViews = views.filter((view) => buyer(view.user));
@@ -31,6 +32,7 @@ export async function listingActivity(listingId: string, sellerId: string, now =
     viewers: [...byViewer.values()],
     ndas: ndas.filter((nda) => buyer(nda.user)),
     favorites: favorites.filter((favorite) => buyer(favorite.user)),
+    downloads: downloads.filter((row) => buyer(row.actor)),
     offers: offers.length,
     bidders: new Set(offers.map((offer) => offer.buyerId)).size,
     questions: inquiries.length - offers.length,
@@ -51,6 +53,7 @@ export function sellerReport(activity: ListingActivity) {
     { label: "Buyers who opened it", value: activity.viewers.length },
     { label: "Opens in the last 7 days", value: activity.viewsThisWeek },
     { label: "Signed the NDA", value: activity.ndas.length },
+    { label: "Buyers who took a file", value: new Set(activity.downloads.map((row) => row.actorId)).size },
     { label: "Saved it", value: activity.favorites.length },
     { label: "Buy boxes it fits", value: activity.matchedBuyers },
     { label: "Sent to by the desk", value: activity.sends.reached },

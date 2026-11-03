@@ -10,6 +10,27 @@ import { getSettings } from "@/lib/settings";
 import { postBrokerFees } from "@/lib/broker-pay";
 import { ensureClosingThread } from "@/lib/threads";
 
+// One open closing per loan. A whole-listing award needs every loan free, and a one-loan award needs
+// that loan free and no whole-listing closing open. Returns why the award can't go ahead, or null.
+export async function tradeConflict(listingId: string, noteId: string | null) {
+  const [listing, open] = await Promise.all([
+    prisma.listing.findUnique({ where: { id: listingId }, select: { status: true, notes: { select: { id: true, tradeStatus: true } } } }),
+    prisma.closing.findMany({ where: { listingId, status: "OPEN" }, select: { noteId: true } }),
+  ]);
+  if (!listing) return "That listing no longer exists.";
+  if (listing.status === "SOLD") return "This listing is already sold.";
+  if (noteId) {
+    const note = listing.notes.find((item) => item.id === noteId);
+    if (!note) return "That loan is not on this listing.";
+    if (note.tradeStatus !== "AVAILABLE") return `That loan is already ${note.tradeStatus === "SOLD" ? "sold" : "in contract"}.`;
+    if (open.some((closing) => closing.noteId === null || closing.noteId === noteId)) return "An open closing already covers that loan. Finish or cancel it first.";
+    return null;
+  }
+  if (open.length) return "This listing already has an open closing. Finish or cancel it first.";
+  if (listing.notes.some((note) => note.tradeStatus !== "AVAILABLE")) return "Some loans on this listing are in contract or sold, so the whole listing can't be awarded.";
+  return null;
+}
+
 export async function openClosing(input: {
   listingId: string;
   inquiryId?: string | null;

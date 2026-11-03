@@ -562,6 +562,14 @@ model Closing {
   proceedsSentCents     Int?
   proceedsSentAt        DateTime?
   proceedsReference     String?
+  // Borrower notices. The new owner sends the sale notice (12 CFR 1026.39); UPB only dates and drafts it.
+  transferAt            DateTime?
+  loanPurpose           String?
+  paymentPolicy         String?
+  ownerContact          String?
+  recordingNote         String?
+  ownerNoticeSentAt     DateTime?
+  ownerNoticeRemindedAt DateTime?
   steps                 ClosingStep[]
   boarding              ServicerBoarding?
   funders               ClosingFunder[]
@@ -606,6 +614,9 @@ model ServicerBoarding {
   contactEmail String    @default("")
   loanNumber   String    @default("")
   boardedAt    DateTime?
+  // The servicers' transfer letters (12 CFR 1024.33). boardedAt is the effective date they count from.
+  goodbyeSentAt DateTime?
+  helloSentAt   DateTime?
   notes        String    @default("")
   updatedAt    DateTime  @updatedAt
 }

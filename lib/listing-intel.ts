@@ -1,6 +1,7 @@
 import { estimateProperty } from "@/lib/enrichment";
 import { notify, notifyDesk } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
+import { unset } from "@/lib/db-filters";
 
 async function writeEstimate(note: { id: string; city: string; state: string; zip: string; streetAddress: string; estimatedValue: unknown }) {
   const estimate = await estimateProperty({
@@ -23,7 +24,7 @@ async function writeEstimate(note: { id: string; city: string; state: string; zi
 }
 
 export async function enrichListing(listingId: string) {
-  const notes = await prisma.note.findMany({ where: { listingId, latitude: null } });
+  const notes = await prisma.note.findMany({ where: { listingId, ...unset("latitude") } });
   for (const note of notes) await writeEstimate(note);
 }
 
@@ -37,7 +38,7 @@ export async function rememberView(listingId: string, userId: string) {
 
 export async function enrichOpenBook() {
   const notes = await prisma.note.findMany({
-    where: { latitude: null, listing: { status: { in: ["APPROVED", "PENDING", "SOLD"] } } },
+    where: { ...unset("latitude"), listing: { status: { in: ["APPROVED", "PENDING", "SOLD"] } } },
     take: 80,
   });
   for (const note of notes) await writeEstimate(note);
@@ -45,7 +46,7 @@ export async function enrichOpenBook() {
 
 export async function notifyClosedAuctions() {
   const due = await prisma.listing.findMany({
-    where: { bidMode: { not: "NONE" }, bidDeadline: { lte: new Date() }, auctionNotifiedAt: null },
+    where: { bidMode: { not: "NONE" }, bidDeadline: { lte: new Date() }, ...unset("auctionNotifiedAt") },
     select: { id: true },
   });
   for (const row of due) await notifyIfAuctionClosed(row.id);

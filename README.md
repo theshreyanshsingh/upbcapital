@@ -85,11 +85,11 @@ MRR is the count of paid active Pro members times the current monthly price. Com
 
 ## Confidentiality
 
-A buyer signs per listing, by typing a name or drawing on the pad. The record stores the time, IP address, user agent, and a PDF. The seller, the desk, and the signer can download that PDF; other buyers never see it in the data room. A broker's seller authorization is kept the same way. Street, borrower, and files stay closed until that signature exists.
+A buyer signs per listing, by typing a name or drawing on the pad. The record stores the time, IP address, user agent, and a PDF. The seller, the desk, and the signer can download that PDF; other buyers never see it in the data room. A broker's seller authorization is kept the same way. Street, borrower, and files stay closed until that signature exists. Only a live listing takes a signature. Once a listing goes to contract or sells, the data room closes to everyone except the deal's own buyers, the seller, and the desk, because Reg P limits a bidder's use of borrower data to the sale. A canceled closing puts the listing back on the book and reopens the room. Every file download is logged, and the desk's listing page shows the log. Sellers see how many buyers took a file, not who.
 
 ## Offers and closing
 
-Approved buyers with an approved buyer file can bid the whole listing or, inside a pool, a single loan. The desk and the buyer can counter and message on the same thread. Accepting the working price opens a closing checklist:
+Approved buyers with an approved buyer file can bid the whole listing or, inside a pool, a single loan. The desk and the buyer can counter and message on the same thread. Accepting the working price opens a closing checklist. A listing or loan can have one open closing at a time: an award, a desk bid taken from the book, or a seller's acceptance of a desk bid is refused while another closing covers the same loans. When a bid wins, every other open bid on the same loans is declined and each bidder is told, without the price or the winner. A one-loan award also ends bids on the whole pool.
 
 1. Purchase agreement
 2. Buyer deposit
@@ -98,7 +98,7 @@ Approved buyers with an approved buyer file can bid the whole listing or, inside
 5. Payment received
 6. Closed
 
-Both sides upload documents. A broker who filed the listing acts for the seller and sees what the seller sees. An approved broker who referred the buyer can follow the steps and the fee without seeing wire instructions, files, or other group members. The desk marks steps complete and edits wire instructions. The checklist shows the sale price, buyer premium, all-in, commission, and net to seller. Marking the file closed posts those two ledger lines once. Escrow is a manual wire provider today. `registerEscrowProvider()` in `lib/escrow.ts` is the hook for a later provider, selected with `ESCROW_PROVIDER`.
+Both sides upload documents. A broker who filed the listing acts for the seller and sees what the seller sees. An approved broker who referred the buyer can follow the steps and the fee without seeing wire instructions, files, or other group members. The desk marks steps complete and edits wire instructions. The checklist shows the sale price, buyer premium, all-in, commission, and net to seller. Marking the file closed posts those two ledger lines once. A manual "mark sold" posts them once too, checks the OFAC hold, marks the loans sold, and declines open bids. Broker-filed listings must close through the checklist so the broker's fee posts. Escrow is a manual wire provider today. `registerEscrowProvider()` in `lib/escrow.ts` is the hook for a later provider, selected with `ESCROW_PROVIDER`.
 
 Each closing has a target close date and a due date on every step, set from the fee schedule's target (30 days by default: 3, 6, 15, 21, 27, 30). The desk can move any date. Late steps show on the closing, the closings list, and the desk home, and the daily job reminds the side that owes the step two days before it is due and each day it runs late. Because escrow is manual, the desk records buyer funds received and seller proceeds sent, with date and wire reference; each is checked against the expected total and the party is told. Every party can download a settlement statement PDF showing its own side. The desk's copy shows both sides and its revenue.
 
@@ -210,7 +210,9 @@ Security shows a QR code for an authenticator, eight one-time recovery codes, an
 
 `/admin/templates` edits the purchase agreement, assignment, and allonge. Tokens such as `{{buyer}}`, `{{price}}`, and `{{street}}` fill from the closing. The PDF keeps those fields editable. Download them from the closing page.
 
-After a file is closed, the parties record the servicer, loan number, and boarding date. `/api/closings/[id]/boarding` downloads the CSV package.
+After a file is closed, the parties record the servicer, loan number, servicing transfer date, and when each servicer sent its transfer letter. `/api/closings/[id]/boarding` downloads the CSV package.
+
+Every closing has a borrower notices card. UPB never contacts borrowers, and the card says so. It dates the new owner's sale notice, due on or before the 30th day after the date of transfer (12 CFR 1026.39). It dates the old servicer's letter 15 days before the servicing transfer and the new servicer's 15 days after, and shows the 60-day window when a payment sent to the old servicer can't be treated as late (12 CFR 1024.33). Each loan is marked in or out of scope from its occupancy and borrower name: tenant-occupied rentals and company borrowers are outside Reg Z. The buyer or the desk can override that, record the owner's contact, recording details, partial-payment policy, and the sent date. `/api/closings/[id]/sale-notice` gives the buyer side a draft PDF with one page per loan in scope and brackets for anything missing. It is a draft for the owner and its counsel, not a notice UPB sends.
 
 The book lists twelve listings a page. Fee settings are cached for twenty seconds in the process.
 
@@ -264,7 +266,7 @@ Accepting the offer opens one closing. Each member funds their share. The premiu
 
 ## Jobs
 
-`GET` or `POST /api/cron` with `Authorization: Bearer $CRON_SECRET` runs the daily jobs: buy-box digests that are due, loss-task reminders inside 48 hours, bid-deadline notices inside 24 hours, closing steps due within two days or running late, the existing closed-auction notice, and retention cleanup. `vercel.json` schedules that path at 13:00 UTC. If the host has no cron, run `npm run jobs` from a worker. The HTTP route stays closed until `CRON_SECRET` is set.
+`GET` or `POST /api/cron` with `Authorization: Bearer $CRON_SECRET` runs the daily jobs: buy-box digests that are due, loss-task reminders inside 48 hours, bid-deadline notices inside 24 hours, closing steps due within two days or running late, the new owner's sale notice five days before it is due and once if it runs late, the existing closed-auction notice, and retention cleanup. `vercel.json` schedules that path at 13:00 UTC. If the host has no cron, run `npm run jobs` from a worker. The HTTP route stays closed until `CRON_SECRET` is set.
 
 ## Rehab, filings, and the public site
 
@@ -293,7 +295,7 @@ An institutional seller, or the desk, mints a key at `/seller/api`. The token is
 - Buy-box IRR can include a balloon, skipped months, and one ARM reset. It is still not a full credit memo.
 - Digests, task reminders, bid-deadline notices, and retention run from `/api/cron` or `npm run jobs`.
 - Desk relist goes live. A buyer relist still waits for review.
-- A vendor OFAC body that is not JSON names, a name column, or an OpenSanctions-style payload is ignored and the local list is used.
+- A vendor OFAC body with no names to parse (JSON names, a name column, or an OpenSanctions-style payload) counts as a failed refresh. Screening keeps the last good copy if there is one. Otherwise it reports the list unavailable and approvals wait, rather than clearing anyone against the short local list.
 - Retention does not delete loan files, closings, or the ledger.
 - A group is co-ownership of one note, not a fund. Investor capital on the desk book is still a share of cash received, not a waterfall.
 - Rehab unit costs are desk defaults for South Florida, not a contractor quote.

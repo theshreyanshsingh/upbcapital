@@ -14,6 +14,7 @@ import { prisma } from "@/lib/prisma";
 import { consumeRateLimit } from "@/lib/rate-limit";
 import { newRecoveryCodes, packHashes, takeRecoveryCode } from "@/lib/recovery";
 import { generateTotpSecret, verifyTotp } from "@/lib/totp";
+import { unset } from "@/lib/db-filters";
 
 export async function beginTotp() {
   const user = await requireUser({ secondFactorSetup: true });
@@ -82,7 +83,7 @@ async function acceptSecondFactor(user: { id: string; totpSecret: string; recove
   }
   const hash = createHash("sha256").update(code.replace(/\s/g, "")).digest("hex");
   const row = await prisma.loginCode.findFirst({
-    where: { userId: user.id, codeHash: hash, usedAt: null, expiresAt: { gt: new Date() } },
+    where: { userId: user.id, codeHash: hash, ...unset("usedAt"), expiresAt: { gt: new Date() } },
     orderBy: { createdAt: "desc" },
   });
   if (!row) return false;

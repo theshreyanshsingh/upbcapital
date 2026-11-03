@@ -3,9 +3,10 @@ import test from "node:test";
 import { listingActivity, sellerReport } from "../lib/activity";
 import { buyerRecords, fundsCoverage, proofExpiry, rankBids, type BidInput } from "../lib/bid-sheet";
 import { closingSchedule, closingStats, effectiveDue, stepClock, stepNeedsReminder, targetDays } from "../lib/closing-clock";
-import { openClosing } from "../lib/closing-service";
+import { cancelOpenClosing, openClosing, tradeConflict } from "../lib/closing-service";
 import { deskSearch, searchTerm } from "../lib/desk-search";
-import { remindClosingSteps } from "../lib/jobs";
+import { unset } from "../lib/db-filters";
+import { remindClosingSteps, remindSaleNotices } from "../lib/jobs";
 import { recentlySent, sendBody, sendFunnel, sendListing } from "../lib/outreach";
 import { prisma } from "../lib/prisma";
 import { statementLines, variance } from "../lib/settlement";
@@ -266,6 +267,64 @@ test("a new closing is dated, and the reminder job tells each side once a day", 
   }
 });
 
+test("a loan or listing already in contract can't be awarded a second time", async () => {
+  const deal = await makeDeal(crypto.randomUUID().slice(0, 8));
+  try {
+    const listingId = deal.listing.id;
+    const note = await prisma.note.findFirstOrThrow({ where: { listingId } });
+    assert.equal(await tradeConflict(listingId, null), null);
+    assert.equal(await tradeConflict(listingId, note.id), null);
+
+    const first = await prisma.inquiry.create({ data: { listingId, buyerId: deal.buyer.id, type: "OFFER", status: "ACCEPTED", amount: 80000 } });
+    const whole = await openClosing({ listingId, inquiryId: first.id, noteId: null, salePrice: 80000, title: deal.listing.title });
+    assert.match((await tradeConflict(listingId, null)) ?? "", /already has an open closing/);
+    assert.match((await tradeConflict(listingId, note.id)) ?? "", /already covers that loan/);
+
+    await cancelOpenClosing(whole.id, "Test cancel");
+    assert.equal(await tradeConflict(listingId, null), null);
+
+    await prisma.note.update({ where: { id: note.id }, data: { tradeStatus: "IN_CONTRACT" } });
+    assert.match((await tradeConflict(listingId, note.id)) ?? "", /already in contract/);
+    assert.match((await tradeConflict(listingId, null)) ?? "", /in contract or sold/);
+
+    await prisma.listing.update({ where: { id: listingId }, data: { status: "SOLD" } });
+    assert.match((await tradeConflict(listingId, null)) ?? "", /already sold/);
+    assert.equal(await tradeConflict("000000000000000000000000", null), "That listing no longer exists.");
+  } finally {
+    await prisma.auditEvent.deleteMany({ where: { entityId: deal.listing.id } });
+    await cleanDeal(deal);
+  }
+});
+
+test("the buyer hears about the sale notice five days out and again once it's late, never after it's sent", async () => {
+  const deal = await makeDeal(crypto.randomUUID().slice(0, 8));
+  try {
+    const inquiry = await prisma.inquiry.create({ data: { listingId: deal.listing.id, buyerId: deal.buyer.id, type: "OFFER", status: "ACCEPTED", amount: 80000 } });
+    const closing = await openClosing({ listingId: deal.listing.id, inquiryId: inquiry.id, noteId: null, salePrice: 80000, title: deal.listing.title });
+    await prisma.note.updateMany({ where: { listingId: deal.listing.id }, data: { occupancy: "OWNER_OCCUPIED" } });
+    await prisma.closing.update({ where: { id: closing.id }, data: { status: "COMPLETE", closedAt: new Date(Date.now() - 27 * DAY) } });
+    const mail = () => prisma.notification.count({ where: { toEmail: deal.buyer.email, subject: { startsWith: "Sale notice" } } });
+    await remindSaleNotices();
+    assert.equal(await mail(), 1);
+    await remindSaleNotices();
+    assert.equal(await mail(), 1);
+    // Move the close back so the notice is late. The first reminder came before the due date, so one more goes.
+    await prisma.closing.update({ where: { id: closing.id }, data: { closedAt: new Date(Date.now() - 32 * DAY), ownerNoticeRemindedAt: new Date(Date.now() - 4 * DAY) } });
+    await remindSaleNotices();
+    assert.equal(await mail(), 2);
+    await prisma.closing.update({ where: { id: closing.id }, data: { ownerNoticeRemindedAt: null, ownerNoticeSentAt: new Date() } });
+    await remindSaleNotices();
+    assert.equal(await mail(), 2);
+    // A business-purpose loan needs no notice at all.
+    await prisma.closing.update({ where: { id: closing.id }, data: { ownerNoticeSentAt: null, loanPurpose: "BUSINESS" } });
+    await remindSaleNotices();
+    assert.equal(await mail(), 2);
+  } finally {
+    await prisma.auditEvent.deleteMany({ where: { entityId: deal.listing.id } });
+    await cleanDeal(deal);
+  }
+});
+
 test("a buyer's record counts closed and canceled wins, not open ones", async () => {
   const deal = await makeDeal(crypto.randomUUID().slice(0, 8));
   try {
@@ -292,5 +351,20 @@ test("desk search finds accounts, listings, and borrowers without regard to case
     assert.equal(await deskSearch("x"), null);
   } finally {
     await cleanDeal(deal);
+  }
+});
+
+test("a field nothing has written yet counts as empty, which a plain null filter misses on MongoDB", async () => {
+  const toEmail = `unset-${crypto.randomUUID().slice(0, 8)}@example.org`;
+  try {
+    await prisma.notification.create({ data: { toEmail, subject: "Unread check", body: "x" } });
+    assert.equal(await prisma.notification.count({ where: { toEmail, readAt: null } }), 0);
+    assert.equal(await prisma.notification.count({ where: { toEmail, ...unset("readAt") } }), 1);
+    await prisma.notification.updateMany({ where: { toEmail }, data: { readAt: new Date() } });
+    assert.equal(await prisma.notification.count({ where: { toEmail, ...unset("readAt") } }), 0);
+    await prisma.notification.updateMany({ where: { toEmail }, data: { readAt: null } });
+    assert.equal(await prisma.notification.count({ where: { toEmail, ...unset("readAt") } }), 1);
+  } finally {
+    await prisma.notification.deleteMany({ where: { toEmail } });
   }
 });

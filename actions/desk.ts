@@ -34,6 +34,8 @@ export async function setAuction(formData: FormData) {
       bidMode,
       bidDeadline: bidMode === "NONE" ? null : deadline,
       auctionNotifiedAt: null,
+      // A new deadline gets its own 24-hour reminder.
+      ...((listing.bidDeadline?.getTime() ?? null) !== (bidMode === "NONE" ? null : deadline?.getTime() ?? null) ? { bidReminderAt: null } : {}),
     },
   });
   await audit(user.id, "AUCTION", "listing", listingId, `${bidMode} ${deadline ? deadline.toISOString() : "open"}`);

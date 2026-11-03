@@ -49,7 +49,7 @@ export default async function AnalyticsPage({
   const top = [...byBuyer.values()].sort((a, b) => b.volume - a.volume).slice(0, 5);
   return (
     <div>
-      <PageIntro eyebrow="Analytics" title="How the desk is moving." lede="Visits are pages opened since this counter started. Time to close uses sold listings, from the day they were filed to the day they were marked sold." />
+      <PageIntro eyebrow="Analytics" title="How the desk is moving." lede="Visits are pages opened since this counter started. Days to sell runs from the day a listing was filed to the day it was marked sold. Days to close, on the desk home, runs from the award to the closed file." />
       <Notice notice={q(params, "notice")} error={q(params, "error")} />
       <form action={sendMatchDigests} className="mt-4">
         <SubmitButton variant="outline" className="h-11 text-[13px] font-medium">Send match digest</SubmitButton>

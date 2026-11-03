@@ -71,6 +71,7 @@ const COPY: Record<string, string> = {
   ofac: "The OFAC decision is on file.",
   testimonial: "The testimonial is updated.",
   answered: "Your answer is with the desk.",
+  notices: "Borrower notice details saved.",
   desk_note: "The desk note is saved. Only the desk sees it.",
   desk_note_removed: "The desk note is removed.",
   dates: "The closing dates are saved. Reminders follow the new dates.",

@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { requireUser } from "@/lib/auth";
 import { mintKey } from "@/lib/api-keys";
 import { prisma } from "@/lib/prisma";
+import { webhookUrlProblem } from "@/lib/webhooks";
 
 async function seller() {
   const user = await requireUser();
@@ -34,7 +35,8 @@ export async function revokeApiKey(formData: FormData) {
 export async function saveWebhook(_prev: RevealState, formData: FormData): Promise<RevealState> {
   const user = await seller();
   const url = String(formData.get("url") || "").trim();
-  if (!/^https?:\/\//i.test(url)) return { secret: "", error: "The webhook needs an http or https URL." };
+  const problem = webhookUrlProblem(url);
+  if (problem) return { secret: "", error: problem };
   const minted = mintKey();
   await prisma.webhookEndpoint.create({
     data: { userId: user.id, url, secret: minted.token },

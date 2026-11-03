@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { answerDeskBid } from "@/actions/desk-book";
 import { Notice } from "@/components/notice";
 import { requireRole } from "@/lib/auth";
 import { brokerRoleLabel } from "@/lib/broker-fees";
@@ -36,7 +37,7 @@ export default async function BrokerDealPage({
   const query = await searchParams;
   const listing = await prisma.listing.findUnique({
     where: { id },
-    include: { notes: true, closings: { include: { brokerFees: true } } },
+    include: { notes: true, closings: { include: { brokerFees: true } }, deskBids: { where: { status: "OPEN" }, orderBy: { createdAt: "desc" } } },
   });
   if (!listing || listing.brokerId !== user.id) notFound();
   const ask = listing.notes.reduce((sum, note) => sum + num(note.askingPrice), 0);
@@ -61,6 +62,20 @@ export default async function BrokerDealPage({
         <Stat k="Filed" v={prettyDate(listing.submittedAt)} />
       </dl>
       {listing.summary && <p className="mt-6 text-sm leading-relaxed text-foreground/85">{listing.summary}</p>}
+      {listing.deskBids.map((bid) => (
+        <div key={bid.id} className="mt-6 border border-link/30 bg-link/5 p-4 rounded-xl">
+          <p className="eyebrow">The desk bid on this</p>
+          <p className="mt-1 font-semibold tracking-tight text-2xl">{money(num(bid.amount))}</p>
+          {bid.message && <p className="mt-1 text-sm text-muted-foreground">{bid.message}</p>}
+          <p className="mt-2 text-sm text-muted-foreground">Accepting opens a closing with UPB Capital as the buyer. Answer only with {listing.clientSellerName || "your client"}&apos;s agreement.</p>
+          <form action={answerDeskBid} className="mt-3 flex flex-wrap gap-2">
+            {/* Not name="id": it shadows form.id in the DOM, and React then drops the clicked button's value. */}
+            <input type="hidden" name="bidId" value={bid.id} />
+            <button type="submit" name="answer" value="ACCEPTED" className="h-9 rounded-lg bg-foreground px-3 text-[13px] font-medium text-background">Accept</button>
+            <button type="submit" name="answer" value="DECLINED" className="h-9 rounded-lg border border-border px-3 text-[13px] font-medium hover:bg-hover">Decline</button>
+          </form>
+        </div>
+      ))}
 
       <ol className="mt-10 space-y-0">
         {TRACK.map((step, stepIndex) => {

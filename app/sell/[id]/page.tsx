@@ -23,7 +23,7 @@ export default async function QuotePage({ params }: { params: Promise<{ id: stri
         <div><dt className="text-[13px] text-muted-foreground">Collateral</dt><dd className="mt-1 text-foreground">{lead.city ? `${lead.city}, ` : ""}{lead.state}</dd></div>
       </dl>
       <div className="mt-10 flex flex-wrap gap-4">
-        <Link href={`/signup?lead=${lead.id}&email=${encodeURIComponent(lead.email)}`} className="inline-flex h-11 items-center bg-primary px-5 text-[13px] font-medium text-primary-foreground rounded-lg">
+        <Link href={`/signup?lead=${lead.id}`} className="inline-flex h-11 items-center bg-primary px-5 text-[13px] font-medium text-primary-foreground rounded-lg">
           Create an account to list it
         </Link>
         <Link href="/sell" className="inline-flex h-11 items-center text-[13px] font-medium text-muted-foreground">

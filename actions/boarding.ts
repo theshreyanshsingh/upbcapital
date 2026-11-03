@@ -28,11 +28,19 @@ export async function saveBoarding(formData: FormData) {
   if (contactEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmail)) {
     redirect(`/closings/${closingId}?error=${encodeURIComponent("Enter a servicer email, or leave it blank.")}`);
   }
-  const boardedAt = boarded ? new Date(`${boarded}T00:00:00Z`) : null;
+  const day = (raw: string) => (raw ? (/^\d{4}-\d{2}-\d{2}$/.test(raw) ? new Date(`${raw}T00:00:00Z`) : undefined) : null);
+  const boardedAt = day(boarded);
+  // The servicers send these letters. Recording the dates lets the closing room show the 15-day clocks as met.
+  const goodbyeSentAt = day(String(formData.get("goodbyeSentAt") || ""));
+  const helloSentAt = day(String(formData.get("helloSentAt") || ""));
+  if (boardedAt === undefined || goodbyeSentAt === undefined || helloSentAt === undefined) {
+    redirect(`/closings/${closingId}?error=${encodeURIComponent("Enter dates as year, month, and day.")}`);
+  }
+  const fields = { servicerName, contactEmail, loanNumber, notes, boardedAt, goodbyeSentAt, helloSentAt };
   await prisma.servicerBoarding.upsert({
     where: { closingId },
-    update: { servicerName, contactEmail, loanNumber, notes, boardedAt },
-    create: { closingId, servicerName, contactEmail, loanNumber, notes, boardedAt },
+    update: fields,
+    create: { closingId, ...fields },
   });
   revalidatePath(`/closings/${closingId}`);
   redirect(`/closings/${closingId}?notice=boarded`);

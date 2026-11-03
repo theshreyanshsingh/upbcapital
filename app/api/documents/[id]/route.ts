@@ -1,5 +1,7 @@
 import { canReadDocument, isPrivateDocument } from "@/lib/acl";
+import { audit } from "@/lib/audit";
 import { getApiUser } from "@/lib/auth";
+import { isClosingParty } from "@/lib/data-room";
 import { prisma } from "@/lib/prisma";
 import { isPro } from "@/lib/settings";
 import { getBytes } from "@/lib/storage";
@@ -27,12 +29,15 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     privateFile: isPrivateDocument(document, document.listing),
     proBuyer: user.role === "BUYER" && user.accountStatus === "APPROVED" && isPro(user),
     signedNda: Boolean(nda),
-    listingVisible: ["APPROVED", "PENDING", "SOLD"].includes(document.listing.status),
+    listingStatus: document.listing.status,
+    closingParty: owner || admin ? false : await isClosingParty(document.listingId, user.id),
   });
   if (!allowed) return new Response("The data room is closed.", { status: 403 });
 
   try {
     const bytes = await getBytes(document.storedName);
+    // Every download is logged against the listing, so the desk can show who took which file and when.
+    await audit(user.id, "DOCUMENT_DOWNLOAD", "listing", document.listingId, document.originalName);
     return new Response(bytes, {
       headers: {
         "Content-Type": document.mime,
