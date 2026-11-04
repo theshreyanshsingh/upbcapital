@@ -14,8 +14,8 @@ export async function answerSaleApproval(formData: FormData) {
   const inquiryId = String(formData.get("inquiryId") || "");
   const answer = String(formData.get("answer") || "");
   const offer = await prisma.inquiry.findUnique({ where: { id: inquiryId }, include: { listing: true } });
-  if (!offer || offer.listing.sellerId !== user.id) redirect(user.role === "BROKER" ? "/broker" : "/seller");
-  const back = sellerPage(offer.listing);
+  if (!offer || offer.listing.sellerId !== user.id) redirect(user.role === "BROKER" ? "/broker" : user.role === "BUYER" ? "/buyer/portfolio" : "/seller");
+  const back = sellerPage(offer.listing, user.role);
   if (!awaitingSeller(offer) || offer.sellerAskedAmount == null || (offer.status !== "OPEN" && offer.status !== "REVIEWED")) {
     redirect(`${back}?error=${encodeURIComponent("Nothing on this listing is waiting for your answer.")}`);
   }
@@ -47,8 +47,8 @@ export async function setReserve(formData: FormData) {
   const user = await requireUser();
   const listingId = String(formData.get("listingId") || "");
   const listing = await prisma.listing.findUnique({ where: { id: listingId } });
-  if (!listing || listing.sellerId !== user.id) redirect(user.role === "BROKER" ? "/broker" : "/seller");
-  const back = sellerPage(listing);
+  if (!listing || listing.sellerId !== user.id) redirect(user.role === "BROKER" ? "/broker" : user.role === "BUYER" ? "/buyer/portfolio" : "/seller");
+  const back = sellerPage(listing, user.role);
   const raw = String(formData.get("reservePrice") || "").replace(/[$,\s]/g, "");
   const reserve = raw ? Number(raw) : null;
   if (reserve !== null && !(Number.isFinite(reserve) && reserve > 0)) redirect(`${back}?error=${encodeURIComponent("Enter a reserve in dollars, or leave it blank.")}`);

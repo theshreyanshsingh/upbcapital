@@ -7,7 +7,7 @@ import { openClosing, tradeConflict } from "@/lib/closing-service";
 import { notify, notifyDesk } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
-import { claimLoan, declineLosingBids } from "@/lib/awards";
+import { claimLoan, declineLosingBids, sellerPage } from "@/lib/awards";
 import { OFAC_HOLD_MESSAGE, ofacHold } from "@/lib/screening";
 
 function amountOf(formData: FormData, key = "amount") {
@@ -98,10 +98,10 @@ export async function answerDeskBid(formData: FormData) {
   const id = String(formData.get("bidId") || "");
   const answer = String(formData.get("answer") || "");
   const bid = await prisma.deskBid.findUnique({ where: { id }, include: { listing: true } });
-  const home = user.role === "BROKER" ? "/broker" : "/seller";
+  const home = user.role === "BROKER" ? "/broker" : user.role === "BUYER" ? "/buyer/portfolio" : "/seller";
   if (!bid || bid.listing.sellerId !== user.id) redirect(home);
-  // A broker files on the client's behalf and is the seller of record, but answers from the deal page.
-  const back = user.role === "BROKER" ? `/broker/deals/${bid.listingId}` : `/seller/listings/${bid.listingId}`;
+  // A broker or a reselling buyer is the seller of record, but answers from their own page.
+  const back = sellerPage(bid.listing, user.role);
   if (bid.status !== "OPEN") redirect(`${back}?error=${encodeURIComponent("That bid is already decided.")}`);
   const price = `$${Number(bid.amount).toLocaleString("en-US")}`;
   if (answer === "DECLINED") {

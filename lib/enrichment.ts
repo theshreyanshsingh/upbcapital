@@ -123,6 +123,14 @@ async function attomEstimate(input: AvmInput, key: string) {
   return { value: Math.round(value), latitude, longitude };
 }
 
+// Coordinates that leave the server for a map. A US map draws about 0.06 degrees a pixel, so a 0.05 degree grid
+// (about 5 km) doesn't move a pin, while an exact point can be turned back into a street address.
+export function mapPoint(latitude: number | null, longitude: number | null) {
+  if (latitude == null || longitude == null) return { latitude: null, longitude: null };
+  const snap = (value: number) => Math.round(value * 20) / 20;
+  return { latitude: snap(latitude), longitude: snap(longitude) };
+}
+
 export function projectUs(latitude: number, longitude: number) {
   const x = ((longitude + 125) / 59) * 1000;
   const y = ((49 - latitude) / 25) * 560;

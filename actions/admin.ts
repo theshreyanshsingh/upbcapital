@@ -17,6 +17,7 @@ import { prisma } from "@/lib/prisma";
 import { OFAC_DOWN_MESSAGE, OFAC_HOLD_MESSAGE, ofacHold, screenListing, screenUser } from "@/lib/screening";
 import { clearSettingsCache, getSettings } from "@/lib/settings";
 import { syncProPrice } from "@/lib/stripe-sync";
+import { deskDecisionAllowed } from "@/lib/listing-status";
 
 async function admin() {
   return requireRole(["ADMIN"]);
@@ -41,6 +42,12 @@ export async function reviewListing(formData: FormData) {
   });
   if (!listing) redirect("/admin/queue?error=Listing not found.");
 
+  if (!deskDecisionAllowed(action, listing.status)) {
+    redirect(`/admin/listings/${listingId}?error=${encodeURIComponent(`That decision doesn't apply to a listing that is ${listing.status.replaceAll("_", " ").toLowerCase()}.`)}`);
+  }
+  if ((action === "REJECT" || action === "REQUEST_CHANGES") && (await prisma.closing.count({ where: { listingId, status: "OPEN" } })) > 0) {
+    redirect(`/admin/listings/${listingId}?error=${encodeURIComponent("A closing is open on this listing. Cancel it before pulling the listing.")}`);
+  }
   const needsComment = action === "REJECT" || action === "REQUEST_CHANGES";
   if (needsComment && comment.length < 3) {
     redirect(`/admin/listings/${listingId}?error=${encodeURIComponent("A comment is required for that decision.")}`);
@@ -229,6 +236,9 @@ export async function decideInquiry(formData: FormData) {
     revalidatePath("/admin/offers");
     revalidatePath(`/admin/listings/${inquiry.listingId}`);
     redirect("/admin/offers?notice=accept");
+  } else if (inquiry.status !== "OPEN" && inquiry.status !== "REVIEWED") {
+    // A stale page can't decline an offer that already has a closing, or one that was already declined.
+    redirect(`/admin/offers?error=${encodeURIComponent("That offer is already decided.")}`);
   } else if (decision === "DECLINE") {
     await prisma.inquiry.update({ where: { id: inquiry.id }, data: { status: "DECLINED" } });
     await onGroupDeclined(inquiry.id);

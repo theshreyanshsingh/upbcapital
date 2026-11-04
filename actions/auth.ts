@@ -61,6 +61,10 @@ export async function signup(_prev: { error: string }, formData: FormData) {
   }
   const existing = await prisma.user.findUnique({ where: { email: data.email } });
   if (existing) return { error: "An account with that email is already on the desk." };
+  // The desk's own inbox takes alerts, so nobody may register it as an account.
+  if (process.env.DESK_EMAIL && data.email === process.env.DESK_EMAIL.trim().toLowerCase()) {
+    return { error: "That address belongs to the desk. Sign up with your own email." };
+  }
   const code = (data.referral || "").trim().toUpperCase();
   const referrer = code ? await prisma.user.findUnique({ where: { referralCode: code } }) : null;
   if (code && !referrer) return { error: "That referral code is not on the desk." };
@@ -117,6 +121,11 @@ export async function login(_prev: { error: string }, formData: FormData) {
   const meta = await requestMeta();
   if (!(await consumeRateLimit(`login:${meta.ipAddress}:${email}`, 8, 10 * 60 * 1000))) {
     return { error: "Too many sign-in attempts. Wait a few minutes and try again." };
+  }
+  // A cap per account, whatever address the attempts claim to come from, so rotating addresses can't keep
+  // guessing one password.
+  if (!(await consumeRateLimit(`login-account:${email}`, 20, 15 * 60 * 1000))) {
+    return { error: "Too many sign-in attempts on this account. Wait fifteen minutes and try again." };
   }
   const user = await prisma.user.findUnique({ where: { email } });
   if (!user || !(await bcrypt.compare(password, user.passwordHash))) {

@@ -16,7 +16,8 @@ export default async function NotificationsPage({
   const user = await requireUser();
   const params = await searchParams;
   const notes = await prisma.notification.findMany({
-    where: { OR: [{ userId: user.id }, { toEmail: user.email }] },
+    // By account only: matching on email would hand the desk inbox's alerts to whoever registers that address.
+    where: { userId: user.id },
     orderBy: { createdAt: "desc" },
     take: 50,
   });

@@ -1,10 +1,26 @@
-export type OfferMoney = { amount: number | null; kind: string; createdAt: Date };
+export type OfferMoney = { amount: number | null; kind: string; createdAt: Date; authorId?: string };
 
-export function workingAmount(inquiryAmount: number | null, messages: OfferMoney[]) {
-  const priced = messages
+function pricedNewestFirst(messages: OfferMoney[]) {
+  return messages
     .filter((message) => (message.kind === "OFFER" || message.kind === "COUNTER") && message.amount != null && message.amount > 0)
     .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-  return priced[0]?.amount ?? inquiryAmount;
+}
+
+// The newest price either side has put on the table: where the negotiation stands.
+export function workingAmount(inquiryAmount: number | null, messages: OfferMoney[]) {
+  return pricedNewestFirst(messages)[0]?.amount ?? inquiryAmount;
+}
+
+// What the buyer has agreed to pay: the opening bid, or the newest price the buyer posted, which includes
+// accepting a desk counter. A desk counter on its own is a proposal, so it is never what gets awarded.
+export function buyerPrice(inquiryAmount: number | null, messages: OfferMoney[], buyerId: string) {
+  return pricedNewestFirst(messages).find((message) => message.authorId === buyerId)?.amount ?? inquiryAmount;
+}
+
+// The desk's counter when it is the newest price on the table, so the buyer still has to answer it.
+export function openCounter(messages: OfferMoney[], buyerId: string) {
+  const latest = pricedNewestFirst(messages)[0];
+  return latest && latest.authorId !== buyerId ? latest.amount : null;
 }
 
 export function canCounter(status: string) {

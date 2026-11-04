@@ -6,7 +6,7 @@ import { audit } from "@/lib/audit";
 import { requireRole } from "@/lib/auth";
 import { cleanRetention } from "@/lib/jobs";
 import { prisma } from "@/lib/prisma";
-import { screenAndRecord } from "@/lib/screening";
+import { partyScope, screenAndRecord } from "@/lib/screening";
 import { clearSettingsCache } from "@/lib/settings";
 import { US_STATES } from "@/lib/labels";
 
@@ -61,8 +61,10 @@ export async function decideOfacReview(formData: FormData) {
   if (note.length < 3) redirect("/admin/compliance?error=Write why, so the record stands on its own.");
   const check = await prisma.ofacCheck.findUnique({ where: { id } });
   if (!check || check.result !== "REVIEW") redirect("/admin/compliance?error=That review is not on file.");
-  const rows = await prisma.ofacCheck.findMany({ where: { name: check.name, result: "REVIEW" }, select: { id: true, matched: true } });
-  const same = rows.filter((row) => (row.matched ?? "") === (check.matched ?? "")).map((row) => row.id);
+  // The decision covers this party's screens of this name, never someone else who happens to share it.
+  const scope = partyScope(check);
+  const rows = scope ? await prisma.ofacCheck.findMany({ where: { name: check.name, result: "REVIEW", ...scope }, select: { id: true, matched: true } }) : [];
+  const same = [check.id, ...rows.filter((row) => (row.matched ?? "") === (check.matched ?? "")).map((row) => row.id)];
   await prisma.ofacCheck.updateMany({
     where: { id: { in: same } },
     data: { status: decision, reviewedById: user.id, reviewedAt: new Date(), reviewNote: note },

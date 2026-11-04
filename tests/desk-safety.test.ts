@@ -141,20 +141,25 @@ async function clean(userIds: string[], listingId?: string) {
   await prisma.user.deleteMany({ where: { id: { in: userIds } } });
 }
 
-test("a cleared OFAC decision carries forward for that name, and a new match asks again", async () => {
-  const name = `Blocked Test ${crypto.randomUUID().slice(0, 8)}`;
+test("a cleared OFAC decision carries forward for that party only, and a new match asks again", async () => {
+  const tag = crypto.randomUUID().slice(0, 8);
+  const name = `Blocked Test ${tag}`;
+  const party = { context: "Test", listingId: `listing-${tag}` };
   try {
-    const first = await screenAndRecord(name, { context: "Test" });
+    const first = await screenAndRecord(name, party);
     assert.equal(first.screen.result, "REVIEW");
     assert.equal(first.check.status, "OPEN");
     assert.equal(first.blocked, true);
     await prisma.ofacCheck.update({ where: { id: first.check.id }, data: { status: "CLEARED", reviewNote: "Different person" } });
-    const second = await screenAndRecord(name, { context: "Test" });
+    const second = await screenAndRecord(name, party);
     assert.equal(second.check.status, "CLEARED");
     assert.equal(second.blocked, false);
+    // Someone else with the same name, on another listing or with no party at all, gets their own review.
+    assert.equal((await screenAndRecord(name, { context: "Test", listingId: `other-${tag}` })).check.status, "OPEN");
+    assert.equal((await screenAndRecord(name, { context: "Test" })).check.status, "OPEN");
     await prisma.ofacCheck.update({ where: { id: first.check.id }, data: { matched: "SOME OTHER ENTRY" } });
     await prisma.ofacCheck.update({ where: { id: second.check.id }, data: { matched: "SOME OTHER ENTRY" } });
-    assert.equal((await screenAndRecord(name, { context: "Test" })).check.status, "OPEN");
+    assert.equal((await screenAndRecord(name, party)).check.status, "OPEN");
   } finally {
     await prisma.ofacCheck.deleteMany({ where: { name } });
   }

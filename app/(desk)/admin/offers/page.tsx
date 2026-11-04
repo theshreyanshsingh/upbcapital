@@ -9,7 +9,7 @@ import { SubmitButton } from "@/components/submit-button";
 import { requireRole } from "@/lib/auth";
 import { money, num, prettyDate, q } from "@/lib/format";
 import { bpsToPercent } from "@/lib/money";
-import { canCounter, workingAmount } from "@/lib/offers";
+import { buyerPrice, canCounter, openCounter } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
 import { getSettings } from "@/lib/settings";
 import Link from "next/link";
@@ -44,8 +44,11 @@ export default async function AdminOffersPage({
             kind: message.kind,
             amount: message.amount ? num(message.amount) : null,
             createdAt: message.createdAt,
+            authorId: message.authorId,
           }));
-          const amount = workingAmount(inquiry.amount ? num(inquiry.amount) : null, messages);
+          // The award price is what the buyer agreed to. A desk counter waits for the buyer to accept it.
+          const amount = buyerPrice(inquiry.amount ? num(inquiry.amount) : null, messages, inquiry.buyerId);
+          const counter = openCounter(messages, inquiry.buyerId);
           const closingId = closingFor.get(inquiry.id);
           const agreed = amount ? sellerAgreed({ price: amount, reserve: inquiry.listing.reservePrice, approvedAmount: inquiry.sellerApprovedAmount }) : null;
           const live = inquiry.type === "OFFER" && (inquiry.status === "OPEN" || inquiry.status === "REVIEWED");
@@ -74,9 +77,10 @@ export default async function AdminOffersPage({
               </div>
               {amount != null && (
                 <p className="mt-3 text-sm text-muted-foreground">
-                  Working bid {money(amount)} · premium {money((amount * settings.buyerPremiumBps) / 10000)} · all-in {money(amount + (amount * settings.buyerPremiumBps) / 10000)}
+                  Buyer&apos;s price {money(amount)} · premium {money((amount * settings.buyerPremiumBps) / 10000)} · all-in {money(amount + (amount * settings.buyerPremiumBps) / 10000)}
                 </p>
               )}
+              {live && counter != null && <p className="mt-2 text-[13px] text-muted-foreground">Desk counter {money(counter)} · waiting on the buyer to accept</p>}
               {live && <p className={`mt-2 text-[13px] ${agreed ? "text-good" : "text-muted-foreground"}`}>{sellerLine}</p>}
               {inquiry.message && <p className="mt-2 text-sm text-foreground/85">{inquiry.message}</p>}
               {closingId && <Link href={`/closings/${closingId}`} className="mt-3 inline-block text-[13px] font-medium text-link">Open closing</Link>}
@@ -105,7 +109,7 @@ export default async function AdminOffersPage({
                       <input type="hidden" name="inquiryId" value={inquiry.id} />
                       <input type="hidden" name="decision" value="ACCEPT" />
                       <SubmitButton className="h-9 text-[13px] font-medium">
-                        {!agreed ? (awaitingSeller(inquiry) ? "Ask the seller again" : "Send to the seller") : inquiry.listing.bidMode === "NONE" ? "Accept working price" : "Award"}
+                        {!agreed ? (awaitingSeller(inquiry) ? "Ask the seller again" : "Send to the seller") : inquiry.listing.bidMode === "NONE" ? "Accept the buyer's price" : "Award at the buyer's price"}
                       </SubmitButton>
                     </form>
                   )}

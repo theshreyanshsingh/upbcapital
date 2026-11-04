@@ -9,7 +9,7 @@ import { unset } from "@/lib/db-filters";
 export async function markNotificationsRead() {
   const user = await requireUser();
   await prisma.notification.updateMany({
-    where: { AND: [unset("readAt"), { OR: [{ userId: user.id }, { toEmail: user.email }] }] },
+    where: { userId: user.id, ...unset("readAt") },
     data: { readAt: new Date() },
   });
   revalidatePath("/notifications");

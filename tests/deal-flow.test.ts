@@ -449,3 +449,43 @@ test("a reserve the price clears is the seller's standing approval", async () =>
     await cleanDeal(deal);
   }
 });
+
+test("a desk counter the buyer never accepted is not what gets awarded", async () => {
+  const deal = await makeDeal(crypto.randomUUID().slice(0, 8));
+  try {
+    await prisma.listing.update({ where: { id: deal.listing.id }, data: { reservePrice: 75000 } });
+    const offer = await prisma.inquiry.create({ data: { listingId: deal.listing.id, buyerId: deal.buyer.id, type: "OFFER", status: "OPEN", amount: 80000 } });
+    await prisma.offerMessage.create({ data: { inquiryId: offer.id, authorId: deal.buyer.id, kind: "OFFER", amount: 80000, body: "Opening bid." } });
+    await prisma.offerMessage.create({ data: { inquiryId: offer.id, authorId: deal.desk.id, kind: "COUNTER", amount: 100000, body: "Counter." } });
+    const awarded = await awardOffer(offer.id, deal.desk.id);
+    assert.equal(awarded.error, null);
+    const closing = await prisma.closing.findUniqueOrThrow({ where: { inquiryId: offer.id } });
+    assert.equal(Number(closing.salePrice), 80000);
+  } finally {
+    await prisma.auditEvent.deleteMany({ where: { entityId: deal.listing.id } });
+    await cleanDeal(deal);
+  }
+});
+
+test("a group bid can't be awarded while a seat hasn't reconfirmed the price", async () => {
+  const deal = await makeDeal(crypto.randomUUID().slice(0, 8));
+  try {
+    await prisma.listing.update({ where: { id: deal.listing.id }, data: { reservePrice: 50000 } });
+    const offer = await prisma.inquiry.create({ data: { listingId: deal.listing.id, buyerId: deal.buyer.id, type: "OFFER", status: "OPEN", amount: 80000 } });
+    const group = await prisma.groupBuy.create({ data: { listingId: deal.listing.id, openedById: deal.buyer.id, minPosition: 10000, deadline: new Date(Date.now() + 86400000), targetAmount: 80000, inquiryId: offer.id, status: "OFFERED" } });
+    await prisma.groupPosition.create({ data: { groupId: group.id, userId: deal.buyer.id, seat: 1, amount: 40000, percent: 50, status: "PLEDGED" } });
+    await prisma.groupPosition.create({ data: { groupId: group.id, userId: deal.quiet.id, seat: 2, amount: 40000, percent: 50, status: "RECONFIRM" } });
+    assert.equal((await awardOffer(offer.id, deal.desk.id)).error, "Some group seats haven't reconfirmed the latest price.");
+    await prisma.groupPosition.updateMany({ where: { groupId: group.id }, data: { status: "PLEDGED", amount: 30000 } });
+    assert.match((await awardOffer(offer.id, deal.desk.id)).error ?? "", /seats add up to \$60,000, not \$80,000/);
+  } finally {
+    await prisma.groupBuy.deleteMany({ where: { listingId: deal.listing.id } });
+    await prisma.auditEvent.deleteMany({ where: { entityId: deal.listing.id } });
+    await cleanDeal(deal);
+  }
+});
+
+test("desk search treats regex characters as text", async () => {
+  const found = await deskSearch("[(*");
+  assert.ok(found);
+});

@@ -6,7 +6,15 @@ import { prisma } from "@/lib/prisma";
 
 type Target = { context: string; userId?: string | null; listingId?: string | null };
 
-// A person's earlier decision on the same name and the same list entry carries forward. A new entry asks again.
+// The same party: the same account, or the same name on the same listing. A name alone is not a person, so
+// two people who share one need two decisions. A screen with no party (a manual check) carries nothing.
+export function partyScope(row: { userId?: string | null; listingId?: string | null }) {
+  if (row.userId) return { userId: row.userId };
+  if (row.listingId) return { listingId: row.listingId };
+  return null;
+}
+
+// A party's earlier decision on the same name and the same list entry carries forward. A new entry asks again.
 async function recordScreen(name: string, screen: Screen, target: Target) {
   const base = {
     name,
@@ -18,7 +26,8 @@ async function recordScreen(name: string, screen: Screen, target: Target) {
     listingId: target.listingId || undefined,
   };
   if (screen.result === "CLEAR") return prisma.ofacCheck.create({ data: base });
-  const earlier = await prisma.ofacCheck.findMany({ where: { name, result: "REVIEW" }, orderBy: { createdAt: "desc" } });
+  const scope = partyScope(target);
+  const earlier = scope ? await prisma.ofacCheck.findMany({ where: { name, result: "REVIEW", ...scope }, orderBy: { createdAt: "desc" } }) : [];
   const decided = earlier.find((row) => (row.status === "CLEARED" || row.status === "CONFIRMED") && row.matched === screen.matched);
   const check = await prisma.ofacCheck.create({
     data: {

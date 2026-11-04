@@ -10,10 +10,13 @@ export function OfferThread({
   inquiryId,
   canCounter,
   messages,
+  acceptAmount,
 }: {
   inquiryId: string;
   canCounter: boolean;
   messages: { id: string; kind: string; body: string; amount: number | null; author: string; when: string }[];
+  // The desk's open counter, shown to the buyer as one click to accept. A counter alone is never awarded.
+  acceptAmount?: number | null;
 }) {
   return (
     <div className="mt-4 border-t border-border pt-4">
@@ -30,6 +33,14 @@ export function OfferThread({
           </li>
         ))}
       </ul>
+      {canCounter && acceptAmount != null && (
+        <form action={postOfferMessage} className="mt-4 flex flex-wrap items-center gap-3 border border-link/30 bg-link/5 p-3 rounded-xl">
+          <input type="hidden" name="inquiryId" value={inquiryId} />
+          <input type="hidden" name="amount" value={acceptAmount} />
+          <p className="text-sm text-foreground">The desk countered at {money(acceptAmount)}. Nothing is awarded until you accept a price.</p>
+          <SubmitButton className="h-9 text-[13px] font-medium" pendingLabel="Accepting…">Accept {money(acceptAmount)}</SubmitButton>
+        </form>
+      )}
       <form action={postOfferMessage} className="mt-4 space-y-3">
         <input type="hidden" name="inquiryId" value={inquiryId} />
         <Textarea name="body" placeholder="Message the other side" className="min-h-20 bg-card" />

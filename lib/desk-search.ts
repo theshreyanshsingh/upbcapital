@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { literal } from "@/lib/db-filters";
 
 const LIMIT = 8;
 
@@ -10,7 +11,7 @@ export function searchTerm(raw: string) {
 export async function deskSearch(raw: string) {
   const term = searchTerm(raw);
   if (term.length < 2) return null;
-  const text = { contains: term, mode: "insensitive" as const };
+  const text = { contains: literal(term), mode: "insensitive" as const };
   const byId = /^c[a-z0-9]{20,}$/i.test(term) ? term : null;
   const [users, listings, borrowerNotes, closings, leads] = await Promise.all([
     prisma.user.findMany({

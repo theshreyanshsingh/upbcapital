@@ -30,6 +30,8 @@ export default async function PortfolioPage({
     select: { id: true },
   });
   for (const closing of closings) await ensureBuyerHolding(closing.id);
+  // Notes this buyer relisted. They answer the desk's sale recommendations from each resale page.
+  const resales = await prisma.listing.findMany({ where: { sellerId: user.id }, select: { id: true, title: true, status: true }, orderBy: { createdAt: "desc" } });
   const [holdings, open] = await Promise.all([
     prisma.buyerHolding.findMany({ where: { userId: user.id }, include: { payments: { orderBy: { paidOn: "desc" } } }, orderBy: { acquiredAt: "desc" } }),
     prisma.closing.findMany({
@@ -117,6 +119,19 @@ export default async function PortfolioPage({
               <li key={closing.id} className="px-5 py-4">
                 <Link href={`/closings/${closing.id}`} className="font-semibold tracking-tight text-2xl text-foreground">{closing.listing.title}</Link>
                 <p className="mt-1 text-sm text-muted-foreground">Tracking starts when the checklist closes.</p>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {resales.length > 0 && (
+        <section className="mt-12" aria-labelledby="resales-heading">
+          <h2 id="resales-heading" className="eyebrow">Your resales</h2>
+          <ul className="mt-3 divide-y divide-border border border-border rounded-xl">
+            {resales.map((resale) => (
+              <li key={resale.id} className="flex flex-wrap items-baseline justify-between gap-3 px-4 py-3">
+                <Link href={`/buyer/resales/${resale.id}`} className="text-sm font-medium text-link">{resale.title}</Link>
+                <span className="text-[13px] text-muted-foreground">{resale.status.replaceAll("_", " ").toLowerCase()}</span>
               </li>
             ))}
           </ul>

@@ -1,5 +1,5 @@
 import { ofacBlocks } from "@/lib/ofac";
-import { workingAmount } from "@/lib/offers";
+import { buyerPrice } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -111,9 +111,11 @@ export async function bidSheet(listingId: string, premiumBps: number, now = new 
   const total = (pick: (note: (typeof notes)[number]) => number) => notes.reduce((sum, note) => sum + pick(note), 0);
   const bids: BidInput[] = [];
   for (const inquiry of listing.inquiries) {
-    const amount = workingAmount(
+    // Ranked on what each buyer has agreed to pay, not on a desk counter they haven't answered.
+    const amount = buyerPrice(
       inquiry.amount != null ? Number(inquiry.amount) : null,
-      inquiry.messages.map((message) => ({ kind: message.kind, amount: message.amount != null ? Number(message.amount) : null, createdAt: message.createdAt })),
+      inquiry.messages.map((message) => ({ kind: message.kind, amount: message.amount != null ? Number(message.amount) : null, createdAt: message.createdAt, authorId: message.authorId })),
+      inquiry.buyerId,
     );
     if (!amount || amount <= 0) continue;
     const note = inquiry.noteId ? notes.find((item) => item.id === inquiry.noteId) : null;

@@ -16,6 +16,7 @@ import { labelOf } from "@/lib/labels";
 import { RESEND_AFTER, sendAudience } from "@/lib/outreach";
 import { prisma } from "@/lib/prisma";
 import { getSettings } from "@/lib/settings";
+import { deskDecisionAllowed } from "@/lib/listing-status";
 
 export const metadata = { title: "Review listing" };
 
@@ -305,12 +306,14 @@ export default async function AdminListingPage({
             <input name="salePrice" defaultValue={ask} className="desk-input mt-2" />
           </label>
           <div className="grid gap-2">
-            <Decision action="UNDER_REVIEW" label="Mark under review" />
-            <Decision action="APPROVE" label="Approve · make live" />
-            <Decision action="REQUEST_CHANGES" label="Request changes" />
-            <Decision action="REJECT" label="Reject" />
-            <Decision action="MARK_PENDING" label="Mark in contract" />
-            <Decision action="MARK_SOLD" label="Mark sold" />
+            {/* Only the decisions that apply from this status; the action checks the same rule. */}
+            {deskDecisionAllowed("UNDER_REVIEW", listing.status) && <Decision action="UNDER_REVIEW" label="Mark under review" />}
+            {deskDecisionAllowed("APPROVE", listing.status) && <Decision action="APPROVE" label="Approve · make live" />}
+            {deskDecisionAllowed("REQUEST_CHANGES", listing.status) && <Decision action="REQUEST_CHANGES" label="Request changes" />}
+            {deskDecisionAllowed("REJECT", listing.status) && <Decision action="REJECT" label="Reject" />}
+            {deskDecisionAllowed("MARK_PENDING", listing.status) && <Decision action="MARK_PENDING" label="Mark in contract" />}
+            {deskDecisionAllowed("MARK_SOLD", listing.status) && <Decision action="MARK_SOLD" label="Mark sold" />}
+            {listing.status === "SOLD" && <p className="text-sm text-muted-foreground">Sold. No further decisions apply.</p>}
           </div>
         </form>
         <ul className="space-y-1 text-xs text-muted-foreground">

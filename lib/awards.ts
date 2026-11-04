@@ -4,7 +4,7 @@ import { deadlinePassed } from "@/lib/auction";
 import { audit } from "@/lib/audit";
 import { openClosing, tradeConflict } from "@/lib/closing-service";
 import { notify } from "@/lib/email";
-import { workingAmount } from "@/lib/offers";
+import { buyerPrice } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
 import { OFAC_HOLD_MESSAGE, ofacHold } from "@/lib/screening";
 
@@ -74,18 +74,33 @@ export async function checkAward(inquiryId: string) {
   const conflict = await tradeConflict(offer.listingId, offer.noteId);
   if (conflict) return { error: conflict } as const;
   const messages = await prisma.offerMessage.findMany({ where: { inquiryId } });
-  const price = workingAmount(
+  // Only a price the buyer put forward can be awarded. A desk counter they haven't accepted can't.
+  const price = buyerPrice(
     offer.amount ? Number(offer.amount) : null,
-    messages.map((message) => ({ kind: message.kind, amount: message.amount ? Number(message.amount) : null, createdAt: message.createdAt })),
+    messages.map((message) => ({ kind: message.kind, amount: message.amount ? Number(message.amount) : null, createdAt: message.createdAt, authorId: message.authorId })),
+    offer.buyerId,
   );
   if (!price || price <= 0) return { error: "That offer has no amount." } as const;
+  // A group bid is the seats' money. Every seat must have agreed to this price, and together they must cover it.
+  const group = await prisma.groupBuy.findFirst({ where: { inquiryId }, include: { positions: true } });
+  if (group) {
+    const seats = group.positions.filter((seat) => seat.status !== "DROPPED");
+    if (seats.some((seat) => seat.status === "RECONFIRM")) return { error: "Some group seats haven't reconfirmed the latest price." } as const;
+    const covered = seats.reduce((sum, seat) => sum + Number(seat.amount), 0);
+    if (Math.abs(covered - price) > 1) {
+      return { error: `The group's seats add up to $${Math.round(covered).toLocaleString("en-US")}, not $${Math.round(price).toLocaleString("en-US")}. The seats reconfirm a price before it can be awarded.` } as const;
+    }
+  }
   const agreed = sellerAgreed({ price, reserve: offer.listing.reservePrice, approvedAmount: offer.sellerApprovedAmount });
   return { error: null, offer, price, agreed } as const;
 }
 
-// Where the seller of record answers: a broker who filed the listing answers from the deal page.
-export function sellerPage(listing: { id: string; sellerId: string; brokerId: string | null }) {
-  return listing.brokerId && listing.brokerId === listing.sellerId ? `/broker/deals/${listing.id}` : `/seller/listings/${listing.id}`;
+// Where the seller of record answers. A broker who filed the listing answers from the deal page, and a buyer
+// reselling a note they hold answers from their resale page, since seller pages are closed to buyers.
+export function sellerPage(listing: { id: string; sellerId: string; brokerId: string | null }, sellerRole: string) {
+  if (listing.brokerId && listing.brokerId === listing.sellerId) return `/broker/deals/${listing.id}`;
+  if (sellerRole === "BUYER") return `/buyer/resales/${listing.id}`;
+  return `/seller/listings/${listing.id}`;
 }
 
 export async function askSeller(offer: Offer, price: number) {
@@ -93,7 +108,7 @@ export async function askSeller(offer: Offer, price: number) {
     where: { id: offer.id },
     data: { sellerAskedAt: new Date(), sellerAskedAmount: price, sellerAnsweredAt: null, sellerDeclined: null },
   });
-  const link = `${process.env.NEXT_PUBLIC_APP_URL || ""}${sellerPage(offer.listing)}`;
+  const link = `${process.env.NEXT_PUBLIC_APP_URL || ""}${sellerPage(offer.listing, offer.listing.seller.role)}`;
   await notify(
     offer.listing.seller.email,
     `Approve a sale · ${offer.listing.title}`,

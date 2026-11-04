@@ -15,6 +15,7 @@ import { noteMetrics, poolMetrics } from "@/lib/metrics";
 import { prisma } from "@/lib/prisma";
 import { enrichOpenBook } from "@/lib/listing-intel";
 import { getSettings, isEarlyAccess, isPro } from "@/lib/settings";
+import { mapPoint } from "@/lib/enrichment";
 
 export const metadata = { title: "The book" };
 
@@ -175,8 +176,7 @@ export default async function MarketplacePage({
                 id: listing.id,
                 title: `${notes[0]?.city ?? note.city}, ${notes[0]?.state ?? note.state}`,
                 href: `/marketplace/${listing.id}`,
-                latitude: note.latitude,
-                longitude: note.longitude,
+                ...(mapPoint(note.latitude, note.longitude) as { latitude: number; longitude: number }),
               }];
             })}
           />

@@ -255,15 +255,18 @@ export async function bidPartial(formData: FormData) {
   const group = await prisma.groupBuy.findUnique({ where: { id: groupId }, include: { positions: true, listing: true } });
   if (!group || (group.openedById !== user.id && user.role !== "ADMIN")) redirect(`/groups/${groupId}?error=Only the opener or the desk can send a partial bid.`);
   if (!group.allowPartial) redirect(`/groups/${groupId}?error=The seller has not allowed a partial bid.`);
-  const state = fillState(Number(group.targetAmount), group.positions.map((seat) => ({ amount: Number(seat.amount), status: seat.status })));
-  if (state.filled + 0.01 < Number(group.minPosition)) redirect(`/groups/${groupId}?error=Nothing is pledged yet.`);
-  const next = state.filled;
-  for (const seat of group.positions) {
-    if (seat.status === "DROPPED") continue;
-    const amount = Number(seat.amount);
+  if (group.status !== "GATHERING") redirect(`/groups/${groupId}?error=${encodeURIComponent("A partial bid goes out only while the group is gathering.")}`);
+  // A seat waiting to reconfirm a counter hasn't agreed to it, so it can't be signed up on its behalf.
+  if (group.positions.some((seat) => seat.status === "RECONFIRM")) {
+    redirect(`/groups/${groupId}?error=${encodeURIComponent("Some seats haven't reconfirmed the counter. They reconfirm or drop before a partial bid.")}`);
+  }
+  const pledged = group.positions.filter((seat) => seat.status === "PLEDGED");
+  const next = Math.round(pledged.reduce((sum, seat) => sum + Number(seat.amount), 0) * 100) / 100;
+  if (next + 0.01 < Number(group.minPosition)) redirect(`/groups/${groupId}?error=Nothing is pledged yet.`);
+  for (const seat of pledged) {
     await prisma.groupPosition.update({
       where: { id: seat.id },
-      data: { percent: (amount / next) * 100, status: "PLEDGED" },
+      data: { percent: (Number(seat.amount) / next) * 100 },
     });
   }
   await prisma.groupBuy.update({ where: { id: group.id }, data: { targetAmount: next } });

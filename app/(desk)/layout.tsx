@@ -10,7 +10,8 @@ export default async function DeskLayout({ children }: { children: React.ReactNo
   const user = await getCurrentUser();
   if (!user) redirect("/login");
   const unread = await prisma.notification.count({
-    where: { AND: [unset("readAt"), { OR: [{ userId: user.id }, { toEmail: user.email }] }] },
+    // By account only. A copy kept for an address with no account belongs to no one who signs up with it later.
+    where: { userId: user.id, ...unset("readAt") },
   });
   return (
     <AppShell

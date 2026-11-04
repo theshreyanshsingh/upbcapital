@@ -4,3 +4,9 @@
 export function unset<K extends string>(field: K) {
   return { OR: [{ [field]: null }, { [field]: { isSet: false } }] } as { OR: Record<K, null | { isSet: false }>[] };
 }
+
+// Prisma's case-insensitive `contains` on MongoDB becomes a regex without escaping, so "[" crashes the query
+// and ".*" or a nested quantifier becomes a pattern the database runs. Escaping makes it a plain-text match.
+export function literal(text: string) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}

@@ -4,7 +4,7 @@ import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { requireRole } from "@/lib/auth";
 import { money, num, prettyDate, q } from "@/lib/format";
-import { canCounter, workingAmount } from "@/lib/offers";
+import { buyerPrice, canCounter, openCounter } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
 
 export const metadata = { title: "Inquiries" };
@@ -22,6 +22,8 @@ export default async function OffersPage({
     orderBy: { createdAt: "desc" },
   });
   const closings = await prisma.closing.findMany({ where: { inquiryId: { in: inquiries.map((item) => item.id) } } });
+  // A group's counter is answered seat by seat on the group page, not by the lead accepting it here.
+  const groupBids = new Set((await prisma.groupBuy.findMany({ where: { inquiryId: { in: inquiries.map((item) => item.id) } }, select: { inquiryId: true } })).map((group) => group.inquiryId));
   const closingFor = new Map(closings.map((closing) => [closing.inquiryId, closing.id]));
   return (
     <div>
@@ -30,10 +32,9 @@ export default async function OffersPage({
       <ul className="mt-8 space-y-3">
         {inquiries.length === 0 && <li className="text-sm text-muted-foreground">No offers or requests yet.</li>}
         {inquiries.map((inquiry) => {
-          const amount = workingAmount(
-            inquiry.amount ? num(inquiry.amount) : null,
-            inquiry.messages.map((message) => ({ kind: message.kind, amount: message.amount ? num(message.amount) : null, createdAt: message.createdAt })),
-          );
+          const priced = inquiry.messages.map((message) => ({ kind: message.kind, amount: message.amount ? num(message.amount) : null, createdAt: message.createdAt, authorId: message.authorId }));
+          const amount = buyerPrice(inquiry.amount ? num(inquiry.amount) : null, priced, inquiry.buyerId);
+          const counter = openCounter(priced, inquiry.buyerId);
           const closingId = closingFor.get(inquiry.id);
           return (
             <li key={inquiry.id} className="glass p-5">
@@ -51,6 +52,7 @@ export default async function OffersPage({
                 <OfferThread
                   inquiryId={inquiry.id}
                   canCounter={canCounter(inquiry.status)}
+                  acceptAmount={groupBids.has(inquiry.id) ? null : counter}
                   messages={inquiry.messages.map((message) => ({
                     id: message.id,
                     kind: message.kind,

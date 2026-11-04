@@ -7,6 +7,7 @@ import { q } from "@/lib/format";
 import { roleLabel } from "@/lib/labels";
 import { ofacBlocks } from "@/lib/ofac";
 import { prisma } from "@/lib/prisma";
+import { literal } from "@/lib/db-filters";
 
 export const metadata = { title: "Accounts" };
 
@@ -18,7 +19,7 @@ export default async function UsersPage({
   const actor = await requireRole(["ADMIN"]);
   const params = await searchParams;
   const filter = q(params, "q").trim().slice(0, 80);
-  const text = { contains: filter, mode: "insensitive" as const };
+  const text = { contains: literal(filter), mode: "insensitive" as const };
   const [users, reviews] = await Promise.all([
     prisma.user.findMany({
       where: filter ? { OR: [{ name: text }, { email: text }, { companyName: text }] } : undefined,
