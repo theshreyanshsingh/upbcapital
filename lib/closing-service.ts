@@ -5,7 +5,9 @@ import { deskFeeBps } from "@/lib/desk-fees";
 import { getEscrowProvider } from "@/lib/escrow";
 import { postRevenueOnce } from "@/lib/ledger";
 import { ensureBuyerHolding } from "@/lib/portfolio";
+import { unset } from "@/lib/db-filters";
 import { prisma } from "@/lib/prisma";
+import { variance } from "@/lib/settlement";
 import { getSettings } from "@/lib/settings";
 import { postBrokerFees } from "@/lib/broker-pay";
 import { ensureClosingThread } from "@/lib/threads";
@@ -49,7 +51,7 @@ export async function openClosing(input: {
   }
   const settings = await getSettings();
   const bps = input.deskBidId
-    ? deskFeeBps(settings.chargeDeskFees, settings.buyerPremiumBps, settings.sellerCommissionBps)
+    ? deskFeeBps(settings.chargeDeskFees, settings.sellerCommissionBps)
     : { premiumBps: settings.buyerPremiumBps, commissionBps: settings.sellerCommissionBps };
   const fees = closingTotals(input.salePrice, bps.premiumBps, bps.commissionBps);
   const provider = getEscrowProvider();
@@ -118,15 +120,16 @@ export async function finalizeClosing(closingId: string) {
     where: { id: closingId },
     include: { listing: { include: { notes: true } }, steps: true },
   });
-  if (!closing) return closing;
-  if (!canCompleteStep(closing.steps, "CLOSED") && closing.status !== "COMPLETE") return closing;
-  const externalPremium = `closing:${closing.id}:premium`;
-  const externalCommission = `closing:${closing.id}:commission`;
-  if (closing.status !== "COMPLETE") {
-    await prisma.closing.update({
-      where: { id: closing.id },
+  if (!closing || closing.status === "CANCELED") return closing;
+  if (closing.status === "OPEN") {
+    if (!canCompleteStep(closing.steps, "CLOSED")) return closing;
+    // A cancel or a second close can land between the read and this write. Only the write that moves it off OPEN
+    // goes on to sell the loans and post the money.
+    const claimed = await prisma.closing.updateMany({
+      where: { id: closing.id, status: "OPEN" },
       data: { status: "COMPLETE", closedAt: new Date() },
     });
+    if (claimed.count !== 1) return prisma.closing.findUnique({ where: { id: closingId } });
     if (closing.noteId) {
       await prisma.note.update({ where: { id: closing.noteId }, data: { tradeStatus: "SOLD" } });
     } else {
@@ -160,7 +163,8 @@ export async function finalizeClosing(closingId: string) {
     const notes = closing.noteId ? closing.listing.notes.filter((note) => note.id === closing.noteId) : closing.listing.notes;
     const upb = notes.reduce((sum, note) => sum + Number(note.upb), 0);
     const existing = await prisma.deskHolding.findFirst({
-      where: { OR: [{ closingId: closing.id }, { listingId: closing.listingId, noteId: closing.noteId }] },
+      // A whole-listing holding may have no noteId field at all, which `noteId: null` alone would miss.
+      where: { OR: [{ closingId: closing.id }, { listingId: closing.listingId, ...(closing.noteId ? { noteId: closing.noteId } : unset("noteId")) }] },
     });
     if (!existing) {
       await prisma.deskHolding.create({
@@ -178,24 +182,24 @@ export async function finalizeClosing(closingId: string) {
       await prisma.deskHolding.update({ where: { id: existing.id }, data: { closingId: closing.id } });
     }
   }
-  if (closing.buyerPremiumCents > 0 || closing.sellerCommissionCents > 0) {
-  await postRevenueOnce([
+  // A zero fee is not revenue, so it gets no ledger row.
+  const revenue = [
     {
-      type: "BUYER_PREMIUM",
+      type: "BUYER_PREMIUM" as const,
       amountCents: closing.buyerPremiumCents,
       listingId: closing.listingId,
       description: `Buyer premium on ${closing.listing.title}`,
-      externalId: externalPremium,
+      externalId: `closing:${closing.id}:premium`,
     },
     {
-      type: "SELLER_COMMISSION",
+      type: "SELLER_COMMISSION" as const,
       amountCents: closing.sellerCommissionCents,
       listingId: closing.listingId,
       description: `Seller commission on ${closing.listing.title}`,
-      externalId: externalCommission,
+      externalId: `closing:${closing.id}:commission`,
     },
-  ]);
-  }
+  ].filter((event) => event.amountCents > 0);
+  if (revenue.length) await postRevenueOnce(revenue);
   await postBrokerFees(closing.id);
   return prisma.closing.findUnique({ where: { id: closingId } });
 }
@@ -205,7 +209,12 @@ export async function finalizeClosing(closingId: string) {
 export async function cancelOpenClosing(closingId: string, reason: string) {
   const closing = await prisma.closing.findUnique({ where: { id: closingId }, include: { listing: true } });
   if (!closing || closing.status !== "OPEN") return null;
-  await prisma.closing.update({ where: { id: closingId }, data: { status: "CANCELED", canceledAt: new Date(), cancelReason: reason } });
+  // Only the write that moves it off OPEN cancels, so a close that landed first stays closed.
+  const claimed = await prisma.closing.updateMany({
+    where: { id: closingId, status: "OPEN" },
+    data: { status: "CANCELED", canceledAt: new Date(), cancelReason: reason },
+  });
+  if (claimed.count !== 1) return null;
   if (closing.noteId) await prisma.note.update({ where: { id: closing.noteId }, data: { tradeStatus: "AVAILABLE" } });
   if (closing.inquiryId) await prisma.inquiry.update({ where: { id: closing.inquiryId }, data: { status: "DECLINED" } });
   if (closing.deskBidId) await prisma.deskBid.update({ where: { id: closing.deskBidId }, data: { status: "WITHDRAWN" } });
@@ -218,6 +227,29 @@ export async function cancelOpenClosing(closingId: string, reason: string) {
     },
   });
   return closing;
+}
+
+// The lead buyer and every group seat holder each wire money, so each of them hears about anything that touches it.
+export async function buyerSideEmails(closingId: string) {
+  const closing = await prisma.closing.findUnique({ where: { id: closingId }, select: { inquiryId: true, funders: { select: { user: { select: { email: true } } } } } });
+  if (!closing) return [];
+  const inquiry = closing.inquiryId ? await prisma.inquiry.findUnique({ where: { id: closing.inquiryId }, select: { buyer: { select: { email: true } } } }) : null;
+  return [...new Set([inquiry?.buyer.email, ...closing.funders.map((funder) => funder.user.email)].filter((email): email is string => Boolean(email)))];
+}
+
+// The deposit step completes from the deposit the desk recorded, once it covers what was due. A seat holder's own
+// word that they funded never completes it.
+export async function completeDepositFromWire(closingId: string) {
+  const closing = await prisma.closing.findUnique({ where: { id: closingId } });
+  if (!closing || closing.status !== "OPEN" || closing.depositCents == null || closing.depositReceivedCents == null) return false;
+  const check = variance(closing.depositCents, closing.depositReceivedCents);
+  if (check.state !== "match" && check.state !== "over") return false;
+  const received = `$${(closing.depositReceivedCents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const done = await prisma.closingStep.updateMany({
+    where: { closingId, key: "BUYER_DEPOSIT", status: "PENDING" },
+    data: { status: "COMPLETE", completedAt: new Date(), note: `Deposit of ${received} received${closing.depositReceivedAt ? ` ${closing.depositReceivedAt.toISOString().slice(0, 10)}` : ""}.` },
+  });
+  return done.count === 1;
 }
 
 export function isClosingStepKey(value: string): value is ClosingStepKey {

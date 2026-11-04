@@ -1,3 +1,5 @@
+import { deliverable } from "./mail-config";
+
 export const DEMO_EMAILS = [
   "iris@upbcapital.test",
   "maya.ellison@upbcapital.test",
@@ -20,6 +22,18 @@ export const DEMO_LOGINS = [
   { role: "Buyer · Pro", email: "camille.ortiz@upbcapital.test" },
   { role: "Broker", email: "nora.vale@upbcapital.test" },
 ];
+
+// The demo desk's own addresses: the seeded seats and anything else on its domain.
+export function demoAddress(email: string) {
+  const address = email.trim().toLowerCase();
+  return DEMO_EMAILS.includes(address) || address.endsWith("@upbcapital.test");
+}
+
+// The seeded seats share one password and skip the second factor, because one visitor enrolling would lock out the
+// rest. A real signup on some other reserved domain is not a seat, and a release build has none.
+export function demoSeat(email: string, env: Record<string, string | undefined> = process.env) {
+  return !isReleaseBuild(env) && demoAddress(email);
+}
 
 export function demoSeedBlocked(env: Record<string, string | undefined>) {
   return env.VERCEL === "1" || env.NODE_ENV === "production" || env.UPB_RELEASE === "1";
@@ -85,20 +99,27 @@ export function assertReleaseEnv(env: Record<string, string | undefined>) {
   if (!env.OFAC_SDN_URL && !(env.OFAC_API_URL && env.OFAC_API_KEY)) missing.push("OFAC_SDN_URL, or OFAC_API_URL + OFAC_API_KEY");
   if (missing.length) throw new Error(`Production build is missing ${missing.join(", ")}.`);
   assertMongoUrl(env.DATABASE_URL);
+  // Screening finds aliases in ALT.CSV beside SDN.CSV (aliasUrl in lib/ofac), so the address has to name SDN.CSV.
+  if (env.OFAC_SDN_URL && !/\/sdn\.csv$/i.test(URL.canParse(env.OFAC_SDN_URL) ? new URL(env.OFAC_SDN_URL).pathname : "")) {
+    throw new Error("OFAC_SDN_URL must be the address of SDN.CSV, so the alias list beside it can load.");
+  }
   if ((env.AUTH_SECRET || "").length < 16 || env.AUTH_SECRET === DEV_AUTH_SECRET) {
     throw new Error("AUTH_SECRET must be a new random string of at least 16 characters.");
   }
   if ((env.CRON_SECRET || "").length < 16) throw new Error("CRON_SECRET must be at least 16 characters.");
   const email = (env.ADMIN_EMAIL || "").trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error("ADMIN_EMAIL is not an email address.");
-  if (DEMO_EMAILS.includes(email) || email.endsWith("@upbcapital.test")) {
+  if (demoAddress(email)) {
     throw new Error("ADMIN_EMAIL cannot be a demo account.");
   }
+  // A release mails its admin codes, resets and alerts, so a reserved test domain won't do.
+  if (isReleaseBuild(env) && !deliverable(email)) throw new Error("ADMIN_EMAIL must be an address that takes mail.");
   const desk = (env.DESK_EMAIL || "").trim().toLowerCase();
   if (desk && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(desk)) throw new Error("DESK_EMAIL is not an email address.");
-  if (DEMO_EMAILS.includes(desk) || desk.endsWith("@upbcapital.test")) {
+  if (demoAddress(desk)) {
     throw new Error("DESK_EMAIL cannot be a demo account.");
   }
+  if (desk && isReleaseBuild(env) && !deliverable(desk)) throw new Error("DESK_EMAIL must be an address that takes mail.");
   if ((env.ADMIN_PASSWORD || "").length < 12 || env.ADMIN_PASSWORD === DEV_DEMO_PASSWORD) {
     throw new Error("ADMIN_PASSWORD must be at least 12 characters and cannot be the demo password.");
   }

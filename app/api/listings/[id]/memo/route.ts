@@ -2,6 +2,7 @@ import { listingIsPublic } from "@/lib/access";
 import { audit } from "@/lib/audit";
 import { getApiUser } from "@/lib/auth";
 import { foreclosureFor } from "@/lib/foreclosure";
+import { showableAvm } from "@/lib/enrichment";
 import { buildMemoPdf } from "@/lib/memo-pdf";
 import { prisma } from "@/lib/prisma";
 import { isPro } from "@/lib/settings";
@@ -47,7 +48,11 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     foreclosureCost: rule.cost,
     process: rule.assumed ? "Florida judicial (assumed)" : rule.process,
   });
-  const avmValues = notes.map((note) => (note.avmValue == null ? null : Number(note.avmValue))).filter((item): item is number => item != null);
+  // Stand-in values stay out of a release memo, and a pool's sum counts only when every loan has a value, so it's
+  // never set against the whole pool's price.
+  const avmValues = notes
+    .map((note) => showableAvm({ avmValue: note.avmValue == null ? null : Number(note.avmValue), avmProvider: note.avmProvider }))
+    .filter((item): item is number => item != null);
   const pdf = await buildMemoPdf({
     title: listing.title,
     city: lead.city,
@@ -61,7 +66,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     cashOnCash: performing ? cash.cashOnCash : null,
     paybackMonths: performing ? cash.paybackMonths : null,
     scenarios: performing ? [] : scenarios,
-    avm: avmValues.length ? avmValues.reduce((sum, item) => sum + item, 0) : null,
+    avm: avmValues.length && avmValues.length === notes.length ? avmValues.reduce((sum, item) => sum + item, 0) : null,
   });
   return new Response(new Uint8Array(pdf), {
     headers: {

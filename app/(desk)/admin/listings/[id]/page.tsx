@@ -9,6 +9,7 @@ import { Notice } from "@/components/notice";
 import { StatusPill } from "@/components/status-pill";
 import { SubmitButton } from "@/components/submit-button";
 import { listingActivity } from "@/lib/activity";
+import { deadlinePassed } from "@/lib/auction";
 import { requireRole } from "@/lib/auth";
 import { bidSheet, type BidRow } from "@/lib/bid-sheet";
 import { money, num, pct, prettyDate, q } from "@/lib/format";
@@ -55,6 +56,9 @@ export default async function AdminListingPage({
   const now = Date.now();
   const sentRecently = (at: Date | null) => Boolean(at && now - at.getTime() < RESEND_AFTER.LISTING);
   const deadlineOpen = listing.bidMode !== "NONE" && Boolean(listing.bidDeadline && listing.bidDeadline.getTime() > now);
+  // Marking by hand waits for the deadline, as an award does. The action checks the same rule.
+  const biddingOpen = listing.bidMode !== "NONE" && !deadlinePassed(listing.bidDeadline, new Date(now));
+  const canMarkSold = deskDecisionAllowed("MARK_SOLD", listing.status) && !biddingOpen;
   const listingHref = `/admin/listings/${listing.id}`;
 
   return (
@@ -301,18 +305,29 @@ export default async function AdminListingPage({
         <form action={reviewListing} className="space-y-3">
           <input type="hidden" name="listingId" value={listing.id} />
           <textarea name="comment" placeholder="Comment to the seller" className="desk-input min-h-28" />
-          <label className="block text-sm text-muted-foreground">
-            Sale price
-            <input name="salePrice" defaultValue={ask} className="desk-input mt-2" />
-          </label>
+          {canMarkSold && (
+            <>
+              <label className="block text-sm text-muted-foreground">
+                Sale price
+                <input name="salePrice" defaultValue={ask} className="desk-input mt-2" />
+              </label>
+              <label className="block text-sm text-muted-foreground">
+                Seller&apos;s agreement, for Mark sold
+                <input name="consent" className="desk-input mt-2" maxLength={300} placeholder="The seller’s email and its date" />
+              </label>
+            </>
+          )}
           <div className="grid gap-2">
             {/* Only the decisions that apply from this status; the action checks the same rule. */}
             {deskDecisionAllowed("UNDER_REVIEW", listing.status) && <Decision action="UNDER_REVIEW" label="Mark under review" />}
             {deskDecisionAllowed("APPROVE", listing.status) && <Decision action="APPROVE" label="Approve · make live" />}
             {deskDecisionAllowed("REQUEST_CHANGES", listing.status) && <Decision action="REQUEST_CHANGES" label="Request changes" />}
             {deskDecisionAllowed("REJECT", listing.status) && <Decision action="REJECT" label="Reject" />}
-            {deskDecisionAllowed("MARK_PENDING", listing.status) && <Decision action="MARK_PENDING" label="Mark in contract" />}
-            {deskDecisionAllowed("MARK_SOLD", listing.status) && <Decision action="MARK_SOLD" label="Mark sold" />}
+            {deskDecisionAllowed("MARK_PENDING", listing.status) && !biddingOpen && <Decision action="MARK_PENDING" label="Mark in contract" />}
+            {canMarkSold && <Decision action="MARK_SOLD" label="Mark sold" />}
+            {biddingOpen && (deskDecisionAllowed("MARK_PENDING", listing.status) || deskDecisionAllowed("MARK_SOLD", listing.status)) && (
+              <p className="text-sm text-muted-foreground">Bids are open. Mark in contract or sold after the deadline.</p>
+            )}
             {listing.status === "SOLD" && <p className="text-sm text-muted-foreground">Sold. No further decisions apply.</p>}
           </div>
         </form>

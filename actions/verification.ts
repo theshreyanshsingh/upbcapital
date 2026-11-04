@@ -11,7 +11,7 @@ import { prisma } from "@/lib/prisma";
 import { OFAC_DOWN_MESSAGE, OFAC_HOLD_MESSAGE, ofacHold, screenInBackground, screenUser } from "@/lib/screening";
 import { extensionOf, mimeFor, putBytes, safeBasename } from "@/lib/storage";
 import { uploadProblem } from "@/lib/uploads";
-import { ACCREDITATION_TEXT } from "@/lib/verification";
+import { ACCREDITATION_TEXT, VENDOR_LOCKED, vendorBlocked } from "@/lib/verification";
 import { startKyc } from "@/lib/vendors";
 
 const ENTITIES = new Set(["INDIVIDUAL", "LLC", "TRUST", "FUND", "OTHER"]);
@@ -139,6 +139,10 @@ export async function reviewVerification(formData: FormData) {
 export async function startVendorKyc() {
   const user = await requireUser();
   if (user.role !== "BUYER") redirect("/");
+  // A vendor check is identity only. It never reopens a file the desk has already decided.
+  const profile = await prisma.buyerProfile.findUnique({ where: { userId: user.id }, select: { status: true } });
+  const decided = vendorBlocked(profile?.status);
+  if (decided) redirect(`/buyer/verification?error=${encodeURIComponent(decided)}`);
   let started;
   try {
     started = await startKyc({ userId: user.id, email: user.email, name: user.name });
@@ -147,17 +151,18 @@ export async function startVendorKyc() {
     redirect(`/buyer/verification?error=${encodeURIComponent(message)}`);
   }
   if (!started.url) redirect("/buyer/verification?error=Vendor%20keys%20are%20not%20set.%20Use%20the%20desk%20form.");
-  await prisma.buyerProfile.upsert({
-    where: { userId: user.id },
-    update: { vendor: started.provider, vendorRef: started.reference, status: "SUBMITTED", submittedAt: new Date() },
-    create: {
-      userId: user.id,
-      vendor: started.provider,
-      vendorRef: started.reference,
-      status: "SUBMITTED",
-      submittedAt: new Date(),
-      entityName: user.name,
-    },
-  });
+  const data = { vendor: started.provider, vendorRef: started.reference, status: "SUBMITTED" as const, submittedAt: new Date() };
+  if (profile) {
+    // Conditional, so a desk decision that lands while the vendor opens still stands.
+    const opened = await prisma.buyerProfile.updateMany({ where: { userId: user.id, status: { notIn: [...VENDOR_LOCKED] } }, data });
+    if (opened.count !== 1) redirect(`/buyer/verification?error=${encodeURIComponent("The desk has already decided this file.")}`);
+  } else {
+    // A file made in the meantime keeps its status and only gains the vendor reference.
+    await prisma.buyerProfile.upsert({
+      where: { userId: user.id },
+      update: { vendor: data.vendor, vendorRef: data.vendorRef },
+      create: { userId: user.id, ...data, entityName: user.name },
+    });
+  }
   redirect(started.url);
 }

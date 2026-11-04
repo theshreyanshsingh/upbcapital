@@ -1,6 +1,6 @@
 import { closingClock, closingStats, targetDays } from "@/lib/closing-clock";
-import { ofacOpen } from "@/lib/ofac";
 import { prisma } from "@/lib/prisma";
+import { openReviewWhere, reviewKey } from "@/lib/screening";
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -19,11 +19,12 @@ export async function deskToday(closingDays: number | null | undefined, now = ne
     prisma.user.count({ where: { accountStatus: "PENDING" } }),
     prisma.closing.findMany({ where: { status: "OPEN" }, include: { steps: true } }),
     prisma.closing.findMany({ where: { status: { in: ["COMPLETE", "CANCELED"] }, openedAt: { gte: since } }, select: { status: true, openedAt: true, closedAt: true } }),
-    prisma.ofacCheck.findMany({ where: { result: "REVIEW" }, select: { name: true, matched: true, result: true, status: true } }),
+    prisma.ofacCheck.findMany({ where: openReviewWhere, select: { id: true, name: true, matched: true, userId: true, listingId: true } }),
     prisma.listing.findMany({ where: { status: "APPROVED" }, select: { _count: { select: { inquiries: { where: { type: "OFFER" } } } } } }),
   ]);
   const clocks = open.map((closing) => closingClock(closing, closing.steps, days, now));
-  const openReviews = new Set(reviews.filter(ofacOpen).map((row) => `${row.name}|${row.matched ?? ""}`));
+  // Counted the way the compliance page lists them: one per party, name and list entry.
+  const openReviews = new Set(reviews.map(reviewKey));
   const bids = live.reduce((sum, listing) => sum + listing._count.inquiries, 0);
   return {
     review: review.length,

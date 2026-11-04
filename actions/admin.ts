@@ -3,19 +3,21 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import type { AccountStatus, ReviewAction } from "@prisma/client";
-import { alertMatchingSearches } from "@/actions/listings";
+import { alertMatchingSearches } from "@/lib/search-alerts";
 import { audit } from "@/lib/audit";
+import { deadlinePassed } from "@/lib/auction";
 import { askSeller, awardOffer, checkAward, declineLosingBids } from "@/lib/awards";
 import { endSessions, requireRole } from "@/lib/auth";
-import { notify } from "@/lib/email";
+import { notify, sendAlert } from "@/lib/email";
 import { DEFAULT_CLOSING_DAYS, DEFAULT_DEPOSIT_BPS, DEFAULT_DEPOSIT_DAYS } from "@/lib/closing-clock";
-import { onGroupDeclined } from "@/actions/group";
+import { onGroupDeclined } from "@/lib/group-events";
 import { rescoreListing } from "@/lib/matching";
 import { postRevenueOnce } from "@/lib/ledger";
 import { feeBreakdown, percentToBps } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
-import { OFAC_DOWN_MESSAGE, OFAC_HOLD_MESSAGE, ofacHold, screenListing, screenUser } from "@/lib/screening";
+import { OFAC_DOWN_MESSAGE, OFAC_HOLD_MESSAGE, ofacHold, screenInBackground, screenListing, screenUser } from "@/lib/screening";
 import { clearSettingsCache, getSettings } from "@/lib/settings";
+import { cancelBuyerSubscription } from "@/lib/stripe-billing";
 import { syncProPrice } from "@/lib/stripe-sync";
 import { deskDecisionAllowed } from "@/lib/listing-status";
 
@@ -91,6 +93,11 @@ export async function reviewListing(formData: FormData) {
     back(listingId, "Changes requested");
   }
 
+  // An award waits for the bid deadline, so marking by hand does too. Otherwise it would close every sealed
+  // bid before buyers had their full window.
+  if ((action === "MARK_PENDING" || action === "MARK_SOLD") && listing.bidMode !== "NONE" && !deadlinePassed(listing.bidDeadline)) {
+    redirect(`/admin/listings/${listingId}?error=${encodeURIComponent("The bid deadline hasn't passed. Mark it in contract or sold after the deadline.")}`);
+  }
   // Marking in contract or sold by hand skips the award and closing paths, so it checks the same OFAC hold they do.
   if ((action === "MARK_PENDING" || action === "MARK_SOLD") && (await ofacHold({ listingId, userIds: [listing.sellerId] }))) {
     redirect(`/admin/listings/${listingId}?error=${encodeURIComponent(OFAC_HOLD_MESSAGE)}`);
@@ -118,6 +125,11 @@ export async function reviewListing(formData: FormData) {
     if (!Number.isFinite(salePrice) || salePrice <= 0) {
       redirect(`/admin/listings/${listingId}?error=${encodeURIComponent("Enter the accepted sale price.")}`);
     }
+    // No sale without the seller's word on the price, so the desk records how it was given, as on a desk bid.
+    const consent = String(formData.get("consent") || "").trim().slice(0, 300);
+    if (consent.length < 3) {
+      redirect(`/admin/listings/${listingId}?error=${encodeURIComponent("Record how the seller agreed to this price, such as the email and its date.")}`);
+    }
     const settings = await getSettings();
     const fees = feeBreakdown(salePrice, settings.buyerPremiumBps, settings.sellerCommissionBps);
     await prisma.listing.update({
@@ -139,11 +151,11 @@ export async function reviewListing(formData: FormData) {
     ]);
     await prisma.note.updateMany({ where: { listingId }, data: { tradeStatus: "SOLD" } });
     await declineLosingBids({ id: null, listingId, noteId: null }, listing.title);
-    await record(user.id, listingId, "MARK_SOLD", comment || `Sold at $${salePrice.toLocaleString("en-US")}.`);
+    await record(user.id, listingId, "MARK_SOLD", `${comment || `Sold at $${salePrice.toLocaleString("en-US")}.`} Seller agreement: ${consent}`);
     await notify(
       listing.seller.email,
       `Sold · ${listing.title}`,
-      `Sale price $${salePrice.toLocaleString("en-US")}. Commission $${(fees.commissionCents / 100).toLocaleString("en-US")}. Estimated net $${(fees.netToSellerCents / 100).toLocaleString("en-US")}.`,
+      `The desk recorded your agreement to sell at $${salePrice.toLocaleString("en-US")} (${consent}). Commission $${(fees.commissionCents / 100).toLocaleString("en-US")}. Estimated net $${(fees.netToSellerCents / 100).toLocaleString("en-US")}. If you did not agree, write the desk now.`,
     );
     back(listingId, "Marked sold");
   }
@@ -155,6 +167,16 @@ async function record(authorId: string, listingId: string, action: ReviewAction,
   await prisma.reviewComment.create({ data: { authorId, listingId, action, comment } });
   await audit(authorId, action, "listing", listingId, comment);
 }
+
+// The map pin and value estimate describe the old address or value after an edit. Clearing them makes the
+// next listing view work them out again.
+const STALE_ESTIMATE = {
+  latitude: { unset: true },
+  longitude: { unset: true },
+  avmValue: { unset: true },
+  avmProvider: "",
+  avmAsOf: { unset: true },
+} as const;
 
 export async function adminUpdateListing(formData: FormData) {
   const user = await admin();
@@ -170,27 +192,31 @@ export async function adminUpdateListing(formData: FormData) {
 
   if (listing.kind === "SINGLE" && listing.notes[0]) {
     const note = listing.notes[0];
+    // A blank box keeps what is on file rather than saving 0, and no figure on a note is negative.
     const num = (key: string, fallback: number) => {
-      const value = Number(String(formData.get(key) || "").replace(/[$,]/g, ""));
-      return Number.isFinite(value) ? value : fallback;
+      const raw = String(formData.get(key) ?? "").replace(/[$,\s]/g, "");
+      const value = Number(raw);
+      return raw && Number.isFinite(value) && value >= 0 ? value : fallback;
     };
-    await prisma.note.update({
-      where: { id: note.id },
-      data: {
-        streetAddress: String(formData.get("streetAddress") || note.streetAddress),
-        city: String(formData.get("city") || note.city),
-        state: String(formData.get("state") || note.state).toUpperCase(),
-        zip: String(formData.get("zip") || note.zip),
-        upb: num("upb", Number(note.upb)),
-        askingPrice: num("askingPrice", Number(note.askingPrice)),
-        estimatedValue: num("estimatedValue", Number(note.estimatedValue)),
-        interestRate: num("interestRate", Number(note.interestRate)),
-        monthlyPi: num("monthlyPi", Number(note.monthlyPi)),
-        monthsDelinquent: Math.round(num("monthsDelinquent", note.monthsDelinquent)),
-        borrowerName: String(formData.get("borrowerName") || ""),
-        memo: summary,
-      },
-    });
+    const data = {
+      streetAddress: String(formData.get("streetAddress") || note.streetAddress),
+      city: String(formData.get("city") || note.city),
+      state: String(formData.get("state") || note.state).toUpperCase(),
+      zip: String(formData.get("zip") || note.zip),
+      upb: num("upb", Number(note.upb)),
+      askingPrice: num("askingPrice", Number(note.askingPrice)),
+      estimatedValue: num("estimatedValue", Number(note.estimatedValue)),
+      interestRate: num("interestRate", Number(note.interestRate)),
+      monthlyPi: num("monthlyPi", Number(note.monthlyPi)),
+      monthsDelinquent: Math.round(num("monthsDelinquent", note.monthsDelinquent)),
+      borrowerName: String(formData.get("borrowerName") || "").trim(),
+      memo: summary,
+    };
+    const moved =
+      data.streetAddress !== note.streetAddress || data.city !== note.city || data.state !== note.state || data.zip !== note.zip || data.estimatedValue !== Number(note.estimatedValue);
+    await prisma.note.update({ where: { id: note.id }, data: { ...data, ...(moved ? STALE_ESTIMATE : {}) } });
+    // A new borrower name has never been screened, and awards and closings only check rows already on file.
+    if (data.borrowerName && data.borrowerName !== note.borrowerName.trim()) screenInBackground(() => screenListing(listingId, user.id));
   }
 
   if (listing.kind === "POOL") {
@@ -204,7 +230,8 @@ export async function adminUpdateListing(formData: FormData) {
       if (Number.isFinite(estimatedValue) && estimatedValue > 0) data.estimatedValue = estimatedValue;
       const payment = String(formData.get(`status_${note.id}`) || "");
       if (payment === "PERFORMING" || payment === "NON_PERFORMING" || payment === "SUB_PERFORMING") data.paymentStatus = payment;
-      if (Object.keys(data).length) await prisma.note.update({ where: { id: note.id }, data });
+      const revalued = data.estimatedValue !== undefined && data.estimatedValue !== Number(note.estimatedValue);
+      if (Object.keys(data).length) await prisma.note.update({ where: { id: note.id }, data: { ...data, ...(revalued ? STALE_ESTIMATE : {}) } });
     }
   }
 
@@ -305,7 +332,8 @@ export async function resetTwoFactor(formData: FormData) {
   });
   await endSessions(userId);
   await audit(actor.id, "TOTP_RESET", "user", userId);
-  await notify(user.email, "Two-factor sign-in was cleared", "The desk cleared the second factor on your account and signed you out. Set it up again from the security page. If you did not ask for this, write the desk now.");
+  // A security alert goes out whatever the user's email-notice setting says.
+  await sendAlert(user.email, "Two-factor sign-in was cleared", "The desk cleared the second factor on your account and signed you out. Set it up again from the security page. If you did not ask for this, write the desk now.");
   revalidatePath("/admin/users");
   redirect("/admin/users?notice=factor_reset");
 }
@@ -314,6 +342,13 @@ export async function setMembership(formData: FormData) {
   const actor = await admin();
   const userId = String(formData.get("userId") || "");
   const tier = String(formData.get("tier") || "FREE");
+  const target = await prisma.user.findUnique({ where: { id: userId } });
+  if (!target || target.role !== "BUYER") redirect("/admin/users?error=Membership is for buyer accounts.");
+  // A paying buyer's subscription would keep charging them, and its next Stripe event would undo the change.
+  const stripe = await cancelBuyerSubscription(process.env.STRIPE_SECRET_KEY, target.stripeSubscriptionId);
+  if (stripe.mode === "error") {
+    redirect(`/admin/users?error=${encodeURIComponent(`Stripe did not cancel the subscription, so the membership is unchanged. ${stripe.detail}`)}`);
+  }
   if (tier === "PRO") {
     await prisma.user.update({
       where: { id: userId },
@@ -323,6 +358,8 @@ export async function setMembership(formData: FormData) {
         subscriptionComped: true,
         // A desk comp runs until the desk sets the account back to free.
         subscriptionCurrentPeriodEnd: null,
+        // The canceled subscription's last events then match no one.
+        stripeSubscriptionId: null,
       },
     });
   } else {
@@ -331,7 +368,7 @@ export async function setMembership(formData: FormData) {
       data: { subscriptionTier: "FREE", subscriptionStatus: "CANCELED", subscriptionComped: false },
     });
   }
-  await audit(actor.id, "MEMBERSHIP", "user", userId, tier === "PRO" ? "Comped Pro" : "Set to free");
+  await audit(actor.id, "MEMBERSHIP", "user", userId, `${tier === "PRO" ? "Comped Pro" : "Set to free"}${stripe.mode === "canceled" ? `. ${stripe.detail}` : ""}`);
   revalidatePath("/admin/users");
   redirect("/admin/users?notice=membership");
 }
@@ -350,13 +387,16 @@ export async function saveSettings(formData: FormData) {
   if (premium < 0 || premium > 15 || commission < 0 || commission > 15) {
     redirect("/admin/settings?error=Keep premium and commission between 0% and 15%.");
   }
-  if (price < 0 || price > 5000) redirect("/admin/settings?error=Pro price must be between $0 and $5,000.");
+  // Stripe can't bill a recurring price under $0.50, and the app has no free Pro to stand in for $0.
+  if (price < 0.5 || price > 5000) redirect(`/admin/settings?error=${encodeURIComponent("Pro price must be between $0.50 and $5,000. Stripe can't bill less than $0.50 a month.")}`);
   if (early < 0 || early > 336) redirect("/admin/settings?error=Early access can run from 0 to 336 hours.");
   if (limit < 1 || limit > 100) redirect("/admin/settings?error=Free browse limit must be between 1 and 100.");
   const closingDays = Number(formData.get("closingTargetDays") || DEFAULT_CLOSING_DAYS);
   if (!Number.isFinite(closingDays) || closingDays < 5 || closingDays > 180) redirect("/admin/settings?error=Keep the target close between 5 and 180 days.");
-  const depositPercent = Number(formData.get("depositPercent") ?? DEFAULT_DEPOSIT_BPS / 100);
-  const depositDays = Number(formData.get("depositDays") ?? DEFAULT_DEPOSIT_DAYS);
+  // A cleared box keeps the default rather than reading as 0, which would quietly turn deposits off. A deposit
+  // of 0% is still possible when typed.
+  const depositPercent = Number(formData.get("depositPercent") || DEFAULT_DEPOSIT_BPS / 100);
+  const depositDays = Number(formData.get("depositDays") || DEFAULT_DEPOSIT_DAYS);
   if (!Number.isFinite(depositPercent) || depositPercent < 0 || depositPercent > 50) redirect("/admin/settings?error=Keep the deposit between 0% and 50%.");
   if (!Number.isFinite(depositDays) || depositDays < 1 || depositDays > 30) redirect("/admin/settings?error=Give buyers between 1 and 30 days to wire the deposit.");
   const requireTwoStep = formData.get("requireTwoStep") === "on";
@@ -433,18 +473,22 @@ export async function saveSettings(formData: FormData) {
       data: { stripeProductId: synced.productId, stripePriceId: synced.priceId },
     });
   }
+  // Checkout still charges the old Stripe price, so the page keeps showing it rather than a price nobody is charged.
+  const priceKept = synced.mode === "error" && before.proMonthlyPriceCents !== cents;
+  if (priceKept) await prisma.platformSettings.update({ where: { id: "default" }, data: { proMonthlyPriceCents: before.proMonthlyPriceCents } });
   await audit(
     actor.id,
     "FEE_SCHEDULE",
     "settings",
     "default",
-    `Premium ${premium}%, commission ${commission}%, Pro $${price}, early access ${Math.round(early)}h, free browse ${Math.round(limit)}, target close ${Math.round(closingDays)} days. Default wires ${wireInstructions === before.wireInstructions ? "unchanged" : "changed"}.`,
+    `Premium ${premium}%, commission ${commission}%, Pro $${priceKept ? (before.proMonthlyPriceCents / 100).toFixed(2) : price}${priceKept ? " (kept, Stripe failed)" : ""}, early access ${Math.round(early)}h, free browse ${Math.round(limit)}, target close ${Math.round(closingDays)} days. Default wires ${wireInstructions === before.wireInstructions ? "unchanged" : "changed"}.`,
   );
   clearSettingsCache();
   revalidatePath("/admin/settings");
   revalidatePath("/marketplace");
   if (synced.mode === "error") {
-    redirect(`/admin/settings?error=${encodeURIComponent(`The schedule is saved. Stripe was not updated: ${synced.detail}`)}`);
+    const kept = priceKept ? ` Pro stays at $${(before.proMonthlyPriceCents / 100).toFixed(2)} until it is.` : "";
+    redirect(`/admin/settings?error=${encodeURIComponent(`The schedule is saved. Stripe was not updated: ${synced.detail}${kept}`)}`);
   }
   redirect(`/admin/settings?notice=${synced.mode === "created" ? "stripe_price" : "saved_settings"}`);
 }

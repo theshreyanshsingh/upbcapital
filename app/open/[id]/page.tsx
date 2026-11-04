@@ -45,7 +45,7 @@ export default async function OpenListingPage({ params }: { params: Promise<{ id
         <h1 className="mt-4 font-semibold tracking-tight text-5xl text-foreground md:text-6xl">{note.city}, {note.state}</h1>
         <p className="mt-6 text-lg leading-relaxed text-muted-foreground">
           {listing.kind === "POOL"
-            ? `${listing.notes.length} loans across ${states}. The largest unpaid principal sits in the ${upbBucket(upb)} band for the pool.`
+            ? `${listing.notes.length} loans across ${states}. Total unpaid principal is in the ${upbBucket(upb)} band.`
             : `A ${labelOf("lien", note.lienPosition).toLowerCase()} ${labelOf("payment", note.paymentStatus).toLowerCase()} note. Unpaid principal is in the ${upbBucket(Number(note.upb))} band.`}
         </p>
         <dl className="mt-8 grid gap-px bg-muted sm:grid-cols-2">

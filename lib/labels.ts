@@ -115,6 +115,8 @@ export function homeFor(role: string) {
   }
 }
 
+// A tape comes from the pool upload, not the note wizard's file list, so its label lives here.
 export function docLabel(type: string) {
+  if (type === "TAPE") return "Loan tape";
   return DOC_TYPES.find((doc) => doc.value === type)?.label ?? type;
 }

@@ -15,8 +15,10 @@ import { requireRole } from "@/lib/auth";
 import { hideCompetingBids } from "@/lib/auction";
 import { docLabel } from "@/lib/labels";
 import { money, num, prettyDate, q } from "@/lib/format";
+import { buyerPrice } from "@/lib/offers";
 import { bpsToPercent } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
+import { deskBidNotAcceptable } from "@/lib/awards";
 import { getSettings } from "@/lib/settings";
 
 export const metadata = { title: "Your listing" };
@@ -33,15 +35,18 @@ export default async function SellerListingPage({
   const query = await searchParams;
   const listing = await prisma.listing.findUnique({
     where: { id },
-    include: { notes: true, documents: true, seller: true, inquiries: { include: { buyer: true } }, deskBids: { where: { status: "OPEN" }, orderBy: { createdAt: "desc" } }, reviews: { include: { author: true }, orderBy: { createdAt: "desc" } } },
+    include: { notes: true, documents: true, seller: true, inquiries: { include: { buyer: true, messages: { select: { kind: true, amount: true, createdAt: true, authorId: true } } } }, deskBids: { where: { status: "OPEN" }, orderBy: { createdAt: "desc" } }, reviews: { include: { author: true }, orderBy: { createdAt: "desc" } } },
   });
   if (!listing || (listing.sellerId !== user.id && user.role !== "ADMIN")) notFound();
   const settings = await getSettings();
+  const deskBidBlock = deskBidNotAcceptable(listing);
   const ask = listing.notes.reduce((sum, note) => sum + num(note.askingPrice), 0);
   const commission = listing.sellerCommissionCents != null ? listing.sellerCommissionCents / 100 : (ask * settings.sellerCommissionBps) / 10000;
   const net = listing.netToSellerCents != null ? listing.netToSellerCents / 100 : ask - commission;
   const editable = listing.status === "SUBMITTED" || listing.status === "CHANGES_REQUESTED";
   const sealed = hideCompetingBids({ bidMode: listing.bidMode, deadline: listing.bidDeadline, isDesk: user.role === "ADMIN" });
+  // The buyer's own latest price, not the opening bid, which goes stale once they reprice.
+  const latest = (inquiry: (typeof listing.inquiries)[number]) => buyerPrice(inquiry.amount, inquiry.messages, inquiry.buyerId);
   const report = listing.status === "SUBMITTED" || listing.status === "UNDER_REVIEW" || listing.status === "CHANGES_REQUESTED"
     ? null
     : sellerReport(await listingActivity(listing.id, listing.sellerId));
@@ -86,10 +91,11 @@ export default async function SellerListingPage({
                 <form action={answerDeskBid} className="mt-3 flex flex-wrap gap-2">
                   {/* Not name="id": it shadows form.id in the DOM, and React then drops the clicked button's value. */}
                   <input type="hidden" name="bidId" value={bid.id} />
-                  <button type="submit" name="answer" value="ACCEPTED" className="h-9 rounded-lg bg-foreground px-3 text-[13px] font-medium text-background">Accept</button>
+                  {!deskBidBlock && <button type="submit" name="answer" value="ACCEPTED" className="h-9 rounded-lg bg-foreground px-3 text-[13px] font-medium text-background">Accept</button>}
                   <button type="submit" name="answer" value="DECLINED" className="h-9 rounded-lg border border-border px-3 text-[13px] font-medium hover:bg-hover">Decline</button>
                 </form>
               )}
+              {deskBidBlock && <p className="mt-2 text-sm text-muted-foreground">{deskBidBlock}</p>}
             </div>
           ))}
           <p className="eyebrow">Inquiries</p>
@@ -98,8 +104,8 @@ export default async function SellerListingPage({
             {listing.inquiries.map((inquiry) => (
               <li key={inquiry.id} className="px-4 py-4">
                 <p className="text-sm text-foreground">{inquiry.buyer.name} · {inquiry.type.replaceAll("_", " ").toLowerCase()} · {inquiry.status.toLowerCase()}</p>
-                {inquiry.amount && !sealed && <p className="mt-1 font-semibold tracking-tight text-2xl">{money(num(inquiry.amount))}</p>}
-                {inquiry.amount && sealed && <p className="mt-1 text-sm text-muted-foreground">Amount sealed until the deadline.</p>}
+                {latest(inquiry) && !sealed && <p className="mt-1 font-semibold tracking-tight text-2xl">{money(num(latest(inquiry)))}</p>}
+                {latest(inquiry) && sealed && <p className="mt-1 text-sm text-muted-foreground">Amount sealed until the deadline.</p>}
                 {!(sealed && inquiry.type === "OFFER") && <p className="mt-1 text-sm text-muted-foreground">{inquiry.message}</p>}
               </li>
             ))}

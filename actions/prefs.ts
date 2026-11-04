@@ -23,6 +23,7 @@ export async function saveNotificationPrefs(formData: FormData) {
 
 export async function sendMatchDigests() {
   await requireRole(["ADMIN"]);
-  const sent = await sendDueDigests();
-  redirect(`/admin/analytics?notice=${encodeURIComponent(`Digest sent to ${sent} buyer${sent === 1 ? "" : "s"}.`)}`);
+  const { sent, failed } = await sendDueDigests();
+  const missed = failed ? ` ${failed} could not be sent. The server log has the reason.` : "";
+  redirect(`/admin/analytics?notice=${encodeURIComponent(`Digest sent to ${sent} buyer${sent === 1 ? "" : "s"}.${missed}`)}`);
 }

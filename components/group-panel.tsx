@@ -15,7 +15,7 @@ export function GroupPanel({
   group,
 }: {
   listingId: string;
-  asking: number;
+  asking: number | null;
   canStart: boolean;
   viewer: { id: string; role: string };
   group: { id: string; status: string; targetAmount: number; deadline: Date; positions: SeatRow[] } | null;
@@ -46,7 +46,7 @@ export function GroupPanel({
         <form action={openGroup} className="mt-4 grid gap-3">
           <p className="text-sm text-muted-foreground">Open a group on this note. Set the price, the smallest seat, and a deadline. Other verified buyers take the rest.</p>
           <input type="hidden" name="listingId" value={listingId} />
-          <input name="targetAmount" defaultValue={Math.round(asking)} className="desk-input" aria-label="Group target price" placeholder="Target price" />
+          <input name="targetAmount" defaultValue={asking == null ? undefined : Math.round(asking)} className="desk-input" aria-label="Group target price" placeholder="Target price" />
           <input name="minPosition" className="desk-input" aria-label="Minimum position" placeholder="Minimum seat" />
           <input name="deadline" type="datetime-local" className="desk-input" aria-label="Group deadline" required />
           <select name="structure" className="desk-input" aria-label="Position type">

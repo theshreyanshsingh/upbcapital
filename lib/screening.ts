@@ -1,7 +1,9 @@
+import type { Prisma } from "@prisma/client";
 import { after } from "next/server";
 import { audit } from "@/lib/audit";
 import { notifyDesk } from "@/lib/email";
-import { ofacBlocks, screenParties, screenParty, type Screen } from "@/lib/ofac";
+import { unset } from "@/lib/db-filters";
+import { ofacBlocks, ofacOpen, screenParties, screenParty, type Screen } from "@/lib/ofac";
 import { prisma } from "@/lib/prisma";
 
 type Target = { context: string; userId?: string | null; listingId?: string | null };
@@ -14,7 +16,25 @@ export function partyScope(row: { userId?: string | null; listingId?: string | n
   return null;
 }
 
+// One review per party, name and list entry. A screen with no party is its own review.
+export function reviewKey(row: { id: string; name: string; matched?: string | null; userId?: string | null; listingId?: string | null }) {
+  const scope = partyScope(row);
+  const party = scope ? ("userId" in scope ? `user:${scope.userId}` : `listing:${scope.listingId}`) : `check:${row.id}`;
+  return `${party}|${row.name}|${row.matched ?? ""}`;
+}
+
+// REVIEW rows nobody has decided. Rows from before decisions existed have no status at all.
+export const openReviewWhere: Prisma.OfacCheckWhereInput = { result: "REVIEW", OR: [{ status: { notIn: ["CLEARED", "CONFIRMED"] } }, ...unset("status").OR] };
+
+// Every row a decision on this one covers: the same party's screens of this name against this entry.
+export async function sameReviewIds(check: { id: string; name: string; matched?: string | null; userId?: string | null; listingId?: string | null }) {
+  const scope = partyScope(check);
+  const rows = scope ? await prisma.ofacCheck.findMany({ where: { name: check.name, result: "REVIEW", ...scope }, select: { id: true, matched: true } }) : [];
+  return [...new Set([check.id, ...rows.filter((row) => (row.matched ?? "") === (check.matched ?? "")).map((row) => row.id)])];
+}
+
 // A party's earlier decision on the same name and the same list entry carries forward. A new entry asks again.
+// An open review already on file is the answer, so screening again adds no row and no second email.
 async function recordScreen(name: string, screen: Screen, target: Target) {
   const base = {
     name,
@@ -28,7 +48,9 @@ async function recordScreen(name: string, screen: Screen, target: Target) {
   if (screen.result === "CLEAR") return prisma.ofacCheck.create({ data: base });
   const scope = partyScope(target);
   const earlier = scope ? await prisma.ofacCheck.findMany({ where: { name, result: "REVIEW", ...scope }, orderBy: { createdAt: "desc" } }) : [];
-  const decided = earlier.find((row) => (row.status === "CLEARED" || row.status === "CONFIRMED") && row.matched === screen.matched);
+  const latest = earlier.find((row) => row.matched === screen.matched);
+  if (latest && ofacOpen(latest)) return latest;
+  const decided = latest && (latest.status === "CLEARED" || latest.status === "CONFIRMED") ? latest : undefined;
   const check = await prisma.ofacCheck.create({
     data: {
       ...base,
@@ -41,6 +63,13 @@ async function recordScreen(name: string, screen: Screen, target: Target) {
   });
   if (check.status === "OPEN") {
     await notifyDesk(`OFAC review · ${name}`, `${target.context}: ${screen.detail} Decide it at /admin/compliance. Nothing was said to the party.`);
+  }
+  // A confirmed party showing up again is a new dealing with a blocked party, which counsel may have to report.
+  if (check.status === "CONFIRMED") {
+    await notifyDesk(
+      `OFAC confirmed match screened again · ${name}`,
+      `${target.context}: ${name} matches ${screen.matched}, which the desk confirmed earlier. The hold stands and nothing was said to the party. Call counsel, because a report can be due within 10 business days. To change the decision, reopen it at /admin/compliance.`,
+    );
   }
   return check;
 }
@@ -115,5 +144,5 @@ export async function ofacHold(target: { userIds?: (string | null | undefined)[]
   return rows.find(ofacBlocks) ?? null;
 }
 
-export const OFAC_HOLD_MESSAGE = "An OFAC review is open on this deal. Decide it under Compliance first.";
+export const OFAC_HOLD_MESSAGE = "An OFAC match on this deal is open or confirmed. Check it under Compliance first.";
 export const OFAC_DOWN_MESSAGE = "The sanctions list could not be read just now, so this cannot be approved yet. Try again in a few minutes.";

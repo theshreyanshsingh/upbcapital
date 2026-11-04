@@ -6,6 +6,7 @@ import { SaleApproval } from "@/components/sale-approval";
 import { requireRole } from "@/lib/auth";
 import { money, num, q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
+import { deskBidNotAcceptable } from "@/lib/awards";
 
 export const metadata = { title: "Your resale" };
 
@@ -35,12 +36,13 @@ export default async function ResalePage({
     where: { id },
     include: {
       notes: true,
-      inquiries: { where: { type: "OFFER" }, include: { buyer: true } },
+      inquiries: { where: { type: "OFFER" }, include: { buyer: true, messages: { select: { kind: true, amount: true, createdAt: true, authorId: true } } } },
       deskBids: { where: { status: "OPEN" }, orderBy: { createdAt: "desc" } },
     },
   });
   if (!listing || listing.sellerId !== user.id) notFound();
   const ask = listing.notes.reduce((sum, note) => sum + num(note.askingPrice), 0);
+  const deskBidBlock = deskBidNotAcceptable(listing);
   return (
     <div className="mx-auto max-w-3xl">
       <Link href="/buyer/portfolio" className="text-[13px] font-medium text-link">Back to your portfolio</Link>
@@ -64,9 +66,10 @@ export default async function ResalePage({
           <form action={answerDeskBid} className="mt-3 flex flex-wrap gap-2">
             {/* Not name="id": it shadows form.id in the DOM, and React then drops the clicked button's value. */}
             <input type="hidden" name="bidId" value={bid.id} />
-            <button type="submit" name="answer" value="ACCEPTED" className="h-9 rounded-lg bg-foreground px-3 text-[13px] font-medium text-background">Accept</button>
+            {!deskBidBlock && <button type="submit" name="answer" value="ACCEPTED" className="h-9 rounded-lg bg-foreground px-3 text-[13px] font-medium text-background">Accept</button>}
             <button type="submit" name="answer" value="DECLINED" className="h-9 rounded-lg border border-border px-3 text-[13px] font-medium hover:bg-hover">Decline</button>
           </form>
+          {deskBidBlock && <p className="mt-2 text-sm text-muted-foreground">{deskBidBlock}</p>}
         </div>
       ))}
     </div>

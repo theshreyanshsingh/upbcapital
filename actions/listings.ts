@@ -4,9 +4,8 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import type { DocType } from "@prisma/client";
 import { requireUser } from "@/lib/auth";
-import { notify, notifyDesk } from "@/lib/email";
-import { noteMatches, type BookFilters } from "@/lib/filters";
-import { isPro } from "@/lib/settings";
+import { notifyDesk } from "@/lib/email";
+import { typedNumber } from "@/lib/money";
 import { rescoreListing } from "@/lib/matching";
 import { screenInBackground, screenListing } from "@/lib/screening";
 import { prisma } from "@/lib/prisma";
@@ -17,18 +16,29 @@ import { normalizeTapeRows } from "@/lib/tape";
 import type { TapeFieldKey } from "@/lib/tape-fields";
 import { firstZodError, noteSchema, noteTitle } from "@/lib/validators";
 
+function skippedNotice(skipped: string[]) {
+  if (!skipped.length) return "";
+  const names = skipped.slice(0, 3).map((name) => name.slice(0, 40)).join(", ") + (skipped.length > 3 ? ", and more" : "");
+  const lead = skipped.length === 1 ? "One file wasn't added" : `${skipped.length} files weren't added`;
+  return `&error=${encodeURIComponent(`${lead} (${names}). Check its type and size, then upload it again.`)}`;
+}
+
 const DOC_VALUES = new Set(["NOTE", "MORTGAGE", "PAY_HISTORY", "BPO", "TITLE", "TAPE", "OTHER"]);
 
+// Returns the names of files it couldn't take, so the seller hears about them instead of assuming they're in.
 async function saveDocuments(listingId: string, formData: FormData) {
+  const skipped: string[] = [];
   const files = formData.getAll("documents");
   const types = formData.getAll("documentTypes").map(String);
   for (let index = 0; index < files.length; index += 1) {
     const file = files[index];
     if (!(file instanceof File) || file.size <= 0) continue;
     const bytes = Buffer.from(await file.arrayBuffer());
-    if (uploadProblem(file.name, bytes.length, bytes)) continue;
     const ext = extensionOf(file.name);
-    if (!ext) continue;
+    if (uploadProblem(file.name, bytes.length, bytes) || !ext) {
+      skipped.push(file.name);
+      continue;
+    }
     const storedName = `${crypto.randomUUID()}-${safeBasename(file.name)}`;
     const mime = mimeFor(ext, file.type || "application/octet-stream");
     await putBytes(storedName, bytes, mime);
@@ -45,6 +55,7 @@ async function saveDocuments(listingId: string, formData: FormData) {
       },
     });
   }
+  return skipped;
 }
 
 function noteData(input: ReturnType<typeof noteSchema.parse>) {
@@ -127,7 +138,7 @@ export async function createNoteListing(formData: FormData) {
     },
   });
   screenInBackground(() => screenListing(listing.id, user.id));
-  await saveDocuments(listing.id, formData);
+  const skipped = await saveDocuments(listing.id, formData);
   await prisma.reviewComment.create({
     data: { listingId: listing.id, authorId: user.id, action: "COMMENT", comment: "Submitted to the desk." },
   });
@@ -144,7 +155,7 @@ export async function createNoteListing(formData: FormData) {
   }
   await rescoreListing(listing.id, false);
   revalidatePath("/admin/queue");
-  redirect(`/seller/listings/${listing.id}?notice=submitted`);
+  redirect(`/seller/listings/${listing.id}?notice=submitted${skippedNotice(skipped)}`);
 }
 
 export async function updateOwnNote(listingId: string, formData: FormData) {
@@ -160,7 +171,15 @@ export async function updateOwnNote(listingId: string, formData: FormData) {
   const input = parsed.data;
   const note = listing.notes[0];
   if (!note) return { error: "The loan record is missing." };
-  await prisma.note.update({ where: { id: note.id }, data: noteData(input) });
+  const data = noteData(input);
+  // A new address or value makes the stored pin and valuation wrong, so they're cleared and read again.
+  const moved =
+    note.streetAddress !== data.streetAddress || note.city !== data.city || note.state !== data.state || note.zip !== data.zip ||
+    Number(note.estimatedValue) !== Number(data.estimatedValue);
+  await prisma.note.update({
+    where: { id: note.id },
+    data: moved ? { ...data, latitude: null, longitude: null, avmValue: null, avmProvider: "", avmAsOf: null } : data,
+  });
   await prisma.listing.update({
     where: { id: listing.id },
     data: {
@@ -170,13 +189,13 @@ export async function updateOwnNote(listingId: string, formData: FormData) {
       sellerFinanced: user.role === "INDIVIDUAL_SELLER" || formData.get("sellerFinanced") === "true",
     },
   });
-  await saveDocuments(listing.id, formData);
+  const skipped = await saveDocuments(listing.id, formData);
   await prisma.reviewComment.create({
     data: { listingId: listing.id, authorId: user.id, action: "COMMENT", comment: "Seller updated the file and resubmitted." },
   });
   await notifyDesk(`Resubmitted · ${noteTitle(input)}`, `${user.name} updated the listing and sent it back to review.`);
   revalidatePath(`/seller/listings/${listing.id}`);
-  redirect(`/seller/listings/${listing.id}?notice=resubmitted`);
+  redirect(`/seller/listings/${listing.id}?notice=resubmitted${skippedNotice(skipped)}`);
 }
 
 export async function updateOwnListingMeta(formData: FormData) {
@@ -211,7 +230,14 @@ export async function createPoolListing(formData: FormData) {
   const summary = String(formData.get("summary") || "").trim();
   const priceMode = String(formData.get("priceMode") || "COLUMN") as "COLUMN" | "PERCENT" | "POOL_TOTAL";
   if (title.length < 3) return { error: "Name the pool." };
-  const mapping = JSON.parse(String(formData.get("mapping") || "{}")) as Partial<Record<TapeFieldKey, string>>;
+  let mapping: Partial<Record<TapeFieldKey, string>>;
+  try {
+    const parsed: unknown = JSON.parse(String(formData.get("mapping") || "{}"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("mapping");
+    mapping = Object.fromEntries(Object.entries(parsed).filter(([, header]) => typeof header === "string")) as Partial<Record<TapeFieldKey, string>>;
+  } catch {
+    return { error: "Map the tape's columns again." };
+  }
   const draft = await readTapeDraft(user.id, token);
   if (!draft) return { error: "That tape expired. Upload it again." };
   const { parseTapeBuffer } = await import("@/lib/tape");
@@ -220,8 +246,8 @@ export async function createPoolListing(formData: FormData) {
     rows: matrix.rows,
     mapping,
     priceMode,
-    pricePercent: Number(formData.get("pricePercent") || 0),
-    poolTotal: Number(formData.get("poolTotal") || 0),
+    pricePercent: typedNumber(formData.get("pricePercent")),
+    poolTotal: typedNumber(formData.get("poolTotal")),
   });
   if (errors.length) {
     return { error: errors.slice(0, 4).map((issue) => (issue.row ? `Row ${issue.row}: ${issue.message}` : issue.message)).join(" ") };
@@ -239,7 +265,7 @@ export async function createPoolListing(formData: FormData) {
     },
   });
   const storedName = `${crypto.randomUUID()}-${safeBasename(draft.filename)}`;
-  const tapeMime = draft.filename.toLowerCase().endsWith(".csv") ? "text/csv" : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  const tapeMime = mimeFor(extensionOf(draft.filename) ?? "", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   await putBytes(storedName, draft.bytes, tapeMime);
   await prisma.document.create({
     data: {
@@ -262,33 +288,3 @@ export async function createPoolListing(formData: FormData) {
   redirect(`/seller/listings/${listing.id}?notice=submitted`);
 }
 
-export async function alertMatchingSearches(listingId: string) {
-  const listing = await prisma.listing.findUnique({ where: { id: listingId }, include: { notes: true } });
-  if (!listing || listing.status !== "APPROVED") return;
-  const searches = await prisma.savedSearch.findMany({ where: { alertEnabled: true }, include: { user: true } });
-  for (const search of searches) {
-    if (!isPro(search.user) || search.user.accountStatus !== "APPROVED") continue;
-    const filters = search.filters as BookFilters;
-    if (filters.kind && filters.kind !== listing.kind) continue;
-    const hit = listing.notes.some((note) =>
-      noteMatches(
-        {
-          city: note.city,
-          state: note.state,
-          paymentStatus: note.paymentStatus,
-          lienPosition: note.lienPosition,
-          propertyType: note.propertyType,
-          upb: Number(note.upb),
-          askingPrice: Number(note.askingPrice),
-        },
-        filters,
-      ),
-    );
-    if (!hit) continue;
-    await notify(
-      search.user.email,
-      `New paper matches “${search.name}”`,
-      `${listing.title} just went live and matches your saved search. Open the book to underwrite it.`,
-    );
-  }
-}

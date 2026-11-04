@@ -131,7 +131,7 @@ function rateValue(raw: string) {
   const cleaned = raw.replace(/[%$,\s]/g, "");
   const value = Number(cleaned);
   if (!Number.isFinite(value)) return { value: null, fix: "" };
-  if (value > 0 && value <= 1) return { value: value * 100, fix: `${raw} will be read as ${(value * 100).toFixed(2)}%.` };
   if (raw.includes("%")) return { value, fix: "The percent sign will be dropped." };
+  if (value > 0 && value < 1) return { value: value * 100, fix: `${raw} will be read as ${(value * 100).toFixed(2)}%.` };
   return { value, fix: "" };
 }

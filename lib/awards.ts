@@ -1,10 +1,11 @@
 import type { ListingStatus } from "@prisma/client";
-import { onGroupAccepted, onGroupDeclined } from "@/actions/group";
+import { onGroupAccepted, onGroupDeclined } from "@/lib/group-events";
 import { deadlinePassed } from "@/lib/auction";
 import { audit } from "@/lib/audit";
+import { unset } from "@/lib/db-filters";
 import { openClosing, tradeConflict } from "@/lib/closing-service";
 import { notify } from "@/lib/email";
-import { buyerPrice } from "@/lib/offers";
+import { buyerPrice, type OfferMoney } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
 import { OFAC_HOLD_MESSAGE, ofacHold } from "@/lib/screening";
 
@@ -31,6 +32,12 @@ export async function declineLosingBids(winner: { id: string | null; listingId: 
         : "Another bid was accepted. Thank you for bidding.",
     );
   }
+  // The desk's open bids on the same loans can't be taken either, so they come off the seller's page. A desk bid
+  // that just won is already ACCEPTED.
+  await prisma.deskBid.updateMany({
+    where: { listingId: winner.listingId, status: "OPEN", ...(winner.noteId ? { OR: [{ noteId: winner.noteId }, ...unset("noteId").OR] } : {}) },
+    data: { status: "WITHDRAWN" },
+  });
   return losers.length;
 }
 
@@ -49,9 +56,42 @@ export function sellerAgreed(input: { price: number; reserve: number | null | un
   return null;
 }
 
+// The buyer can change their bid after the desk asks the seller. An answer to the old figure can't sell at the new one.
+export function askedPriceStands(asked: number | null | undefined, current: number | null | undefined) {
+  return asked != null && current != null && Math.abs(asked - current) < 0.005;
+}
+
+type BidMoney = { id: string; type: string; status: string; noteId: string | null; amount: number | null; buyerId: string; messages: OfferMoney[] };
+
+// The other live bids a seller can weigh against this one: those for the same loan, or for the whole listing when
+// this one is, each at the buyer's own latest price rather than the opening bid.
+export function rivalBids(offer: BidMoney, offers: BidMoney[]) {
+  const rest = offers.filter((other) => other.id !== offer.id && other.type === "OFFER" && (other.status === "OPEN" || other.status === "REVIEWED") && other.noteId === offer.noteId);
+  const best = rest.reduce((top, other) => Math.max(top, buyerPrice(other.amount, other.messages, other.buyerId) ?? 0), 0);
+  return { count: rest.length, best };
+}
+
 // A bid waits on the seller when the desk asked and the seller hasn't answered since.
 export function awaitingSeller(offer: { sellerAskedAt: Date | null; sellerAnsweredAt: Date | null }) {
   return Boolean(offer.sellerAskedAt && (!offer.sellerAnsweredAt || offer.sellerAnsweredAt < offer.sellerAskedAt));
+}
+
+// Why a buyer's bid on a listing in this status can't be awarded, or null when it can.
+export function listingNotAwardable(status: string) {
+  if (status === "APPROVED") return null;
+  if (status === "SOLD") return "This listing is already sold.";
+  if (status === "PENDING") return "This listing is in contract, so its bids can't be awarded.";
+  return "This listing isn't live, so its bids can't be awarded.";
+}
+
+// The desk may buy a file before it goes live, but not one it declined, sent back, or that is already in contract.
+export function deskBidNotAcceptable(listing: { status: string; bidMode: string; bidDeadline: Date | null }) {
+  if (listing.status === "SOLD") return "This listing is already sold.";
+  if (listing.status === "PENDING") return "This listing is in contract, so the bid can't be taken.";
+  if (listing.status === "REJECTED" || listing.status === "CHANGES_REQUESTED") return "This listing was declined or sent back for changes, so the bid can't be taken.";
+  // Taking a bid closes every other one, so a sealed or best-and-final round runs to its deadline first.
+  if (listing.bidMode !== "NONE" && !deadlinePassed(listing.bidDeadline)) return "This bid can be accepted after the bid deadline.";
+  return null;
 }
 
 function loadOffer(inquiryId: string) {
@@ -68,8 +108,17 @@ export async function checkAward(inquiryId: string) {
   if (offer.status === "DECLINED") return { error: "That offer was declined or its closing was canceled. The buyer can send a new one." } as const;
   const awarded = await prisma.closing.findUnique({ where: { inquiryId } });
   if (awarded) return { error: "That offer already has a closing.", closingId: awarded.id } as const;
+  // Only a live listing sells. A rejected or sent-back one would skip the desk's review, and an in-contract one
+  // is already spoken for. A pool's one-loan sales leave it live, so they pass here too.
+  const listingProblem = listingNotAwardable(offer.listing.status);
+  if (listingProblem) return { error: listingProblem } as const;
   if (offer.buyer.accountStatus !== "APPROVED") return { error: "That buyer account is not approved." } as const;
-  if (await ofacHold({ listingId: offer.listingId, userIds: [offer.buyerId, offer.listing.sellerId] })) return { error: OFAC_HOLD_MESSAGE } as const;
+  // A group's seats all become funders and closing parties, so each seat holder is checked like the lead.
+  const group = await prisma.groupBuy.findFirst({ where: { inquiryId }, include: { positions: { include: { user: { select: { accountStatus: true } } } } } });
+  const seats = group ? group.positions.filter((seat) => seat.status !== "DROPPED") : [];
+  if (seats.some((seat) => seat.user.accountStatus !== "APPROVED")) return { error: "A group seat holder's account is not approved." } as const;
+  const parties = [offer.buyerId, offer.listing.sellerId, ...seats.map((seat) => seat.userId)];
+  if (await ofacHold({ listingId: offer.listingId, userIds: parties })) return { error: OFAC_HOLD_MESSAGE } as const;
   if (offer.listing.bidMode !== "NONE" && !deadlinePassed(offer.listing.bidDeadline)) return { error: "Award this after the bid deadline." } as const;
   const conflict = await tradeConflict(offer.listingId, offer.noteId);
   if (conflict) return { error: conflict } as const;
@@ -82,9 +131,7 @@ export async function checkAward(inquiryId: string) {
   );
   if (!price || price <= 0) return { error: "That offer has no amount." } as const;
   // A group bid is the seats' money. Every seat must have agreed to this price, and together they must cover it.
-  const group = await prisma.groupBuy.findFirst({ where: { inquiryId }, include: { positions: true } });
   if (group) {
-    const seats = group.positions.filter((seat) => seat.status !== "DROPPED");
     if (seats.some((seat) => seat.status === "RECONFIRM")) return { error: "Some group seats haven't reconfirmed the latest price." } as const;
     const covered = seats.reduce((sum, seat) => sum + Number(seat.amount), 0);
     if (Math.abs(covered - price) > 1) {

@@ -33,9 +33,24 @@ export default async function ClosingsPage() {
                 ],
               }
             : { listing: { sellerId: user.id } },
-    include: { listing: true, steps: true },
+    include: {
+      listing: true,
+      steps: true,
+      funders: { where: { userId: user.id } },
+      brokerFees: { where: { brokerId: user.id } },
+    },
     orderBy: { openedAt: "desc" },
   });
+  // Each side sees its own figure: the buyer what they wire, the seller what they net, a broker their fee.
+  const figure = (closing: (typeof closings)[number]) => {
+    if (user.role === "ADMIN") return `All-in ${money(closing.buyerTotalCents / 100)} · net ${money(closing.netToSellerCents / 100)}`;
+    if (closing.listing.sellerId === user.id) return `Net ${money(closing.netToSellerCents / 100)}`;
+    const share = closing.funders[0];
+    if (share) return `Your share ${money(Number(share.amount) + share.premiumCents / 100)}`;
+    if (user.role === "BUYER") return `All-in ${money(closing.buyerTotalCents / 100)}`;
+    const fee = closing.brokerFees.reduce((sum, row) => sum + row.amountCents, 0);
+    return fee ? `Your fee ${money(fee / 100)}` : null;
+  };
   const days = targetDays((await getSettings()).closingTargetDays);
   return (
     <div>
@@ -45,6 +60,7 @@ export default async function ClosingsPage() {
         {closings.map((closing) => {
           const done = closing.steps.filter((step) => step.status === "COMPLETE").length;
           const clock = closingClock(closing, closing.steps, days);
+          const amount = figure(closing);
           return (
             <li key={closing.id} className="flex flex-wrap items-baseline justify-between gap-3 px-5 py-5">
               <div>
@@ -61,7 +77,7 @@ export default async function ClosingsPage() {
                   </p>
                 )}
               </div>
-              <p className="text-sm text-foreground">All-in {money(closing.buyerTotalCents / 100)}</p>
+              {amount && <p className="text-sm text-foreground">{amount}</p>}
             </li>
           );
         })}

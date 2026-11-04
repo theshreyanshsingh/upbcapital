@@ -28,8 +28,10 @@ test("a broker fee is a percent of premium plus commission", () => {
   assert.deepEqual(result.fees, [{ brokerId: "nora", role: "SELLER_BROKER", amountCents: 2000, basis: "PERCENT" }]);
 });
 
-test("a flat fee ignores the pool and an override replaces the desk schedule", () => {
+test("a flat fee ignores the pool's size and an override replaces the desk schedule", () => {
   const result = assessBrokerFees(input({
+    premiumCents: 400000,
+    commissionCents: 600000,
     deal: { brokerId: "nora", role: "SELLER_BROKER", terms: { basis: "FLAT", bps: 0, cents: 75000 } },
   }));
   assert.equal(result.fees[0]?.amountCents, 75000);

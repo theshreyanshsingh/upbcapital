@@ -82,6 +82,13 @@ export async function duplicateListing(formData: FormData) {
       status: "SUBMITTED",
       title: `Copy of ${listing.title}`.slice(0, 140),
       summary: listing.summary,
+      // A copy keeps what the desk reviews it by: the compliance flag, the broker on the deal, and the reserve.
+      sellerFinanced: listing.sellerFinanced,
+      brokerId: listing.brokerId,
+      brokerRole: listing.brokerRole,
+      clientSellerName: listing.clientSellerName,
+      clientRelationship: listing.clientRelationship,
+      reservePrice: listing.reservePrice,
       notes: {
         create: listing.notes.map((note) => ({
           streetAddress: note.streetAddress,

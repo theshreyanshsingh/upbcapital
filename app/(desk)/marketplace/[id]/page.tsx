@@ -41,8 +41,6 @@ export default async function ListingPage({
   const query = await searchParams;
   const user = await requireUser();
   if (user.role === "BUYER" && user.accountStatus !== "APPROVED") redirect("/buyer/pending");
-  await enrichListing(id);
-  await notifyIfAuctionClosed(id);
   const [listing, settings, live] = await Promise.all([
     prisma.listing.findUnique({
       where: { id },
@@ -66,8 +64,6 @@ export default async function ListingPage({
     sellerId: listing.sellerId,
     brokerId: listing.brokerId,
   });
-  // Desk opens are not buyer interest, so they stay out of the counts sellers and the desk read.
-  if (listing.sellerId !== user.id && user.role !== "ADMIN") await rememberView(listing.id, user.id);
   if (!access.ok) {
     const copy = access.reason === "early"
       ? `This listing is inside the ${settings.earlyAccessHours}-hour early-access window.`
@@ -83,6 +79,12 @@ export default async function ListingPage({
       </div>
     );
   }
+
+  // Desk opens are not buyer interest, and a refused open isn't a view, so neither reaches the seller's counts.
+  if (listing.sellerId !== user.id && user.role !== "ADMIN") await rememberView(listing.id, user.id);
+  // Valuations run only for someone who can open the listing, so a held listing's streets never go to a vendor.
+  if (await enrichListing(listing.id)) listing.notes = await prisma.note.findMany({ where: { listingId: listing.id } });
+  await notifyIfAuctionClosed(listing.id);
 
   const pro = user.role === "ADMIN" || isPro(user);
   const profile = user.role === "BUYER" ? await prisma.buyerProfile.findUnique({ where: { userId: user.id } }) : null;
@@ -124,13 +126,18 @@ export default async function ListingPage({
     askingPrice: num(note.askingPrice),
     foreclosureStatus: note.foreclosureStatus,
     borrowerName: loanOpen(note) ? note.borrowerName : "",
-    memo: note.memo,
+    memo: loanOpen(note) ? note.memo : "",
     tradeStatus: note.tradeStatus,
     ...mapPoint(note.latitude, note.longitude),
     avm: showableAvm({ avmValue: note.avmValue == null ? null : num(note.avmValue), avmProvider: note.avmProvider }),
   }));
-  const economics = listing.kind === "POOL" ? poolMetrics(notes) : noteMetrics(notes[0]);
-  const asking = listing.kind === "POOL" ? poolMetrics(notes).totalAsk : notes[0].askingPrice;
+  // A pool sold loan by loan prices only what's left, and can't be bid whole once any loan has traded.
+  const forSale = listing.kind === "POOL" && notes.some((note) => note.tradeStatus === "AVAILABLE") ? notes.filter((note) => note.tradeStatus === "AVAILABLE") : notes;
+  const wholeOpen = forSale.length === notes.length;
+  const pool = poolMetrics(forSale);
+  const economics = listing.kind === "POOL" ? pool : noteMetrics(notes[0]);
+  const asking = listing.kind === "POOL" ? pool.totalAsk : notes[0].askingPrice;
+  const avms = forSale.map((note) => note.avm).filter((value): value is number => value != null);
   const liveGroup = await prisma.groupBuy.findFirst({
     where: { listingId: listing.id, status: { in: ["GATHERING", "OFFERED", "COUNTERED", "CLOSING"] } },
     include: { positions: { include: { user: true }, orderBy: { seat: "asc" } } },
@@ -138,7 +145,7 @@ export default async function ListingPage({
   const premium = (asking * settings.buyerPremiumBps) / 10000;
   const lead = notes[0];
   const stateCounts = countBy(notes.map((note) => note.state));
-  const performingSlice = sliceForAnalyzer(notes);
+  const performingSlice = sliceForAnalyzer(forSale);
   const poolStrata = stratify(notes.map((note) => ({
     state: note.state,
     lien: note.lienPosition,
@@ -200,12 +207,15 @@ export default async function ListingPage({
               )}
             </>
           ) : (
-            <p className="mt-3 text-sm text-muted-foreground">{notes.length} loans. {unlocked ? "Addresses are open." : "Street addresses open after confidentiality."}</p>
+            <p className="mt-3 text-sm text-muted-foreground">{wholeOpen ? `${notes.length} loans.` : `${forSale.length} of ${notes.length} loans still for sale.`} {unlocked ? "Addresses are open." : "Street addresses open after confidentiality."}</p>
           )}
           {listing.kind === "SINGLE" && !unlocked && user.role === "ADMIN" ? null : null}
           {listing.kind === "POOL" && !unlocked && !roomClosed && user.role === "BUYER" && <div className="mt-5"><NdaDialog listingId={listing.id} listingTitle={listing.title} /></div>}
-          {pro && lead.avm != null && (
-            <p className="mt-4 text-sm text-muted-foreground">Value estimate {money(lead.avm)} · {listing.notes[0]?.avmProvider || "mock"}</p>
+          {pro && avms.length > 0 && (
+            <p className="mt-4 text-sm text-muted-foreground">
+              Value estimate {money(avms.reduce((sum, value) => sum + value, 0))}
+              {listing.kind === "POOL" ? ` · ${avms.length} of ${forSale.length} loans` : ""} · {listing.notes[0]?.avmProvider || "mock"}
+            </p>
           )}
           <div className="mt-5">
             <UsMap
@@ -225,8 +235,8 @@ export default async function ListingPage({
             <p className="eyebrow">Capital stack</p>
             <div className="mt-5">
               <CapitalStack
-                value={listing.kind === "POOL" ? poolMetrics(notes).totalValue : lead.estimatedValue}
-                upb={listing.kind === "POOL" ? poolMetrics(notes).totalUpb : lead.upb}
+                value={listing.kind === "POOL" ? pool.totalValue : lead.estimatedValue}
+                upb={listing.kind === "POOL" ? pool.totalUpb : lead.upb}
                 price={asking}
               />
             </div>
@@ -279,9 +289,9 @@ export default async function ListingPage({
               <p className="eyebrow">Performance mix</p>
               <div className="mt-4">
                 <Donut slices={[
-                  { label: "Performing", value: poolMetrics(notes).performingUpb, color: "var(--chart-1)" },
-                  { label: "Sub-performing", value: poolMetrics(notes).subUpb, color: "var(--warn)" },
-                  { label: "Non-performing", value: poolMetrics(notes).nplUpb, color: "var(--bad)" },
+                  { label: "Performing", value: pool.performingUpb, color: "var(--chart-1)" },
+                  { label: "Sub-performing", value: pool.subUpb, color: "var(--warn)" },
+                  { label: "Non-performing", value: pool.nplUpb, color: "var(--bad)" },
                 ]} />
               </div>
             </div>
@@ -348,10 +358,15 @@ export default async function ListingPage({
             {dataRoom.length === 0 && <li className="px-4 py-4 text-sm text-muted-foreground">No documents uploaded.</li>}
             {dataRoom.map((document) => (
               <li key={document.id} className="flex items-center justify-between gap-3 px-4 py-4">
-                <div>
-                  <p className="text-sm text-foreground">{document.originalName}</p>
-                  <p className="text-[13px] font-medium text-muted-foreground">{docLabel(document.type)}</p>
-                </div>
+                {/* File names often carry a borrower or a street, so they show only to someone who can open the file. */}
+                {((pro || closingParty) && unlocked) || document.id === ownNdaId ? (
+                  <div>
+                    <p className="text-sm text-foreground">{document.originalName}</p>
+                    <p className="text-[13px] font-medium text-muted-foreground">{docLabel(document.type)}</p>
+                  </div>
+                ) : (
+                  <p className="text-sm text-foreground">{docLabel(document.type)}</p>
+                )}
                 {((pro || closingParty) && unlocked) || document.id === ownNdaId ? (
                   <a className="text-[13px] font-medium text-link" href={`/api/documents/${document.id}`}>Download</a>
                 ) : (
@@ -386,8 +401,8 @@ export default async function ListingPage({
         </div>
         <GroupPanel
           listingId={listing.id}
-          asking={asking}
-          canStart={listing.status === "APPROVED" && (user.role === "ADMIN" || (user.role === "BUYER" && verified && unlocked))}
+          asking={pro || user.role === "ADMIN" ? asking : null}
+          canStart={listing.status === "APPROVED" && wholeOpen && (user.role === "ADMIN" || (user.role === "BUYER" && verified && unlocked))}
           viewer={{ id: user.id, role: user.role }}
           group={liveGroup ? {
             id: liveGroup.id,
@@ -409,10 +424,11 @@ export default async function ListingPage({
         <OfferPanel
           listingId={listing.id}
           premiumBps={settings.buyerPremiumBps}
-          canOffer={listing.status === "APPROVED" && user.role === "BUYER"}
+          canOffer={listing.status === "APPROVED" && wholeOpen && user.role === "BUYER"}
           pro={pro}
           verified={verified}
           heading={listing.kind === "POOL" ? "Bid the whole pool" : undefined}
+          closedText={listing.status === "APPROVED" && !wholeOpen ? "Some loans in this pool have traded, so it can't be bid whole. Bid the loans still for sale in the table." : undefined}
         />
         <p className="text-xs leading-relaxed text-muted-foreground">Listed by {listing.seller.companyName || listing.seller.name}. An accepted bid opens a closing checklist with the premium and commission on the all-in total.</p>
       </aside>

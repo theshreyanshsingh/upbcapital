@@ -1,44 +1,61 @@
 import { answerSaleApproval, setReserve } from "@/actions/sale-approval";
 import { SubmitButton } from "@/components/submit-button";
-import { awaitingSeller } from "@/lib/awards";
+import { sealedFromSeller } from "@/lib/auction";
+import { askedPriceStands, awaitingSeller, rivalBids } from "@/lib/awards";
 import { money, prettyDate } from "@/lib/format";
+import { buyerPrice, type OfferMoney } from "@/lib/offers";
 
 type Offer = {
   id: string;
   status: string;
   type: string;
+  buyerId: string;
   noteId: string | null;
   amount: number | null;
   sellerAskedAt: Date | null;
   sellerAskedAmount: number | null;
   sellerAnsweredAt: Date | null;
   buyer: { name: string; companyName: string };
+  messages: OfferMoney[];
 };
 
+type Listing = { id: string; status: string; reservePrice: number | null; bidMode: string; bidDeadline: Date | null };
+
+const live = (offer: Offer) => offer.type === "OFFER" && (offer.status === "OPEN" || offer.status === "REVIEWED");
+
 // The seller's side of every sale: bids the desk recommends, and the standing reserve that spares a question.
-export function SaleApproval({ listing, offers, canAnswer }: { listing: { id: string; reservePrice: number | null }; offers: Offer[]; canAnswer: boolean }) {
-  const waiting = offers.filter((offer) => offer.type === "OFFER" && (offer.status === "OPEN" || offer.status === "REVIEWED") && awaitingSeller(offer));
-  const others = offers.filter((offer) => offer.type === "OFFER" && (offer.status === "OPEN" || offer.status === "REVIEWED"));
+export function SaleApproval({ listing, offers, canAnswer }: { listing: Listing; offers: Offer[]; canAnswer: boolean }) {
+  const waiting = offers.filter((offer) => live(offer) && awaitingSeller(offer));
+  const sealed = sealedFromSeller(listing);
   return (
     <section className="mt-10 border border-border p-5 rounded-xl" aria-labelledby="approval-heading">
       <p id="approval-heading" className="eyebrow">Sale approval</p>
       <p className="mt-2 text-sm text-muted-foreground">Nothing sells without your word on the price. Approve each sale the desk recommends, or set a reserve and the desk may accept any bid at or above it.</p>
       {waiting.map((offer) => {
-        const rest = others.filter((other) => other.id !== offer.id);
-        const best = rest.reduce((top, other) => Math.max(top, Number(other.amount ?? 0)), 0);
+        const rest = rivalBids(offer, offers);
+        // The buyer can reprice after the desk asks, and then this answer can't sell at the old figure.
+        const current = buyerPrice(offer.amount, offer.messages, offer.buyerId);
+        const moved = !askedPriceStands(offer.sellerAskedAmount, current);
+        const notLive = listing.status !== "APPROVED";
         return (
           <div key={offer.id} className="mt-4 border border-link/30 bg-link/5 p-4 rounded-xl">
             <p className="text-[13px] text-muted-foreground">The desk recommends · {prettyDate(offer.sellerAskedAt)}</p>
             <p className="mt-1 font-semibold tracking-tight text-2xl">{money(Number(offer.sellerAskedAmount))}</p>
             <p className="mt-1 text-sm text-muted-foreground">
               {offer.buyer.companyName || offer.buyer.name} · {offer.noteId ? "one loan" : "the whole listing"}
-              {rest.length ? ` · ${rest.length} other open bid${rest.length === 1 ? "" : "s"}${best ? `, highest ${money(best)}` : ""}` : " · no other open bids"}
+              {rest.count ? ` · ${rest.count} other open bid${rest.count === 1 ? "" : "s"} for it${rest.best && !sealed ? `, highest ${money(rest.best)}` : ""}` : " · no other open bids for it"}
             </p>
+            {moved && current != null && (
+              <p className="mt-2 text-sm text-foreground">The buyer has since changed their bid to {money(current)}, so this figure can no longer be approved.</p>
+            )}
+            {notLive && <p className="mt-2 text-sm text-foreground">This listing isn&apos;t live right now, so the sale can&apos;t be approved.</p>}
             {canAnswer && (
               <form action={answerSaleApproval} className="mt-3 flex flex-wrap gap-2">
                 {/* Not name="id": it shadows form.id in the DOM, and React then drops the clicked button's value. */}
                 <input type="hidden" name="inquiryId" value={offer.id} />
-                <button type="submit" name="answer" value="APPROVE" className="h-9 rounded-lg bg-foreground px-3 text-[13px] font-medium text-background">Approve the sale</button>
+                {!moved && !notLive && (
+                  <button type="submit" name="answer" value="APPROVE" className="h-9 rounded-lg bg-foreground px-3 text-[13px] font-medium text-background">Approve the sale</button>
+                )}
                 <button type="submit" name="answer" value="DECLINE" className="h-9 rounded-lg border border-border px-3 text-[13px] font-medium hover:bg-hover">Decline</button>
               </form>
             )}

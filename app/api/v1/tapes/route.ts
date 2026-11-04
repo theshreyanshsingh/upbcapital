@@ -11,7 +11,7 @@ export async function POST(request: Request) {
   if (user.role !== "ADMIN" && user.accountStatus !== "APPROVED") {
     return NextResponse.json({ error: "The account is still in review." }, { status: 403 });
   }
-  const body = await request.json().catch(() => null) as { title?: string; summary?: string; csv?: string } | null;
+  const body = await request.json().catch(() => null) as { title?: unknown; summary?: unknown; csv?: unknown } | null;
   if (!body?.csv || !body.title) return NextResponse.json({ error: "Send title and csv." }, { status: 400 });
   const result = await ingestTape({ sellerId: user.id, title: body.title, summary: body.summary, csv: body.csv });
   if ("error" in result) return NextResponse.json(result, { status: 400 });

@@ -1,5 +1,5 @@
 import type { FeeBasis, BrokerDealRole } from "@prisma/client";
-import { assessBrokerFees, type FeeTerms } from "@/lib/broker-fees";
+import { assessBrokerFees, flatFeeKey, type FeeTerms } from "@/lib/broker-fees";
 import { postRevenueOnce } from "@/lib/ledger";
 import { prisma } from "@/lib/prisma";
 import { getSettings } from "@/lib/settings";
@@ -23,6 +23,24 @@ function roleTerms(
   if (!profile) return null;
   if (role === "AFFILIATE") return termsOf(profile.affiliateFeeBasis, profile.affiliateFeeBps, profile.affiliateFeeCents);
   return termsOf(profile.brokerFeeBasis, profile.brokerFeeBps, profile.brokerFeeCents);
+}
+
+// Flat fees the listing's other closings already charged, counting only rows posted before this closing's own,
+// so a closing reads the same history before and after it posts.
+async function flatPaidBefore(closingId: string, listingId: string) {
+  const closings = await prisma.closing.findMany({ where: { listingId }, select: { id: true } });
+  const rows = await prisma.brokerFee.findMany({
+    where: { closingId: { in: closings.map((item) => item.id) }, basis: "FLAT" },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+  });
+  const paid: Record<string, number> = {};
+  const reached = new Set<string>();
+  for (const row of rows) {
+    const key = flatFeeKey(row.brokerId, row.role);
+    if (row.closingId === closingId) reached.add(key);
+    else if (!reached.has(key)) paid[key] = (paid[key] ?? 0) + row.amountCents;
+  }
+  return paid;
 }
 
 export async function assessClosingById(closingId: string) {
@@ -62,6 +80,7 @@ export async function assessClosingById(closingId: string) {
       : null,
     brokerSchedule: { basis: settings.brokerFeeBasis, bps: settings.brokerFeeBps, cents: settings.brokerFeeCents },
     affiliateSchedule: { basis: settings.affiliateFeeBasis, bps: settings.affiliateFeeBps, cents: settings.affiliateFeeCents },
+    flatPaid: await flatPaidBefore(closing.id, closing.listingId),
   });
   const names = new Map<string, string>();
   if (broker) names.set(broker.id, broker.name);
@@ -70,14 +89,15 @@ export async function assessClosingById(closingId: string) {
 }
 
 export async function postBrokerFees(closingId: string) {
-  const assessed = await assessClosingById(closingId);
+  let assessed = await assessClosingById(closingId);
   if (!assessed) return;
+  const postedFlat: string[] = [];
   for (const fee of assessed.result.fees) {
     const existing = await prisma.brokerFee.findFirst({
       where: { closingId, brokerId: fee.brokerId, role: fee.role },
     });
     if (!existing) {
-      await prisma.brokerFee.create({
+      const row = await prisma.brokerFee.create({
         data: {
           closingId,
           brokerId: fee.brokerId,
@@ -87,15 +107,31 @@ export async function postBrokerFees(closingId: string) {
           status: "OWED",
         },
       });
+      if (fee.basis === "FLAT") postedFlat.push(row.id);
     }
+  }
+  // Two of a pool's closings finishing at once could each charge its flat fee. Read again with this closing's rows
+  // in place: only rows posted earlier count against it, so the later closing gives way.
+  if (postedFlat.length) {
+    assessed = (await assessClosingById(closingId)) ?? assessed;
+    for (const row of await prisma.brokerFee.findMany({ where: { id: { in: postedFlat } } })) {
+      const due = assessed.result.fees.find((fee) => fee.brokerId === row.brokerId && fee.role === row.role)?.amountCents ?? 0;
+      if (due <= 0) await prisma.brokerFee.delete({ where: { id: row.id } });
+      else if (due < row.amountCents) await prisma.brokerFee.update({ where: { id: row.id }, data: { amountCents: due } });
+    }
+  }
+  const rows = await prisma.brokerFee.findMany({ where: { closingId } });
+  for (const fee of assessed.result.fees) {
+    const row = rows.find((item) => item.brokerId === fee.brokerId && item.role === fee.role);
+    if (!row) continue;
     const name = assessed.names.get(fee.brokerId) ?? "broker";
     await postRevenueOnce([
       {
         type: "BROKER_FEE",
-        amountCents: fee.amountCents,
+        amountCents: row.amountCents,
         listingId: assessed.closing.listingId,
         userId: fee.brokerId,
-        description: `Broker fee owed to ${name}`,
+        description: `Broker fee owed to ${name}${fee.capped ? " · capped at the desk's fees on this closing" : ""}`,
         externalId: `closing:${closingId}:broker:${fee.brokerId}:${fee.role}`,
       },
     ]);

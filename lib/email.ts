@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { isReleaseBuild } from "@/lib/deploy";
 import { deliverable, deskRecipients, resolveMailTransport, type MailTransport } from "@/lib/mail-config";
 
 async function deliver(transport: MailTransport, toEmail: string, subject: string, body: string) {
@@ -31,11 +32,12 @@ async function deliver(transport: MailTransport, toEmail: string, subject: strin
   }
 }
 
-// For mail that carries a secret, such as a reset link: no in-app copy, and a failure never logs the body.
+// For mail that carries a secret, such as a reset link or a sign-in code: it ignores notice settings, keeps no in-app
+// copy, and a failure never logs the body. A release build keeps the body out of the log transport too.
 export async function sendSecret(toEmail: string, subject: string, body: string) {
   const transport = deliverable(toEmail) ? resolveMailTransport() : "log";
   if (transport === "log") {
-    console.info(`[upb-mail] to=${toEmail} subject=${subject}\n${body}`);
+    console.info(`[upb-mail] to=${toEmail} subject=${subject}${isReleaseBuild(process.env) ? " (body withheld)" : `\n${body}`}`);
     return;
   }
   try {
@@ -46,11 +48,21 @@ export async function sendSecret(toEmail: string, subject: string, body: string)
 }
 
 export async function notify(toEmail: string, subject: string, body: string) {
+  await deliverNotice(toEmail, subject, body, false);
+}
+
+// Security alerts, such as a changed password, reach the inbox whatever the email notice setting says. The in-app copy
+// still follows the user's choice. Use sendSecret for anything that carries a code or a link.
+export async function sendAlert(toEmail: string, subject: string, body: string) {
+  await deliverNotice(toEmail, subject, body, true);
+}
+
+async function deliverNotice(toEmail: string, subject: string, body: string, alwaysEmail: boolean) {
   const user = await prisma.user.findUnique({
     where: { email: toEmail },
     select: { id: true, notifyEmail: true, notifyInApp: true },
   });
-  const sendEmail = !user || user.notifyEmail;
+  const sendEmail = alwaysEmail || !user || user.notifyEmail;
   const keepInApp = !user || user.notifyInApp;
   if (!sendEmail && !keepInApp) return;
   const transport = deliverable(toEmail) ? resolveMailTransport() : "log";

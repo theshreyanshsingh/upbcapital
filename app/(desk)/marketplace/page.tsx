@@ -8,7 +8,7 @@ import { PageIntro } from "@/components/page-intro";
 import { Button } from "@/components/ui/button";
 import { requireUser } from "@/lib/auth";
 import { openableListingIds } from "@/lib/access";
-import { filtersActive, noteMatches, parseFilters } from "@/lib/filters";
+import { filtersActive, filtersFor, listingMatches, parseFilters } from "@/lib/filters";
 import { money, num, pct, q } from "@/lib/format";
 import { labelOf } from "@/lib/labels";
 import { noteMetrics, poolMetrics } from "@/lib/metrics";
@@ -52,19 +52,28 @@ export default async function MarketplacePage({
   const pro = user.role === "ADMIN" || isPro(user);
   const states = [...new Set(listings.flatMap((listing) => listing.notes.map((note) => note.state)))].sort();
 
+  const applied = filtersFor(filters, pro);
+  const order = pro ? sort : "new";
   const prepared = listings
-    .filter((listing) => !filters.kind || listing.kind === filters.kind)
-    .filter((listing) => listing.notes.some((note) => noteMatches({
-      city: note.city,
-      state: note.state,
-      paymentStatus: note.paymentStatus,
-      lienPosition: note.lienPosition,
-      propertyType: note.propertyType,
-      upb: num(note.upb),
-      askingPrice: num(note.askingPrice),
-    }, filters)))
+    .filter((listing) => listingMatches({
+      kind: listing.kind,
+      notes: listing.notes.map((note) => ({
+        city: note.city,
+        state: note.state,
+        paymentStatus: note.paymentStatus,
+        lienPosition: note.lienPosition,
+        propertyType: note.propertyType,
+        upb: num(note.upb),
+        askingPrice: num(note.askingPrice),
+        tradeStatus: note.tradeStatus,
+      })),
+    }, applied))
     .map((listing) => {
-      const view = listing.notes.map((note) => ({
+      // A live pool's card shows the loans still for sale.
+      const forSale = listing.status !== "SOLD" && listing.notes.some((note) => note.tradeStatus === "AVAILABLE")
+        ? listing.notes.filter((note) => note.tradeStatus === "AVAILABLE")
+        : listing.notes;
+      const view = forSale.map((note) => ({
         upb: num(note.upb),
         askingPrice: num(note.askingPrice),
         estimatedValue: num(note.estimatedValue),
@@ -87,17 +96,17 @@ export default async function MarketplacePage({
     });
 
   prepared.sort((a, b) => {
-    if (sort === "discount") return (a.metrics.priceToUpb ?? 999) - (b.metrics.priceToUpb ?? 999);
-    if (sort === "yield") return (b.metrics.yield ?? -1) - (a.metrics.yield ?? -1);
-    if (sort === "upb") return b.metrics.upb - a.metrics.upb;
+    if (order === "discount") return (a.metrics.priceToUpb ?? 999) - (b.metrics.priceToUpb ?? 999);
+    if (order === "yield") return (b.metrics.yield ?? -1) - (a.metrics.yield ?? -1);
+    if (order === "upb") return b.metrics.upb - a.metrics.upb;
     return (b.listing.approvedAt?.getTime() ?? 0) - (a.listing.approvedAt?.getTime() ?? 0);
   });
 
   const live = prepared.filter((item) => item.listing.status !== "SOLD");
   const traded = prepared.filter((item) => item.listing.status === "SOLD").slice(0, 3);
-  const pageNum = Math.max(1, Number(q(params, "page") || "1") || 1);
   const pageSize = 12;
   const pageCount = Math.max(1, Math.ceil(live.length / pageSize));
+  const pageNum = Math.min(pageCount, Math.max(1, Math.floor(Number(q(params, "page") || "1")) || 1));
   const shown = live.slice((pageNum - 1) * pageSize, pageNum * pageSize);
 
   return (
@@ -135,27 +144,31 @@ export default async function MarketplacePage({
           <option value="LAND">Land</option>
           <option value="COMMERCIAL">Commercial</option>
         </select>
-        <input name="upbMin" defaultValue={q(params, "upbMin")} placeholder="UPB min" className="desk-input" />
-        <input name="upbMax" defaultValue={q(params, "upbMax")} placeholder="UPB max" className="desk-input" />
-        <input name="priceMin" defaultValue={q(params, "priceMin")} placeholder="Price min" className="desk-input" />
-        <input name="priceMax" defaultValue={q(params, "priceMax")} placeholder="Price max" className="desk-input" />
+        {pro && (
+          <>
+            <input name="upbMin" defaultValue={q(params, "upbMin")} placeholder="UPB min" className="desk-input" />
+            <input name="upbMax" defaultValue={q(params, "upbMax")} placeholder="UPB max" className="desk-input" />
+            <input name="priceMin" defaultValue={q(params, "priceMin")} placeholder="Price min" className="desk-input" />
+            <input name="priceMax" defaultValue={q(params, "priceMax")} placeholder="Price max" className="desk-input" />
+          </>
+        )}
         <select name="kind" defaultValue={filters.kind ?? ""} className="desk-input">
           <option value="">Notes and pools</option>
           <option value="SINGLE">Notes</option>
           <option value="POOL">Pools</option>
         </select>
-        <select name="sort" defaultValue={sort} className="desk-input">
+        <select name="sort" defaultValue={order} className="desk-input">
           <option value="new">Newest</option>
-          <option value="discount">Deepest discount</option>
-          <option value="yield">Highest yield</option>
-          <option value="upb">Largest UPB</option>
+          {pro && <option value="discount">Deepest discount</option>}
+          {pro && <option value="yield">Highest yield</option>}
+          {pro && <option value="upb">Largest UPB</option>}
         </select>
         <Button type="submit" className="h-11 text-[13px] font-medium">Apply</Button>
         <Link href="/marketplace" className="inline-flex h-11 items-center text-[13px] font-medium text-muted-foreground">Reset</Link>
       </form>
-      {pro && filtersActive(filters) && (
+      {pro && filtersActive(applied) && (
         <form action={saveSearch} className="mt-4 flex flex-wrap items-center gap-3">
-          <input type="hidden" name="filters" value={JSON.stringify(filters)} />
+          <input type="hidden" name="filters" value={JSON.stringify(applied)} />
           <input name="name" placeholder="Name this search" className="desk-input max-w-xs" />
           <Button type="submit" variant="outline" className="h-11 text-[13px] font-medium">Save alert</Button>
         </form>

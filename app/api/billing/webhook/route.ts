@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import Stripe from "stripe";
 import { prisma } from "@/lib/prisma";
-import { getSettings } from "@/lib/settings";
 
 export const runtime = "nodejs";
 
@@ -56,19 +55,22 @@ export async function POST(request: Request) {
     const customerId = typeof invoice.customer === "string" ? invoice.customer : invoice.customer?.id;
     if (customerId && (invoice.billing_reason === "subscription_create" || invoice.billing_reason === "subscription_cycle")) {
       const user = await prisma.user.findFirst({ where: { stripeCustomerId: customerId } });
-      const settings = await getSettings();
-      const amount = invoice.amount_paid || settings.proMonthlyPriceCents;
-      await prisma.revenueEvent.create({
-        data: {
-          type: "SUBSCRIPTION",
-          amountCents: amount,
-          userId: user?.id,
-          description: `Pro membership${user ? ` · ${user.name}` : ""}`,
-          externalId: invoice.id,
-          mock: false,
-        },
-      }).catch(() => null);
-      if (user) {
+      // What Stripe collected, as is. A referral coupon can make the first invoice $0, and nothing was earned.
+      const amount = invoice.amount_paid;
+      if (amount > 0) {
+        await prisma.revenueEvent.create({
+          data: {
+            type: "SUBSCRIPTION",
+            amountCents: amount,
+            userId: user?.id,
+            description: `Pro membership${user ? ` · ${user.name}` : ""}`,
+            externalId: invoice.id,
+            mock: false,
+          },
+        }).catch(() => null);
+      }
+      // A desk comp runs until the desk ends it, whatever Stripe says about an old subscription.
+      if (user && !user.subscriptionComped) {
         await prisma.user.update({
           where: { id: user.id },
           data: {
@@ -85,7 +87,7 @@ export async function POST(request: Request) {
   if (event.type === "customer.subscription.deleted" || event.type === "customer.subscription.updated") {
     const subscription = event.data.object as Stripe.Subscription;
     const user = await prisma.user.findFirst({ where: { stripeSubscriptionId: subscription.id } });
-    if (user) {
+    if (user && !user.subscriptionComped) {
       const active = subscription.status === "active" || subscription.status === "trialing";
       await prisma.user.update({
         where: { id: user.id },

@@ -1,4 +1,5 @@
 import { CLOSING_STEPS } from "@/lib/closing";
+import { periodPassed } from "@/lib/schedule";
 
 export const DEFAULT_CLOSING_DAYS = 30;
 const DAY = 24 * 60 * 60 * 1000;
@@ -74,7 +75,7 @@ export function stepClock(status: string, due: Date | null, now = new Date()): S
 export function stepNeedsReminder(step: { status: string; remindedAt: Date | null }, due: Date | null, now = new Date()) {
   const clock = stepClock(step.status, due, now);
   if (clock !== "overdue" && clock !== "due_soon") return false;
-  return !step.remindedAt || now.getTime() - step.remindedAt.getTime() >= DAY;
+  return !step.remindedAt || periodPassed(step.remindedAt, DAY, now);
 }
 
 export function closingClock(closing: ClockClosing & { status: string; closedAt: Date | null }, steps: ClockStep[], days: number, now = new Date()) {

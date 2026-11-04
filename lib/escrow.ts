@@ -27,13 +27,13 @@ export function registerEscrowProvider(provider: EscrowProvider) {
 const manualProvider: EscrowProvider = {
   id: "manual",
   async open(input) {
+    // Both sides read the same wire text, so it carries no money figures. Each side's own are on the closing page.
     const instructions =
       input.wireInstructions.trim() ||
       [
         "Manual escrow. The desk will issue wire instructions.",
         `Reference ${input.closingId}.`,
-        `Buyer all-in ${(input.buyerTotalCents / 100).toFixed(2)} USD.`,
-        `Estimated net to seller ${(input.netToSellerCents / 100).toFixed(2)} USD.`,
+        "Your own figures are on the closing page and in your settlement statement.",
         input.listingTitle,
       ].join("\n");
     return { provider: "manual", providerRef: "", instructions };

@@ -79,21 +79,18 @@ export function registerPropertyProvider(provider: PropertyProvider) {
 }
 
 export function getPropertyProvider(id = process.env.AVM_PROVIDER || "mock") {
-  if (id === "attom") return { ...mockPropertyProvider, id: "attom" };
   return providers.get(id) ?? mockPropertyProvider;
 }
 
-export async function estimateProperty(input: AvmInput) {
-  const provider = getPropertyProvider();
-  if (provider.id === "attom" && process.env.ATTOM_API_KEY) {
-    try {
-      const live = await attomEstimate(input, process.env.ATTOM_API_KEY);
-      if (live) return { ...live, providerId: "attom" };
-    } catch {
-      const estimate = mockPropertyProvider.estimate(input);
-      return { ...estimate, providerId: "mock" };
-    }
+export async function estimateProperty(input: AvmInput, id = process.env.AVM_PROVIDER || "mock") {
+  // With ATTOM chosen, a failed or empty answer (or no key) falls back to the stand-in. It's labelled mock, so a
+  // release never shows it to buyers as a real valuation.
+  if (id === "attom") {
+    const key = process.env.ATTOM_API_KEY;
+    const live = key ? await attomEstimate(input, key).catch(() => null) : null;
+    return live ? { ...live, providerId: "attom" } : { ...mockPropertyProvider.estimate(input), providerId: mockPropertyProvider.id };
   }
+  const provider = getPropertyProvider(id);
   if (provider.estimateAsync) {
     try {
       const estimate = await provider.estimateAsync(input);

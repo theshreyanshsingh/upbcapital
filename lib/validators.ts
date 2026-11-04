@@ -28,7 +28,8 @@ export const noteSchema = z.object({
   estimatedValue: z.coerce.number().positive("Estimated value must be greater than zero."),
   lienPosition: z.enum(values(LIEN_POSITIONS)),
   upb: z.coerce.number().positive("UPB must be greater than zero."),
-  interestRate: z.coerce.number().min(0).max(40),
+  // A blank rate isn't 0%. Zero is allowed when typed.
+  interestRate: z.preprocess((value) => (value === "" || value == null ? undefined : value), z.coerce.number({ error: "Enter a note rate between 0 and 40." }).min(0).max(40)),
   monthlyPi: z.coerce.number().min(0),
   paymentStatus: z.enum(values(PAYMENT_STATUSES)),
   monthsDelinquent: z.coerce.number().int().min(0).max(600),

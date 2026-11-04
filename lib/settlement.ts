@@ -28,24 +28,146 @@ type StatementClosing = {
   proceedsSentCents: number | null;
   proceedsSentAt: Date | null;
   proceedsReference: string | null;
+  depositCents?: number | null;
+  depositReceivedCents?: number | null;
+  depositReceivedAt?: Date | null;
+  depositReference?: string | null;
 };
+
+// One seat holder's part of a group closing.
+export type FunderShare = { amount: number; premiumCents: number; status: string; fundedAt: Date | null };
 
 export type StatementLine = { label: string; cents: number | null; detail?: string };
 
-// Each party sees its own side only. The desk sees both.
-export function statementLines(closing: StatementClosing, side: StatementSide, brokerFeeCents = 0): { heading: string; lines: StatementLine[] }[] {
+// Who is looking decides which figures they get. A broker who is not a party sees only their own fee.
+export function statementSide(input: { role: string; userId: string; sellerId: string; buyerId: string | null; funderIds: string[] }): StatementSide | "observer" {
+  if (input.role === "ADMIN") return "desk";
+  if (input.userId === input.sellerId) return "seller";
+  if (input.userId === input.buyerId || input.funderIds.includes(input.userId)) return "buyer";
+  return "observer";
+}
+
+// The deposit counts toward what the buyer owes, so the balance wire is checked against the total less the deposit.
+export function balanceDueCents(closing: { buyerTotalCents: number; depositReceivedCents?: number | null }) {
+  return closing.buyerTotalCents - (closing.depositReceivedCents ?? 0);
+}
+
+export function buyerFundsCheck(closing: { buyerTotalCents: number; fundsReceivedCents: number | null; depositReceivedCents?: number | null }) {
+  return variance(balanceDueCents(closing), closing.fundsReceivedCents);
+}
+
+// The steps that say money is in need the wire on record first. Returns what is missing, or null. The desk buying
+// for its own book has no buyer wire to wait for.
+export function moneyGate(
+  stepKey: string,
+  closing: { deskBidId?: string | null; buyerTotalCents: number; fundsReceivedCents: number | null; depositCents?: number | null; depositReceivedCents?: number | null },
+  funders: { status: string }[],
+) {
+  if (closing.deskBidId) return null;
+  if (stepKey === "BUYER_DEPOSIT") {
+    if (closing.depositCents == null) return null;
+    const check = variance(closing.depositCents, closing.depositReceivedCents);
+    if (check.state === "none") return "The buyer's deposit isn't recorded.";
+    if (check.state === "short") return `The deposit recorded is ${varianceNote(check)}.`;
+    return null;
+  }
+  if (stepKey !== "PAYMENT_RECEIVED" && stepKey !== "CLOSED") return null;
+  const check = buyerFundsCheck(closing);
+  if (check.state === "none") return "Buyer funds aren't recorded.";
+  if (check.state === "short") return `Buyer funds are ${varianceNote(check)}, counting the deposit.`;
+  const waiting = funders.filter((funder) => funder.status !== "FUNDED").length;
+  if (waiting) return `${waiting} of ${funders.length} group share${funders.length === 1 ? "" : "s"} ${waiting === 1 ? "isn't" : "aren't"} marked funded.`;
+  return null;
+}
+
+export function varianceNote(check: Variance) {
+  if (check.state === "match") return "matches";
+  if (check.state === "short") return `short ${dollars(-check.diffCents)}`;
+  if (check.state === "over") return `over by ${dollars(check.diffCents)}`;
+  return "";
+}
+
+function wireDetail(at: Date | null | undefined, reference: string | null | undefined, check?: Variance) {
+  if (!at) return "Not recorded";
+  const note = check ? varianceNote(check) : "";
+  return `${at.toISOString().slice(0, 10)}${reference ? ` · ${reference}` : ""}${note ? ` · ${note}` : ""}`;
+}
+
+function shareSection(share: FunderShare) {
+  const price = Math.round(share.amount * 100);
+  const due = price + share.premiumCents;
+  return {
+    heading: "Your share",
+    lines: [
+      { label: "Your share of the price", cents: price },
+      { label: "Your share of the premium", cents: share.premiumCents },
+      { label: "Due from you", cents: due },
+      {
+        label: "Share funded",
+        cents: share.status === "FUNDED" ? due : null,
+        detail: share.status === "FUNDED" && share.fundedAt ? `Marked funded by the desk ${share.fundedAt.toISOString().slice(0, 10)}` : "Not recorded",
+      },
+    ],
+  };
+}
+
+// The price and fee rows each side sees on the closing page, the same figures as its statement.
+export function economicsRows(
+  closing: { salePrice: number; buyerPremiumCents: number; sellerCommissionCents: number; buyerTotalCents: number; netToSellerCents: number },
+  side: StatementSide | "observer",
+  share: FunderShare | null = null,
+): { label: string; cents: number }[] {
   const price = Math.round(closing.salePrice * 100);
+  if (side === "buyer" && share) {
+    const mine = Math.round(share.amount * 100);
+    return [
+      { label: "Your share of the price", cents: mine },
+      { label: "Your share of the premium", cents: share.premiumCents },
+      { label: "Your all-in", cents: mine + share.premiumCents },
+    ];
+  }
+  const buyer = [
+    { label: "Sale price", cents: price },
+    { label: "Buyer premium", cents: closing.buyerPremiumCents },
+    { label: "Buyer all-in", cents: closing.buyerTotalCents },
+  ];
+  const seller = [
+    { label: "Seller commission", cents: closing.sellerCommissionCents },
+    { label: "Net to seller", cents: closing.netToSellerCents },
+  ];
+  if (side === "buyer") return buyer;
+  if (side === "seller") return [buyer[0], ...seller];
+  if (side === "desk") return [...buyer, ...seller];
+  return [];
+}
+
+// Each party sees its own side only. The desk sees both. A group seat holder sees their own share.
+export function statementLines(
+  closing: StatementClosing,
+  side: StatementSide,
+  brokerFeeCents = 0,
+  share: FunderShare | null = null,
+): { heading: string; lines: StatementLine[] }[] {
+  if (side === "buyer" && share) return [shareSection(share)];
+  const price = Math.round(closing.salePrice * 100);
+  const hasDeposit = closing.depositCents != null || closing.depositReceivedCents != null;
   const buyer = {
     heading: "Buyer",
     lines: [
       { label: "Purchase price", cents: price },
       { label: "Buyer premium", cents: closing.buyerPremiumCents },
       { label: "Due from buyer", cents: closing.buyerTotalCents },
-      {
-        label: "Funds received",
-        cents: closing.fundsReceivedCents,
-        detail: closing.fundsReceivedAt ? `${closing.fundsReceivedAt.toISOString().slice(0, 10)}${closing.fundsReference ? ` · ${closing.fundsReference}` : ""}` : "Not recorded",
-      },
+      ...(hasDeposit
+        ? [
+            {
+              label: "Deposit received",
+              cents: closing.depositReceivedCents ?? null,
+              detail: wireDetail(closing.depositReceivedAt, closing.depositReference, closing.depositCents != null ? variance(closing.depositCents, closing.depositReceivedCents) : undefined),
+            },
+            { label: "Balance due", cents: balanceDueCents(closing) },
+          ]
+        : []),
+      { label: "Funds received", cents: closing.fundsReceivedCents, detail: wireDetail(closing.fundsReceivedAt, closing.fundsReference, buyerFundsCheck(closing)) },
     ],
   };
   const seller = {
@@ -54,11 +176,7 @@ export function statementLines(closing: StatementClosing, side: StatementSide, b
       { label: "Sale price", cents: price },
       { label: "Seller commission", cents: -closing.sellerCommissionCents },
       { label: "Net proceeds to seller", cents: closing.netToSellerCents },
-      {
-        label: "Proceeds sent",
-        cents: closing.proceedsSentCents,
-        detail: closing.proceedsSentAt ? `${closing.proceedsSentAt.toISOString().slice(0, 10)}${closing.proceedsReference ? ` · ${closing.proceedsReference}` : ""}` : "Not recorded",
-      },
+      { label: "Proceeds sent", cents: closing.proceedsSentCents, detail: wireDetail(closing.proceedsSentAt, closing.proceedsReference, variance(closing.netToSellerCents, closing.proceedsSentCents)) },
     ],
   };
   if (side === "buyer") return [buyer];

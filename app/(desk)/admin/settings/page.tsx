@@ -68,7 +68,7 @@ export default async function SettingsPage({
         </label>
         <label className="block">
           <span className="text-[13px] text-muted-foreground">Pro price (USD / month)</span>
-          <input name="proPrice" defaultValue={(settings.proMonthlyPriceCents / 100).toFixed(2)} step="0.01" className="desk-input mt-2" />
+          <input name="proPrice" type="number" min="0.50" defaultValue={(settings.proMonthlyPriceCents / 100).toFixed(2)} step="0.01" className="desk-input mt-2" />
         </label>
         <label className="block">
           <span className="text-[13px] text-muted-foreground">Early access (hours)</span>
@@ -134,7 +134,7 @@ export default async function SettingsPage({
         </fieldset>
         <label className="flex items-start gap-3 text-sm text-foreground">
           <input type="checkbox" name="chargeDeskFees" value="on" defaultChecked={settings.chargeDeskFees} className="mt-1" />
-          <span>Charge the buyer premium and the seller commission when the desk buys the note. Turn this off to run those purchases through the checklist with a zero fee.</span>
+          <span>Charge the seller commission when the desk buys the note. The desk never pays itself a buyer premium. Turn this off to run those purchases through the checklist with no fee.</span>
         </label>
         <label className="block">
           <span className="text-[13px] text-muted-foreground">Default wire instructions</span>

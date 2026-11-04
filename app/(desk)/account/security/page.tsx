@@ -6,7 +6,7 @@ import { SubmitButton } from "@/components/submit-button";
 import { needsSecondFactor } from "@/lib/access";
 import { currentSessionId, requireUser, twoStepRequired } from "@/lib/auth";
 import { prettyDate, q } from "@/lib/format";
-import { deliverable } from "@/lib/mail-config";
+import { demoSeat } from "@/lib/deploy";
 import { prisma } from "@/lib/prisma";
 import { otpauthUrl } from "@/lib/totp";
 
@@ -91,7 +91,7 @@ export default async function SecurityPage({
         </form>
       )}
 
-      {deliverable(user.email) && (
+      {!demoSeat(user.email) && (
         <form action={changePassword} className="mt-8 space-y-3 border border-border p-5 rounded-xl">
           <p className="eyebrow">Password</p>
           <label className="block">

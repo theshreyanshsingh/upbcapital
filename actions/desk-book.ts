@@ -7,7 +7,7 @@ import { openClosing, tradeConflict } from "@/lib/closing-service";
 import { notify, notifyDesk } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
-import { claimLoan, declineLosingBids, sellerPage } from "@/lib/awards";
+import { claimLoan, declineLosingBids, deskBidNotAcceptable, sellerPage } from "@/lib/awards";
 import { OFAC_HOLD_MESSAGE, ofacHold } from "@/lib/screening";
 
 function amountOf(formData: FormData, key = "amount") {
@@ -43,11 +43,16 @@ export async function placeDeskBid(formData: FormData) {
 
 type OpenDeskBid = { id: string; listingId: string; noteId: string | null; amount: number; listing: { status: string; title: string; sellerId: string } };
 
-// Returns null when the loan was taken by another award in the meantime. A one-loan purchase leaves the rest
-// of a pool on the book; only a whole-listing purchase puts the listing in contract.
+// Returns no closing when the loan was taken by another award, or the bid was answered, in the meantime. The
+// bid leaves OPEN in one conditional write, so a seller's accept and the desk's take or pass can't both land.
+// A one-loan purchase leaves the rest of a pool on the book; only a whole-listing purchase puts it in contract.
 async function acceptDeskBid(bid: OpenDeskBid) {
-  if (bid.noteId && !(await claimLoan(bid.noteId))) return null;
-  await prisma.deskBid.update({ where: { id: bid.id }, data: { status: "ACCEPTED" } });
+  if (bid.noteId && !(await claimLoan(bid.noteId))) return { closing: null, reason: "loan" } as const;
+  const taken = await prisma.deskBid.updateMany({ where: { id: bid.id, status: "OPEN" }, data: { status: "ACCEPTED" } });
+  if (taken.count !== 1) {
+    if (bid.noteId) await prisma.note.updateMany({ where: { id: bid.noteId, tradeStatus: "IN_CONTRACT" }, data: { tradeStatus: "AVAILABLE" } });
+    return { closing: null, reason: "decided" } as const;
+  }
   if (!bid.noteId && bid.listing.status !== "SOLD") {
     await prisma.listing.update({ where: { id: bid.listingId }, data: { status: "PENDING" } });
   }
@@ -59,7 +64,7 @@ async function acceptDeskBid(bid: OpenDeskBid) {
     title: bid.listing.title,
   });
   await declineLosingBids({ id: null, listingId: bid.listingId, noteId: bid.noteId }, bid.listing.title);
-  return closing;
+  return { closing, reason: null } as const;
 }
 
 // The desk is the buyer on its own bid, so taking it stands in for the seller only with a recorded agreement.
@@ -71,18 +76,23 @@ export async function decideDeskBid(formData: FormData) {
   const bid = await prisma.deskBid.findUnique({ where: { id }, include: { listing: { include: { notes: true, seller: true } } } });
   if (!bid || bid.status !== "OPEN") redirect("/admin/book?error=That bid is already decided.");
   if (decision === "DECLINED" || decision === "WITHDRAWN") {
-    await prisma.deskBid.update({ where: { id }, data: { status: decision } });
+    const passed = await prisma.deskBid.updateMany({ where: { id, status: "OPEN" }, data: { status: decision } });
+    if (passed.count !== 1) redirect("/admin/book?error=That bid is already decided.");
     await audit(user.id, "DESK_BID_PASSED", "listing", bid.listingId, `$${Number(bid.amount).toLocaleString("en-US")}`);
     await notify(bid.listing.seller.email, `Desk bid withdrawn · ${bid.listing.title}`, "The desk withdrew its bid on this listing.");
     redirect("/admin/book?notice=bid");
   }
   if (decision !== "ACCEPTED") redirect("/admin/book?error=Unknown decision.");
   if (consent.length < 3) redirect(`/admin/book?error=${encodeURIComponent("Record how the seller agreed, such as the email and its date.")}`);
+  const problem = deskBidNotAcceptable(bid.listing);
+  if (problem) redirect(`/admin/book?error=${encodeURIComponent(problem)}`);
   if (await ofacHold({ listingId: bid.listingId, userIds: [bid.listing.sellerId] })) redirect(`/admin/book?error=${encodeURIComponent(OFAC_HOLD_MESSAGE)}`);
   const conflict = await tradeConflict(bid.listingId, bid.noteId);
   if (conflict) redirect(`/admin/book?error=${encodeURIComponent(conflict)}`);
-  const closing = await acceptDeskBid(bid);
-  if (!closing) redirect(`/admin/book?error=${encodeURIComponent("That loan went into contract a moment ago. Check its open closing.")}`);
+  const { closing, reason } = await acceptDeskBid(bid);
+  if (!closing) {
+    redirect(`/admin/book?error=${encodeURIComponent(reason === "loan" ? "That loan went into contract a moment ago. Check its open closing." : "That bid is already decided.")}`);
+  }
   const price = `$${Number(bid.amount).toLocaleString("en-US")}`;
   await audit(user.id, "DESK_BID_ACCEPTED", "listing", bid.listingId, `Closing ${closing.id} at ${price}. Seller agreement: ${consent}`);
   await notify(
@@ -105,21 +115,26 @@ export async function answerDeskBid(formData: FormData) {
   if (bid.status !== "OPEN") redirect(`${back}?error=${encodeURIComponent("That bid is already decided.")}`);
   const price = `$${Number(bid.amount).toLocaleString("en-US")}`;
   if (answer === "DECLINED") {
-    await prisma.deskBid.update({ where: { id }, data: { status: "DECLINED" } });
+    const passed = await prisma.deskBid.updateMany({ where: { id, status: "OPEN" }, data: { status: "DECLINED" } });
+    if (passed.count !== 1) redirect(`${back}?error=${encodeURIComponent("That bid is already decided.")}`);
     await audit(user.id, "DESK_BID_DECLINED", "listing", bid.listingId, price);
     await notifyDesk(`Seller declined · ${bid.listing.title}`, `${user.name} declined the desk bid of ${price}.`);
     revalidatePath(back);
     redirect(`${back}?notice=answered`);
   }
   if (answer !== "ACCEPTED") redirect(`${back}?error=${encodeURIComponent("Choose accept or decline.")}`);
+  const problem = deskBidNotAcceptable(bid.listing);
+  if (problem) redirect(`${back}?error=${encodeURIComponent(problem)}`);
   if (await ofacHold({ listingId: bid.listingId, userIds: [user.id] })) {
     await notifyDesk(`Seller accepted · ${bid.listing.title}`, `${user.name} accepted the desk bid of ${price}, but an OFAC review is open. Decide it, then take the bid from the book.`);
     redirect(`${back}?notice=answered`);
   }
   const conflict = await tradeConflict(bid.listingId, bid.noteId);
   if (conflict) redirect(`${back}?error=${encodeURIComponent(conflict)}`);
-  const closing = await acceptDeskBid(bid);
-  if (!closing) redirect(`${back}?error=${encodeURIComponent("That loan went into contract a moment ago. The desk will be in touch.")}`);
+  const { closing, reason } = await acceptDeskBid(bid);
+  if (!closing) {
+    redirect(`${back}?error=${encodeURIComponent(reason === "loan" ? "That loan went into contract a moment ago. The desk will be in touch." : "That bid is already decided.")}`);
+  }
   await audit(user.id, "DESK_BID_ACCEPTED", "listing", bid.listingId, `Closing ${closing.id} at ${price}. Accepted by the seller.`);
   await notifyDesk(`Seller accepted · ${bid.listing.title}`, `${user.name} accepted the desk bid of ${price}. The closing is open.`);
   redirect(`/closings/${closing.id}?notice=desk_closing`);

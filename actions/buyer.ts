@@ -7,14 +7,16 @@ import { audit } from "@/lib/audit";
 import { requireUser } from "@/lib/auth";
 import { notify, notifyDesk } from "@/lib/email";
 import { buildNdaPdf, pngFromDataUrl } from "@/lib/nda-pdf";
-import { isPro } from "@/lib/settings";
+import { canOpenListing, openableListingIds } from "@/lib/access";
+import { getSettings, isPro } from "@/lib/settings";
 import { prisma } from "@/lib/prisma";
 import { requestMeta } from "@/lib/request-meta";
 import { putBytes } from "@/lib/storage";
 import { ensureInquiryThread } from "@/lib/threads";
 import { sendForSignature } from "@/lib/vendors";
 import { canSubmitOffer } from "@/lib/verification";
-import type { BookFilters } from "@/lib/filters";
+import type { ListingStatus } from "@prisma/client";
+import { parseFilters } from "@/lib/filters";
 import { unset } from "@/lib/db-filters";
 
 async function requireBuyer() {
@@ -22,6 +24,25 @@ async function requireBuyer() {
   if (user.role !== "BUYER") redirect("/");
   if (user.accountStatus !== "APPROVED") redirect("/buyer/pending");
   return user;
+}
+
+// The listing page refuses early-access listings and those outside the free slice. The actions behind it hold
+// the same line, since their IDs are in the page bundle.
+async function canOpen(user: Awaited<ReturnType<typeof requireBuyer>>, listing: { id: string; status: ListingStatus; approvedAt: Date | null; sellerId: string; brokerId: string | null }) {
+  const settings = await getSettings();
+  const live = isPro(user)
+    ? []
+    : await prisma.listing.findMany({ where: { status: { in: ["APPROVED", "PENDING"] } }, select: { id: true, status: true, approvedAt: true } });
+  return canOpenListing({
+    viewer: user,
+    status: listing.status,
+    approvedAt: listing.approvedAt,
+    earlyAccessHours: settings.earlyAccessHours,
+    openableIds: openableListingIds(live, settings.earlyAccessHours, settings.freeBrowseLimit),
+    listingId: listing.id,
+    sellerId: listing.sellerId,
+    brokerId: listing.brokerId,
+  }).ok;
 }
 
 export async function toggleFavorite(formData: FormData) {
@@ -56,6 +77,7 @@ export async function signNda(formData: FormData) {
   // Only a live listing takes NDAs. Anything else would tell a buyer, and email the seller, about a file
   // the desk hasn't released, or reopen one that has gone to contract.
   if (listing.status !== "APPROVED") redirect(`${back}?error=${encodeURIComponent("This listing isn't open for diligence.")}`);
+  if (!(await canOpen(user, listing))) redirect(`${back}?error=${encodeURIComponent("This listing isn't open on your membership yet.")}`);
   const meta = await requestMeta();
   const signedAt = new Date();
   const signatureKey = drawn ? `signatures/${user.id}/${listingId}.png` : "";
@@ -135,6 +157,9 @@ export async function submitInquiry(formData: FormData) {
   if (!listing || listing.status !== "APPROVED") {
     redirect(`/marketplace/${listingId}?error=This listing is not taking new inquiries.`);
   }
+  if (!(await canOpen(user, listing))) {
+    redirect(`/marketplace/${listingId}?error=${encodeURIComponent("This listing isn't open on your membership yet.")}`);
+  }
   if (type === "DATA_ROOM" && !isPro(user)) {
     redirect("/buyer/subscription?reason=dataroom");
   }
@@ -153,6 +178,9 @@ export async function submitInquiry(formData: FormData) {
       if (!note || note.tradeStatus !== "AVAILABLE") {
         redirect(`/marketplace/${listingId}?error=${encodeURIComponent("That loan is not open for a bid.")}`);
       }
+    } else if (listing.kind === "POOL" && (await prisma.note.count({ where: { listingId, tradeStatus: { not: "AVAILABLE" } } })) > 0) {
+      // A whole-pool bid on a pool with traded loans could never be awarded.
+      redirect(`/marketplace/${listingId}?error=${encodeURIComponent("Some loans in this pool have traded, so it can't be bid whole. Bid the loans still for sale.")}`);
     }
     const existing = await prisma.inquiry.findFirst({
       // A whole-listing offer may have no noteId field at all, which `noteId: null` alone would miss.
@@ -209,7 +237,15 @@ export async function saveSearch(formData: FormData) {
   if (!isPro(user)) redirect("/buyer/subscription?reason=alerts");
   const name = String(formData.get("name") || "").trim();
   if (name.length < 2) redirect("/marketplace?error=Name the search before saving it.");
-  const filters = JSON.parse(String(formData.get("filters") || "{}")) as BookFilters;
+  // The filters come back from the page as JSON. Anything else is read as no filter rather than a crash.
+  let raw: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse(String(formData.get("filters") || "{}"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) raw = parsed as Record<string, unknown>;
+  } catch {
+    redirect("/marketplace?error=Set the filters again, then save.");
+  }
+  const filters = parseFilters(Object.fromEntries(Object.entries(raw).map(([key, value]) => [key, value == null ? undefined : String(value)])));
   await prisma.savedSearch.create({ data: { userId: user.id, name, filters } });
   redirect("/buyer/alerts?notice=saved");
 }

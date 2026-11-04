@@ -6,7 +6,7 @@ import { redirect } from "next/navigation";
 import { accountLocked } from "@/lib/access";
 import { audit } from "@/lib/audit";
 import { endSessions } from "@/lib/auth";
-import { notify, sendSecret } from "@/lib/email";
+import { sendAlert, sendSecret } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
 import { consumeRateLimit } from "@/lib/rate-limit";
 import { requestMeta } from "@/lib/request-meta";
@@ -54,6 +54,6 @@ export async function resetPassword(formData: FormData) {
   await endSessions(user.id);
   const meta = await requestMeta();
   await audit(user.id, "PASSWORD_RESET", "user", user.id, meta.ipAddress);
-  await notify(user.email, "Your UPB Capital password changed", "Your password was just reset, and every device was signed out. If this was not you, write the desk now.");
+  await sendAlert(user.email, "Your UPB Capital password changed", "Your password was just reset, and every device was signed out. If this was not you, write the desk now.");
   redirect("/login?notice=password_reset");
 }

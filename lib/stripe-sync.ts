@@ -26,8 +26,9 @@ export async function syncProPrice(input: {
   if (!input.secretKey) {
     return { mode: "skipped", productId: input.productId, priceId: input.priceId, detail: "Stripe secret is not set." };
   }
+  // Not a quiet skip: Checkout would keep charging the old price while the desk shows the new one.
   if (input.cents < 50) {
-    return { mode: "skipped", productId: input.productId, priceId: input.priceId, detail: "Stripe recurring prices start at $0.50." };
+    return { mode: "error", productId: input.productId, priceId: input.priceId, detail: "Stripe recurring prices start at $0.50." };
   }
   try {
     const Stripe = (await import("stripe")).default;

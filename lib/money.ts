@@ -30,3 +30,11 @@ export function bpsToPercent(bps: number) {
 export function percentToBps(percent: number) {
   return Math.round(percent * 100);
 }
+
+// A figure as people type it: "1,250,000", "$1.25M", "70%", "250k". Anything else is NaN, for the caller to refuse.
+export function typedNumber(raw: unknown) {
+  const match = /^(\d+(?:\.\d+)?|\.\d+)([km]?)$/i.exec(String(raw ?? "").replace(/[$,%\s]/g, ""));
+  if (!match) return Number.NaN;
+  const scale = match[2].toLowerCase() === "m" ? 1e6 : match[2].toLowerCase() === "k" ? 1e3 : 1;
+  return Number(match[1]) * scale;
+}

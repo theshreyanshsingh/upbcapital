@@ -2,14 +2,15 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { onGroupDeclined } from "@/actions/group";
+import { onGroupDeclined } from "@/lib/group-events";
 import { audit } from "@/lib/audit";
 import { requireUser } from "@/lib/auth";
 import { notify } from "@/lib/email";
 import { canCompleteStep } from "@/lib/closing";
-import { cancelOpenClosing, finalizeClosing, isClosingStepKey } from "@/lib/closing-service";
+import { buyerSideEmails, cancelOpenClosing, completeDepositFromWire, finalizeClosing, isClosingStepKey } from "@/lib/closing-service";
 import { prisma } from "@/lib/prisma";
 import { OFAC_HOLD_MESSAGE, ofacHold } from "@/lib/screening";
+import { moneyGate } from "@/lib/settlement";
 import { emitWebhook } from "@/lib/webhooks";
 import { extensionOf, mimeFor, putBytes, safeBasename } from "@/lib/storage";
 import { uploadProblem } from "@/lib/uploads";
@@ -20,6 +21,7 @@ async function loadClosing(id: string) {
     include: {
       listing: { include: { seller: true } },
       steps: { include: { files: true } },
+      funders: true,
     },
   });
 }
@@ -28,16 +30,15 @@ async function participant(closingId: string) {
   const user = await requireUser();
   const closing = await loadClosing(closingId);
   if (!closing) redirect("/closings");
-  const inquiry = closing.inquiryId ? await prisma.inquiry.findUnique({ where: { id: closing.inquiryId } }) : null;
-  const funder = await prisma.closingFunder.findUnique({ where: { closingId_userId: { closingId, userId: user.id } } });
-  const allowed = user.role === "ADMIN" || user.id === closing.listing.sellerId || user.id === inquiry?.buyerId || Boolean(funder);
+  const inquiry = closing.inquiryId ? await prisma.inquiry.findUnique({ where: { id: closing.inquiryId }, include: { buyer: true } }) : null;
+  const allowed = user.role === "ADMIN" || user.id === closing.listing.sellerId || user.id === inquiry?.buyerId || closing.funders.some((funder) => funder.userId === user.id);
   if (!allowed) redirect("/");
   return { user, closing, inquiry };
 }
 
 export async function saveWireInstructions(formData: FormData) {
   const closingId = String(formData.get("closingId") || "");
-  const { user, closing, inquiry } = await participant(closingId);
+  const { user, closing } = await participant(closingId);
   if (user.role !== "ADMIN") redirect(`/closings/${closingId}?error=Only the desk edits wire instructions.`);
   if (closing.status !== "OPEN") redirect(`/closings/${closingId}?error=This closing is already finished.`);
   const wireInstructions = String(formData.get("wireInstructions") || "").trim();
@@ -49,9 +50,9 @@ export async function saveWireInstructions(formData: FormData) {
   if (wireInstructions !== closing.wireInstructions) {
     // Changed wire details are the classic closing fraud, so each side hears about it from the desk.
     const warning = "The desk changed the wire instructions on this closing. Before sending money, confirm them by phone on a number you already trust.";
-    const buyer = inquiry ? await prisma.user.findUnique({ where: { id: inquiry.buyerId } }) : null;
-    if (buyer) await notify(buyer.email, `Wires changed · ${closing.listing.title}`, warning);
-    await notify(closing.listing.seller.email, `Wires changed · ${closing.listing.title}`, warning);
+    for (const email of [...(await buyerSideEmails(closingId)), closing.listing.seller.email]) {
+      await notify(email, `Wires changed · ${closing.listing.title}`, warning);
+    }
   }
   revalidatePath(`/closings/${closingId}`);
   redirect(`/closings/${closingId}?notice=wires`);
@@ -93,12 +94,12 @@ export async function completeClosingStep(formData: FormData) {
   const closingId = String(formData.get("closingId") || "");
   const stepKey = String(formData.get("stepKey") || "");
   const note = String(formData.get("note") || "").trim();
+  const override = String(formData.get("override") || "").trim().slice(0, 300);
   const { user, closing, inquiry } = await participant(closingId);
   if (user.role !== "ADMIN") redirect(`/closings/${closingId}?error=Only the desk advances a closing.`);
   if (!isClosingStepKey(stepKey)) redirect(`/closings/${closingId}?error=Unknown step.`);
   if (closing.status !== "OPEN") redirect(`/closings/${closingId}?error=This closing is already finished.`);
-  const funders = await prisma.closingFunder.findMany({ where: { closingId }, select: { userId: true } });
-  if (await ofacHold({ listingId: closing.listingId, userIds: [inquiry?.buyerId, closing.listing.sellerId, ...funders.map((row) => row.userId)] })) {
+  if (await ofacHold({ listingId: closing.listingId, userIds: [inquiry?.buyerId, closing.listing.sellerId, ...closing.funders.map((row) => row.userId)] })) {
     redirect(`/closings/${closingId}?error=${encodeURIComponent(OFAC_HOLD_MESSAGE)}`);
   }
   if (!canCompleteStep(closing.steps, stepKey)) {
@@ -106,16 +107,30 @@ export async function completeClosingStep(formData: FormData) {
   }
   const step = closing.steps.find((item) => item.key === stepKey);
   if (!step) redirect(`/closings/${closingId}`);
-  await prisma.closingStep.update({
-    where: { id: step.id },
+  // Money steps wait for the recorded wire. The desk can go ahead without it only by saying why, and that is audited.
+  const gate = moneyGate(stepKey, closing, closing.funders);
+  if (gate && override.length < 3) {
+    redirect(`/closings/${closingId}?error=${encodeURIComponent(`${gate} Record it first, or give a reason to go ahead without it.`)}`);
+  }
+  const marked = await prisma.closingStep.updateMany({
+    where: { id: step.id, status: "PENDING" },
     data: { status: "COMPLETE", note, completedAt: new Date() },
   });
-  if (stepKey === "CLOSED") await finalizeClosing(closingId);
+  if (marked.count !== 1) redirect(`/closings/${closingId}?error=${encodeURIComponent("That step is already marked complete.")}`);
+  if (stepKey === "CLOSED") {
+    const finished = await finalizeClosing(closingId);
+    if (finished?.status !== "COMPLETE") {
+      // A cancel landed first. Put the step back so a canceled file doesn't read as closed.
+      await prisma.closingStep.update({ where: { id: step.id }, data: { status: "PENDING", note: step.note, completedAt: null } });
+      redirect(`/closings/${closingId}?error=${encodeURIComponent("This closing was canceled, so it can't be marked closed.")}`);
+    }
+  }
+  if (gate) await audit(user.id, "CLOSING_OVERRIDE", "closing", closingId, `${stepKey}: ${gate} Reason: ${override}`);
   await audit(user.id, "CLOSING", "closing", closingId, stepKey);
-  const buyerEmail = inquiry ? (await prisma.user.findUnique({ where: { id: inquiry.buyerId } }))?.email : null;
   const label = stepKey.replaceAll("_", " ").toLowerCase();
-  if (buyerEmail) await notify(buyerEmail, `Closing · ${closing.listing.title}`, `The desk marked ${label} complete.`);
-  await notify(closing.listing.seller.email, `Closing · ${closing.listing.title}`, `The desk marked ${label} complete.`);
+  for (const email of [...(await buyerSideEmails(closingId)), closing.listing.seller.email]) {
+    await notify(email, `Closing · ${closing.listing.title}`, `The desk marked ${label} complete.`);
+  }
   revalidatePath(`/closings/${closingId}`);
   revalidatePath("/closings");
   revalidatePath("/admin");
@@ -129,14 +144,14 @@ export async function cancelClosing(formData: FormData) {
   if (user.role !== "ADMIN") redirect(`/closings/${closingId}?error=Only the desk cancels a closing.`);
   if (closing.status !== "OPEN") redirect(`/closings/${closingId}?error=This closing is already finished.`);
   if (reason.length < 3) redirect(`/closings/${closingId}?error=${encodeURIComponent("Say why the closing is being canceled.")}`);
-  await cancelOpenClosing(closingId, reason);
+  // A close or another cancel that landed first wins, and nobody is told this one happened.
+  if (!(await cancelOpenClosing(closingId, reason))) redirect(`/closings/${closingId}?error=This closing is already finished.`);
   await audit(user.id, "CLOSING_CANCELED", "closing", closingId, reason);
   const message = `The desk canceled this closing. Reason: ${reason} Any money already wired has to be returned outside the app, so write the desk about it.`;
   if (inquiry) {
     await onGroupDeclined(inquiry.id, message);
     await emitWebhook(closing.listing.sellerId, "offer.declined", { inquiryId: inquiry.id, listingId: closing.listingId });
-    const buyer = await prisma.user.findUnique({ where: { id: inquiry.buyerId } });
-    if (buyer) await notify(buyer.email, `Closing canceled · ${closing.listing.title}`, message);
+    await notify(inquiry.buyer.email, `Closing canceled · ${closing.listing.title}`, message);
   }
   await notify(closing.listing.seller.email, `Closing canceled · ${closing.listing.title}`, message);
   const thread = await prisma.deskThread.findUnique({ where: { closingId } });
@@ -181,7 +196,7 @@ export async function setClosingDates(formData: FormData) {
 export async function recordSettlement(formData: FormData) {
   const closingId = String(formData.get("closingId") || "");
   const side = String(formData.get("side") || "");
-  const { user, closing, inquiry } = await participant(closingId);
+  const { user, closing } = await participant(closingId);
   if (user.role !== "ADMIN") redirect(`/closings/${closingId}?error=Only the desk records money movement.`);
   if (closing.status === "CANCELED") redirect(`/closings/${closingId}?error=This closing was canceled.`);
   if (side !== "funds" && side !== "proceeds" && side !== "deposit") redirect(`/closings/${closingId}?error=Choose which wire this is.`);
@@ -205,10 +220,10 @@ export async function recordSettlement(formData: FormData) {
   await audit(user.id, side === "funds" ? "FUNDS_RECEIVED" : side === "deposit" ? "DEPOSIT_RECEIVED" : "PROCEEDS_SENT", "closing", closingId, `${label}: ${before == null ? "none" : `$${(before / 100).toFixed(2)}`} to ${dollars} on ${at.toISOString().slice(0, 10)}${reference ? ` · ${reference}` : ""}`);
   const message = `The desk recorded ${label.toLowerCase()} of ${dollars} on ${at.toISOString().slice(0, 10)}${reference ? ` (reference ${reference})` : ""} for ${closing.listing.title}. If that does not match your records, reply on the closing thread.`;
   if (side === "proceeds") await notify(closing.listing.seller.email, `${label} · ${closing.listing.title}`, message);
-  if ((side === "funds" || side === "deposit") && inquiry) {
-    const buyer = await prisma.user.findUnique({ where: { id: inquiry.buyerId } });
-    if (buyer) await notify(buyer.email, `${label} · ${closing.listing.title}`, message);
+  if (side === "funds" || side === "deposit") {
+    for (const email of await buyerSideEmails(closingId)) await notify(email, `${label} · ${closing.listing.title}`, message);
   }
+  if (side === "deposit") await completeDepositFromWire(closingId);
   revalidatePath(`/closings/${closingId}`);
   redirect(`/closings/${closingId}?notice=settlement`);
 }

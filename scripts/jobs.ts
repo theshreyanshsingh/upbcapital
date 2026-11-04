@@ -4,7 +4,8 @@ import { runJobs } from "../lib/jobs";
 runJobs()
   .then((result) => {
     console.log(result.summary);
-    process.exit(0);
+    // A failed job fails the run, so the scheduler shows it.
+    process.exit(result.failed.length ? 1 : 0);
   })
   .catch((error) => {
     console.error(error instanceof Error ? error.message : error);

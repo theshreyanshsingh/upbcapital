@@ -30,7 +30,7 @@ export default async function UsersPage({
   const held = new Set(reviews.filter(ofacBlocks).map((row) => row.userId));
   return (
     <div>
-      <PageIntro eyebrow="Accounts" title="Who is allowed in." lede="Buyers and institutions wait here until you approve them. Pro can be comped without a charge." />
+      <PageIntro eyebrow="Accounts" title="Who is allowed in." lede="Buyers and institutions wait here until you approve them. Pro can be comped without a charge. Comping a paying buyer or setting them free cancels their Stripe subscription." />
       <Notice notice={q(params, "notice")} error={q(params, "error")} />
       <form action="/admin/users" role="search" className="mt-6 flex max-w-md gap-2">
         <input name="q" type="search" defaultValue={filter} aria-label="Filter accounts" placeholder="Name, email, or company" className="desk-input" />

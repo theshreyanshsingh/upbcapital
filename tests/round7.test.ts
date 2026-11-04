@@ -6,9 +6,9 @@ import { digestBody, digestSince } from "@/lib/digest";
 import { screenOfac } from "@/lib/ofac";
 import { modelParticipation } from "@/lib/participation";
 
-test("desk fees can be waived", () => {
-  assert.deepEqual(deskFeeBps(false, 250, 300), { premiumBps: 0, commissionBps: 0 });
-  assert.deepEqual(deskFeeBps(true, 250, 300), { premiumBps: 250, commissionBps: 300 });
+test("desk fees can be waived, and the desk never pays itself a premium", () => {
+  assert.deepEqual(deskFeeBps(false, 300), { premiumBps: 0, commissionBps: 0 });
+  assert.deepEqual(deskFeeBps(true, 300), { premiumBps: 0, commissionBps: 300 });
 });
 
 test("a participation splits percent and payment streams", () => {
@@ -70,7 +70,8 @@ test("a digest waits out its window", () => {
   assert.equal(digestSince("WEEKLY", new Date("2026-10-16T00:00:00Z"), now), null);
   const since = digestSince("WEEKLY", new Date("2026-10-01T00:00:00Z"), now);
   assert.ok(since);
-  assert.equal(since.toISOString().slice(0, 10), "2026-10-11");
+  assert.equal(since.toISOString().slice(0, 10), "2026-10-01");
+  assert.equal(digestSince("DAILY", new Date("2026-06-01T00:00:00Z"), now)?.toISOString().slice(0, 10), "2026-09-18");
   assert.equal(digestBody([]), "");
   assert.match(digestBody([{ title: "Naples first", score: 80 }]), /Naples first/);
 });

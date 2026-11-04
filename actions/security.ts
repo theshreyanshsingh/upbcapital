@@ -7,9 +7,9 @@ import { redirect } from "next/navigation";
 import { accountLocked, needsSecondFactor } from "@/lib/access";
 import { audit } from "@/lib/audit";
 import { clearPending, currentSessionId, endSessions, pendingUserId, requireUser, setSession, twoStepRequired } from "@/lib/auth";
-import { notify } from "@/lib/email";
+import { demoSeat } from "@/lib/deploy";
+import { sendAlert, sendSecret } from "@/lib/email";
 import { homeFor } from "@/lib/labels";
-import { deliverable } from "@/lib/mail-config";
 import { prisma } from "@/lib/prisma";
 import { consumeRateLimit } from "@/lib/rate-limit";
 import { newRecoveryCodes, packHashes, takeRecoveryCode } from "@/lib/recovery";
@@ -76,10 +76,11 @@ export async function setEmailFallback(formData: FormData) {
 
 async function acceptSecondFactor(user: { id: string; totpSecret: string; recoveryHashes: string; email: string }, code: string) {
   if (verifyTotp(user.totpSecret, code)) return true;
+  // Single-use codes are taken with a conditional write, so two requests racing with one code can't both pass.
   const remaining = takeRecoveryCode(user.recoveryHashes, code);
   if (remaining != null) {
-    await prisma.user.update({ where: { id: user.id }, data: { recoveryHashes: remaining } });
-    return true;
+    const taken = await prisma.user.updateMany({ where: { id: user.id, recoveryHashes: user.recoveryHashes }, data: { recoveryHashes: remaining } });
+    return taken.count === 1;
   }
   const hash = createHash("sha256").update(code.replace(/\s/g, "")).digest("hex");
   const row = await prisma.loginCode.findFirst({
@@ -87,8 +88,8 @@ async function acceptSecondFactor(user: { id: string; totpSecret: string; recove
     orderBy: { createdAt: "desc" },
   });
   if (!row) return false;
-  await prisma.loginCode.update({ where: { id: row.id }, data: { usedAt: new Date() } });
-  return true;
+  const taken = await prisma.loginCode.updateMany({ where: { id: row.id, ...unset("usedAt") }, data: { usedAt: new Date() } });
+  return taken.count === 1;
 }
 
 export async function verifyLoginTotp(formData: FormData) {
@@ -125,14 +126,15 @@ export async function sendEmailCode() {
   await prisma.loginCode.create({
     data: { userId: user.id, codeHash, expiresAt: new Date(Date.now() + 10 * 60 * 1000) },
   });
-  await notify(user.email, "Your UPB Capital sign-in code", `Your code is ${code}. It expires in ten minutes.`);
+  // The code ignores notice settings and never lands in the in-app inbox, which can't be read before sign-in.
+  await sendSecret(user.email, "Your UPB Capital sign-in code", `Your code is ${code}. It expires in ten minutes.`);
   redirect("/login/verify?notice=email_sent");
 }
 
 export async function changePassword(formData: FormData) {
   const user = await requireUser({ secondFactorSetup: true });
   const back = (message: string) => redirect(`/account/security?error=${encodeURIComponent(message)}`);
-  if (!deliverable(user.email)) back("Demo accounts keep the shared password.");
+  if (demoSeat(user.email)) back("Demo accounts keep the shared password.");
   if (!(await consumeRateLimit(`password:${user.id}`, 5, 15 * 60 * 1000))) back("Too many tries. Wait fifteen minutes.");
   const current = String(formData.get("current") || "");
   const password = String(formData.get("password") || "");
@@ -143,7 +145,7 @@ export async function changePassword(formData: FormData) {
   await prisma.user.update({ where: { id: user.id }, data: { passwordHash: await bcrypt.hash(password, 10) } });
   await endSessions(user.id, await currentSessionId());
   await audit(user.id, "PASSWORD_CHANGED", "user", user.id);
-  await notify(user.email, "Your UPB Capital password changed", "Your password was changed from the security page, and other devices were signed out. If this was not you, write the desk now.");
+  await sendAlert(user.email, "Your UPB Capital password changed", "Your password was changed from the security page, and other devices were signed out. If this was not you, write the desk now.");
   redirect("/account/security?notice=password");
 }
 

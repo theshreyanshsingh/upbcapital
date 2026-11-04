@@ -10,43 +10,99 @@ import { bidNeedsReminder, taskNeedsReminder } from "@/lib/schedule";
 import { purgeTapeDrafts } from "@/lib/tape-draft";
 import { unset } from "@/lib/db-filters";
 
+// What a sending job did: how many went out, and how many items failed, with the first reason.
+export type Tally = { sent: number; failed: number; error: string };
+
+function errorText(error: unknown) {
+  return (error instanceof Error ? error.message : String(error)).split("\n")[0].slice(0, 200);
+}
+
+// One bad item is logged and counted, and the job goes on to the next. A claimed item that then fails waits for its
+// next turn rather than risk a second send.
+export async function eachItem<T>(job: string, items: T[], name: (item: T) => string, send: (item: T) => Promise<boolean>): Promise<Tally> {
+  const tally: Tally = { sent: 0, failed: 0, error: "" };
+  for (const item of items) {
+    try {
+      if (await send(item)) tally.sent += 1;
+    } catch (error) {
+      tally.failed += 1;
+      tally.error ||= `${name(item)}: ${errorText(error)}`;
+      console.error(`[upb-jobs] ${job} failed for ${name(item)}:`, errorText(error));
+    }
+  }
+  return tally;
+}
+
+// A marker still at the value this run read. Each item is claimed with it before anything is sent, so an overlapping
+// run (a second cron delivery, or the desk's digest button) finds the item taken and sends nothing.
+function still<K extends string>(field: K, seen: Date | null) {
+  return seen ? ({ [field]: seen } as Record<K, Date>) : unset(field);
+}
+
+type JobResult = { job: string; ok: boolean; line: string };
+
+function describe(job: string, outcome: PromiseSettledResult<Tally | string>): JobResult {
+  if (outcome.status === "rejected") return { job, ok: false, line: `${job} failed: ${errorText(outcome.reason)}.` };
+  const value = outcome.value;
+  if (typeof value === "string") return { job, ok: true, line: `${value.charAt(0).toUpperCase()}${value.slice(1)}.` };
+  const ok = value.failed === 0;
+  return { job, ok, line: `${job} ${value.sent}${ok ? "" : `, ${value.failed} failed (${value.error})`}.` };
+}
+
+export type Job = [name: string, run: () => Promise<Tally | string>];
+
 export async function runJobs(now = new Date()) {
-  const [digests, tasks, bids, steps, notices, auctions, retention, drafts] = await Promise.all([
-    sendDueDigests(now),
-    remindTasks(now),
-    remindBidDeadlines(now),
-    remindClosingSteps(now),
-    remindSaleNotices(now),
-    notifyClosedAuctions().then(() => "closed auctions checked"),
-    cleanRetention(now),
-    purgeTapeDrafts(now),
+  return runJobList([
+    ["Digests", () => sendDueDigests(now)],
+    ["Task reminders", () => remindTasks(now)],
+    ["Bid reminders", () => remindBidDeadlines(now)],
+    ["Closing reminders", () => remindClosingSteps(now)],
+    ["Sale notice reminders", () => remindSaleNotices(now)],
+    ["Closed auctions", () => notifyClosedAuctions().then(() => "closed auctions checked")],
+    ["Retention", () => cleanRetention(now)],
+    ["Abandoned tapes", () => purgeTapeDrafts(now).then((count) => `abandoned tapes ${count}`)],
   ]);
-  const summary = `Digests ${digests}. Task reminders ${tasks}. Bid reminders ${bids}. Closing reminders ${steps}. Sale notice reminders ${notices}. ${auctions}. ${retention}. Abandoned tapes ${drafts}.`;
-  await prisma.jobRun.create({ data: { finishedAt: new Date(), summary } });
-  return { digests, tasks, bids, steps, notices, retention, summary };
+}
+
+// Each job settles on its own, so one failure neither stops the others nor loses the run record.
+export async function runJobList(jobs: Job[]) {
+  const startedAt = new Date();
+  const settled = await Promise.allSettled(jobs.map(([, run]) => Promise.resolve().then(run)));
+  const results = settled.map((outcome, index) => describe(jobs[index][0], outcome));
+  const failed = results.filter((result) => !result.ok).map((result) => result.job);
+  const summary = results.map((result) => result.line).join(" ");
+  try {
+    await prisma.jobRun.create({ data: { startedAt, finishedAt: new Date(), summary } });
+  } catch (error) {
+    console.error("[upb-jobs] the run record was not saved:", errorText(error), summary);
+  }
+  return { startedAt, summary, failed, results };
 }
 
 export async function sendDueDigests(now = new Date()) {
   const users = await prisma.user.findMany({
     where: { role: "BUYER", accountStatus: "APPROVED", digest: { not: "OFF" } },
+    select: { id: true, email: true, digest: true, lastDigestAt: true },
   });
-  let sent = 0;
-  for (const user of users) {
-    const since = digestSince(user.digest, user.lastDigestAt, now);
-    if (!since) continue;
-    const matches = await prisma.listingMatch.findMany({
-      where: { userId: user.id, createdAt: { gte: since }, listing: { status: "APPROVED" } },
-      include: { listing: true },
-      orderBy: { score: "desc" },
-      take: 12,
-    });
-    await prisma.user.update({ where: { id: user.id }, data: { lastDigestAt: now } });
-    const body = digestBody(matches.map((match) => ({ title: match.listing.title, score: match.score })));
-    if (!body) continue;
-    await notify(user.email, "Buy box digest", body);
-    sent += 1;
-  }
-  return sent;
+  return eachItem("digest", users, (user) => `user ${user.id}`, (user) => sendDigest(user, now));
+}
+
+export async function sendDigest(user: { id: string; email: string; digest: string; lastDigestAt: Date | null }, now = new Date()) {
+  const since = digestSince(user.digest, user.lastDigestAt, now);
+  if (!since) return false;
+  const claim = await prisma.user.updateMany({ where: { id: user.id, ...still("lastDigestAt", user.lastDigestAt) }, data: { lastDigestAt: now } });
+  if (claim.count !== 1) return false;
+  // Up to this run's start; anything newer opens the next window.
+  const matches = await prisma.listingMatch.findMany({
+    where: { userId: user.id, createdAt: { gte: since, lt: now }, listing: { status: "APPROVED" } },
+    include: { listing: true },
+    orderBy: { score: "desc" },
+    take: 12,
+  });
+  const body = digestBody(matches.map((match) => ({ title: match.listing.title, score: match.score })));
+  if (!body) return false;
+  await notify(user.email, "Buy box digest", body);
+  return true;
 }
 
 async function remindTasks(now: Date) {
@@ -54,17 +110,19 @@ async function remindTasks(now: Date) {
     where: unset("doneAt"),
     include: { case: { include: { holding: true } } },
   });
-  let sent = 0;
-  for (const task of tasks) {
-    if (!taskNeedsReminder(task, now)) continue;
+  return eachItem("task reminder", tasks, (task) => `task ${task.id}`, async (task) => {
+    if (!taskNeedsReminder(task, now)) return false;
+    const claim = await prisma.lossTask.updateMany({
+      where: { id: task.id, AND: [still("remindedAt", task.remindedAt), unset("doneAt")] },
+      data: { remindedAt: now },
+    });
+    if (claim.count !== 1) return false;
     await notifyDesk(
       `Task due · ${task.title}`,
       `${task.title} on ${task.case.holding.title} is due ${task.dueOn.toISOString().slice(0, 10)}.`,
     );
-    await prisma.lossTask.update({ where: { id: task.id }, data: { remindedAt: now } });
-    sent += 1;
-  }
-  return sent;
+    return true;
+  });
 }
 
 async function remindBidDeadlines(now: Date) {
@@ -72,18 +130,19 @@ async function remindBidDeadlines(now: Date) {
     where: { bidMode: { not: "NONE" }, bidDeadline: { not: null }, ...unset("bidReminderAt") },
     include: { seller: true, inquiries: { where: { type: "OFFER" }, include: { buyer: true } } },
   });
-  let sent = 0;
-  for (const listing of listings) {
-    if (!bidNeedsReminder(listing, now)) continue;
+  return eachItem("bid reminder", listings, (listing) => `listing ${listing.id}`, async (listing) => {
+    if (!bidNeedsReminder(listing, now)) return false;
+    const claim = await prisma.listing.updateMany({ where: { id: listing.id, ...unset("bidReminderAt") }, data: { bidReminderAt: now } });
+    if (claim.count !== 1) return false;
     const when = listing.bidDeadline?.toISOString().slice(0, 16) ?? "";
+    const subject = `Bid deadline · ${listing.title}`;
     const body = `Bids on ${listing.title} close at ${when} UTC.`;
-    await notify(listing.seller.email, `Bid deadline · ${listing.title}`, body);
-    await notifyDesk(`Bid deadline · ${listing.title}`, body);
-    for (const inquiry of listing.inquiries) await notify(inquiry.buyer.email, `Bid deadline · ${listing.title}`, body);
-    await prisma.listing.update({ where: { id: listing.id }, data: { bidReminderAt: now } });
-    sent += 1;
-  }
-  return sent;
+    await notify(listing.seller.email, subject, body);
+    await notifyDesk(subject, body);
+    // A buyer with several offers on the listing hears once.
+    for (const email of new Set(listing.inquiries.map((inquiry) => inquiry.buyer.email))) await notify(email, subject, body);
+    return true;
+  });
 }
 
 // One message per closing and party, listing every step that is late or due within two days.
@@ -94,12 +153,20 @@ export async function remindClosingSteps(now = new Date()) {
     where: { status: "OPEN" },
     include: { steps: true, listing: { include: { seller: true } }, funders: { include: { user: true } } },
   });
-  let sent = 0;
-  for (const closing of closings) {
-    const due = closing.steps
+  return eachItem("closing reminder", closings, (closing) => `closing ${closing.id}`, async (closing) => {
+    const ready = closing.steps
       .map((step) => ({ step, at: effectiveDue(step, closing, days) }))
       .filter(({ step, at }) => stepNeedsReminder(step, at, now));
-    if (!due.length) continue;
+    // Each step is claimed on its own; the message covers only the steps this run took.
+    const due: typeof ready = [];
+    for (const item of ready) {
+      const claim = await prisma.closingStep.updateMany({
+        where: { id: item.step.id, status: { not: "COMPLETE" }, ...still("remindedAt", item.step.remindedAt) },
+        data: { remindedAt: now },
+      });
+      if (claim.count === 1) due.push(item);
+    }
+    if (!due.length) return false;
     const inquiry = closing.inquiryId ? await prisma.inquiry.findUnique({ where: { id: closing.inquiryId }, include: { buyer: true } }) : null;
     const buyers = closing.funders.length ? closing.funders.map((funder) => funder.user.email) : inquiry ? [inquiry.buyer.email] : [];
     const line = ({ step, at }: (typeof due)[number]) =>
@@ -110,12 +177,10 @@ export async function remindClosingSteps(now = new Date()) {
     const sellerSteps = forParty("seller");
     if (sellerSteps.length) await notify(closing.listing.seller.email, subject, `${sellerSteps.map(line).join("\n")}\n\nThe checklist: ${link}`);
     const buyerSteps = forParty("buyer");
-    if (buyerSteps.length) for (const email of buyers) await notify(email, subject, `${buyerSteps.map(line).join("\n")}\n\nThe checklist: ${link}`);
+    if (buyerSteps.length) for (const email of new Set(buyers)) await notify(email, subject, `${buyerSteps.map(line).join("\n")}\n\nThe checklist: ${link}`);
     await notifyDesk(subject, `${due.map(line).join("\n")}\n\n${link}`);
-    await prisma.closingStep.updateMany({ where: { id: { in: due.map(({ step }) => step.id) } }, data: { remindedAt: now } });
-    sent += 1;
-  }
-  return sent;
+    return true;
+  });
 }
 
 // The new owner's sale notice to the borrower, due 30 days after transfer. One reminder five days out and one
@@ -125,11 +190,15 @@ export async function remindSaleNotices(now = new Date()) {
     where: { status: "COMPLETE", ...unset("ownerNoticeSentAt"), closedAt: { gte: new Date(now.getTime() - 120 * 24 * 60 * 60 * 1000) } },
     include: { listing: { include: { notes: true } }, boarding: true, funders: { include: { user: true } } },
   });
-  let sent = 0;
-  for (const closing of closings) {
+  return eachItem("sale notice reminder", closings, (closing) => `closing ${closing.id}`, async (closing) => {
     const notes = closing.noteId ? closing.listing.notes.filter((note) => note.id === closing.noteId) : closing.listing.notes;
     const plan = borrowerNotices(closing, closing.boarding, loansInScope(notes, closing.loanPurpose).length, now);
-    if (plan.sale.state === "not_needed" || !saleNoticeNeedsReminder(plan.sale.due, closing.ownerNoticeSentAt, closing.ownerNoticeRemindedAt, now)) continue;
+    if (plan.sale.state === "not_needed" || !saleNoticeNeedsReminder(plan.sale.due, closing.ownerNoticeSentAt, closing.ownerNoticeRemindedAt, now)) return false;
+    const claim = await prisma.closing.updateMany({
+      where: { id: closing.id, AND: [still("ownerNoticeRemindedAt", closing.ownerNoticeRemindedAt), unset("ownerNoticeSentAt")] },
+      data: { ownerNoticeRemindedAt: now },
+    });
+    if (claim.count !== 1) return false;
     const due = plan.sale.due!.toISOString().slice(0, 10);
     const late = plan.sale.state === "late";
     const link = `${process.env.NEXT_PUBLIC_APP_URL || ""}/closings/${closing.id}`;
@@ -141,12 +210,10 @@ UPB doesn't send borrower notices. This is a reminder, not legal advice.`;
     else {
       const inquiry = closing.inquiryId ? await prisma.inquiry.findUnique({ where: { id: closing.inquiryId }, include: { buyer: true } }) : null;
       const buyers = closing.funders.length ? closing.funders.map((funder) => funder.user.email) : inquiry ? [inquiry.buyer.email] : [];
-      for (const email of buyers) await notify(email, subject, body);
+      for (const email of new Set(buyers)) await notify(email, subject, body);
     }
-    await prisma.closing.update({ where: { id: closing.id }, data: { ownerNoticeRemindedAt: now } });
-    sent += 1;
-  }
-  return sent;
+    return true;
+  });
 }
 
 export async function cleanRetention(now = new Date()) {

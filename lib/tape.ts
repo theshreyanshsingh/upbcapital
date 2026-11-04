@@ -91,7 +91,8 @@ function cell(row: Record<string, string>, mapping: Partial<Record<TapeFieldKey,
 
 function money(raw: string) {
   if (!raw) return null;
-  const cleaned = raw.replace(/[$,\s]/g, "").replace(/[()]/g, "");
+  // Accounting style "(1,000)" is a negative, which the checks below refuse, not a positive 1,000.
+  const cleaned = raw.replace(/[$,\s]/g, "").replace(/^\((.*)\)$/, "-$1");
   if (!cleaned) return null;
   const value = Number(cleaned);
   return Number.isFinite(value) ? value : null;
@@ -212,8 +213,10 @@ export function normalizeTapeRows(input: {
 
     const upb = money(cell(row, input.mapping, "upb"));
     const estimatedValue = money(cell(row, input.mapping, "estimatedValue"));
-    const rateRaw = money(cell(row, input.mapping, "interestRate"));
-    const interestRate = rateRaw == null ? null : rateRaw <= 1 ? rateRaw * 100 : rateRaw;
+    // "6.50%" is already a percent; a bare 0.065 is a fraction. The quality check reads rates the same way.
+    const rateText = cell(row, input.mapping, "interestRate");
+    const rateRaw = money(rateText.replace(/%/g, ""));
+    const interestRate = rateRaw == null ? null : rateRaw < 1 && !rateText.includes("%") ? rateRaw * 100 : rateRaw;
     const monthlyRaw = cell(row, input.mapping, "monthlyPi");
     const monthlyPi = monthlyRaw ? money(monthlyRaw) : 0;
     const monthsRaw = cell(row, input.mapping, "monthsDelinquent");
@@ -240,7 +243,8 @@ export function normalizeTapeRows(input: {
       streetAddress: street || "Not provided on tape",
       city,
       state: state!,
-      zip: cell(row, input.mapping, "zip").replace(/[^0-9]/g, "").slice(0, 5),
+      // Spreadsheets store 02134 as the number 2134, so short ZIPs get their leading zeros back.
+      zip: ((digits) => (digits.length >= 3 && digits.length < 5 ? digits.padStart(5, "0") : digits))(cell(row, input.mapping, "zip").replace(/[^0-9]/g, "").slice(0, 5)),
       propertyType: propertyType as NormalizedLoan["propertyType"],
       lienPosition: lienPosition as NormalizedLoan["lienPosition"],
       upb: upb!,
@@ -267,7 +271,7 @@ export function normalizeTapeRows(input: {
   let loans: NormalizedLoan[] = [];
   if (input.priceMode === "PERCENT") {
     const percent = input.pricePercent ?? 0;
-    if (percent <= 0 || percent > 150) {
+    if (!Number.isFinite(percent) || percent <= 0 || percent > 150) {
       errors.push({ row: 0, message: "Enter a pool price between 1% and 150% of UPB." });
     } else {
       loans = drafts.map((draft) => ({ ...draft, askingPrice: Math.round(draft.upb * percent) / 100 }));
@@ -275,13 +279,15 @@ export function normalizeTapeRows(input: {
   } else if (input.priceMode === "POOL_TOTAL") {
     const total = input.poolTotal ?? 0;
     const upb = drafts.reduce((sum, draft) => sum + draft.upb, 0);
-    if (total <= 0 || upb <= 0) {
+    if (!Number.isFinite(total) || total <= 0 || upb <= 0) {
       errors.push({ row: 0, message: "Enter a pool asking price greater than zero." });
     } else {
       loans = drafts.map((draft) => ({ ...draft, askingPrice: Math.round((total * (draft.upb / upb)) * 100) / 100 }));
     }
-  } else {
+  } else if (input.priceMode === "COLUMN") {
     loans = drafts.map((draft) => ({ ...draft, askingPrice: draft.askingPrice ?? 0 }));
+  } else {
+    errors.push({ row: 0, message: "Choose how to price the pool." });
   }
 
   return { loans, errors };

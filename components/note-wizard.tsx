@@ -103,7 +103,7 @@ export function NoteWizard({
     }
     if (index === 1) {
       if (Number(draft.upb) <= 0) return "UPB must be greater than zero.";
-      if (Number(draft.interestRate) < 0 || Number(draft.interestRate) > 40) return "Enter a note rate between 0 and 40.";
+      if (draft.interestRate.trim() === "" || !(Number(draft.interestRate) >= 0 && Number(draft.interestRate) <= 40)) return "Enter a note rate between 0 and 40.";
       if (Number(draft.monthlyPi) < 0 || draft.monthlyPi === "") return "Enter monthly principal and interest.";
       if (Number(draft.estimatedValue) <= 0) return "Enter the estimated property value.";
     }
@@ -232,7 +232,7 @@ export function NoteWizard({
               <Field label="Borrower name" hint="Shown only after a buyer acknowledges confidentiality.">
                 <Input className="h-11 bg-card" value={draft.borrowerName} onChange={(event) => set("borrowerName", event.target.value)} />
               </Field>
-              <Field label="Notes for the desk">
+              <Field label="Summary for buyers" hint="Shown on the book to every buyer, before any NDA. Leave out borrower names and street addresses.">
                 <Textarea className="min-h-32 bg-card" value={draft.narrative} onChange={(event) => set("narrative", event.target.value)} />
               </Field>
             </div>

@@ -101,10 +101,13 @@ export default async function AdminOffersPage({
               )}
               {(inquiry.status === "OPEN" || inquiry.status === "REVIEWED") && (
                 <div className="mt-4 flex flex-wrap items-center gap-2">
-                  {inquiry.type === "OFFER" && inquiry.listing.bidMode !== "NONE" && !deadlinePassed(inquiry.listing.bidDeadline) && (
+                  {inquiry.type === "OFFER" && inquiry.listing.status === "APPROVED" && inquiry.listing.bidMode !== "NONE" && !deadlinePassed(inquiry.listing.bidDeadline) && (
                     <p className="text-sm text-muted-foreground">Award opens after the deadline.</p>
                   )}
-                  {inquiry.type === "OFFER" && (inquiry.listing.bidMode === "NONE" || deadlinePassed(inquiry.listing.bidDeadline)) && (
+                  {inquiry.type === "OFFER" && inquiry.listing.status !== "APPROVED" && (
+                    <p className="text-sm text-muted-foreground">The listing isn&apos;t live, so this bid can&apos;t be awarded.</p>
+                  )}
+                  {inquiry.type === "OFFER" && inquiry.listing.status === "APPROVED" && (inquiry.listing.bidMode === "NONE" || deadlinePassed(inquiry.listing.bidDeadline)) && (
                     <form action={decideInquiry}>
                       <input type="hidden" name="inquiryId" value={inquiry.id} />
                       <input type="hidden" name="decision" value="ACCEPT" />

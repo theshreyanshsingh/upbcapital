@@ -6,7 +6,8 @@ import { audit } from "@/lib/audit";
 import { requireRole } from "@/lib/auth";
 import { cleanRetention } from "@/lib/jobs";
 import { prisma } from "@/lib/prisma";
-import { partyScope, screenAndRecord } from "@/lib/screening";
+import { ofacOpen } from "@/lib/ofac";
+import { openReviewWhere, sameReviewIds, screenAndRecord } from "@/lib/screening";
 import { clearSettingsCache } from "@/lib/settings";
 import { US_STATES } from "@/lib/labels";
 
@@ -61,16 +62,45 @@ export async function decideOfacReview(formData: FormData) {
   if (note.length < 3) redirect("/admin/compliance?error=Write why, so the record stands on its own.");
   const check = await prisma.ofacCheck.findUnique({ where: { id } });
   if (!check || check.result !== "REVIEW") redirect("/admin/compliance?error=That review is not on file.");
+  if (!ofacOpen(check)) redirect(`/admin/compliance?error=${encodeURIComponent("That review is already decided. Reopen it to change the decision.")}`);
   // The decision covers this party's screens of this name, never someone else who happens to share it.
-  const scope = partyScope(check);
-  const rows = scope ? await prisma.ofacCheck.findMany({ where: { name: check.name, result: "REVIEW", ...scope }, select: { id: true, matched: true } }) : [];
-  const same = [check.id, ...rows.filter((row) => (row.matched ?? "") === (check.matched ?? "")).map((row) => row.id)];
-  await prisma.ofacCheck.updateMany({
-    where: { id: { in: same } },
+  // Only rows still open change, so two people deciding at once can't overwrite each other.
+  const same = await sameReviewIds(check);
+  const { count } = await prisma.ofacCheck.updateMany({
+    where: { id: { in: same }, ...openReviewWhere },
     data: { status: decision, reviewedById: user.id, reviewedAt: new Date(), reviewNote: note },
   });
+  if (count === 0) redirect(`/admin/compliance?error=${encodeURIComponent("Someone decided that review a moment ago.")}`);
   await audit(user.id, `OFAC_${decision}`, "ofac", id, `${check.name} against ${check.matched ?? "an unrecorded entry"}: ${note}`);
   revalidatePath("/admin/compliance");
   revalidatePath("/admin/users");
   redirect("/admin/compliance?notice=ofac");
+}
+
+// For a mis-click, or a decision that new facts undo. The party's rows go back to open, so every hold applies
+// again until someone decides. The audit log keeps the decision it replaced.
+export async function reopenOfacReview(formData: FormData) {
+  const user = await requireRole(["ADMIN"]);
+  const id = String(formData.get("checkId") || "");
+  const note = String(formData.get("note") || "").trim().slice(0, 500);
+  if (note.length < 3) redirect(`/admin/compliance?error=${encodeURIComponent("Write why it needs another look.")}`);
+  const check = await prisma.ofacCheck.findUnique({ where: { id } });
+  if (!check || check.result !== "REVIEW") redirect("/admin/compliance?error=That review is not on file.");
+  if (ofacOpen(check)) redirect(`/admin/compliance?error=${encodeURIComponent("That review is already open.")}`);
+  const same = await sameReviewIds(check);
+  const { count } = await prisma.ofacCheck.updateMany({
+    where: { id: { in: same }, status: check.status },
+    data: { status: "OPEN", reviewedById: null, reviewedAt: null, reviewNote: null },
+  });
+  if (count === 0) redirect(`/admin/compliance?error=${encodeURIComponent("That review changed a moment ago. Look again.")}`);
+  await audit(
+    user.id,
+    "OFAC_REOPENED",
+    "ofac",
+    id,
+    `${check.name} against ${check.matched ?? "an unrecorded entry"}: was ${String(check.status).toLowerCase()} (${check.reviewNote ?? "no note"}). Reopened: ${note}`,
+  );
+  revalidatePath("/admin/compliance");
+  revalidatePath("/admin/users");
+  redirect(`/admin/compliance?notice=${encodeURIComponent("The review is open again. Decide it below.")}`);
 }

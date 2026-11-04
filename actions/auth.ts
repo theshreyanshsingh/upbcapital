@@ -5,9 +5,11 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 import { audit } from "@/lib/audit";
 import { clearSession, getCurrentUser, setPending, setSession } from "@/lib/auth";
+import { demoAddress, isReleaseBuild } from "@/lib/deploy";
 import { notifyDesk } from "@/lib/email";
 import { screenInBackground, screenUser } from "@/lib/screening";
 import { homeFor } from "@/lib/labels";
+import { deliverable } from "@/lib/mail-config";
 import { prisma } from "@/lib/prisma";
 import { consumeRateLimit } from "@/lib/rate-limit";
 import { referralCodeFor } from "@/lib/referral";
@@ -58,6 +60,12 @@ export async function signup(_prev: { error: string }, formData: FormData) {
   const data = parsed.data;
   if (data.role === "INSTITUTIONAL_SELLER" && !data.companyName) {
     return { error: "Institutional accounts need a company name." };
+  }
+  // The demo domain belongs to the seeded seats. A release mails codes, resets and alerts, so the address has to take
+  // mail. Whether the signer owns it is not confirmed yet.
+  if (demoAddress(data.email)) return { error: "That address is for the demo desk. Sign up with your own email." };
+  if (isReleaseBuild(process.env) && !deliverable(data.email)) {
+    return { error: "That address can't receive mail. Sign up with your own email." };
   }
   const existing = await prisma.user.findUnique({ where: { email: data.email } });
   if (existing) return { error: "An account with that email is already on the desk." };

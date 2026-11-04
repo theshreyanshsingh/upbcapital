@@ -2,12 +2,13 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { audit } from "@/lib/audit";
 import { requireRole, requireUser } from "@/lib/auth";
 import { canSubmitBid, sealedFromSeller } from "@/lib/auction";
 import { notify, notifyDesk } from "@/lib/email";
-import { fillState, resolvePositionAmount, scaleToTarget, splitPremium } from "@/lib/group-buy";
+import { fillState, resolvePositionAmount } from "@/lib/group-buy";
+import { notifySeats } from "@/lib/group-events";
 import { prisma } from "@/lib/prisma";
-import { seatMembers } from "@/lib/threads";
 import { canSubmitOffer } from "@/lib/verification";
 
 const OPEN_GROUP = ["GATHERING", "OFFERED", "COUNTERED", "CLOSING"] as const;
@@ -29,11 +30,6 @@ async function buyerReady(userId: string, listingId: string) {
   if (!gate.ok) return gate.reason === "verification" ? "Verify the buyer file before joining a group." : "This account cannot join a group.";
   if (!nda) return "Sign the confidentiality agreement before taking a seat.";
   return null;
-}
-
-async function notifySeats(groupId: string, subject: string, body: string) {
-  const seats = await prisma.groupPosition.findMany({ where: { groupId, status: { not: "DROPPED" } }, include: { user: true } });
-  for (const seat of seats) await notify(seat.user.email, subject, body);
 }
 
 async function publishOffer(groupId: string) {
@@ -111,6 +107,10 @@ export async function openGroup(formData: FormData) {
   const listing = await prisma.listing.findUnique({ where: { id: listingId } });
   const back = `/marketplace/${listingId}`;
   if (!listing || listing.status !== "APPROVED") redirect(`${back}?error=Groups open on a live listing.`);
+  // A group buys the whole listing, which a pool with traded loans can no longer sell.
+  if ((await prisma.note.count({ where: { listingId, tradeStatus: { not: "AVAILABLE" } } })) > 0) {
+    redirect(`${back}?error=${encodeURIComponent("Some loans on this listing have traded, so a group can't buy it whole.")}`);
+  }
   const blocked = user.role === "ADMIN" ? null : await buyerReady(user.id, listingId);
   if (blocked) redirect(`${back}?error=${encodeURIComponent(blocked)}`);
   const existing = await prisma.groupBuy.findFirst({ where: { listingId, status: { in: [...OPEN_GROUP] } } });
@@ -288,80 +288,25 @@ export async function dissolveGroup(formData: FormData) {
   redirect(`/groups/${groupId}?notice=dissolved`);
 }
 
-export async function onGroupCounter(inquiryId: string, amount: number) {
-  const group = await prisma.groupBuy.findFirst({ where: { inquiryId }, include: { positions: true, listing: true } });
-  if (!group || group.status === "CLOSED" || group.status === "DISSOLVED") return;
-  const oldTarget = Number(group.targetAmount);
-  const live = group.positions.filter((seat) => seat.status !== "DROPPED");
-  let allocated = 0;
-  for (let index = 0; index < live.length; index += 1) {
-    const seat = live[index];
-    const next = index === live.length - 1 ? Math.round((amount - allocated) * 100) / 100 : scaleToTarget(Number(seat.amount), oldTarget, amount);
-    allocated += next;
-    await prisma.groupPosition.update({
-      where: { id: seat.id },
-      data: { amount: next, percent: amount > 0 ? (next / amount) * 100 : 0, status: "RECONFIRM" },
-    });
-  }
-  await prisma.groupBuy.update({ where: { id: group.id }, data: { targetAmount: amount, status: "COUNTERED" } });
-  await notifySeats(group.id, `Counter · ${group.listing.title}`, `The desk countered the group at $${Math.round(amount).toLocaleString("en-US")}. Reconfirm your seat or drop it.`);
-}
-
-export async function onGroupAccepted(inquiryId: string, closingId: string, premiumCents: number) {
-  const group = await prisma.groupBuy.findFirst({ where: { inquiryId }, include: { positions: { include: { user: true } }, listing: true } });
-  if (!group) return;
-  const live = group.positions.filter((seat) => seat.status === "PLEDGED" || seat.status === "FUNDED");
-  const splits = splitPremium(premiumCents, live.map((seat) => ({ userId: seat.userId, amount: Number(seat.amount) })));
-  for (const seat of live) {
-    const split = splits.find((row) => row.userId === seat.userId);
-    await prisma.closingFunder.upsert({
-      where: { closingId_userId: { closingId, userId: seat.userId } },
-      create: {
-        closingId,
-        userId: seat.userId,
-        amount: seat.amount,
-        premiumCents: split?.premiumCents ?? 0,
-        percent: seat.percent,
-        slice: seat.slice,
-      },
-      update: { amount: seat.amount, premiumCents: split?.premiumCents ?? 0, percent: seat.percent, slice: seat.slice },
-    });
-    await prisma.groupPosition.update({ where: { id: seat.id }, data: { status: "FUNDED" } });
-  }
-  await prisma.groupBuy.update({ where: { id: group.id }, data: { status: "CLOSING", closingId } });
-  const thread = await prisma.deskThread.findUnique({ where: { closingId } });
-  if (thread) {
-    await seatMembers(thread.id, live.map((position) => position.userId));
-  }
-  const link = `/closings/${closingId}`;
-  for (const seat of live) {
-    await notify(seat.user.email, `Group accepted · ${group.listing.title}`, `Your seat is on the closing checklist. Fund your share: ${link}`);
-  }
-}
-
-export async function onGroupDeclined(inquiryId: string, message = "The seller did not take the group offer.") {
-  const group = await prisma.groupBuy.findFirst({ where: { inquiryId }, include: { listing: true } });
-  if (!group || group.status === "CLOSED") return;
-  await prisma.groupBuy.update({ where: { id: group.id }, data: { status: "DISSOLVED" } });
-  await notifySeats(group.id, `Group declined · ${group.listing.title}`, message);
-}
-
+// Only the desk marks a share funded, from a wire it can see. A seat holder's own word is not money in, and the
+// deposit step completes from the recorded deposit, not from these marks.
 export async function markShareFunded(formData: FormData) {
-  const user = await requireUser();
+  const user = await requireRole(["ADMIN"]);
   const closingId = String(formData.get("closingId") || "");
-  const userId = String(formData.get("userId") || user.id);
-  if (userId !== user.id && user.role !== "ADMIN") redirect(`/closings/${closingId}?error=You can mark only your own share.`);
-  const funder = await prisma.closingFunder.findUnique({ where: { closingId_userId: { closingId, userId } }, include: { closing: true } });
+  const userId = String(formData.get("userId") || "");
+  const reference = String(formData.get("reference") || "").trim().slice(0, 120);
+  const funder = await prisma.closingFunder.findUnique({ where: { closingId_userId: { closingId, userId } }, include: { closing: { include: { listing: true } }, user: true } });
   if (!funder) redirect(`/closings/${closingId}?error=That share is not on this closing.`);
   if (funder.closing.status !== "OPEN") redirect(`/closings/${closingId}?error=This closing is already finished.`);
-  await prisma.closingFunder.update({ where: { id: funder.id }, data: { status: "FUNDED", fundedAt: new Date() } });
-  const pending = await prisma.closingFunder.count({ where: { closingId, status: "PENDING" } });
-  if (pending === 0) {
-    await prisma.closingStep.updateMany({
-      where: { closingId, key: "BUYER_DEPOSIT", status: "PENDING" },
-      data: { status: "COMPLETE", completedAt: new Date(), note: "Each buyer funded their share." },
-    });
-  }
+  const marked = await prisma.closingFunder.updateMany({ where: { id: funder.id, status: "PENDING" }, data: { status: "FUNDED", fundedAt: new Date() } });
+  if (marked.count !== 1) redirect(`/closings/${closingId}?error=That share is already marked funded.`);
+  const share = `$${(Number(funder.amount) + funder.premiumCents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  await audit(user.id, "SHARE_FUNDED", "closing", closingId, `${funder.user.name}: ${share}${reference ? ` · ${reference}` : ""}`);
+  await notify(
+    funder.user.email,
+    `Share funded · ${funder.closing.listing.title}`,
+    `The desk marked your share of ${share} funded${reference ? ` (reference ${reference})` : ""}. If that does not match your records, reply on the closing thread.`,
+  );
   revalidatePath(`/closings/${closingId}`);
   redirect(`/closings/${closingId}?notice=funded`);
 }

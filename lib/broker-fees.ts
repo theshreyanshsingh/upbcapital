@@ -11,6 +11,7 @@ export type AssessedFee = {
   role: DealRole;
   amountCents: number;
   basis: "PERCENT" | "FLAT";
+  capped?: boolean;
 };
 
 export type AssessInput = {
@@ -24,7 +25,13 @@ export type AssessInput = {
   referrer: { brokerId: string; terms: FeeTerms | null } | null;
   brokerSchedule: FeeTerms;
   affiliateSchedule: FeeTerms;
+  // Flat fees already charged to each payee on the listing's earlier closings, by flatFeeKey.
+  flatPaid?: Record<string, number>;
 };
+
+export function flatFeeKey(brokerId: string, role: DealRole) {
+  return `${brokerId}:${role}`;
+}
 
 export function feeFromPool(poolCents: number, terms: FeeTerms) {
   if (terms.basis === "FLAT") return Math.max(0, Math.round(terms.cents));
@@ -51,6 +58,22 @@ export function assessBrokerFees(input: AssessInput): { fees: AssessedFee[]; wit
   const fees: AssessedFee[] = [];
   const pool = Math.max(0, input.premiumCents) + Math.max(0, input.commissionCents);
   const scheduleFor = (role: DealRole) => (role === "AFFILIATE" ? input.affiliateSchedule : input.brokerSchedule);
+  let room = pool;
+  // A flat fee is owed once per listing, however many closings a pool sells in, so earlier closings' share comes
+  // off. And no closing pays brokers more than the desk's fees on it: the listing fee comes first, the referral
+  // fee gets what is left, and a cut is noted.
+  const charge = (brokerId: string, role: DealRole, terms: FeeTerms, label: string) => {
+    const paid = terms.basis === "FLAT" ? (input.flatPaid?.[flatFeeKey(brokerId, role)] ?? 0) : 0;
+    const full = feeFromPool(pool, terms);
+    const owed = Math.max(0, full - paid);
+    const amountCents = Math.min(owed, room);
+    room -= amountCents;
+    const capped = amountCents < owed;
+    if (amountCents > 0) fees.push({ brokerId, role, amountCents, basis: terms.basis, ...(capped ? { capped: true } : {}) });
+    if (capped) withheld.push(`The ${label} fee was capped at the desk's fees on this closing${amountCents ? "" : ", which leaves nothing for it"}.`);
+    else if (full > 0 && owed === 0) withheld.push(`The flat ${label} fee was already charged on an earlier closing of this listing.`);
+    else if (amountCents === 0) withheld.push(`The ${label} fee calculated to zero.`);
+  };
 
   if (input.deal) {
     const brokerIsBuyer = Boolean(input.buyerId) && input.deal.brokerId === input.buyerId;
@@ -61,10 +84,7 @@ export function assessBrokerFees(input: AssessInput): { fees: AssessedFee[]; wit
     } else if (namedAsSeller || unnamedSelf) {
       withheld.push("No broker fee. The broker is the seller on this trade.");
     } else {
-      const terms = input.deal.terms ?? scheduleFor(input.deal.role);
-      const amountCents = feeFromPool(pool, terms);
-      if (amountCents > 0) fees.push({ brokerId: input.deal.brokerId, role: input.deal.role, amountCents, basis: terms.basis });
-      else withheld.push("The listing fee calculated to zero.");
+      charge(input.deal.brokerId, input.deal.role, input.deal.terms ?? scheduleFor(input.deal.role), "listing");
     }
   }
 
@@ -76,10 +96,7 @@ export function assessBrokerFees(input: AssessInput): { fees: AssessedFee[]; wit
     } else if (input.referrer.brokerId === input.sellerId) {
       withheld.push("No referral fee. The affiliate is the seller.");
     } else {
-      const terms = input.referrer.terms ?? input.affiliateSchedule;
-      const amountCents = feeFromPool(pool, terms);
-      if (amountCents > 0) fees.push({ brokerId: input.referrer.brokerId, role: "AFFILIATE", amountCents, basis: terms.basis });
-      else withheld.push("The referral fee calculated to zero.");
+      charge(input.referrer.brokerId, "AFFILIATE", input.referrer.terms ?? input.affiliateSchedule, "referral");
     }
   }
 

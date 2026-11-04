@@ -1,8 +1,9 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { alertMatchingSearches } from "@/actions/listings";
+import { alertMatchingSearches } from "@/lib/search-alerts";
 import { isPrivateDocument } from "@/lib/acl";
+import { audit } from "@/lib/audit";
 import { requireRole, requireUser } from "@/lib/auth";
 import { closingLoans } from "@/lib/closing";
 import { modelParticipation } from "@/lib/participation";
@@ -142,6 +143,23 @@ export async function handoffReo(formData: FormData) {
   redirect(`/admin/book/${holdingId}?notice=reo`);
 }
 
+// A pool's price is spread by balance, as the tape import does, since pool loans can be bid one by one.
+function shareOfPrice(price: number, notes: { upb: unknown }[]) {
+  const total = notes.reduce((sum, note) => sum + Number(note.upb), 0);
+  return (note: { upb: unknown }) => (total > 0 ? Math.round(((price * Number(note.upb)) / total) * 100) / 100 : price / notes.length);
+}
+
+// A holding goes on the book once. A second Relist while the first listing is still open would sell the same
+// loans twice.
+async function openRelist(holdingId: string) {
+  const past = await prisma.auditEvent.findMany({ where: { action: "RELIST", entityType: "holding", entityId: holdingId }, select: { detail: true } });
+  if (!past.length) return null;
+  return prisma.listing.findFirst({
+    where: { id: { in: past.map((row) => row.detail) }, status: { in: ["SUBMITTED", "UNDER_REVIEW", "CHANGES_REQUESTED", "APPROVED", "PENDING"] } },
+    select: { id: true },
+  });
+}
+
 async function relistFrom(input: {
   sellerId: string;
   title: string;
@@ -196,12 +214,16 @@ export async function relistDeskNote(formData: FormData) {
   });
   if (!holding) redirect("/admin/book?error=That note is not on the desk book.");
   if (!(price > 0)) redirect(`/admin/book/${holdingId}?error=Enter an asking price.`);
+  const earlier = await openRelist(holdingId);
+  if (earlier) redirect(`/admin/listings/${earlier.id}?error=${encodeURIComponent("This holding is already listed.")}`);
   const notes = holding.noteId ? holding.listing.notes.filter((note) => note.id === holding.noteId) : holding.listing.notes;
-  const history = holding.payments.map((payment) => `${payment.paidOn.toISOString().slice(0, 10)} ${Number(payment.amount)} ${payment.memo}`).join("; ");
+  const askFor = shareOfPrice(price, notes);
+  // Buyers see dates and amounts received. The desk's cost and its payment memos stay with the desk.
+  const history = holding.payments.map((payment) => `${payment.paidOn.toISOString().slice(0, 10)} ${Number(payment.amount)}`).join("; ");
   const listing = await relistFrom({
     sellerId: user.id,
     title: `Resale · ${holding.title}`,
-    summary: `${holding.listing.summary}\n\nRelisted from the desk book. Cost basis ${Number(holding.costBasis)}. Receipts: ${history || "none logged."}`,
+    summary: `${holding.listing.summary}\n\nRelisted from the desk book. Receipts: ${history || "none logged."}`,
     live: true,
     notes: notes.map((note) => ({
       streetAddress: note.streetAddress,
@@ -217,7 +239,7 @@ export async function relistDeskNote(formData: FormData) {
       monthlyPi: Number(note.monthlyPi),
       paymentStatus: note.paymentStatus,
       monthsDelinquent: note.monthsDelinquent,
-      askingPrice: price / notes.length,
+      askingPrice: askFor(note),
       foreclosureStatus: note.foreclosureStatus,
       borrowerName: note.borrowerName,
       memo: note.memo,
@@ -231,6 +253,10 @@ export async function relistDeskNote(formData: FormData) {
       size: doc.size,
     })),
   });
+  await audit(user.id, "RELIST", "holding", holdingId, listing.id);
+  await prisma.reviewComment.create({
+    data: { listingId: listing.id, authorId: user.id, action: "COMMENT", comment: `Relisted from the desk book at a cost basis of $${Number(holding.costBasis).toLocaleString("en-US")}.` },
+  });
   redirect(`/admin/listings/${listing.id}?notice=relist`);
 }
 
@@ -241,6 +267,7 @@ export async function relistBuyerNote(formData: FormData) {
   const holding = await prisma.buyerHolding.findUnique({ where: { id: holdingId }, include: { payments: true } });
   if (!holding || holding.userId !== user.id) redirect("/buyer/portfolio?error=That note is not on your book.");
   if (!(price > 0)) redirect("/buyer/portfolio?error=Enter an asking price.");
+  if (await openRelist(holdingId)) redirect(`/buyer/portfolio?error=${encodeURIComponent("This holding is already listed.")}`);
   const source = holding.listingId
     ? await prisma.listing.findUnique({ where: { id: holding.listingId }, include: { notes: true, documents: true } })
     : null;
@@ -251,6 +278,7 @@ export async function relistBuyerNote(formData: FormData) {
   if (!notes.length) redirect("/buyer/portfolio?error=This holding has no loan file to copy. Add the property facts on a new listing.");
   // The source's files cover every loan on it, so they come along only when the buyer bought all of them.
   const wholeSource = Boolean(source) && notes.length === source!.notes.length;
+  const askFor = shareOfPrice(price, notes);
   const history = holding.payments.map((payment) => `${payment.paidOn.toISOString().slice(0, 10)} ${Number(payment.amount)}`).join("; ");
   const yieldText = holding.underwrittenYield == null ? "" : ` Underwritten yield ${Number(holding.underwrittenYield).toFixed(1)}%.`;
   const share = holding.sharePercent == null ? 1 : Number(holding.sharePercent) / 100;
@@ -259,8 +287,8 @@ export async function relistBuyerNote(formData: FormData) {
     sellerId: user.id,
     title: fractional ? `Position · ${Number(holding.sharePercent).toFixed(1)}% · ${holding.title}` : `Resale · ${holding.title}`,
     summary: fractional
-      ? `A ${Number(holding.sharePercent).toFixed(1)}% participation relisted by the holder. Cost ${Number(holding.costBasis)}.${yieldText} Receipts: ${history || "none logged."}`
-      : `Relisted by the holder. Cost ${Number(holding.costBasis)}.${yieldText} Receipts: ${history || "none logged."}`,
+      ? `A ${Number(holding.sharePercent).toFixed(1)}% participation relisted by the holder.${yieldText} Receipts: ${history || "none logged."}`
+      : `Relisted by the holder.${yieldText} Receipts: ${history || "none logged."}`,
     live: false,
     notes: notes.map((note) => ({
       streetAddress: note.streetAddress,
@@ -276,7 +304,7 @@ export async function relistBuyerNote(formData: FormData) {
       monthlyPi: Number(note.monthlyPi) * (fractional ? share : 1),
       paymentStatus: note.paymentStatus,
       monthsDelinquent: note.monthsDelinquent,
-      askingPrice: price / notes.length,
+      askingPrice: askFor(note),
       foreclosureStatus: note.foreclosureStatus,
       borrowerName: note.borrowerName,
       memo: fractional ? `${Number(holding.sharePercent).toFixed(1)}% participation.` : note.memo,
@@ -289,6 +317,7 @@ export async function relistBuyerNote(formData: FormData) {
       size: doc.size,
     })),
   });
+  await audit(user.id, "RELIST", "holding", holdingId, listing.id);
   redirect(`/buyer/portfolio?notice=relist&listed=${listing.id}`);
 }
 
@@ -373,7 +402,7 @@ export async function listSlice(formData: FormData) {
       monthlyPi: Number(note.monthlyPi) * (slice.paymentCount ? 1 : share),
       paymentStatus: note.paymentStatus,
       monthsDelinquent: note.monthsDelinquent,
-      askingPrice: Number(slice.price) / notes.length,
+      askingPrice: shareOfPrice(Number(slice.price), notes)(note),
       foreclosureStatus: note.foreclosureStatus,
       borrowerName: note.borrowerName,
       memo: slice.paymentCount ? `Payment stream of ${slice.paymentCount} months.` : `${Number(slice.percent)}% participation.`,

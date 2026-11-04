@@ -4,8 +4,9 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { audit } from "@/lib/audit";
 import { requireUser } from "@/lib/auth";
-import { awaitingSeller, awardOffer, sellerPage } from "@/lib/awards";
+import { askedPriceStands, awaitingSeller, awardOffer, sellerPage } from "@/lib/awards";
 import { notifyDesk } from "@/lib/email";
+import { buyerPrice } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
 
 // The seller of record answers the desk's recommended bid. A broker who filed the listing is that seller.
@@ -13,7 +14,7 @@ export async function answerSaleApproval(formData: FormData) {
   const user = await requireUser();
   const inquiryId = String(formData.get("inquiryId") || "");
   const answer = String(formData.get("answer") || "");
-  const offer = await prisma.inquiry.findUnique({ where: { id: inquiryId }, include: { listing: true } });
+  const offer = await prisma.inquiry.findUnique({ where: { id: inquiryId }, include: { listing: true, messages: true } });
   if (!offer || offer.listing.sellerId !== user.id) redirect(user.role === "BROKER" ? "/broker" : user.role === "BUYER" ? "/buyer/portfolio" : "/seller");
   const back = sellerPage(offer.listing, user.role);
   if (!awaitingSeller(offer) || offer.sellerAskedAmount == null || (offer.status !== "OPEN" && offer.status !== "REVIEWED")) {
@@ -29,6 +30,13 @@ export async function answerSaleApproval(formData: FormData) {
     redirect(`${back}?notice=seller_declined`);
   }
   if (answer !== "APPROVE") redirect(`${back}?error=${encodeURIComponent("Approve or decline the sale.")}`);
+  // An approval only counts for the listing and the bid as they stand, so a stale page can't record one.
+  if (offer.listing.status !== "APPROVED") redirect(`${back}?error=${encodeURIComponent("This listing isn't live right now, so the sale can't be approved.")}`);
+  const current = buyerPrice(offer.amount, offer.messages.map((message) => ({ kind: message.kind, amount: message.amount, createdAt: message.createdAt, authorId: message.authorId })), offer.buyerId);
+  if (!askedPriceStands(amount, current)) {
+    await notifyDesk(`Bid changed before approval · ${offer.listing.title}`, `${user.name} tried to approve the sale at ${price}, but the buyer's bid is now $${Number(current ?? 0).toLocaleString("en-US")}. Ask the seller again at the new price.`);
+    redirect(`${back}?error=${encodeURIComponent("The buyer changed their bid since the desk asked, so this figure can no longer be approved.")}`);
+  }
   await prisma.inquiry.update({ where: { id: offer.id }, data: { sellerApprovedAmount: amount, sellerAnsweredAt: new Date(), sellerDeclined: false } });
   await audit(user.id, "SELLER_APPROVED", "inquiry", offer.id, `${offer.listing.title} · ${price}`);
   const result = await awardOffer(offer.id, user.id);

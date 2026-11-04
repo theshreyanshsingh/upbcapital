@@ -19,7 +19,8 @@ export default async function BuyBoxPage({
   const params = await searchParams;
   const boxes = await prisma.buyBox.findMany({
     where: { userId: user.id, active: true },
-    include: { matches: { include: { listing: true }, orderBy: { score: "desc" }, take: 5 } },
+    // Boxes score listings still in review too, so the live filter runs before the top five are taken.
+    include: { matches: { where: { listing: { status: { in: ["APPROVED", "PENDING"] } } }, include: { listing: true }, orderBy: { score: "desc" }, take: 5 } },
     orderBy: { createdAt: "desc" },
   });
   return (
@@ -47,7 +48,7 @@ export default async function BuyBoxPage({
               </div>
               <ul className="mt-4 space-y-2 text-sm">
                 {box.matches.length === 0 && <li className="text-muted-foreground">Nothing on the current book fits.</li>}
-                {box.matches.filter((match) => match.listing.status === "APPROVED" || match.listing.status === "PENDING").map((match) => (
+                {box.matches.map((match) => (
                   <li key={match.id} className="flex flex-wrap items-baseline justify-between gap-2">
                     <Link href={`/marketplace/${match.listingId}`} className="text-foreground hover:text-link">{match.listing.title}</Link>
                     <span className="text-link">{match.score}</span>

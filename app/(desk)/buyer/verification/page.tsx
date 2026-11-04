@@ -37,10 +37,10 @@ export default async function VerificationPage({
         lede="Offers wait until the desk has an entity, a proof-of-funds file, and an accredited-investor certification. Account approval and this file are separate."
       />
       <Notice notice={q(params, "notice")} error={q(params, "error")} />
-      {kycMode() !== "mock" && (
+      {kycMode() !== "mock" && profile?.status !== "APPROVED" && profile?.status !== "REJECTED" && (
         <form action={startVendorKyc} className="mt-6 border border-border p-5 rounded-xl">
           <p className="eyebrow">Vendor file</p>
-          <p className="mt-2 text-sm text-muted-foreground">Open {kycMode() === "persona" ? "Persona" : "Parallel Markets"} for identity or accreditation. The desk form below still accepts a proof file.</p>
+          <p className="mt-2 text-sm text-muted-foreground">Open {kycMode() === "persona" ? "Persona" : "Parallel Markets"} to confirm who you are. It checks identity only; the desk still approves the file below before you can bid.</p>
           <SubmitButton className="mt-4 h-11 text-[13px] font-medium">Continue with {kycMode() === "persona" ? "Persona" : "Parallel"}</SubmitButton>
         </form>
       )}

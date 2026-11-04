@@ -1,7 +1,7 @@
 import { canReadClosingFile } from "@/lib/acl";
 import { getApiUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { buildStatementPdf, statementLines, type StatementSide } from "@/lib/settlement";
+import { buildStatementPdf, statementLines, statementSide } from "@/lib/settlement";
 
 export const runtime = "nodejs";
 
@@ -13,10 +13,12 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   if (!closing) return new Response("Not found.", { status: 404 });
   const inquiry = closing.inquiryId ? await prisma.inquiry.findUnique({ where: { id: closing.inquiryId }, include: { buyer: true } }) : null;
   const funderIds = closing.funders.map((funder) => funder.userId);
-  const allowed = canReadClosingFile({ role: user.role, userId: user.id, sellerId: closing.listing.sellerId, buyerId: inquiry?.buyerId ?? null, funderIds });
-  if (!allowed) return new Response("Closed.", { status: 403 });
-  // Each side sees its own figures. The desk sees both, and what it owes brokers.
-  const side: StatementSide = user.role === "ADMIN" ? "desk" : user.id === closing.listing.sellerId ? "seller" : "buyer";
+  const parties = { role: user.role, userId: user.id, sellerId: closing.listing.sellerId, buyerId: inquiry?.buyerId ?? null, funderIds };
+  // Each side sees its own figures. The desk sees both, and what it owes brokers. A group seat holder sees their share.
+  const side = statementSide(parties);
+  if (!canReadClosingFile(parties) || side === "observer") return new Response("Closed.", { status: 403 });
+  const mine = side === "buyer" ? closing.funders.find((funder) => funder.userId === user.id) : undefined;
+  const share = mine ? { amount: Number(mine.amount), premiumCents: mine.premiumCents, status: mine.status, fundedAt: mine.fundedAt } : null;
   const brokerCents = closing.brokerFees.reduce((sum, fee) => sum + fee.amountCents, 0);
   const seller = closing.listing.seller.companyName || closing.listing.seller.name;
   const buyer = closing.deskBidId ? "UPB Capital desk" : funderIds.length > 1 ? "A buying group" : inquiry?.buyer.companyName || inquiry?.buyer.name || "Buyer";
@@ -25,7 +27,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     title: closing.listing.title,
     parties: `Seller ${seller}  -  Buyer ${buyer}`,
     closing: record,
-    sections: statementLines(record, side, side === "desk" ? brokerCents : 0),
+    sections: statementLines(record, side, side === "desk" ? brokerCents : 0, share),
   });
   return new Response(Buffer.from(pdf), {
     headers: {

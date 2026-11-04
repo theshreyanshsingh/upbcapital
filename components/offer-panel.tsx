@@ -17,6 +17,7 @@ export function OfferPanel({
   verified,
   noteId,
   heading,
+  closedText = "This listing is not taking new bids.",
 }: {
   listingId: string;
   premiumBps: number;
@@ -25,6 +26,7 @@ export function OfferPanel({
   verified: boolean;
   noteId?: string;
   heading?: string;
+  closedText?: string;
 }) {
   const [amount, setAmount] = useState("");
   const offer = Number(amount.replace(/[$,]/g, ""));
@@ -72,7 +74,7 @@ export function OfferPanel({
           .
         </p>
       ) : (
-        <p className="mt-6 text-sm text-muted-foreground">This listing is not taking new bids.</p>
+        <p className="mt-6 text-sm text-muted-foreground">{closedText}</p>
       )}
       <div className="mt-4 grid gap-2">
         <form action={submitInquiry}>

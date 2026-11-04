@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { onGroupCounter } from "@/actions/group";
+import { onGroupCounter } from "@/lib/group-events";
 import { deadlinePassed, sealedFromSeller } from "@/lib/auction";
 import { audit } from "@/lib/audit";
 import { requireUser } from "@/lib/auth";

@@ -14,9 +14,9 @@ import { stepLabel } from "@/lib/closing";
 import { STEP_OWNER, closingClock, effectiveDue, stepClock, targetDays } from "@/lib/closing-clock";
 import { closingBrokerView } from "@/lib/broker-pay";
 import { brokerRoleLabel } from "@/lib/broker-fees";
-import { isoDate, money, num, prettyDate, q } from "@/lib/format";
+import { isoDate, money, prettyDate, q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
-import { variance, type Variance } from "@/lib/settlement";
+import { balanceDueCents, buyerFundsCheck, economicsRows, moneyGate, statementSide, variance, varianceNote, type Variance } from "@/lib/settlement";
 import { getSettings } from "@/lib/settings";
 
 export const metadata = { title: "Closing" };
@@ -59,7 +59,18 @@ export default async function ClosingPage({
   const isAdmin = user.role === "ADMIN";
   const isSeller = user.id === closing.listing.sellerId;
   const isBuyer = user.id === inquiry?.buyerId || closing.funders.some((funder) => funder.userId === user.id);
-  const funds = variance(closing.buyerTotalCents, closing.fundsReceivedCents);
+  // Each side sees its own figures, the same ones its statement shows. A broker who isn't a party sees only their fee.
+  const side = access === "observer" ? "observer" : statementSide({ role: user.role, userId: user.id, sellerId: closing.listing.sellerId, buyerId: inquiry?.buyerId ?? null, funderIds: closing.funders.map((funder) => funder.userId) });
+  const mine = side === "buyer" ? closing.funders.find((funder) => funder.userId === user.id) : undefined;
+  const economics = economicsRows(
+    { ...closing, salePrice: Number(closing.salePrice) },
+    side,
+    mine ? { amount: Number(mine.amount), premiumCents: mine.premiumCents, status: mine.status, fundedAt: mine.fundedAt } : null,
+  );
+  const ownFees = isAdmin ? brokerView.posted : brokerView.posted.filter((fee) => fee.brokerId === user.id);
+  const ownPreview = isAdmin ? brokerView.preview : brokerView.preview.filter((fee) => fee.brokerId === user.id);
+  const balanceDue = balanceDueCents(closing);
+  const funds = buyerFundsCheck(closing);
   const proceeds = variance(closing.netToSellerCents, closing.proceedsSentCents);
   const deposit = closing.depositCents != null ? variance(closing.depositCents, closing.depositReceivedCents) : null;
   const depositLate = Boolean(closing.depositDueAt && closing.depositReceivedCents == null && closing.status === "OPEN" && closing.depositDueAt.getTime() < Date.now());
@@ -97,22 +108,24 @@ export default async function ClosingPage({
         {party && closing.funders.length > 0 && (
           <section className="mt-8 glass p-6">
             <p className="eyebrow">Buying group</p>
-            <p className="mt-2 text-sm text-muted-foreground">Each buyer funds their share of the price. The premium is split on the same percentages and stays one ledger entry.</p>
+            <p className="mt-2 text-sm text-muted-foreground">Each buyer funds their share of the price. The premium is split on the same percentages and stays one ledger entry. The desk marks a share funded when its wire lands.</p>
             <ul className="mt-4 divide-y divide-border">
               {closing.funders.map((funder) => (
                 <li key={funder.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
                   <div>
                     <p className="text-foreground">{funder.user.name}</p>
                     <p className="text-sm text-muted-foreground">
-                      {Number(funder.percent).toFixed(1)}% · price {money(Number(funder.amount))} · premium {money(funder.premiumCents / 100)} · {funder.slice === "PARI" ? "pro rata" : funder.slice.toLowerCase()}
+                      {Number(funder.percent).toFixed(1)}% · price {money(Number(funder.amount))}
+                      {side === "buyer" || side === "desk" ? ` · premium ${money(funder.premiumCents / 100)}` : ""} · {funder.slice === "PARI" ? "pro rata" : funder.slice.toLowerCase()}
                     </p>
                   </div>
                   {funder.status === "FUNDED" ? (
                     <p className="text-[13px] font-medium text-link">Funded</p>
-                  ) : (user.role === "ADMIN" || user.id === funder.userId) && closing.status === "OPEN" ? (
-                    <form action={markShareFunded}>
+                  ) : isAdmin && closing.status === "OPEN" ? (
+                    <form action={markShareFunded} className="flex flex-wrap items-center gap-2">
                       <input type="hidden" name="closingId" value={closing.id} />
                       <input type="hidden" name="userId" value={funder.userId} />
+                      <input name="reference" placeholder="Wire reference" aria-label={`Wire reference for ${funder.user.name}`} className="desk-input w-40" />
                       <SubmitButton className="h-10 text-[13px] font-medium">Mark funded</SubmitButton>
                     </form>
                   ) : (
@@ -162,6 +175,7 @@ export default async function ClosingPage({
                   <input type="hidden" name="closingId" value={closing.id} />
                   <input type="hidden" name="stepKey" value={step.key} />
                   <input name="note" placeholder="Optional note" className="desk-input" />
+                  <StepGate gate={moneyGate(step.key, closing, closing.funders)} label={stepLabel(step.key)} />
                   <SubmitButton className="h-9 text-[13px] font-medium" pendingLabel="Saving…">
                     Mark complete
                   </SubmitButton>
@@ -246,40 +260,45 @@ export default async function ClosingPage({
       <aside className="space-y-4 lg:sticky lg:top-8 lg:self-start">
         <div className="glass p-6">
           <p className="eyebrow">Economics</p>
-          <dl className="mt-4 space-y-2 text-sm">
-            <Row k="Sale price" v={money(num(closing.salePrice))} />
-            <Row k="Buyer premium" v={money(closing.buyerPremiumCents / 100)} />
-            <Row k="Buyer all-in" v={money(closing.buyerTotalCents / 100)} />
-            <Row k="Seller commission" v={money(closing.sellerCommissionCents / 100)} />
-            <Row k="Net to seller" v={money(closing.netToSellerCents / 100)} />
-          </dl>
-          <div className="mt-5 border-t border-border pt-4">
-            <p className="text-[13px] text-muted-foreground">Broker</p>
-            {brokerView.attribution && (
-              <p className="mt-2 text-sm text-foreground/85">
-                {brokerRoleLabel(brokerView.attribution.role)} · {brokerView.attribution.name}
-                {brokerView.attribution.client ? ` for ${brokerView.attribution.client}` : ""}
-              </p>
-            )}
-            {brokerView.posted.map((fee) => (
-              <p key={fee.id} className="mt-2 flex justify-between gap-4 text-sm">
-                <span className="text-muted-foreground">{brokerRoleLabel(fee.role)} · {fee.status === "PAID" ? "Paid" : "Owed"}</span>
-                <span className="text-foreground">{money(fee.amountCents / 100)}</span>
-              </p>
-            ))}
-            {brokerView.preview.map((fee) => (
-              <p key={`${fee.brokerId}-${fee.role}`} className="mt-2 flex justify-between gap-4 text-sm">
-                <span className="text-muted-foreground">{brokerRoleLabel(fee.role)} · {brokerView.names.get(fee.brokerId) || "Broker"} · posts at close</span>
-                <span className="text-foreground">{money(fee.amountCents / 100)}</span>
-              </p>
-            ))}
-            {brokerView.posted.length === 0 && brokerView.preview.length === 0 && !brokerView.withheld.length && (
-              <p className="mt-2 text-sm text-muted-foreground">No broker fee on this trade.</p>
-            )}
-            {brokerView.withheld.map((line) => (
-              <p key={line} className="mt-2 text-xs leading-relaxed text-muted-foreground">{line}</p>
-            ))}
-          </div>
+          {economics.length > 0 && (
+            <dl className="mt-4 space-y-2 text-sm">
+              {economics.map((row) => (
+                <Row key={row.label} k={row.label} v={money(row.cents / 100)} />
+              ))}
+            </dl>
+          )}
+          {(isAdmin || ownFees.length > 0 || ownPreview.length > 0 || side === "observer") && (
+            <div className={economics.length > 0 ? "mt-5 border-t border-border pt-4" : "mt-4"}>
+              <p className="text-[13px] text-muted-foreground">{isAdmin ? "Broker" : "Your fee"}</p>
+              {isAdmin && brokerView.attribution && (
+                <p className="mt-2 text-sm text-foreground/85">
+                  {brokerRoleLabel(brokerView.attribution.role)} · {brokerView.attribution.name}
+                  {brokerView.attribution.client ? ` for ${brokerView.attribution.client}` : ""}
+                </p>
+              )}
+              {ownFees.map((fee) => (
+                <p key={fee.id} className="mt-2 flex justify-between gap-4 text-sm">
+                  <span className="text-muted-foreground">{brokerRoleLabel(fee.role)} · {fee.status === "PAID" ? "Paid" : "Owed"}</span>
+                  <span className="text-foreground">{money(fee.amountCents / 100)}</span>
+                </p>
+              ))}
+              {ownPreview.map((fee) => (
+                <p key={`${fee.brokerId}-${fee.role}`} className="mt-2 flex justify-between gap-4 text-sm">
+                  <span className="text-muted-foreground">{brokerRoleLabel(fee.role)} · {brokerView.names.get(fee.brokerId) || "Broker"} · posts at close</span>
+                  <span className="text-foreground">{money(fee.amountCents / 100)}</span>
+                </p>
+              ))}
+              {isAdmin && brokerView.posted.length === 0 && brokerView.preview.length === 0 && !brokerView.withheld.length && (
+                <p className="mt-2 text-sm text-muted-foreground">No broker fee on this trade.</p>
+              )}
+              {!isAdmin && ownFees.length === 0 && ownPreview.length === 0 && (
+                <p className="mt-2 text-sm text-muted-foreground">No fee to you on this trade.</p>
+              )}
+              {isAdmin && brokerView.withheld.map((line) => (
+                <p key={line} className="mt-2 text-xs leading-relaxed text-muted-foreground">{line}</p>
+              ))}
+            </div>
+          )}
         </div>
         {party && (isAdmin || isSeller || isBuyer) && (
           <div className="glass p-6">
@@ -294,7 +313,7 @@ export default async function ClosingPage({
                 </div>
               )}
               {(isAdmin || isBuyer) && (
-                <WireRow label="Buyer funds received" expected={closing.buyerTotalCents} recorded={closing.fundsReceivedCents} at={closing.fundsReceivedAt} reference={closing.fundsReference} check={funds} />
+                <WireRow label="Buyer funds received" expected={balanceDue} expectedLabel={closing.depositReceivedCents != null ? "Balance after deposit" : "Expected"} recorded={closing.fundsReceivedCents} at={closing.fundsReceivedAt} reference={closing.fundsReference} check={funds} />
               )}
               {(isAdmin || isSeller) && (
                 <WireRow label="Seller proceeds sent" expected={closing.netToSellerCents} recorded={closing.proceedsSentCents} at={closing.proceedsSentAt} reference={closing.proceedsReference} check={proceeds} />
@@ -306,7 +325,7 @@ export default async function ClosingPage({
                 {closing.depositCents != null && (
                   <SettlementForm closingId={closing.id} side="deposit" title="Record buyer deposit" amount={closing.depositReceivedCents ?? closing.depositCents} at={closing.depositReceivedAt} reference={closing.depositReference} />
                 )}
-                <SettlementForm closingId={closing.id} side="funds" title="Record buyer funds" amount={closing.fundsReceivedCents ?? closing.buyerTotalCents} at={closing.fundsReceivedAt} reference={closing.fundsReference} />
+                <SettlementForm closingId={closing.id} side="funds" title="Record buyer funds" amount={closing.fundsReceivedCents ?? balanceDue} at={closing.fundsReceivedAt} reference={closing.fundsReference} />
                 <SettlementForm closingId={closing.id} side="proceeds" title="Record seller proceeds" amount={closing.proceedsSentCents ?? closing.netToSellerCents} at={closing.proceedsSentAt} reference={closing.proceedsReference} />
               </div>
             )}
@@ -371,7 +390,8 @@ function DueLine({ due, owner }: { due: Date | null; owner: string }) {
   );
 }
 
-function WireRow({ label, expected, recorded, at, reference, check }: { label: string; expected: number; recorded: number | null; at: Date | null; reference: string | null; check: Variance }) {
+function WireRow({ label, expected, expectedLabel = "Expected", recorded, at, reference, check }: { label: string; expected: number; expectedLabel?: string; recorded: number | null; at: Date | null; reference: string | null; check: Variance }) {
+  const note = varianceNote(check);
   return (
     <div>
       <div className="flex justify-between gap-4">
@@ -379,11 +399,22 @@ function WireRow({ label, expected, recorded, at, reference, check }: { label: s
         <dd className="text-foreground">{recorded == null ? "Not recorded" : money(recorded / 100, 2)}</dd>
       </div>
       <p className={`text-xs ${check.state === "short" || check.state === "over" ? "text-bad" : "text-muted-foreground"}`}>
-        Expected {money(expected / 100, 2)}
-        {check.state === "match" ? " · matches" : check.state === "short" ? ` · short ${money(-check.diffCents / 100, 2)}` : check.state === "over" ? ` · over by ${money(check.diffCents / 100, 2)}` : ""}
+        {expectedLabel} {money(expected / 100, 2)}
+        {note ? ` · ${note}` : ""}
         {at ? ` · ${prettyDate(at)}` : ""}
         {reference ? ` · ${reference}` : ""}
       </p>
+    </div>
+  );
+}
+
+// A money step whose wire isn't on record takes a typed reason before the desk can mark it. The reason is audited.
+function StepGate({ gate, label }: { gate: string | null; label: string }) {
+  if (!gate) return null;
+  return (
+    <div className="space-y-2">
+      <p className="text-xs text-bad">{gate} Record the wire first, or say why the desk is going ahead without it.</p>
+      <input name="override" placeholder="Reason to go ahead anyway" aria-label={`Reason to mark ${label.toLowerCase()} complete without the wire`} className="desk-input" minLength={3} />
     </div>
   );
 }

@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { money } from "@/lib/format";
-import { bpsToPercent } from "@/lib/money";
+import { bpsToPercent, typedNumber } from "@/lib/money";
 import { TAPE_FIELDS, type TapeFieldKey } from "@/lib/tape-fields";
 
 type TapeFlag = { row: number; level: "error" | "warn" | "fix"; field: string; message: string };
@@ -219,7 +219,7 @@ export function TapeWizard({
           <p className="eyebrow">Ready for the desk</p>
           <h2 className="mt-2 font-semibold tracking-tight text-[28px] text-foreground">{title}</h2>
           <p className="mt-4 max-w-xl text-sm leading-relaxed text-muted-foreground">{summary || "No narrative."}</p>
-          <p className="mt-6 text-sm text-foreground">{preview.rowCount} loans · {priceMode === "COLUMN" ? "priced from the tape" : priceMode === "PERCENT" ? `${pricePercent}% of UPB` : money(Number(poolTotal) || 0) + " allocated by UPB"}</p>
+          <p className="mt-6 text-sm text-foreground">{preview.rowCount} loans · {priceMode === "COLUMN" ? "priced from the tape" : priceMode === "PERCENT" ? `${typedNumber(pricePercent)}% of UPB` : money(typedNumber(poolTotal) || 0) + " allocated by UPB"}</p>
           <p className="mt-2 text-sm text-muted-foreground">Commission of {bpsToPercent(commissionBps).toFixed(2)}% is deducted from the accepted sale price, not from UPB.</p>
           <div className="mt-8 flex justify-between">
             <Button type="button" variant="ghost" onClick={() => setStep(2)}>Back</Button>

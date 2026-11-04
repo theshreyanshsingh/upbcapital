@@ -1,4 +1,4 @@
-import { decideOfacReview, runRetention, saveDisclosure, saveRetention, screenName } from "@/actions/compliance";
+import { decideOfacReview, reopenOfacReview, runRetention, saveDisclosure, saveRetention, screenName } from "@/actions/compliance";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { SubmitButton } from "@/components/submit-button";
@@ -6,8 +6,9 @@ import { requireRole } from "@/lib/auth";
 import { FLORIDA_DISCLOSURE } from "@/lib/compliance";
 import { prettyDate, q } from "@/lib/format";
 import { US_STATES } from "@/lib/labels";
-import { ofacOpen, sanctionSource } from "@/lib/ofac";
+import { sanctionSource } from "@/lib/ofac";
 import { prisma } from "@/lib/prisma";
+import { openReviewWhere, reviewKey } from "@/lib/screening";
 import { getSettings } from "@/lib/settings";
 
 export const metadata = { title: "Compliance" };
@@ -19,23 +20,27 @@ export default async function CompliancePage({
 }) {
   await requireRole(["ADMIN"]);
   const params = await searchParams;
-  const [settings, disclosures, checks, reviews, source] = await Promise.all([
+  // Open reviews and confirmed matches are holds, so every one shows. Only the cleared history is cut short.
+  const [settings, disclosures, checks, openRows, confirmedRows, clearedRows, source] = await Promise.all([
     getSettings(),
     prisma.stateDisclosure.findMany({ orderBy: { state: "asc" } }),
     prisma.ofacCheck.findMany({ orderBy: { createdAt: "desc" }, take: 8 }),
-    prisma.ofacCheck.findMany({ where: { result: "REVIEW" }, orderBy: { createdAt: "desc" }, take: 300 }),
+    prisma.ofacCheck.findMany({ where: openReviewWhere, orderBy: { createdAt: "desc" } }),
+    prisma.ofacCheck.findMany({ where: { result: "REVIEW", status: "CONFIRMED" }, orderBy: { createdAt: "desc" } }),
+    prisma.ofacCheck.findMany({ where: { result: "REVIEW", status: "CLEARED" }, orderBy: { createdAt: "desc" }, take: 300 }),
     sanctionSource(),
   ]);
-  // One row per name and list entry: a decision covers them all, and an open review needs one answer.
+  // One row per party, name and list entry: a decision covers them all, and an open review needs one answer.
   const seen = new Set<string>();
-  const latest = reviews.filter((row) => {
-    const key = `${row.name}|${row.matched ?? ""}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-  const open = latest.filter(ofacOpen);
-  const decided = latest.filter((row) => !ofacOpen(row)).slice(0, 12);
+  const latest = <T extends Parameters<typeof reviewKey>[0]>(rows: T[]) =>
+    rows.filter((row) => {
+      const key = reviewKey(row);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  const open = latest(openRows);
+  const decided = [...latest(confirmedRows), ...latest(clearedRows).slice(0, 12)];
   const florida = disclosures.find((row) => row.state === "FL");
   return (
     <div>
@@ -80,7 +85,7 @@ export default async function CompliancePage({
           </p>
         )}
         <p className="mt-2 text-sm text-muted-foreground">
-          A match stops account approval, listing approval, awards, and closing steps until someone decides it. Nothing is said to the party. A confirmed match stays blocked: stop the deal and call counsel, because OFAC reports can be due within 10 business days. This is a name match, not a legal clearance.
+          A match stops account approval, listing approval, awards, and closing steps until someone decides it. Nothing is said to the party. A confirmed match stays blocked: stop the deal and call counsel, because OFAC reports can be due within 10 business days. Reopen a decision only to correct it. The audit log keeps the decision it replaced. This is a name match, not a legal clearance.
         </p>
         {open.length === 0 && <p className="mt-4 text-sm text-muted-foreground">No reviews waiting.</p>}
         <ul className="mt-4 space-y-4">
@@ -107,7 +112,15 @@ export default async function CompliancePage({
             <ul className="mt-2 space-y-2 text-sm">
               {decided.map((check) => (
                 <li key={check.id} className="text-muted-foreground">
-                  <span className={check.status === "CONFIRMED" ? "text-bad" : "text-foreground"}>{check.name}</span> · {check.status?.toLowerCase()}{check.reviewedAt ? ` ${prettyDate(check.reviewedAt)}` : ""} · {check.reviewNote}
+                  <span className={check.status === "CONFIRMED" ? "text-bad" : "text-foreground"}>{check.name}</span>{check.matched ? ` · matched ${check.matched}` : ""} · {check.status?.toLowerCase()}{check.reviewedAt ? ` ${prettyDate(check.reviewedAt)}` : ""} · {check.reviewNote}
+                  <details className="mt-1">
+                    <summary className="w-fit cursor-pointer text-[13px] text-link">Reopen</summary>
+                    <form action={reopenOfacReview} className="mt-2 flex flex-wrap gap-2">
+                      <input type="hidden" name="checkId" value={check.id} />
+                      <input name="note" className="desk-input min-w-56 flex-1" aria-label={`Reason to reopen the decision on ${check.name}`} placeholder="Why it needs another look" required minLength={3} />
+                      <button type="submit" className="h-11 rounded-lg border border-border px-3 text-[13px] font-medium hover:bg-hover">Reopen the review</button>
+                    </form>
+                  </details>
                 </li>
               ))}
             </ul>

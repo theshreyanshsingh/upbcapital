@@ -7,6 +7,7 @@ import { requireRole } from "@/lib/auth";
 import { brokerRoleLabel } from "@/lib/broker-fees";
 import { money, num, prettyDate, q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
+import { deskBidNotAcceptable } from "@/lib/awards";
 
 export const metadata = { title: "Deal" };
 
@@ -38,10 +39,11 @@ export default async function BrokerDealPage({
   const query = await searchParams;
   const listing = await prisma.listing.findUnique({
     where: { id },
-    include: { notes: true, closings: { include: { brokerFees: true } }, deskBids: { where: { status: "OPEN" }, orderBy: { createdAt: "desc" } }, inquiries: { where: { type: "OFFER" }, include: { buyer: true } } },
+    include: { notes: true, closings: { include: { brokerFees: true } }, deskBids: { where: { status: "OPEN" }, orderBy: { createdAt: "desc" } }, inquiries: { where: { type: "OFFER" }, include: { buyer: true, messages: { select: { kind: true, amount: true, createdAt: true, authorId: true } } } } },
   });
   if (!listing || listing.brokerId !== user.id) notFound();
   const ask = listing.notes.reduce((sum, note) => sum + num(note.askingPrice), 0);
+  const deskBidBlock = deskBidNotAcceptable(listing);
   const index = stageIndex(listing.status);
   const fees = listing.closings.flatMap((closing) => closing.brokerFees.filter((fee) => fee.brokerId === user.id));
   const declined = listing.status === "REJECTED";
@@ -73,9 +75,10 @@ export default async function BrokerDealPage({
           <form action={answerDeskBid} className="mt-3 flex flex-wrap gap-2">
             {/* Not name="id": it shadows form.id in the DOM, and React then drops the clicked button's value. */}
             <input type="hidden" name="bidId" value={bid.id} />
-            <button type="submit" name="answer" value="ACCEPTED" className="h-9 rounded-lg bg-foreground px-3 text-[13px] font-medium text-background">Accept</button>
+            {!deskBidBlock && <button type="submit" name="answer" value="ACCEPTED" className="h-9 rounded-lg bg-foreground px-3 text-[13px] font-medium text-background">Accept</button>}
             <button type="submit" name="answer" value="DECLINED" className="h-9 rounded-lg border border-border px-3 text-[13px] font-medium hover:bg-hover">Decline</button>
           </form>
+          {deskBidBlock && <p className="mt-2 text-sm text-muted-foreground">{deskBidBlock}</p>}
         </div>
       ))}
 

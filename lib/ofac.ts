@@ -39,6 +39,23 @@ function localSource(note = ""): SanctionSource {
   return { provider: "local", index: LOCAL_INDEX, count: SDN_NAMES.length, fetchedAt: null, note, unavailable: Boolean(note) };
 }
 
+export const ALIAS_URL_NOTE = "OFAC_SDN_URL has to end in SDN.CSV, so the alias file next to it can be read. Nothing was screened against the real list.";
+
+// Treasury publishes ALT.CSV next to SDN.CSV. Any other address can't be guessed, so it returns null rather
+// than read the main file twice or screen without aliases.
+export function aliasUrl(sdnUrl: string) {
+  let url: URL;
+  try {
+    url = new URL(sdnUrl);
+  } catch {
+    return null;
+  }
+  const file = url.pathname.split("/").pop() ?? "";
+  if (file.toLowerCase() !== "sdn.csv") return null;
+  url.pathname = url.pathname.slice(0, -file.length) + (file === file.toLowerCase() ? "alt.csv" : "ALT.CSV");
+  return url.toString();
+}
+
 async function readList(url: string, headers: Record<string, string> = {}) {
   // no-store: Next would otherwise try to keep this multi-megabyte body in its fetch cache.
   const response = await fetch(url, { headers, cache: "no-store", signal: AbortSignal.timeout(60000) });
@@ -54,7 +71,11 @@ async function fetchSource(env: Env): Promise<SanctionSource> {
     return { provider: "live", index: indexNames([...SDN_NAMES, ...remote]), count: remote.length, fetchedAt: new Date(), note: "", unavailable: false };
   }
   const sdnUrl = env.OFAC_SDN_URL!;
-  const [sdn, alt] = await Promise.all([readList(sdnUrl), readList(sdnUrl.replace(/SDN\.CSV$/i, "ALT.CSV")).catch(() => "")]);
+  const altUrl = aliasUrl(sdnUrl);
+  if (!altUrl) throw new Error(ALIAS_URL_NOTE);
+  // Many listed parties are named only under an a.k.a., so a list without its aliases is a failed refresh.
+  const [sdn, alt] = await Promise.all([readList(sdnUrl), readList(altUrl)]);
+  if (alt.split("\n").filter((line) => line.trim()).length < 1000) throw new Error("The alias file looked too short to trust.");
   const remote = parseTreasuryLists(sdn, alt);
   if (remote.length < 1000) throw new Error("The SDN file looked too short to trust.");
   return { provider: "treasury", index: indexNames([...SDN_NAMES, ...remote]), count: remote.length, fetchedAt: new Date(), note: "", unavailable: false };
@@ -75,6 +96,7 @@ function stateFor(key: string) {
 // keeps the last good copy and says so. With no good copy the result is marked unavailable, never clear.
 export async function sanctionSource(env: Env = process.env): Promise<SanctionSource> {
   if (ofacMode(env) === "mock") return localSource();
+  if (ofacMode(env) === "treasury" && !aliasUrl(env.OFAC_SDN_URL!)) return localSource(ALIAS_URL_NOTE);
   const state = stateFor(`${env.OFAC_API_URL ?? ""}|${env.OFAC_SDN_URL ?? ""}`);
   if (state.source && Date.now() - state.at < FRESH_MS) return state.source;
   if (Date.now() - state.failedAt > RETRY_MS) {

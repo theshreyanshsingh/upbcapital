@@ -74,7 +74,9 @@ export default async function SubscriptionPage({
                 </form>
               )
             ) : stripe ? (
-              <form action="/api/billing/checkout" method="post">
+              // The route sends a buyer whose subscription still exists to the portal, so a lapsed card is fixed there.
+              <form action="/api/billing/checkout" method="post" className="space-y-3">
+                {user.subscriptionStatus === "PAST_DUE" && <p className="text-sm text-muted-foreground">The last payment didn&apos;t go through. Update the card in Stripe to restart Pro.</p>}
                 <SubmitButton className="h-11 text-[13px] font-medium">Continue to Stripe</SubmitButton>
               </form>
             ) : simulated ? (
