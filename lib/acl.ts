@@ -22,9 +22,29 @@ export function closingAccess(input: {
   return null;
 }
 
-// Signed NDAs and the broker's seller authorization stay with the seller, the desk, and the signer.
-export function isPrivateDocument(document: { type: string; storedName: string }, listing: { authorizationKey: string }) {
-  return document.type === "NDA" || (listing.authorizationKey !== "" && document.storedName === listing.authorizationKey);
+// Files that never go out with the listing's data room. Signed NDAs and the broker's seller authorization stay
+// with the seller, the desk, and the signer. A loan's own file (an O&E, a risk search) opens only by that loan's
+// rule, through loanFileAccess, so anything that copies or lists the room leaves it out.
+export function isPrivateDocument(document: { type: string; storedName: string; noteId?: string | null }, listing: { authorizationKey: string }) {
+  return document.type === "NDA" || Boolean(document.noteId) || (listing.authorizationKey !== "" && document.storedName === listing.authorizationKey);
+}
+
+// A loan's own file opens with that loan's street and borrower, and to a buyer only when they are Pro or are
+// buying that loan. A file whose loan has gone, or sits on another listing, opens to no buyer.
+export function loanFileAccess(input: {
+  note: { id: string; listingId: string; tradeStatus: string } | null;
+  listingId: string;
+  listingStatus: string;
+  signedNda: boolean;
+  wholeParty: boolean;
+  loanIds: Iterable<string>;
+}) {
+  if (!input.note || input.note.listingId !== input.listingId) return { open: false, party: false };
+  const loanParty = new Set(input.loanIds).has(input.note.id);
+  return {
+    open: loanOpenTo({ tradeStatus: input.note.tradeStatus, listingStatus: input.listingStatus, signedNda: input.signedNda, wholeParty: input.wholeParty, loanParty }),
+    party: input.wholeParty || loanParty,
+  };
 }
 
 // Before an award, a buyer who signed the NDA may work the file. Once the listing is in contract or sold, only
@@ -54,8 +74,11 @@ export function canReadDocument(input: {
   signedNda: boolean;
   listingStatus: string;
   closingParty: boolean;
+  // Set for a loan's own file, from loanFileAccess. The listing's room doesn't open it.
+  loan?: { open: boolean; party: boolean } | null;
 }) {
   if (input.owner || input.admin || input.ownNda) return true;
+  if (input.loan) return input.loan.open && (input.proBuyer || input.loan.party);
   if (input.privateFile) return false;
   // A buyer on the deal needs the file to close it, Pro or not.
   return (input.proBuyer || input.closingParty) && dataRoomOpenTo(input);

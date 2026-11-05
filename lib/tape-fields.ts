@@ -1,24 +1,40 @@
 export const TAPE_FIELDS = [
-  { key: "streetAddress", label: "Street address", required: false },
-  { key: "city", label: "City", required: true },
-  { key: "state", label: "State", required: true },
-  { key: "zip", label: "ZIP", required: false },
-  { key: "propertyType", label: "Property type", required: true },
-  { key: "lienPosition", label: "Lien position", required: true },
-  { key: "upb", label: "Unpaid principal balance", required: true },
-  { key: "interestRate", label: "Interest rate", required: true },
-  { key: "monthlyPi", label: "Monthly P&I", required: false },
-  { key: "paymentStatus", label: "Payment status", required: true },
-  { key: "monthsDelinquent", label: "Months delinquent", required: false },
-  { key: "lastPaidDate", label: "Last paid date", required: false },
-  { key: "originationDate", label: "Origination date", required: false },
-  { key: "maturityDate", label: "Maturity date", required: false },
-  { key: "estimatedValue", label: "Estimated value / BPO", required: true },
-  { key: "askingPrice", label: "Asking price", required: false },
-  { key: "occupancy", label: "Occupancy", required: false },
-  { key: "foreclosureStatus", label: "Foreclosure status", required: false },
-  { key: "borrowerName", label: "Borrower name", required: false },
-  { key: "memo", label: "Notes", required: false },
+  { key: "streetAddress", label: "Street address", required: false, group: "core" },
+  { key: "city", label: "City", required: true, group: "core" },
+  { key: "state", label: "State", required: true, group: "core" },
+  { key: "zip", label: "ZIP", required: false, group: "core" },
+  { key: "propertyType", label: "Property type", required: true, group: "core" },
+  { key: "lienPosition", label: "Lien position", required: true, group: "core" },
+  { key: "upb", label: "Unpaid principal balance", required: true, group: "core" },
+  { key: "interestRate", label: "Interest rate", required: true, group: "core" },
+  { key: "monthlyPi", label: "Monthly P&I", required: false, group: "core" },
+  { key: "paymentStatus", label: "Payment status", required: true, group: "core" },
+  { key: "monthsDelinquent", label: "Months delinquent", required: false, group: "core" },
+  { key: "lastPaidDate", label: "Last paid date", required: false, group: "core" },
+  { key: "originationDate", label: "Origination date", required: false, group: "core" },
+  { key: "maturityDate", label: "Maturity date", required: false, group: "core" },
+  { key: "estimatedValue", label: "Estimated value / BPO", required: true, group: "core" },
+  { key: "askingPrice", label: "Asking price", required: false, group: "core" },
+  { key: "occupancy", label: "Occupancy", required: false, group: "core" },
+  { key: "foreclosureStatus", label: "Foreclosure status", required: false, group: "core" },
+  { key: "borrowerName", label: "Borrower name", required: false, group: "core" },
+  { key: "memo", label: "Notes", required: false, group: "core" },
+  // Tape v2: the servicing record. Optional, so older tapes import as they did.
+  { key: "loanNumber", label: "Loan number", required: false, group: "servicing" },
+  { key: "servicerName", label: "Servicer", required: false, group: "servicing" },
+  { key: "payString", label: "Pay string, newest month first", required: false, group: "servicing" },
+  { key: "nextDueDate", label: "Next due date", required: false, group: "servicing" },
+  { key: "modified", label: "Modified (yes or no)", required: false, group: "servicing" },
+  { key: "modificationDate", label: "Modification date", required: false, group: "servicing" },
+  { key: "lossMitigation", label: "Loss mitigation", required: false, group: "servicing" },
+  { key: "bankruptcyChapter", label: "Bankruptcy chapter", required: false, group: "servicing" },
+  { key: "bankruptcyFiledAt", label: "Bankruptcy filed date", required: false, group: "servicing" },
+  { key: "foreclosureFiledAt", label: "Foreclosure filed date", required: false, group: "servicing" },
+  { key: "valueType", label: "Value source (BPO, AVM, appraisal, seller)", required: false, group: "servicing" },
+  { key: "valueAsOf", label: "Value date", required: false, group: "servicing" },
+  { key: "loanPurpose", label: "Loan purpose", required: false, group: "servicing" },
+  { key: "hoaLien", label: "HOA lien (yes or no)", required: false, group: "servicing" },
+  { key: "taxDelinquent", label: "Taxes delinquent (yes or no)", required: false, group: "servicing" },
 ] as const;
 
 export type TapeFieldKey = (typeof TAPE_FIELDS)[number]["key"];
@@ -44,6 +60,21 @@ export const TAPE_HEADERS = [
   "foreclosure_status",
   "borrower_name",
   "notes",
+  "loan_number",
+  "servicer",
+  "pay_string",
+  "next_due_date",
+  "modified",
+  "modification_date",
+  "loss_mitigation",
+  "bankruptcy_chapter",
+  "bankruptcy_filed_date",
+  "foreclosure_filed_date",
+  "value_source",
+  "value_date",
+  "loan_purpose",
+  "hoa_lien",
+  "taxes_delinquent",
 ];
 
 const SYNONYMS: Record<TapeFieldKey, string[]> = {
@@ -67,6 +98,35 @@ const SYNONYMS: Record<TapeFieldKey, string[]> = {
   foreclosureStatus: ["foreclosurestatus", "foreclosure", "fcstatus", "legalstatus"],
   borrowerName: ["borrowername", "borrower", "mortgagor"],
   memo: ["notes", "memo", "comments", "comment", "loannote"],
+  // "Loan #" and "Acct #" lose the # when normalised, so the bare words are listed.
+  loanNumber: [
+    "loannumber", "loanno", "loannum", "loanid", "loan", "loanidentifier", "servicerloannumber", "servicerloanno",
+    "servicerloanid", "servicerloan", "sellerloanid", "sellerloannumber", "accountnumber", "accountno", "account",
+    "acctnumber", "acctno", "acct",
+  ],
+  servicerName: ["servicer", "servicername", "currentservicer", "loanservicer", "subservicer", "servicedby"],
+  payString: [
+    "paystring", "payhistory", "paymenthistory", "payhist", "paymentstring", "mbapaystring", "12monthpayhistory",
+    "24monthpayhistory", "12mopayhistory", "24mopayhistory", "delinquencystring", "delinquencyhistory", "dlqstring", "dlqhistory",
+  ],
+  nextDueDate: ["nextduedate", "nextdue", "nextpaymentdue", "nextpaymentduedate", "nextpaymentdate", "duedate", "nextduedt"],
+  modified: ["modified", "modification", "modflag", "loanmodified", "ismodified", "mod", "modyn", "modifiedyn"],
+  modificationDate: ["modificationdate", "moddate", "lastmoddate", "modeffectivedate", "modifieddate", "modificationeffectivedate"],
+  lossMitigation: ["lossmitigation", "lossmit", "lossmitstatus", "lossmitigationstatus", "workout", "workoutstatus"],
+  bankruptcyChapter: ["bankruptcychapter", "bkchapter", "bkch", "bkchap", "chapter", "bktype", "bankruptcytype"],
+  bankruptcyFiledAt: [
+    "bankruptcyfileddate", "bankruptcyfiledate", "bankruptcydate", "bankruptcyfiled", "bkfileddate", "bkfiledate", "bkdate",
+    "bkfiled", "petitiondate",
+  ],
+  foreclosureFiledAt: [
+    "foreclosurefileddate", "foreclosurefiledate", "foreclosuredate", "foreclosurefiled", "fcdate", "fcfileddate", "fcfiledate",
+    "fcfiled", "lispendensdate",
+  ],
+  valueType: ["valuesource", "valuetype", "valuationtype", "valuationsource", "valuationmethod", "valuemethod", "bpotype"],
+  valueAsOf: ["valuedate", "valueasof", "valuationdate", "bpodate", "avmdate", "appraisaldate", "valuedt", "valueasofdate"],
+  loanPurpose: ["loanpurpose", "purpose", "purposeofloan", "originalpurpose", "loanpurposetype"],
+  hoaLien: ["hoalien", "hoaliens", "hoalienyn", "hoadelinquent"],
+  taxDelinquent: ["taxesdelinquent", "taxdelinquent", "delinquenttaxes", "taxdelinquency", "taxlien", "propertytaxdelinquent"],
 };
 
 export function normalizeHeader(header: string) {
@@ -90,7 +150,165 @@ export function suggestMapping(headers: string[]): Partial<Record<TapeFieldKey, 
 }
 
 export const SAMPLE_TAPE_ROWS = [
-  ["100 SAMPLE Banyan Street", "Miami", "FL", "33130", "SFR", "First", "428000", "6.50", "2704", "Performing", "0", "2026-09-01", "2019-06-15", "2049-06-15", "710000", "312000", "Owner occupied", "None", "FICTIONAL BORROWER 01", "Sample row — delete before a live tape"],
-  ["200 SAMPLE Magnolia Court", "Savannah", "GA", "31401", "Condo", "Second", "86000", "8.25", "690", "Non-performing", "11", "2025-10-01", "2018-03-01", "2048-03-01", "340000", "29000", "Vacant", "Lis pendens", "FICTIONAL BORROWER 02", "Sample row — fictional"],
-  ["300 SAMPLE Palmetto Lane", "Charlotte", "NC", "28202", "Townhouse", "First", "196500", "7.00", "1310", "Sub-performing", "2", "2026-07-15", "2021-01-20", "2051-01-20", "285000", "151000", "Tenant occupied", "None", "FICTIONAL BORROWER 03", "Sample row — fictional"],
+  ["100 SAMPLE Banyan Street", "Miami", "FL", "33130", "SFR", "First", "428000", "6.50", "2704", "Performing", "0", "2026-09-01", "2019-06-15", "2049-06-15", "710000", "312000", "Owner occupied", "None", "FICTIONAL BORROWER 01", "Sample row — delete before a live tape", "SAMPLE-0001", "Sample Servicing LLC", "000000000000", "2026-11-01", "No", "", "", "", "", "", "BPO", "2026-08-15", "Purchase", "No", "No"],
+  ["200 SAMPLE Magnolia Court", "Savannah", "GA", "31401", "Condo", "Second", "86000", "8.25", "690", "Non-performing", "11", "2025-10-01", "2018-03-01", "2048-03-01", "340000", "29000", "Vacant", "Lis pendens", "FICTIONAL BORROWER 02", "Sample row — fictional", "SAMPLE-0002", "Sample Servicing LLC", "999876543210", "2025-12-01", "Yes", "2020-08-01", "Forbearance ended", "", "", "2026-04-10", "BPO", "2026-06-01", "Cash-out refinance", "Yes", "No"],
+  ["300 SAMPLE Palmetto Lane", "Charlotte", "NC", "28202", "Townhouse", "First", "196500", "7.00", "1310", "Sub-performing", "2", "2026-07-15", "2021-01-20", "2051-01-20", "285000", "151000", "Tenant occupied", "None", "FICTIONAL BORROWER 03", "Sample row — fictional", "SAMPLE-0003", "Sample Servicing LLC", "221100000000", "2026-09-01", "No", "", "Repayment plan", "13", "2026-08-03", "", "AVM", "2026-09-20", "Refinance", "No", "No"],
 ];
+
+export const VALUE_TYPES = [
+  { value: "BPO", label: "Broker price opinion (BPO)" },
+  { value: "AVM", label: "Automated valuation (AVM)" },
+  { value: "APPRAISAL", label: "Appraisal" },
+  { value: "SELLER", label: "Seller's own estimate" },
+] as const;
+
+export const LOAN_PURPOSES = [
+  { value: "PURCHASE", label: "Purchase" },
+  { value: "REFINANCE", label: "Refinance" },
+  { value: "CASH_OUT", label: "Cash-out refinance" },
+  { value: "SELLER_FINANCED", label: "Seller financing" },
+  { value: "BUSINESS", label: "Business purpose" },
+] as const;
+
+export const BANKRUPTCY_CHAPTERS = ["7", "11", "12", "13"] as const;
+
+export type ValueType = (typeof VALUE_TYPES)[number]["value"];
+export type LoanPurpose = (typeof LOAN_PURPOSES)[number]["value"];
+export type BankruptcyChapter = (typeof BANKRUPTCY_CHAPTERS)[number];
+
+// The optional servicing record a tape or the note wizard can carry. Absent keys stay off the stored note.
+export type ServicingRecord = {
+  loanNumber?: string;
+  servicerName?: string;
+  payString?: string;
+  nextDueDate?: Date;
+  modified?: boolean;
+  modificationDate?: Date;
+  lossMitigation?: string;
+  bankruptcyChapter?: BankruptcyChapter;
+  bankruptcyFiledAt?: Date;
+  foreclosureFiledAt?: Date;
+  valueType?: ValueType;
+  valueAsOf?: Date;
+  loanPurpose?: LoanPurpose;
+  hoaLien?: boolean;
+  taxDelinquent?: boolean;
+};
+
+// The servicing record's fields, in the order the note wizard and the tape mapping show them.
+export const SERVICING_KEYS = [
+  "loanNumber",
+  "servicerName",
+  "payString",
+  "nextDueDate",
+  "modified",
+  "modificationDate",
+  "lossMitigation",
+  "bankruptcyChapter",
+  "bankruptcyFiledAt",
+  "foreclosureFiledAt",
+  "valueType",
+  "valueAsOf",
+  "loanPurpose",
+  "hoaLien",
+  "taxDelinquent",
+] as const satisfies readonly (keyof ServicingRecord)[];
+
+export type ServicingKey = (typeof SERVICING_KEYS)[number];
+
+export const PAY_STRING_MAX = 48;
+
+// Pay strings arrive as "000011", "CCCC3", "0,0,1" or "0 30 60 90". They're stored newest month first, one character
+// a month: 0 paid on time, 1 to 9 months behind (9 is nine or more), X nothing due. Null when it can't be read.
+export function parsePayString(raw: string) {
+  const text = raw.trim().toUpperCase();
+  if (!text) return null;
+  const tokens = /[\s,;|/]/.test(text)
+    ? text.split(/[\s,;|/]+/).filter(Boolean)
+    : /^[0-9CX](-[0-9CX])+$/.test(text)
+      ? text.split("-")
+      : [text];
+  let out = "";
+  for (const part of tokens) {
+    const token = part.replace(/\+$/, "");
+    // Between separators, 30, 60 and 90 are days late. Run together, "30" is two months: 3 behind, then on time.
+    if (tokens.length > 1 && /^(0|[1-9]\d*0)$/.test(token) && Number(token) % 30 === 0) {
+      out += String(Math.min(9, Number(token) / 30));
+      continue;
+    }
+    if (!/^[0-9CX]+$/.test(token)) return null;
+    out += token.replace(/C/g, "0");
+  }
+  return out ? out.slice(0, PAY_STRING_MAX) : null;
+}
+
+// A spreadsheet stores 000011 as the number 11. When most of a column's pay strings share one length, that's the
+// length a shorter all-digit value lost its leading zeros from.
+export function payStringWidth(raws: string[]) {
+  const counts = new Map<number, number>();
+  for (const raw of raws) {
+    const parsed = parsePayString(raw);
+    if (parsed && parsed.length >= 6) counts.set(parsed.length, (counts.get(parsed.length) ?? 0) + 1);
+  }
+  let width = 0;
+  let best = 0;
+  for (const [length, count] of counts) {
+    if (count > best) {
+      best = count;
+      width = length;
+    }
+  }
+  return width;
+}
+
+export function restorePayString(raw: string, width: number) {
+  const parsed = parsePayString(raw);
+  if (parsed && width && /^\d+$/.test(raw.trim()) && parsed.length < width) return parsed.padStart(width, "0");
+  return parsed;
+}
+
+// Months behind in the newest month of a pay string. X, nothing due, counts as current.
+export function payStringMonths(payString: string | null | undefined) {
+  const latest = payString?.[0];
+  if (!latest) return null;
+  return latest === "X" ? 0 : Number(latest);
+}
+
+const YES = new Set(["y", "yes", "true", "t", "1", "x"]);
+const NO = new Set(["n", "no", "false", "f", "0", "none"]);
+
+export function parseYesNo(raw: string) {
+  const key = raw.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (YES.has(key)) return true;
+  if (NO.has(key)) return false;
+  return null;
+}
+
+// "13", "Ch 13", "Chapter 13" and "BK13" all read as 13.
+export function parseBankruptcyChapter(raw: string) {
+  const key = raw.trim().toLowerCase().replace(/[^a-z0-9]/g, "").replace(/^(bk|bankruptcy)?(chapter|chap|ch)?/, "");
+  return (BANKRUPTCY_CHAPTERS as readonly string[]).includes(key) ? (key as BankruptcyChapter) : null;
+}
+
+export function parseValueType(raw: string): ValueType | null {
+  const key = raw.toLowerCase().replace(/[^a-z]/g, "");
+  if (!key) return null;
+  if (key.includes("bpo") || key.includes("brokerprice") || key.includes("brokeropinion")) return "BPO";
+  if (key.includes("avm") || key.includes("automated") || key.includes("zestimate")) return "AVM";
+  if (key.includes("apprais")) return "APPRAISAL";
+  if (key.includes("seller") || key.includes("owner") || key.includes("internal")) return "SELLER";
+  return null;
+}
+
+export function parseLoanPurpose(raw: string): LoanPurpose | null {
+  const key = raw.toLowerCase().replace(/[^a-z]/g, "");
+  if (!key) return null;
+  // "No cash-out refi" is a rate-and-term refinance, so it's read before cash-out.
+  if (key.includes("nocashout") || key.includes("limitedcashout") || key.includes("rateterm") || key.includes("rateandterm")) return "REFINANCE";
+  if (key.includes("cashout")) return "CASH_OUT";
+  if (key.includes("refi")) return "REFINANCE";
+  if (key.includes("purch")) return "PURCHASE";
+  if (key.includes("sellerfinanc") || key.includes("ownerfinanc") || key.includes("sellercarry")) return "SELLER_FINANCED";
+  if (key.includes("business") || key === "commercial") return "BUSINESS";
+  return null;
+}

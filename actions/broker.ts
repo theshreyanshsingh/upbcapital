@@ -6,6 +6,7 @@ import type { BrokerDealRole, DocType, FeeBasis } from "@prisma/client";
 import { payoutNoteProblem, splitStates } from "@/lib/broker-fees";
 import { endSessions, requireRole } from "@/lib/auth";
 import { notify, notifyDesk } from "@/lib/email";
+import { flagDuplicates } from "@/lib/duplicates";
 import { rescoreListing } from "@/lib/matching";
 import { OFAC_DOWN_MESSAGE, OFAC_HOLD_MESSAGE, ofacHold, screenInBackground, screenListing, screenUser } from "@/lib/screening";
 import { prisma } from "@/lib/prisma";
@@ -15,6 +16,7 @@ import { suggestMapping } from "@/lib/tape-fields";
 import { uploadProblem } from "@/lib/uploads";
 import { US_STATES } from "@/lib/labels";
 import { firstZodError, noteSchema, noteTitle } from "@/lib/validators";
+import { audit } from "@/lib/audit";
 
 async function brokerUser() {
   const user = await requireRole(["BROKER"]);
@@ -290,10 +292,38 @@ async function createBrokerListing(input: {
     `${input.userName} filed ${input.title} for ${input.clientSellerName} as ${input.role === "AFFILIATE" ? "a referring affiliate" : "seller's broker"}.`,
   );
   screenInBackground(() => screenListing(listing.id, input.userId));
+  // A broker can file a loan the seller already listed, or that another broker brought in.
+  await flagDuplicates(listing.id, input.userId);
   await rescoreListing(listing.id, false);
   revalidatePath("/admin/queue");
   revalidatePath("/broker");
   return listing;
+}
+
+// A broker answers the desk's change request: an updated summary and a note on what changed, and the file goes
+// back to review. Loan facts are edited through the desk for now, since the note editor is the seller's.
+export async function resubmitBrokerDeal(formData: FormData) {
+  const { user } = await brokerUser();
+  const listingId = String(formData.get("listingId") || "");
+  const back = `/broker/deals/${listingId}`;
+  const listing = await prisma.listing.findUnique({ where: { id: listingId }, select: { id: true, title: true, brokerId: true, status: true } });
+  if (!listing || listing.brokerId !== user.id) redirect("/broker");
+  if (listing.status !== "CHANGES_REQUESTED") redirect(`${back}?error=${encodeURIComponent("The desk hasn't asked for changes on this file, so there is nothing to resubmit.")}`);
+  const summary = String(formData.get("summary") || "").trim().slice(0, 4000);
+  const changes = String(formData.get("changes") || "").replace(/\s+/g, " ").trim().slice(0, 1000);
+  if (summary.length < 10) redirect(`${back}?error=${encodeURIComponent("Write a summary the desk can review.")}`);
+  if (changes.length < 3) redirect(`${back}?error=${encodeURIComponent("Tell the desk what you changed.")}`);
+  // Only a file still waiting on the broker goes back, so a desk decision that landed first stands.
+  const sent = await prisma.listing.updateMany({ where: { id: listing.id, brokerId: user.id, status: "CHANGES_REQUESTED" }, data: { summary, status: "SUBMITTED" } });
+  if (sent.count !== 1) redirect(`${back}?error=${encodeURIComponent("The desk moved this file a moment ago. Reload it and check its status.")}`);
+  await prisma.reviewComment.create({ data: { listingId: listing.id, authorId: user.id, action: "RESUBMIT", comment: changes } });
+  await audit(user.id, "RESUBMIT", "listing", listing.id, changes);
+  await notifyDesk(`Resubmitted · ${listing.title}`, `${user.name} answered the change request and sent the file back to review. What changed: ${changes}`);
+  revalidatePath(back);
+  revalidatePath("/broker");
+  revalidatePath("/admin/queue");
+  revalidatePath(`/admin/listings/${listing.id}`);
+  redirect(`${back}?notice=resubmitted`);
 }
 
 function readBasis(raw: string): FeeBasis | null {

@@ -1,10 +1,11 @@
 import { notFound, redirect } from "next/navigation";
 import { markShareFunded } from "@/actions/group";
 import { saveBoarding } from "@/actions/boarding";
-import { cancelClosing, completeClosingStep, recordSettlement, saveWireInstructions, setClosingDates, uploadClosingFile } from "@/actions/closing";
+import { cancelClosing, completeClosingStep, recordSettlement, saveWireInstructions, setClosingDates, uploadClosingFile, walkAway } from "@/actions/closing";
 import { BorrowerNotices } from "@/components/borrower-notices";
 import { ComplianceNote } from "@/components/compliance-note";
 import { DeskNotes } from "@/components/desk-notes";
+import { ConfirmRows, ConfirmSubmit } from "@/components/confirm-submit";
 import { Notice } from "@/components/notice";
 import { SubmitButton } from "@/components/submit-button";
 import { Textarea } from "@/components/ui/textarea";
@@ -13,6 +14,7 @@ import { requireUser } from "@/lib/auth";
 import { stepLabel } from "@/lib/closing";
 import { STEP_OWNER, closingClock, effectiveDue, stepClock, targetDays } from "@/lib/closing-clock";
 import { closingBrokerView } from "@/lib/broker-pay";
+import { diligenceOpen } from "@/lib/closing-service";
 import { brokerRoleLabel } from "@/lib/broker-fees";
 import { isoDate, money, prettyDate, q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
@@ -74,6 +76,9 @@ export default async function ClosingPage({
   const proceeds = variance(closing.netToSellerCents, closing.proceedsSentCents);
   const deposit = closing.depositCents != null ? variance(closing.depositCents, closing.depositReceivedCents) : null;
   const depositLate = Boolean(closing.depositDueAt && closing.depositReceivedCents == null && closing.status === "OPEN" && closing.depositDueAt.getTime() < Date.now());
+  const inDiligence = diligenceOpen(closing);
+  // A group's closing is the seats' money, so the desk ends it on their word rather than one seat walking away.
+  const canWalkAway = inDiligence && !isAdmin && closing.funders.length <= 1 && (user.id === inquiry?.buyerId || closing.funders.some((funder) => funder.userId === user.id));
   return (
     <div className="grid grid-cols-[minmax(0,1fr)] gap-10 lg:grid-cols-[minmax(0,1fr)_320px]">
       <div>
@@ -92,6 +97,13 @@ export default async function ClosingPage({
             {clock.overdue ? ` · ${clock.overdue} step${clock.overdue === 1 ? "" : "s"} late` : ""}
             {clock.late ? " · past the target" : ""}
             {clock.next ? ` · next: ${stepLabel(clock.next.key)} by ${prettyDate(clock.next.due)}` : ""}
+          </p>
+        )}
+        {closing.status === "OPEN" && closing.diligenceEndsAt && (
+          <p className="mt-2 text-sm text-muted-foreground">
+            {inDiligence
+              ? `Diligence until ${prettyDate(closing.diligenceEndsAt)}. Until then the buyer can walk away for a finding.`
+              : `The diligence window ended ${prettyDate(closing.diligenceEndsAt)}.`}
           </p>
         )}
         {closing.status === "COMPLETE" && <p className="mt-4 text-sm text-muted-foreground">Closed in {clock.daysOpen} day{clock.daysOpen === 1 ? "" : "s"}.</p>}
@@ -174,11 +186,36 @@ export default async function ClosingPage({
                 <form action={completeClosingStep} className="mt-3 space-y-2">
                   <input type="hidden" name="closingId" value={closing.id} />
                   <input type="hidden" name="stepKey" value={step.key} />
-                  <input name="note" placeholder="Optional note" className="desk-input" />
+                  <label className="block text-[13px] text-muted-foreground">
+                    Note on this step (optional)
+                    <input name="note" className="desk-input mt-1" />
+                  </label>
                   <StepGate gate={moneyGate(step.key, closing, closing.funders)} label={stepLabel(step.key)} />
-                  <SubmitButton className="h-9 text-[13px] font-medium" pendingLabel="Saving…">
-                    Mark complete
-                  </SubmitButton>
+                  {step.key === "CLOSED" ? (
+                    // Closing finishes the sale: the loans are sold, the fees post and the buyer's holding is made.
+                    <ConfirmSubmit
+                      title={`Close ${closing.listing.title}?`}
+                      consequence="This finishes the sale. The loans are marked sold, the premium and commission post as revenue, broker fees fall due and the buyer gets the holding. It can't be reopened."
+                      details={
+                        <ConfirmRows
+                          rows={[
+                            ["Sale price", money(closing.salePrice)],
+                            ["Buyer all-in", money(closing.buyerTotalCents / 100)],
+                            ["Net to seller", money(closing.netToSellerCents / 100)],
+                          ]}
+                        />
+                      }
+                      confirmLabel="Close the deal"
+                      pendingLabel="Closing…"
+                      className="h-9 text-[13px] font-medium"
+                    >
+                      Mark complete
+                    </ConfirmSubmit>
+                  ) : (
+                    <SubmitButton className="h-9 text-[13px] font-medium" pendingLabel="Saving…">
+                      Mark complete
+                    </SubmitButton>
+                  )}
                 </form>
               )}
             </li>
@@ -222,15 +259,15 @@ export default async function ClosingPage({
               <input type="hidden" name="closingId" value={closing.id} />
               <label className="block sm:col-span-2">
                 <span className="text-[13px] text-muted-foreground">Servicer</span>
-                <input name="servicerName" defaultValue={closing.boarding?.servicerName || ""} className="desk-input mt-2" aria-label="Servicer name" required />
+                <input name="servicerName" defaultValue={closing.boarding?.servicerName || ""} className="desk-input mt-2" required />
               </label>
               <label className="block">
                 <span className="text-[13px] text-muted-foreground">Contact email</span>
-                <input name="contactEmail" type="email" defaultValue={closing.boarding?.contactEmail || ""} className="desk-input mt-2" aria-label="Servicer email" />
+                <input name="contactEmail" type="email" defaultValue={closing.boarding?.contactEmail || ""} className="desk-input mt-2" />
               </label>
               <label className="block">
                 <span className="text-[13px] text-muted-foreground">Loan number</span>
-                <input name="loanNumber" defaultValue={closing.boarding?.loanNumber || ""} className="desk-input mt-2" aria-label="Servicer loan number" />
+                <input name="loanNumber" defaultValue={closing.boarding?.loanNumber || ""} className="desk-input mt-2" />
               </label>
               <label className="block">
                 <span className="text-[13px] text-muted-foreground">Servicing transfer date</span>
@@ -355,9 +392,24 @@ export default async function ClosingPage({
           {user.role === "ADMIN" && closing.status === "OPEN" ? (
             <form action={saveWireInstructions} className="mt-4 space-y-3">
               <input type="hidden" name="closingId" value={closing.id} />
-              <Textarea name="wireInstructions" defaultValue={closing.wireInstructions} className="min-h-36 bg-card" />
-              <input name="providerRef" defaultValue={closing.providerRef} placeholder="Provider reference, if any" className="desk-input" />
-              <SubmitButton className="h-9 text-[13px] font-medium" pendingLabel="Saving…">Save wires</SubmitButton>
+              <label className="block text-[13px] text-muted-foreground">
+                Wire instructions both sides will see
+                <Textarea name="wireInstructions" defaultValue={closing.wireInstructions} className="mt-1 min-h-36 bg-card" />
+              </label>
+              <label className="block text-[13px] text-muted-foreground">
+                Provider reference (optional)
+                <input name="providerRef" defaultValue={closing.providerRef} className="desk-input mt-1" />
+              </label>
+              {/* Changed wire instructions are how wire fraud starts, so saving them asks first and warns both sides. */}
+              <ConfirmSubmit
+                title="Save these wire instructions?"
+                consequence="The buyer, every group funder and the seller are emailed that the instructions changed and told to confirm them by phone before sending money."
+                confirmLabel="Save and notify both sides"
+                pendingLabel="Saving…"
+                className="h-9 text-[13px] font-medium"
+              >
+                Save wires
+              </ConfirmSubmit>
             </form>
           ) : party ? (
             <pre className="mt-4 whitespace-pre-wrap font-sans text-sm leading-relaxed text-foreground/85">{closing.wireInstructions || "The desk has not issued wire instructions."}</pre>
@@ -365,13 +417,54 @@ export default async function ClosingPage({
             <p className="mt-4 text-sm text-muted-foreground">Wire instructions go to the buyer and the seller only.</p>
           )}
         </div>
+        {canWalkAway && closing.diligenceEndsAt && (
+          <form action={walkAway} className="glass space-y-3 p-6">
+            <input type="hidden" name="closingId" value={closing.id} />
+            <p className="eyebrow">Walk away in diligence</p>
+            {/* Counsel: confirm "returned per the purchase terms" matches the deposit and refund language in the purchase agreement. */}
+            <p className="text-sm text-muted-foreground">
+              Until {prettyDate(closing.diligenceEndsAt)} you can walk away for something you found in the file. The closing is canceled, the note goes back on the book, and the seller and the desk are told. Money already wired is returned per the purchase terms.
+            </p>
+            <label className="block text-[13px] text-muted-foreground">
+              What you found, in a sentence. The seller reads this.
+              <Textarea name="reason" className="mt-1 min-h-20 bg-card" required minLength={10} />
+            </label>
+            <ConfirmSubmit
+              title={`Walk away from ${money(closing.salePrice)} on ${closing.listing.title}?`}
+              consequence="The closing is canceled for both sides and the note goes back on the book. It can't be reopened, and you'd need to bid again to buy it. Money already wired is returned per the purchase terms."
+              typed={[["Reason the seller will read", "reason", "text"]]}
+              confirmLabel="Walk away"
+              pendingLabel="Canceling…"
+              tone="danger"
+              className="h-9 text-[13px] font-medium"
+            >
+              Walk away
+            </ConfirmSubmit>
+          </form>
+        )}
+        {inDiligence && !isAdmin && isBuyer && closing.funders.length > 1 && (
+          <p className="glass p-6 text-sm text-muted-foreground">The diligence window runs until {prettyDate(closing.diligenceEndsAt)}. A group closing is ended by the desk, so every seat is heard. Write the desk on the closing thread.</p>
+        )}
         {user.role === "ADMIN" && closing.status === "OPEN" && (
           <form action={cancelClosing} className="glass space-y-3 p-6">
             <input type="hidden" name="closingId" value={closing.id} />
             <p className="eyebrow">Cancel this closing</p>
             <p className="text-sm text-muted-foreground">The deal ends and the note goes back on the book. It cannot be reopened, and the buyer would need to send a new offer. Money already wired has to be returned outside the app.</p>
-            <Textarea name="reason" aria-label="Why this closing is being canceled" placeholder="Why, in a sentence. Both sides see this." className="min-h-20 bg-card" required minLength={3} />
-            <SubmitButton variant="outline" className="h-9 text-[13px] font-medium" pendingLabel="Canceling…">Cancel closing</SubmitButton>
+            <label className="block text-[13px] text-muted-foreground">
+              Why, in a sentence. Both sides see this.
+              <Textarea name="reason" className="mt-1 min-h-20 bg-card" required minLength={3} />
+            </label>
+            <ConfirmSubmit
+              title={`Cancel the closing on ${closing.listing.title}?`}
+              consequence="The deal ends for both sides and the note goes back on the book. It can't be reopened, and any money already wired has to be returned outside the app."
+              typed={[["Reason both sides will see", "reason", "text"]]}
+              confirmLabel="Cancel the closing"
+              pendingLabel="Canceling…"
+              tone="danger"
+              className="h-9 text-[13px] font-medium"
+            >
+              Cancel closing
+            </ConfirmSubmit>
           </form>
         )}
       </aside>

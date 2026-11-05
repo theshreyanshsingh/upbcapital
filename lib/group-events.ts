@@ -11,7 +11,7 @@ export async function notifySeats(groupId: string, subject: string, body: string
   for (const seat of seats) await notify(seat.user.email, subject, body);
 }
 
-export async function onGroupCounter(inquiryId: string, amount: number) {
+export async function onGroupCounter(inquiryId: string, amount: number, from: "desk" | "seller" = "desk") {
   const group = await prisma.groupBuy.findFirst({ where: { inquiryId }, include: { positions: true, listing: true } });
   if (!group || group.status === "CLOSED" || group.status === "DISSOLVED") return;
   const oldTarget = Number(group.targetAmount);
@@ -27,7 +27,7 @@ export async function onGroupCounter(inquiryId: string, amount: number) {
     });
   }
   await prisma.groupBuy.update({ where: { id: group.id }, data: { targetAmount: amount, status: "COUNTERED" } });
-  await notifySeats(group.id, `Counter · ${group.listing.title}`, `The desk countered the group at $${Math.round(amount).toLocaleString("en-US")}. Reconfirm your seat or drop it.`);
+  await notifySeats(group.id, `Counter · ${group.listing.title}`, `The ${from} countered the group at $${Math.round(amount).toLocaleString("en-US")}. Reconfirm your seat or drop it.`);
 }
 
 export async function onGroupAccepted(inquiryId: string, closingId: string, premiumCents: number) {

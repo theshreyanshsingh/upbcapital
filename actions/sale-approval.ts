@@ -4,12 +4,13 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { audit } from "@/lib/audit";
 import { requireUser } from "@/lib/auth";
-import { askedPriceStands, awaitingSeller, awardOffer, sellerPage } from "@/lib/awards";
+import { askedPriceStands, awaitingSeller, awardOffer, recordSellerCounter, sameQuestion, sellerPage } from "@/lib/awards";
 import { notifyDesk } from "@/lib/email";
-import { buyerPrice } from "@/lib/offers";
+import { bidExpired, buyerPrice } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
 
-// The seller of record answers the desk's recommended bid. A broker who filed the listing is that seller.
+// The seller of record answers the desk's recommended bid: approve it, decline it, or counter with their own figure.
+// A broker who filed the listing is that seller.
 export async function answerSaleApproval(formData: FormData) {
   const user = await requireUser();
   const inquiryId = String(formData.get("inquiryId") || "");
@@ -22,14 +23,25 @@ export async function answerSaleApproval(formData: FormData) {
   }
   const amount = Number(offer.sellerAskedAmount);
   const price = `$${amount.toLocaleString("en-US")}`;
+  if (bidExpired(offer.expiresAt)) redirect(`${back}?error=${encodeURIComponent("That bid passed the buyer's good-until date, so there is nothing to answer.")}`);
+  if (answer === "COUNTER") {
+    const counter = Number(String(formData.get("counterAmount") || "").replace(/[$,\s]/g, ""));
+    const result = await recordSellerCounter(offer.id, user.id, counter);
+    if (result.error !== null) redirect(`${back}?error=${encodeURIComponent(result.error)}`);
+    revalidatePath(back);
+    revalidatePath("/buyer/offers");
+    revalidatePath("/admin/offers");
+    redirect(`${back}?notice=${encodeURIComponent("Your counter is with the buyer. If they accept it, the desk can award it at that price.")}`);
+  }
   if (answer === "DECLINE") {
-    await prisma.inquiry.update({ where: { id: offer.id }, data: { sellerAnsweredAt: new Date(), sellerDeclined: true } });
+    const declined = await prisma.inquiry.updateMany({ where: sameQuestion(offer), data: { sellerAnsweredAt: new Date(), sellerDeclined: true } });
+    if (declined.count !== 1) redirect(`${back}?error=${encodeURIComponent("This bid was answered a moment ago.")}`);
     await audit(user.id, "SELLER_DECLINED", "inquiry", offer.id, `${offer.listing.title} · ${price}`);
     await notifyDesk(`Seller declined · ${offer.listing.title}`, `${user.name} declined the sale at ${price}. The bid stays open for the desk to counter or decline.`);
     revalidatePath(back);
     redirect(`${back}?notice=seller_declined`);
   }
-  if (answer !== "APPROVE") redirect(`${back}?error=${encodeURIComponent("Approve or decline the sale.")}`);
+  if (answer !== "APPROVE") redirect(`${back}?error=${encodeURIComponent("Approve, decline or counter the sale.")}`);
   // An approval only counts for the listing and the bid as they stand, so a stale page can't record one.
   if (offer.listing.status !== "APPROVED") redirect(`${back}?error=${encodeURIComponent("This listing isn't live right now, so the sale can't be approved.")}`);
   const current = buyerPrice(offer.amount, offer.messages.map((message) => ({ kind: message.kind, amount: message.amount, createdAt: message.createdAt, authorId: message.authorId })), offer.buyerId);
@@ -37,7 +49,8 @@ export async function answerSaleApproval(formData: FormData) {
     await notifyDesk(`Bid changed before approval · ${offer.listing.title}`, `${user.name} tried to approve the sale at ${price}, but the buyer's bid is now $${Number(current ?? 0).toLocaleString("en-US")}. Ask the seller again at the new price.`);
     redirect(`${back}?error=${encodeURIComponent("The buyer changed their bid since the desk asked, so this figure can no longer be approved.")}`);
   }
-  await prisma.inquiry.update({ where: { id: offer.id }, data: { sellerApprovedAmount: amount, sellerAnsweredAt: new Date(), sellerDeclined: false } });
+  const approved = await prisma.inquiry.updateMany({ where: sameQuestion(offer), data: { sellerApprovedAmount: amount, sellerAnsweredAt: new Date(), sellerDeclined: false } });
+  if (approved.count !== 1) redirect(`${back}?error=${encodeURIComponent("This bid was answered a moment ago.")}`);
   await audit(user.id, "SELLER_APPROVED", "inquiry", offer.id, `${offer.listing.title} · ${price}`);
   const result = await awardOffer(offer.id, user.id);
   if (result.error !== null) {

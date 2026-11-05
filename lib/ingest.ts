@@ -1,3 +1,4 @@
+import { flagDuplicates } from "@/lib/duplicates";
 import { notifyDesk } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
 import { rescoreListing } from "@/lib/matching";
@@ -19,6 +20,7 @@ export async function ingestTape(input: { sellerId: string; title: unknown; summ
   const bytes = Buffer.from(input.csv);
   if (bytes.length > MAX_TAPE_BYTES) return { error: "Tapes are limited to 10 MB." as const };
   const matrix = parseTapeBuffer(bytes, "tape.csv");
+  // Header aliases cover the servicing columns too, so an API tape carries the same record as an uploaded one.
   const mapping = suggestMapping(matrix.headers);
   const { loans, errors } = normalizeTapeRows({ rows: matrix.rows, mapping, priceMode: "COLUMN" });
   if (errors.length) return { error: errors.slice(0, 4).map((issue) => (issue.row ? `Row ${issue.row}: ${issue.message}.` : issue.message)).join(" ") };
@@ -41,6 +43,7 @@ export async function ingestTape(input: { sellerId: string; title: unknown; summ
     data: { listingId: listing.id, type: "TAPE", originalName: "tape.csv", storedName, mime: "text/csv", size: bytes.length },
   });
   await notifyDesk(`API tape · ${title}`, `${loans.length} loans arrived through the seller API.`);
+  await flagDuplicates(listing.id, input.sellerId);
   screenInBackground(() => screenListing(listing.id, input.sellerId));
   await rescoreListing(listing.id, false);
   return { listingId: listing.id, loans: loans.length };

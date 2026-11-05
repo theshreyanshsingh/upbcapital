@@ -4,6 +4,7 @@ import { PageIntro } from "@/components/page-intro";
 import { Button } from "@/components/ui/button";
 import { requireRole } from "@/lib/auth";
 import { q } from "@/lib/format";
+import { resolveMailTransport } from "@/lib/mail-config";
 import { prisma } from "@/lib/prisma";
 import { isPro } from "@/lib/settings";
 import Link from "next/link";
@@ -23,7 +24,11 @@ export default async function AlertsPage({
       <PageIntro
         eyebrow="Alerts"
         title="Searches that watch the book."
-        lede="When the desk approves a match, a notice is written to the mail log. Delivery to a real inbox is not wired in this version."
+        lede={
+          resolveMailTransport() === "log"
+            ? "When the desk approves a listing that matches, you get a notice here. This demo desk writes the email to its mail log instead of sending it."
+            : "When the desk approves a listing that matches, you get an email and a notice here."
+        }
       />
       <Notice notice={q(params, "notice")} error={q(params, "error")} />
       {!isPro(user) && (

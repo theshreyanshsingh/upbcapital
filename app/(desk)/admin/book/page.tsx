@@ -2,6 +2,7 @@ import Link from "next/link";
 import { decideDeskBid, logDeskPayment, setDeskHoldingStatus } from "@/actions/desk-book";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
+import { ConfirmSubmit } from "@/components/confirm-submit";
 import { SubmitButton } from "@/components/submit-button";
 import { requireRole } from "@/lib/auth";
 import { ensureAcceptedDeskClosings } from "@/lib/closing-service";
@@ -54,7 +55,16 @@ export default async function DeskBookPage({
                   <input type="hidden" name="id" value={bid.id} />
                   <input type="hidden" name="decision" value="ACCEPTED" />
                   <input name="consent" className="desk-input w-56" aria-label={`How the seller agreed to the bid on ${bid.listing.title}`} placeholder="How the seller agreed" required minLength={3} />
-                  <SubmitButton className="h-10 text-[13px] font-medium">Take it</SubmitButton>
+                  <ConfirmSubmit
+                    title={`Buy ${bid.listing.title} at ${money(Number(bid.amount))}?`}
+                    consequence="This opens a closing with the desk as the buyer, puts the loan or listing in contract and declines the other bids on it. The seller's agreement you typed is recorded with it."
+                    typed={[["Seller's agreement", "consent", "text"]]}
+                    confirmLabel="Take it and open the closing"
+                    pendingLabel="Opening…"
+                    className="h-10 text-[13px] font-medium"
+                  >
+                    Take it
+                  </ConfirmSubmit>
                 </form>
                 <form action={decideDeskBid}>
                   <input type="hidden" name="id" value={bid.id} />

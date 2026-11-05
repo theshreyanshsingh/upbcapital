@@ -18,6 +18,8 @@ import { canSubmitOffer } from "@/lib/verification";
 import type { ListingStatus } from "@prisma/client";
 import { parseFilters } from "@/lib/filters";
 import { unset } from "@/lib/db-filters";
+import { withdrawBid } from "@/lib/awards";
+import { readGoodUntil } from "@/lib/offers";
 
 async function requireBuyer() {
   const user = await requireUser();
@@ -165,6 +167,7 @@ export async function submitInquiry(formData: FormData) {
   }
   const noteId = String(formData.get("noteId") || "");
   let amount: number | null = null;
+  let expiresAt: Date | null = null;
   if (type === "OFFER") {
     const profile = await prisma.buyerProfile.findUnique({ where: { userId: user.id } });
     const gate = canSubmitOffer({ role: user.role, accountStatus: user.accountStatus, verificationStatus: profile?.status ?? null });
@@ -182,9 +185,20 @@ export async function submitInquiry(formData: FormData) {
       // A whole-pool bid on a pool with traded loans could never be awarded.
       redirect(`/marketplace/${listingId}?error=${encodeURIComponent("Some loans in this pool have traded, so it can't be bid whole. Bid the loans still for sale.")}`);
     }
+    const goodUntil = readGoodUntil(String(formData.get("goodUntil") || ""), listing);
+    if (goodUntil.error) redirect(`/marketplace/${listingId}?error=${encodeURIComponent(goodUntil.error)}`);
+    expiresAt = goodUntil.expiresAt;
     const existing = await prisma.inquiry.findFirst({
       // A whole-listing offer may have no noteId field at all, which `noteId: null` alone would miss.
-      where: { listingId, buyerId: user.id, type: "OFFER", ...(noteId ? { noteId } : unset("noteId")), status: { in: ["OPEN", "REVIEWED", "ACCEPTED"] } },
+      // Best and final is one bid per buyer, so one they withdrew still counts; otherwise withdrawing would be a way
+      // to change the price.
+      where: {
+        listingId,
+        buyerId: user.id,
+        type: "OFFER",
+        ...(noteId ? { noteId } : unset("noteId")),
+        status: { in: listing.bidMode === "BEST_AND_FINAL" ? ["OPEN", "REVIEWED", "ACCEPTED", "WITHDRAWN", "EXPIRED"] : ["OPEN", "REVIEWED", "ACCEPTED"] },
+      },
     });
     const gateBid = canSubmitBid({ bidMode: listing.bidMode, deadline: listing.bidDeadline, alreadyBid: Boolean(existing) });
     if (!gateBid.ok) {
@@ -202,6 +216,7 @@ export async function submitInquiry(formData: FormData) {
       type: type === "OFFER" ? "OFFER" : type === "DATA_ROOM" ? "DATA_ROOM" : "INFO_REQUEST",
       amount,
       message,
+      ...(expiresAt ? { expiresAt } : {}),
     },
   });
   if (type === "OFFER" && amount != null) {
@@ -211,13 +226,14 @@ export async function submitInquiry(formData: FormData) {
   }
   await ensureInquiryThread(inquiry.id);
   const label = type === "OFFER" ? `Offer of $${Math.round(amount || 0).toLocaleString("en-US")}` : type === "DATA_ROOM" ? "Data room request" : "Information request";
+  const until = expiresAt ? ` Good until ${expiresAt.toISOString().slice(0, 10)}.` : "";
   const sealed = type === "OFFER" && sealedFromSeller(listing);
   if (sealed) {
     await notify(listing.seller.email, `Sealed bid · ${listing.title}`, `${user.name} (${user.email}) placed a sealed bid. The amount opens at the deadline.`);
   } else {
     await notify(listing.seller.email, `${label} · ${listing.title}`, `${user.name} (${user.email}) wrote: ${message || "No message."}`);
   }
-  await notifyDesk(`${label} · ${listing.title}`, `From ${user.name} (${user.email}). ${message || ""}`);
+  await notifyDesk(`${label} · ${listing.title}`, `From ${user.name} (${user.email}).${until} ${message || ""}`);
   if (type === "OFFER") {
     const { emitWebhook } = await import("@/lib/webhooks");
     await emitWebhook(listing.sellerId, "offer.created", {
@@ -230,6 +246,19 @@ export async function submitInquiry(formData: FormData) {
   }
   revalidatePath("/admin/offers");
   redirect(`/marketplace/${listingId}?notice=inquiry`);
+}
+
+// The buyer takes back a bid the desk hasn't accepted. A group's bid comes back through the group page instead.
+export async function withdrawInquiry(formData: FormData) {
+  const user = await requireBuyer();
+  const inquiryId = String(formData.get("inquiryId") || "");
+  const result = await withdrawBid(inquiryId, user.id);
+  if (result.error !== null) {
+    redirect(result.groupId ? `/groups/${result.groupId}?error=${encodeURIComponent(result.error)}` : `/buyer/offers?error=${encodeURIComponent(result.error)}`);
+  }
+  revalidatePath("/buyer/offers");
+  revalidatePath("/admin/offers");
+  redirect(`/buyer/offers?notice=${encodeURIComponent("Your bid is withdrawn, and the desk was told.")}`);
 }
 
 export async function saveSearch(formData: FormData) {

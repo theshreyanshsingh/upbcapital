@@ -18,6 +18,7 @@ import {
   US_STATES,
 } from "@/lib/labels";
 import { bpsToPercent } from "@/lib/money";
+import { BANKRUPTCY_CHAPTERS, LOAN_PURPOSES, SERVICING_KEYS, VALUE_TYPES, parsePayString, type ServicingKey } from "@/lib/tape-fields";
 
 type Draft = {
   streetAddress: string;
@@ -41,9 +42,18 @@ type Draft = {
   borrowerName: string;
   narrative: string;
   sellerFinanced: string;
-};
+} & Record<ServicingKey, string>;
 
-const steps = ["Property", "Loan", "Performance", "Price", "Documents", "Review"];
+const steps = ["Property", "Loan", "Performance", "Servicing", "Price", "Documents", "Review"] as const;
+
+const YES_NO = [
+  { value: "true", label: "Yes" },
+  { value: "false", label: "No" },
+] as const;
+
+const CHAPTERS = BANKRUPTCY_CHAPTERS.map((chapter) => ({ value: chapter, label: `Chapter ${chapter}` }));
+
+const DAY = 86400000;
 
 const empty: Draft = {
   streetAddress: "",
@@ -67,6 +77,7 @@ const empty: Draft = {
   borrowerName: "",
   narrative: "",
   sellerFinanced: "false",
+  ...(Object.fromEntries(SERVICING_KEYS.map((key) => [key, ""])) as Record<ServicingKey, string>),
 };
 
 export function NoteWizard({
@@ -89,26 +100,38 @@ export function NoteWizard({
   const [files, setFiles] = useState<Record<string, File[]>>({});
   const [error, setError] = useState("");
   const [pending, start] = useTransition();
+  // An edit page that doesn't pass the stored servicing record shows it blank, so blanks mustn't clear it on save.
+  const servicingLoaded = mode === "create" || SERVICING_KEYS.some((key) => initial?.[key] !== undefined);
 
   function set<K extends keyof Draft>(key: K, value: Draft[K]) {
     setDraft((current) => ({ ...current, [key]: value }));
   }
 
   function validate(index: number) {
-    if (index === 0) {
+    const name = steps[index];
+    if (name === "Property") {
       if (draft.streetAddress.trim().length < 3) return "Enter the street address.";
       if (draft.city.trim().length < 2) return "Enter the city.";
       if (!/^[A-Za-z]{2}$/.test(draft.state)) return "Use a two-letter state.";
       if (!/^\d{5}$/.test(draft.zip)) return "Use a 5-digit ZIP.";
     }
-    if (index === 1) {
+    if (name === "Loan") {
       if (Number(draft.upb) <= 0) return "UPB must be greater than zero.";
       if (draft.interestRate.trim() === "" || !(Number(draft.interestRate) >= 0 && Number(draft.interestRate) <= 40)) return "Enter a note rate between 0 and 40.";
       if (Number(draft.monthlyPi) < 0 || draft.monthlyPi === "") return "Enter monthly principal and interest.";
       if (Number(draft.estimatedValue) <= 0) return "Enter the estimated property value.";
     }
-    if (index === 2 && Number(draft.monthsDelinquent) < 0) return "Months delinquent cannot be negative.";
-    if (index === 3 && Number(draft.askingPrice) <= 0) return "Enter an asking price.";
+    if (name === "Performance" && Number(draft.monthsDelinquent) < 0) return "Months delinquent cannot be negative.";
+    if (name === "Servicing") {
+      if (draft.payString.trim() && !parsePayString(draft.payString)) return "Use 0 to 9 or X for each month of the pay string, newest month first.";
+      // A day of slack, as on the server, for a date picked ahead of the server's timezone.
+      const future = (value: string) => value !== "" && new Date(value).getTime() > Date.now() + DAY;
+      if (future(draft.modificationDate)) return "The modification date can't be in the future.";
+      if (future(draft.bankruptcyFiledAt)) return "The bankruptcy filing date can't be in the future.";
+      if (future(draft.foreclosureFiledAt)) return "The foreclosure filing date can't be in the future.";
+      if (future(draft.valueAsOf)) return "The value date can't be in the future.";
+    }
+    if (name === "Price" && Number(draft.askingPrice) <= 0) return "Enter an asking price.";
     return "";
   }
 
@@ -119,7 +142,7 @@ export function NoteWizard({
   }
 
   function submit() {
-    const message = [0, 1, 2, 3].map(validate).find(Boolean);
+    const message = steps.map((_, index) => validate(index)).find(Boolean);
     if (message) {
       setError(message);
       return;
@@ -127,6 +150,7 @@ export function NoteWizard({
     const formData = new FormData();
     if (leadId) formData.set("leadId", leadId);
     Object.entries(draft).forEach(([key, value]) => formData.set(key, value));
+    formData.set("servicingLoaded", servicingLoaded ? "true" : "false");
     Object.entries(files).forEach(([type, group]) => {
       group.forEach((file) => {
         formData.append("documents", file);
@@ -144,6 +168,7 @@ export function NoteWizard({
   const value = Number(draft.estimatedValue) || 0;
   const premium = (ask * premiumBps) / 10000;
   const commission = (ask * commissionBps) / 10000;
+  const payStored = draft.payString.trim() ? parsePayString(draft.payString) : null;
 
   return (
     <div className="grid gap-8 lg:grid-cols-[200px_minmax(0,1fr)]">
@@ -224,6 +249,80 @@ export function NoteWizard({
           </div>
         )}
         {step === 3 && (
+          <div className="grid gap-5 md:grid-cols-2">
+            <p className="text-sm leading-relaxed text-muted-foreground md:col-span-2">
+              All optional. Fill in what you know from the servicer&apos;s statement or your own records, and skip the rest. Buyers price faster with a pay history and a next due date.
+            </p>
+            <Field label="Loan number" hint="The servicer's number for this loan. Kept private, like the street address.">
+              <Input className="h-11 bg-card" autoComplete="off" value={draft.loanNumber} onChange={(event) => set("loanNumber", event.target.value)} />
+            </Field>
+            <Field label="Servicer" hint="The company that collects the payments. Leave it blank if you collect them yourself.">
+              <Input className="h-11 bg-card" value={draft.servicerName} onChange={(event) => set("servicerName", event.target.value)} />
+            </Field>
+            <div className="md:col-span-2">
+              <Field
+                label="Pay history"
+                hint={`One character a month, newest month first: 0 paid on time, 1 to 9 months behind, X nothing due. A year of on-time payments is 000000000000.${payStored && payStored !== draft.payString.trim() ? ` Saved as ${payStored}.` : ""}`}
+              >
+                <Input className="h-11 bg-card tabular-nums" autoComplete="off" spellCheck={false} value={draft.payString} onChange={(event) => set("payString", event.target.value)} />
+              </Field>
+            </div>
+            <Field label="Next payment due" hint="The due date of the oldest unpaid payment.">
+              <Input className="h-11 bg-card" type="date" value={draft.nextDueDate} onChange={(event) => set("nextDueDate", event.target.value)} />
+            </Field>
+            <Field label="Loss mitigation" hint="Any forbearance, repayment plan or trial modification, in a few words.">
+              <Input className="h-11 bg-card" value={draft.lossMitigation} onChange={(event) => set("lossMitigation", event.target.value)} />
+            </Field>
+            <Field label="Has the loan been modified?">
+              <OptionalSelect
+                value={draft.modified}
+                options={YES_NO}
+                onChange={(value) => setDraft((current) => ({ ...current, modified: value, modificationDate: value === "true" ? current.modificationDate : "" }))}
+              />
+            </Field>
+            {draft.modified === "true" ? (
+              <Field label="Modification date">
+                <Input className="h-11 bg-card" type="date" value={draft.modificationDate} onChange={(event) => set("modificationDate", event.target.value)} />
+              </Field>
+            ) : (
+              <div className="hidden md:block" />
+            )}
+            <Field label="Borrower bankruptcy">
+              <OptionalSelect
+                value={draft.bankruptcyChapter}
+                options={CHAPTERS}
+                unsure="None or not sure"
+                onChange={(value) => setDraft((current) => ({ ...current, bankruptcyChapter: value, bankruptcyFiledAt: value ? current.bankruptcyFiledAt : "" }))}
+              />
+            </Field>
+            {draft.bankruptcyChapter ? (
+              <Field label="Bankruptcy filed">
+                <Input className="h-11 bg-card" type="date" value={draft.bankruptcyFiledAt} onChange={(event) => set("bankruptcyFiledAt", event.target.value)} />
+              </Field>
+            ) : (
+              <div className="hidden md:block" />
+            )}
+            <Field label="Foreclosure filed" hint="Leave it blank if no foreclosure case has been filed.">
+              <Input className="h-11 bg-card" type="date" value={draft.foreclosureFiledAt} onChange={(event) => set("foreclosureFiledAt", event.target.value)} />
+            </Field>
+            <Field label="Loan purpose" hint="What the borrower used the loan for.">
+              <OptionalSelect value={draft.loanPurpose} options={LOAN_PURPOSES} onChange={(value) => set("loanPurpose", value)} />
+            </Field>
+            <Field label="Where the value came from">
+              <OptionalSelect value={draft.valueType} options={VALUE_TYPES} onChange={(value) => set("valueType", value)} />
+            </Field>
+            <Field label="Value date" hint="When the BPO, appraisal or estimate was done.">
+              <Input className="h-11 bg-card" type="date" value={draft.valueAsOf} onChange={(event) => set("valueAsOf", event.target.value)} />
+            </Field>
+            <Field label="HOA lien on the property?" hint="A homeowners association can file a lien for unpaid dues.">
+              <OptionalSelect value={draft.hoaLien} options={YES_NO} onChange={(value) => set("hoaLien", value)} />
+            </Field>
+            <Field label="Property taxes past due?">
+              <OptionalSelect value={draft.taxDelinquent} options={YES_NO} onChange={(value) => set("taxDelinquent", value)} />
+            </Field>
+          </div>
+        )}
+        {step === 4 && (
           <div className="grid gap-6 lg:grid-cols-[1fr_280px]">
             <div className="space-y-5">
               <Field label="Asking price" hint="What you want for the note, before the desk's buyer premium.">
@@ -239,7 +338,7 @@ export function NoteWizard({
             <FeeCard ask={ask} upb={upb} value={value} premium={premium} commission={commission} premiumBps={premiumBps} commissionBps={commissionBps} />
           </div>
         )}
-        {step === 4 && (
+        {step === 5 && (
           <div className="grid gap-4">
             <p className="text-sm leading-relaxed text-muted-foreground">
               Attach the note, mortgage, pay history, BPO, and title if you have them. The desk can ask for anything missing. Buyers see files only after confidentiality, and only on Pro.
@@ -262,7 +361,7 @@ export function NoteWizard({
             ))}
           </div>
         )}
-        {step === 5 && (
+        {step === 6 && (
           <div className="space-y-6">
             <div>
               <p className="eyebrow">{draft.city || "City"}, {draft.state}</p>
@@ -276,6 +375,8 @@ export function NoteWizard({
               <Row k="Rate" v={draft.interestRate ? `${draft.interestRate}%` : "—"} />
               <Row k="Status" v={draft.paymentStatus.replaceAll("_", " ").toLowerCase()} />
               <Row k="Lien" v={draft.lienPosition.toLowerCase()} />
+              <Row k="Servicer" v={draft.servicerName.trim() || "—"} />
+              <Row k="Pay history" v={payStored || "—"} />
             </dl>
             <FeeCard ask={ask} upb={upb} value={value} premium={premium} commission={commission} premiumBps={premiumBps} commissionBps={commissionBps} />
             <label className="flex items-start gap-3 text-sm text-foreground">
@@ -289,7 +390,7 @@ export function NoteWizard({
             </label>
           </div>
         )}
-        {error && <p className="mt-6 text-sm text-bad">{error}</p>}
+        {error && <p role="alert" className="mt-6 text-sm text-bad">{error}</p>}
         <div className="mt-8 flex items-center justify-between gap-3">
           <Button type="button" variant="ghost" className="h-11 px-4 text-[13px] font-medium" onClick={() => setStep((current) => Math.max(current - 1, 0))} disabled={step === 0}>
             Back
@@ -346,6 +447,29 @@ function FeeCard({
         <Row k={`Buyer all-in +${bpsToPercent(premiumBps).toFixed(2)}%`} v={ask ? money(ask + premium) : "—"} />
       </dl>
     </aside>
+  );
+}
+
+const UNSURE = "UNSURE";
+
+// "Not sure" is a real answer here, and it saves nothing.
+function OptionalSelect({
+  value,
+  onChange,
+  options,
+  unsure = "Not sure",
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  options: readonly { value: string; label: string }[];
+  unsure?: string;
+}) {
+  return (
+    <EnumSelect
+      value={value || UNSURE}
+      onChange={(next) => onChange(next === UNSURE ? "" : next)}
+      options={[{ value: UNSURE, label: unsure }, ...options]}
+    />
   );
 }
 

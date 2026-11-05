@@ -2,6 +2,7 @@ import { decideInquiry } from "@/actions/admin";
 import { deadlinePassed } from "@/lib/auction";
 import { awaitingSeller, sellerAgreed } from "@/lib/awards";
 import { notifyClosedAuctions } from "@/lib/listing-intel";
+import { ConfirmRows, ConfirmSubmit } from "@/components/confirm-submit";
 import { Notice } from "@/components/notice";
 import { OfferThread } from "@/components/offer-thread";
 import { PageIntro } from "@/components/page-intro";
@@ -9,7 +10,7 @@ import { SubmitButton } from "@/components/submit-button";
 import { requireRole } from "@/lib/auth";
 import { money, num, prettyDate, q } from "@/lib/format";
 import { bpsToPercent } from "@/lib/money";
-import { buyerPrice, canCounter, openCounter } from "@/lib/offers";
+import { bidExpired, buyerPrice, canCounter, counterFrom, openCounter } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
 import { getSettings } from "@/lib/settings";
 import Link from "next/link";
@@ -52,17 +53,21 @@ export default async function AdminOffersPage({
           const closingId = closingFor.get(inquiry.id);
           const agreed = amount ? sellerAgreed({ price: amount, reserve: inquiry.listing.reservePrice, approvedAmount: inquiry.sellerApprovedAmount }) : null;
           const live = inquiry.type === "OFFER" && (inquiry.status === "OPEN" || inquiry.status === "REVIEWED");
+          const lapsed = live && bidExpired(inquiry.expiresAt);
+          const counterBy = counterFrom(messages, inquiry.buyerId, inquiry.listing.sellerId);
           const sellerLine = awaitingSeller(inquiry)
             ? `Waiting on the seller since ${prettyDate(inquiry.sellerAskedAt)}`
             : agreed === "reserve"
               ? `Within the seller's reserve of ${money(Number(inquiry.listing.reservePrice))}`
               : agreed === "approved"
-                ? "The seller approved this price"
+                ? inquiry.sellerCounterAmount != null && Math.abs(Number(inquiry.sellerCounterAmount) - (amount ?? 0)) < 0.005
+                  ? "The buyer accepted the seller's counter, so the seller has agreed this price"
+                  : "The seller approved this price"
                 : inquiry.sellerDeclined
                   ? `The seller declined ${money(Number(inquiry.sellerAskedAmount))} on ${prettyDate(inquiry.sellerAnsweredAt)}`
                   : "Accepting sends this to the seller for approval first";
           return (
-            <li key={inquiry.id} className="glass p-5">
+            <li key={inquiry.id} id={`offer-${inquiry.id}`} className="glass scroll-mt-6 p-5">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <Link href={`/admin/listings/${inquiry.listingId}`} className="font-semibold tracking-tight text-2xl text-foreground">{inquiry.listing.title}</Link>
@@ -80,7 +85,17 @@ export default async function AdminOffersPage({
                   Buyer&apos;s price {money(amount)} · premium {money((amount * settings.buyerPremiumBps) / 10000)} · all-in {money(amount + (amount * settings.buyerPremiumBps) / 10000)}
                 </p>
               )}
-              {live && counter != null && <p className="mt-2 text-[13px] text-muted-foreground">Desk counter {money(counter)} · waiting on the buyer to accept</p>}
+              {live && counter != null && (
+                <p className="mt-2 text-[13px] text-muted-foreground">
+                  {counterBy === "seller" ? `Seller counter ${money(counter)}, already approved by the seller` : `Desk counter ${money(counter)}`} · waiting on the buyer to accept
+                </p>
+              )}
+              {inquiry.type === "OFFER" && inquiry.expiresAt && (
+                <p className={`mt-2 text-[13px] ${lapsed ? "text-bad" : "text-muted-foreground"}`}>
+                  {inquiry.status === "EXPIRED" || lapsed ? `Lapsed ${prettyDate(inquiry.expiresAt)} · the buyer's good-until date passed` : `Good until ${prettyDate(inquiry.expiresAt)}`}
+                </p>
+              )}
+              {inquiry.status === "WITHDRAWN" && <p className="mt-2 text-[13px] text-muted-foreground">Withdrawn by the buyer{inquiry.withdrawnAt ? ` ${prettyDate(inquiry.withdrawnAt)}` : ""}</p>}
               {live && <p className={`mt-2 text-[13px] ${agreed ? "text-good" : "text-muted-foreground"}`}>{sellerLine}</p>}
               {inquiry.message && <p className="mt-2 text-sm text-foreground/85">{inquiry.message}</p>}
               {closingId && <Link href={`/closings/${closingId}`} className="mt-3 inline-block text-[13px] font-medium text-link">Open closing</Link>}
@@ -107,19 +122,50 @@ export default async function AdminOffersPage({
                   {inquiry.type === "OFFER" && inquiry.listing.status !== "APPROVED" && (
                     <p className="text-sm text-muted-foreground">The listing isn&apos;t live, so this bid can&apos;t be awarded.</p>
                   )}
-                  {inquiry.type === "OFFER" && inquiry.listing.status === "APPROVED" && (inquiry.listing.bidMode === "NONE" || deadlinePassed(inquiry.listing.bidDeadline)) && (
+                  {lapsed && <p className="text-sm text-muted-foreground">The good-until date passed, so this bid can&apos;t be awarded.</p>}
+                  {inquiry.type === "OFFER" && !lapsed && inquiry.listing.status === "APPROVED" && (inquiry.listing.bidMode === "NONE" || deadlinePassed(inquiry.listing.bidDeadline)) && (
                     <form action={decideInquiry}>
                       <input type="hidden" name="inquiryId" value={inquiry.id} />
                       <input type="hidden" name="decision" value="ACCEPT" />
-                      <SubmitButton className="h-9 text-[13px] font-medium">
-                        {!agreed ? (awaitingSeller(inquiry) ? "Ask the seller again" : "Send to the seller") : inquiry.listing.bidMode === "NONE" ? "Accept the buyer's price" : "Award at the buyer's price"}
-                      </SubmitButton>
+                      {agreed && amount != null ? (
+                        <ConfirmSubmit
+                          title={`Award ${inquiry.listing.title} at ${money(amount)}?`}
+                          consequence={`This opens the closing with ${inquiry.buyer.name}, puts ${inquiry.note ? "the loan" : "the listing"} in contract and declines the other bids on it. It can't be undone from here.`}
+                          details={
+                            <ConfirmRows
+                              rows={[
+                                ["Buyer's price", money(amount)],
+                                ["Buyer premium", money((amount * settings.buyerPremiumBps) / 10000)],
+                                ["Buyer all-in", money(amount + (amount * settings.buyerPremiumBps) / 10000)],
+                              ]}
+                            />
+                          }
+                          confirmLabel="Award and open the closing"
+                          pendingLabel="Awarding…"
+                          className="h-9 text-[13px] font-medium"
+                        >
+                          {inquiry.listing.bidMode === "NONE" ? "Accept the buyer's price" : "Award at the buyer's price"}
+                        </ConfirmSubmit>
+                      ) : (
+                        <SubmitButton className="h-9 text-[13px] font-medium" pendingLabel="Sending…">
+                          {awaitingSeller(inquiry) ? "Ask the seller again" : "Send to the seller"}
+                        </SubmitButton>
+                      )}
                     </form>
                   )}
                   <form action={decideInquiry}>
                     <input type="hidden" name="inquiryId" value={inquiry.id} />
                     <input type="hidden" name="decision" value="DECLINE" />
-                    <SubmitButton variant="outline" className="h-9 text-[13px] font-medium">Decline</SubmitButton>
+                    <ConfirmSubmit
+                      title={`Decline ${inquiry.buyer.name}'s ${inquiry.type === "OFFER" ? "bid" : "request"}?`}
+                      consequence="The buyer is told the desk declined it, and it leaves the book. It can't be reopened."
+                      confirmLabel="Decline it"
+                      pendingLabel="Declining…"
+                      tone="danger"
+                      className="h-9 text-[13px] font-medium"
+                    >
+                      Decline
+                    </ConfirmSubmit>
                   </form>
                 </div>
               )}

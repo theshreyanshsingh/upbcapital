@@ -9,6 +9,7 @@ const tones: Record<string, string> = {
   CHANGES_REQUESTED: "bg-warn/12 text-warn",
   UNDER_REVIEW: "bg-link/10 text-link",
   SUBMITTED: "bg-muted text-muted-foreground",
+  WITHDRAWN: "bg-muted text-muted-foreground",
 };
 
 export function StatusPill({ status }: { status: string }) {

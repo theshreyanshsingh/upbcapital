@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { allowPartialGroup, bidPartial, dissolveGroup, dropSeat, extendGroup, joinGroup, reconfirmSeat } from "@/actions/group";
 import { FillBar } from "@/components/fill-bar";
 import { Notice } from "@/components/notice";
+import { ConfirmSubmit } from "@/components/confirm-submit";
 import { SubmitButton } from "@/components/submit-button";
 import { requireUser } from "@/lib/auth";
 import { money, prettyDate, q } from "@/lib/format";
@@ -129,20 +130,42 @@ export default async function GroupPage({
           <form action={extendGroup} className="space-y-3">
             <p className="eyebrow">Extend</p>
             <input type="hidden" name="groupId" value={group.id} />
-            <input name="deadline" type="datetime-local" className="desk-input" aria-label="New deadline" required />
+            <label className="block text-[13px] text-muted-foreground">
+              New deadline
+              <input name="deadline" type="datetime-local" className="desk-input mt-1" required />
+            </label>
             <SubmitButton variant="outline" className="h-10 text-[13px] font-medium">Move the deadline</SubmitButton>
           </form>
           <form action={bidPartial} className="space-y-3">
             <p className="eyebrow">Partial bid</p>
             <input type="hidden" name="groupId" value={group.id} />
             <p className="text-sm text-muted-foreground">{group.allowPartial ? `Send ${money(state.filled)} as the offer.` : "The seller has to allow a short fill first."}</p>
-            <SubmitButton variant="outline" className="h-10 text-[13px] font-medium">Bid what is filled</SubmitButton>
+            <ConfirmSubmit
+              title={`Send ${money(state.filled)} as the group's offer?`}
+              consequence="Every pledged seat is committed at its share of this price if the seller accepts. Seats still reconfirming aren't counted."
+              confirmLabel="Send the offer"
+              pendingLabel="Sending…"
+              variant="outline"
+              className="h-10 text-[13px] font-medium"
+            >
+              Bid what is filled
+            </ConfirmSubmit>
           </form>
           <form action={dissolveGroup} className="space-y-3">
             <p className="eyebrow">Dissolve</p>
             <input type="hidden" name="groupId" value={group.id} />
             <p className="text-sm text-muted-foreground">Everyone with a seat gets a note, and the offer comes off the table.</p>
-            <SubmitButton variant="ghost" className="h-10 text-[13px] font-medium">Dissolve</SubmitButton>
+            <ConfirmSubmit
+              title="Dissolve this group?"
+              consequence="Every seat holder gets a note, the group's offer comes off the table and the group can't be reopened."
+              confirmLabel="Dissolve the group"
+              pendingLabel="Dissolving…"
+              tone="danger"
+              variant="ghost"
+              className="h-10 text-[13px] font-medium"
+            >
+              Dissolve
+            </ConfirmSubmit>
           </form>
         </section>
       )}

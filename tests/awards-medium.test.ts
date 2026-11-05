@@ -274,3 +274,53 @@ test("two of a pool's closings finishing at once still charge the flat fee once"
     await cleanPool(pool);
   }
 });
+
+test("awards that land at the same moment open one closing, and the loser leaves everything as it was", async () => {
+  const pool = await makePool(crypto.randomUUID().slice(0, 8));
+  try {
+    const listingId = pool.listing.id;
+    // Two whole-pool bids, both within the reserve, awarded at once.
+    const first = await prisma.inquiry.create({ data: { listingId, buyerId: pool.buyer.id, type: "OFFER", status: "OPEN", amount: 90000 } });
+    const second = await prisma.inquiry.create({ data: { listingId, buyerId: pool.second.id, type: "OFFER", status: "OPEN", amount: 95000 } });
+    const results = await Promise.all([awardOffer(first.id, pool.desk.id), awardOffer(second.id, pool.desk.id)]);
+    assert.equal(results.filter((result) => result.error === null).length, 1);
+    assert.equal(await prisma.closing.count({ where: { listingId } }), 1);
+
+    // The same offer awarded twice at once still opens one closing.
+    const again = await makePool(crypto.randomUUID().slice(0, 8));
+    try {
+      const offer = await prisma.inquiry.create({ data: { listingId: again.listing.id, buyerId: again.buyer.id, type: "OFFER", status: "OPEN", amount: 90000 } });
+      const twice = await Promise.all([awardOffer(offer.id, again.desk.id), awardOffer(offer.id, again.desk.id)]);
+      assert.equal(twice.filter((result) => result.error === null).length, 1);
+      assert.equal(await prisma.closing.count({ where: { listingId: again.listing.id } }), 1);
+    } finally {
+      await cleanPool(again);
+    }
+
+    // A whole-pool award and a one-loan award racing: at most one wins, and a loser puts its claim back.
+    const race = await makePool(crypto.randomUUID().slice(0, 8));
+    try {
+      const raceId = race.listing.id;
+      const whole = await prisma.inquiry.create({ data: { listingId: raceId, buyerId: race.buyer.id, type: "OFFER", status: "OPEN", amount: 90000 } });
+      const loan = await prisma.inquiry.create({ data: { listingId: raceId, buyerId: race.second.id, type: "OFFER", status: "OPEN", amount: 45000, noteId: race.listing.notes[0].id } });
+      const outcome = await Promise.all([awardOffer(whole.id, race.desk.id), awardOffer(loan.id, race.desk.id)]);
+      assert.ok(outcome.filter((result) => result.error === null).length <= 1);
+      const listing = await prisma.listing.findUniqueOrThrow({ where: { id: raceId }, include: { notes: true } });
+      const closings = await prisma.closing.findMany({ where: { listingId: raceId } });
+      assert.equal(closings.length, outcome.filter((result) => result.error === null).length);
+      if (closings.length === 0) {
+        assert.equal(listing.status, "APPROVED");
+        assert.ok(listing.notes.every((note) => note.tradeStatus === "AVAILABLE"));
+      }
+      for (const inquiry of [whole, loan]) {
+        const row = await prisma.inquiry.findUniqueOrThrow({ where: { id: inquiry.id } });
+        const awarded = closings.some((closing) => closing.inquiryId === inquiry.id);
+        assert.equal(row.status === "ACCEPTED", awarded);
+      }
+    } finally {
+      await cleanPool(race);
+    }
+  } finally {
+    await cleanPool(pool);
+  }
+});

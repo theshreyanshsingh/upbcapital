@@ -1,7 +1,7 @@
-import { canReadDocument, isPrivateDocument } from "@/lib/acl";
+import { canReadDocument, isPrivateDocument, loanFileAccess } from "@/lib/acl";
 import { audit } from "@/lib/audit";
 import { getApiUser } from "@/lib/auth";
-import { isClosingParty } from "@/lib/data-room";
+import { dealAccess } from "@/lib/data-room";
 import { prisma } from "@/lib/prisma";
 import { isPro } from "@/lib/settings";
 import { getBytes } from "@/lib/storage";
@@ -22,6 +22,11 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   const nda = await prisma.ndaAcknowledgment.findUnique({
     where: { userId_listingId: { userId: user.id, listingId: document.listingId } },
   });
+  const deal = owner || admin ? { whole: false, loans: new Set<string>() } : await dealAccess(document.listingId, user.id);
+  // A loan's own file follows that loan: sold out of a pool, it closes to everyone but its buyer.
+  const note = document.noteId
+    ? await prisma.note.findUnique({ where: { id: document.noteId }, select: { id: true, listingId: true, tradeStatus: true } })
+    : null;
   const allowed = canReadDocument({
     owner,
     admin,
@@ -30,7 +35,10 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     proBuyer: user.role === "BUYER" && user.accountStatus === "APPROVED" && isPro(user),
     signedNda: Boolean(nda),
     listingStatus: document.listing.status,
-    closingParty: owner || admin ? false : await isClosingParty(document.listingId, user.id),
+    closingParty: deal.whole || deal.loans.size > 0,
+    loan: document.noteId
+      ? loanFileAccess({ note, listingId: document.listingId, listingStatus: document.listing.status, signedNda: Boolean(nda), wholeParty: deal.whole, loanIds: deal.loans })
+      : null,
   });
   if (!allowed) return new Response("The data room is closed.", { status: 403 });
 

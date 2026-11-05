@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import type { DocType } from "@prisma/client";
 import { requireUser } from "@/lib/auth";
+import { flagDuplicates } from "@/lib/duplicates";
 import { notifyDesk } from "@/lib/email";
 import { typedNumber } from "@/lib/money";
 import { rescoreListing } from "@/lib/matching";
@@ -13,8 +14,8 @@ import { extensionOf, mimeFor, putBytes, safeBasename } from "@/lib/storage";
 import { deleteTapeDraft, readTapeDraft } from "@/lib/tape-draft";
 import { uploadProblem } from "@/lib/uploads";
 import { normalizeTapeRows } from "@/lib/tape";
-import type { TapeFieldKey } from "@/lib/tape-fields";
-import { firstZodError, noteSchema, noteTitle } from "@/lib/validators";
+import { SERVICING_KEYS, type TapeFieldKey } from "@/lib/tape-fields";
+import { firstZodError, noteSchema, noteTitle, type NoteInput } from "@/lib/validators";
 
 function skippedNotice(skipped: string[]) {
   if (!skipped.length) return "";
@@ -83,6 +84,29 @@ function noteData(input: ReturnType<typeof noteSchema.parse>) {
   };
 }
 
+// A first filing leaves blank servicing answers off the record. An edit that loaded the stored record clears what the
+// seller blanked; one that didn't (an older edit page) only writes what was typed, so nothing stored is lost.
+function servicingData(input: NoteInput, clearBlanks: boolean) {
+  const fields = {
+    loanNumber: input.loanNumber,
+    servicerName: input.servicerName,
+    payString: input.payString,
+    nextDueDate: input.nextDueDate,
+    modified: input.modified,
+    modificationDate: input.modificationDate,
+    lossMitigation: input.lossMitigation,
+    bankruptcyChapter: input.bankruptcyChapter,
+    bankruptcyFiledAt: input.bankruptcyFiledAt,
+    foreclosureFiledAt: input.foreclosureFiledAt,
+    valueType: input.valueType,
+    valueAsOf: input.valueAsOf,
+    loanPurpose: input.loanPurpose,
+    hoaLien: input.hoaLien,
+    taxDelinquent: input.taxDelinquent,
+  };
+  return Object.fromEntries(Object.entries(fields).filter(([, value]) => clearBlanks || value != null)) as Partial<typeof fields>;
+}
+
 function readNoteForm(formData: FormData) {
   return noteSchema.safeParse({
     streetAddress: formData.get("streetAddress"),
@@ -105,6 +129,7 @@ function readNoteForm(formData: FormData) {
     foreclosureStatus: formData.get("foreclosureStatus"),
     borrowerName: formData.get("borrowerName") || "",
     narrative: formData.get("narrative") || "",
+    ...Object.fromEntries(SERVICING_KEYS.map((key) => [key, formData.get(key) || ""])),
   });
 }
 
@@ -134,7 +159,7 @@ export async function createNoteListing(formData: FormData) {
       sellerFinanced,
       title: noteTitle(input),
       summary: input.narrative,
-      notes: { create: noteData(input) },
+      notes: { create: { ...noteData(input), ...servicingData(input, false) } },
     },
   });
   screenInBackground(() => screenListing(listing.id, user.id));
@@ -146,6 +171,7 @@ export async function createNoteListing(formData: FormData) {
     `Note submitted · ${listing.title}`,
     `${user.name} submitted ${listing.title} at an ask of $${input.askingPrice.toLocaleString("en-US")}.`,
   );
+  await flagDuplicates(listing.id, user.id);
   const leadId = String(formData.get("leadId") || "");
   if (leadId) {
     await prisma.sellerLead.updateMany({
@@ -171,11 +197,17 @@ export async function updateOwnNote(listingId: string, formData: FormData) {
   const input = parsed.data;
   const note = listing.notes[0];
   if (!note) return { error: "The loan record is missing." };
-  const data = noteData(input);
+  const data = { ...noteData(input), ...servicingData(input, formData.get("servicingLoaded") === "true") };
   // A new address or value makes the stored pin and valuation wrong, so they're cleared and read again.
   const moved =
     note.streetAddress !== data.streetAddress || note.city !== data.city || note.state !== data.state || note.zip !== data.zip ||
     Number(note.estimatedValue) !== Number(data.estimatedValue);
+  // The duplicate check runs again only when what identifies the loan changed, so a resubmit doesn't repeat the flag.
+  const reidentified =
+    moved ||
+    Number(note.upb) !== Number(data.upb) ||
+    (data.loanNumber !== undefined && data.loanNumber !== note.loanNumber) ||
+    (data.servicerName !== undefined && data.servicerName !== note.servicerName);
   await prisma.note.update({
     where: { id: note.id },
     data: moved ? { ...data, latitude: null, longitude: null, avmValue: null, avmProvider: "", avmAsOf: null } : data,
@@ -194,6 +226,7 @@ export async function updateOwnNote(listingId: string, formData: FormData) {
     data: { listingId: listing.id, authorId: user.id, action: "COMMENT", comment: "Seller updated the file and resubmitted." },
   });
   await notifyDesk(`Resubmitted · ${noteTitle(input)}`, `${user.name} updated the listing and sent it back to review.`);
+  if (reidentified) await flagDuplicates(listing.id, user.id);
   revalidatePath(`/seller/listings/${listing.id}`);
   redirect(`/seller/listings/${listing.id}?notice=resubmitted${skippedNotice(skipped)}`);
 }
@@ -282,6 +315,7 @@ export async function createPoolListing(formData: FormData) {
     `${user.companyName || user.name} submitted ${loans.length} loans in ${title}.`,
   );
   await deleteTapeDraft(token);
+  await flagDuplicates(listing.id, user.id);
   screenInBackground(() => screenListing(listing.id, user.id));
   await rescoreListing(listing.id, false);
   revalidatePath("/admin/queue");

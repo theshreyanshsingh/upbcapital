@@ -1,35 +1,52 @@
 import type { ListingStatus } from "@prisma/client";
-import { onGroupAccepted, onGroupDeclined } from "@/lib/group-events";
+import { notifySeats, onGroupAccepted, onGroupCounter, onGroupDeclined } from "@/lib/group-events";
 import { deadlinePassed } from "@/lib/auction";
 import { audit } from "@/lib/audit";
 import { unset } from "@/lib/db-filters";
 import { openClosing, tradeConflict } from "@/lib/closing-service";
-import { notify } from "@/lib/email";
-import { buyerPrice, type OfferMoney } from "@/lib/offers";
+import { notify, notifyDesk } from "@/lib/email";
+import { listingWithdrawBlock } from "@/lib/listing-status";
+import { bidExpired, buyerPrice, withdrawBlock, type OfferMoney } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
 import { OFAC_HOLD_MESSAGE, ofacHold } from "@/lib/screening";
 
-// Once a bid wins, the others on the same loans can't, so they close now: an award, a desk purchase, or a
-// manual sale. Each bidder hears it without the price or the winner. A one-loan sale also ends offers on the
-// whole listing, which can no longer trade whole. Pass a null winner id when the winning bid isn't an offer.
-export async function declineLosingBids(winner: { id: string | null; listingId: string; noteId: string | null }, title: string) {
+const LIVE = ["OPEN", "REVIEWED"] as const;
+
+function dollars(amount: number) {
+  return `$${Math.round(amount).toLocaleString("en-US")}`;
+}
+
+// Why open bids are closing, in the words each bidder and group hears. The default is another bid winning.
+type DeclineWhy = { subject: string; bidder: string; group: string; reason: string };
+
+// Once a bid wins, the others on the same loans can't, so they close now: an award, a desk purchase, a manual sale,
+// or the seller withdrawing the listing. Each bidder hears it without the price or the winner. A one-loan sale also
+// ends offers on the whole listing, which can no longer trade whole. Pass a null winner id when the winning bid
+// isn't an offer.
+export async function declineLosingBids(winner: { id: string | null; listingId: string; noteId: string | null }, title: string, why?: DeclineWhy) {
   const open = await prisma.inquiry.findMany({
-    where: { listingId: winner.listingId, ...(winner.id ? { id: { not: winner.id } } : {}), type: "OFFER", status: { in: ["OPEN", "REVIEWED"] } },
+    where: { listingId: winner.listingId, ...(winner.id ? { id: { not: winner.id } } : {}), type: "OFFER", status: { in: [...LIVE] } },
     include: { buyer: { select: { email: true } } },
   });
   const losers = winner.noteId ? open.filter((offer) => !offer.noteId || offer.noteId === winner.noteId) : open;
   const { emitWebhook } = await import("@/lib/webhooks");
   const sellerId = (await prisma.listing.findUnique({ where: { id: winner.listingId }, select: { sellerId: true } }))?.sellerId;
+  let declined = 0;
   for (const loser of losers) {
-    await prisma.inquiry.update({ where: { id: loser.id }, data: { status: "DECLINED" } });
-    await onGroupDeclined(loser.id, "Another bid was accepted, so the group offer closed.");
-    if (sellerId) await emitWebhook(sellerId, "offer.declined", { inquiryId: loser.id, listingId: winner.listingId, reason: "another_bid_accepted" });
+    // A bid its buyer withdrew a moment ago stays withdrawn, and they aren't told it was declined.
+    const closed = await prisma.inquiry.updateMany({ where: { id: loser.id, status: { in: [...LIVE] } }, data: { status: "DECLINED" } });
+    if (closed.count !== 1) continue;
+    declined += 1;
+    await onGroupDeclined(loser.id, why?.group ?? "Another bid was accepted, so the group offer closed.");
+    if (sellerId) await emitWebhook(sellerId, "offer.declined", { inquiryId: loser.id, listingId: winner.listingId, reason: why?.reason ?? "another_bid_accepted" });
     await notify(
       loser.buyer.email,
-      `Bid not selected · ${title}`,
-      winner.noteId && !loser.noteId
-        ? "A loan in this pool was sold on its own, so the pool can no longer trade whole. Thank you for bidding."
-        : "Another bid was accepted. Thank you for bidding.",
+      why ? `${why.subject} · ${title}` : `Bid not selected · ${title}`,
+      why
+        ? why.bidder
+        : winner.noteId && !loser.noteId
+          ? "A loan in this pool was sold on its own, so the pool can no longer trade whole. Thank you for bidding."
+          : "Another bid was accepted. Thank you for bidding.",
     );
   }
   // The desk's open bids on the same loans can't be taken either, so they come off the seller's page. A desk bid
@@ -38,7 +55,7 @@ export async function declineLosingBids(winner: { id: string | null; listingId: 
     where: { listingId: winner.listingId, status: "OPEN", ...(winner.noteId ? { OR: [{ noteId: winner.noteId }, ...unset("noteId").OR] } : {}) },
     data: { status: "WITHDRAWN" },
   });
-  return losers.length;
+  return declined;
 }
 
 // Takes one loan into contract only if it is still free, in a single write, so two awards at the same moment
@@ -69,6 +86,17 @@ export function rivalBids(offer: BidMoney, offers: BidMoney[]) {
   const rest = offers.filter((other) => other.id !== offer.id && other.type === "OFFER" && (other.status === "OPEN" || other.status === "REVIEWED") && other.noteId === offer.noteId);
   const best = rest.reduce((top, other) => Math.max(top, buyerPrice(other.amount, other.messages, other.buyerId) ?? 0), 0);
   return { count: rest.length, best };
+}
+
+// The question to the seller as it was read: still live, asked at the same moment and not answered since. Each answer
+// is a conditional write on it, so an approval, a decline or a counter that landed first wins.
+export function sameQuestion(offer: { id: string; sellerAskedAt: Date | null; sellerAnsweredAt: Date | null }) {
+  return {
+    id: offer.id,
+    status: { in: [...LIVE] },
+    sellerAskedAt: offer.sellerAskedAt,
+    ...(offer.sellerAnsweredAt ? { sellerAnsweredAt: offer.sellerAnsweredAt } : unset("sellerAnsweredAt")),
+  };
 }
 
 // A bid waits on the seller when the desk asked and the seller hasn't answered since.
@@ -106,6 +134,10 @@ export async function checkAward(inquiryId: string) {
   const offer = await loadOffer(inquiryId);
   if (!offer || offer.type !== "OFFER") return { error: "That offer no longer exists." } as const;
   if (offer.status === "DECLINED") return { error: "That offer was declined or its closing was canceled. The buyer can send a new one." } as const;
+  if (offer.status === "WITHDRAWN") return { error: "The buyer withdrew that bid." } as const;
+  if (offer.status === "EXPIRED" || (offer.status !== "ACCEPTED" && bidExpired(offer.expiresAt))) {
+    return { error: "That bid passed its good-until date, so it can't be awarded. The buyer can send a new one." } as const;
+  }
   const awarded = await prisma.closing.findUnique({ where: { inquiryId } });
   if (awarded) return { error: "That offer already has a closing.", closingId: awarded.id } as const;
   // Only a live listing sells. A rejected or sent-back one would skip the desk's review, and an in-contract one
@@ -170,13 +202,46 @@ export async function awardOffer(inquiryId: string, actorId: string) {
   if (check.error !== null) return check;
   const { offer, price } = check;
   if (!check.agreed) return { error: "The seller hasn't approved this price." } as const;
-  if (offer.noteId && !(await claimLoan(offer.noteId))) return { error: "That loan went into contract a moment ago. Check its open closing." } as const;
-  await prisma.inquiry.update({ where: { id: offer.id }, data: { status: "ACCEPTED", amount: price } });
-  if (!offer.noteId && offer.listing.status !== "SOLD") {
-    await prisma.listing.update({
-      where: { id: offer.listingId },
+  // Two awards can pass the checks above at the same moment: a second click, the seller approving while the desk
+  // accepts, or two bids on one listing. Each claim below is a conditional write, so only one award goes through,
+  // and a loser puts back what it took.
+  // The buyer's good-until date is part of the claim too, so a bid can't be taken in the minute it lapses.
+  const won = await prisma.inquiry.updateMany({
+    where: { id: offer.id, status: { in: [...LIVE] }, OR: [...unset("expiresAt").OR, { expiresAt: { gt: new Date() } }] },
+    data: { status: "ACCEPTED", amount: price },
+  });
+  if (won.count !== 1) return { error: "That offer was decided a moment ago." } as const;
+  const release = () => prisma.inquiry.update({ where: { id: offer.id }, data: { status: offer.status, amount: offer.amount } });
+  if (offer.noteId) {
+    if (!(await claimLoan(offer.noteId))) {
+      await release();
+      return { error: "That loan went into contract a moment ago. Check its open closing." } as const;
+    }
+    // A whole-listing award that claimed the listing first wins, and this loan goes back.
+    const listing = await prisma.listing.findUnique({ where: { id: offer.listingId }, select: { status: true } });
+    if (listing?.status !== "APPROVED") {
+      await prisma.note.updateMany({ where: { id: offer.noteId, tradeStatus: "IN_CONTRACT" }, data: { tradeStatus: "AVAILABLE" } });
+      await release();
+      return { error: "The whole listing went into contract a moment ago." } as const;
+    }
+  } else {
+    const claimed = await prisma.listing.updateMany({
+      where: { id: offer.listingId, status: "APPROVED" },
       data: { status: "PENDING" satisfies ListingStatus, acceptedInquiryId: offer.id },
     });
+    if (claimed.count !== 1) {
+      await release();
+      return { error: "This listing went into contract a moment ago." } as const;
+    }
+    // A one-loan award that claimed a loan first wins, and the listing goes back on the book.
+    if ((await prisma.note.count({ where: { listingId: offer.listingId, tradeStatus: { not: "AVAILABLE" } } })) > 0) {
+      await prisma.listing.updateMany({
+        where: { id: offer.listingId, status: "PENDING", acceptedInquiryId: offer.id },
+        data: { status: "APPROVED", acceptedInquiryId: null },
+      });
+      await release();
+      return { error: "A loan on this listing went into contract a moment ago." } as const;
+    }
   }
   const closing = await openClosing({ listingId: offer.listingId, inquiryId: offer.id, noteId: offer.noteId, salePrice: price, title: offer.listing.title });
   await onGroupAccepted(offer.id, closing.id, closing.buyerPremiumCents);
@@ -198,4 +263,120 @@ export async function awardOffer(inquiryId: string, actorId: string) {
     `${offer.listing.title} · ${offer.buyer.name} · ${check.agreed === "reserve" ? "within the seller's reserve" : "approved by the seller"}${declined ? ` · ${declined} other bid${declined === 1 ? "" : "s"} declined` : ""}`,
   );
   return { error: null, closingId: closing.id, declined, price } as const;
+}
+
+function pricedMessages(messages: { kind: string; amount: number | null; createdAt: Date; authorId: string }[]) {
+  return messages.map((message) => ({ kind: message.kind, amount: message.amount, createdAt: message.createdAt, authorId: message.authorId }));
+}
+
+// The buyer takes a bid back before it is accepted. The claim is conditional, so an award landing at the same
+// moment wins or loses cleanly. Returns the group's id when the bid belongs to one, so the caller can point there.
+export async function withdrawBid(inquiryId: string, buyerId: string, now = new Date()) {
+  const offer = await prisma.inquiry.findUnique({ where: { id: inquiryId }, include: { buyer: true, listing: { include: { seller: true } }, messages: true } });
+  if (!offer || offer.buyerId !== buyerId) return { error: "That bid isn't yours.", groupId: null } as const;
+  const group = await prisma.groupBuy.findFirst({ where: { inquiryId }, select: { id: true } });
+  const block = withdrawBlock({ type: offer.type, status: offer.status, bidMode: offer.listing.bidMode, bidDeadline: offer.listing.bidDeadline, group: Boolean(group), now });
+  if (block) return { error: block, groupId: group?.id ?? null } as const;
+  const claimed = await prisma.inquiry.updateMany({
+    where: { id: offer.id, buyerId, status: { in: [...LIVE] } },
+    data: { status: "WITHDRAWN", withdrawnAt: now },
+  });
+  if (claimed.count !== 1) return { error: "That bid was decided a moment ago.", groupId: null } as const;
+  const price = buyerPrice(offer.amount, pricedMessages(offer.messages), offer.buyerId) ?? 0;
+  const title = offer.listing.title;
+  await prisma.offerMessage.create({ data: { inquiryId: offer.id, authorId: buyerId, kind: "NOTE", body: "The buyer withdrew this bid." } });
+  await audit(buyerId, "BID_WITHDRAWN", "inquiry", offer.id, `${title} · ${dollars(price)}`);
+  const { emitWebhook } = await import("@/lib/webhooks");
+  await emitWebhook(offer.listing.sellerId, "offer.declined", { inquiryId: offer.id, listingId: offer.listingId, reason: "withdrawn" });
+  const asked = Boolean(offer.sellerAskedAt);
+  await notifyDesk(
+    `Bid withdrawn · ${title}`,
+    `${offer.buyer.name} withdrew their bid of ${dollars(price)}${offer.noteId ? " for one loan" : ""}.${asked ? " The seller had been asked to approve it and was told." : ""}`,
+  );
+  if (asked) {
+    await notify(
+      offer.listing.seller.email,
+      `Bid withdrawn · ${title}`,
+      `The buyer withdrew the bid of ${dollars(Number(offer.sellerAskedAmount ?? price))} the desk asked you to approve. Nothing is waiting for your answer on it.`,
+    );
+  }
+  return { error: null, groupId: null } as const;
+}
+
+// The seller answers the desk's question with their own figure. It counts as their approval of exactly that price
+// and goes to the buyer as a counter, so a buyer who accepts it can be awarded without asking the seller again.
+export async function recordSellerCounter(inquiryId: string, sellerId: string, amount: number, now = new Date()) {
+  const offer = await prisma.inquiry.findUnique({ where: { id: inquiryId }, include: { buyer: true, listing: true, messages: true } });
+  if (!offer || offer.listing.sellerId !== sellerId) return { error: "That bid isn't on your listing." } as const;
+  if (!awaitingSeller(offer) || offer.sellerAskedAmount == null || (offer.status !== "OPEN" && offer.status !== "REVIEWED")) {
+    return { error: "Nothing on this listing is waiting for your answer." } as const;
+  }
+  if (offer.listing.status !== "APPROVED") return { error: "This listing isn't live right now, so you can't counter." } as const;
+  if (bidExpired(offer.expiresAt, now)) return { error: "That bid passed its good-until date, so there is nothing to counter." } as const;
+  if (!Number.isFinite(amount) || amount <= 0 || amount > 1_000_000_000) return { error: "Enter your counter in dollars." } as const;
+  const current = buyerPrice(offer.amount, pricedMessages(offer.messages), offer.buyerId);
+  if (current != null && amount <= current + 0.005) return { error: "A counter is above the buyer's bid. To sell at their price, approve it." } as const;
+  const answered = await prisma.inquiry.updateMany({
+    where: sameQuestion(offer),
+    data: { sellerCounterAmount: amount, sellerCounteredAt: now, sellerApprovedAmount: amount, sellerAnsweredAt: now, sellerDeclined: false },
+  });
+  if (answered.count !== 1) return { error: "This bid was answered a moment ago." } as const;
+  const title = offer.listing.title;
+  const asked = Number(offer.sellerAskedAmount);
+  await prisma.offerMessage.create({ data: { inquiryId: offer.id, authorId: sellerId, kind: "COUNTER", amount, createdAt: now, body: `The seller countered at ${dollars(amount)}.` } });
+  // A group's seats each reconfirm the new price before it is the group's bid.
+  await onGroupCounter(offer.id, amount, "seller");
+  await audit(sellerId, "SELLER_COUNTERED", "inquiry", offer.id, `${title} · asked ${dollars(asked)} · countered ${dollars(amount)}`);
+  const link = `${process.env.NEXT_PUBLIC_APP_URL || ""}/buyer/offers`;
+  await notify(
+    offer.buyer.email,
+    `Seller counter · ${title}`,
+    `The seller countered your bid at ${dollars(amount)}. The seller has already agreed to that price, so if you accept it the desk can award it without asking again. You can also leave your bid as it is: ${link}`,
+  );
+  await notifyDesk(
+    `Seller countered · ${title}`,
+    `The seller answered ${dollars(asked)} with a counter at ${dollars(amount)}. It's posted to the buyer. If they accept, it can be awarded without asking the seller again.`,
+  );
+  return { error: null, amount } as const;
+}
+
+const OPEN_GROUPS = ["GATHERING", "OFFERED", "COUNTERED"] as const;
+
+// The seller or the filing broker takes a listing off the book before it is in contract. The status write is
+// conditional on the status as it was read, open bids are declined with a notice, open desk bids end, and groups
+// are dissolved. A relist is a copy the desk reviews again.
+export async function withdrawListing(listingId: string, actorId: string, now = new Date()) {
+  const listing = await prisma.listing.findUnique({ where: { id: listingId }, include: { seller: true } });
+  if (!listing || (listing.sellerId !== actorId && listing.brokerId !== actorId)) return { error: "That listing isn't yours." } as const;
+  const block = listingWithdrawBlock(listing.status, await prisma.closing.count({ where: { listingId, status: "OPEN" } }));
+  if (block) return { error: block } as const;
+  const claimed = await prisma.listing.updateMany({ where: { id: listingId, status: listing.status }, data: { status: "WITHDRAWN", withdrawnAt: now } });
+  if (claimed.count !== 1) return { error: "This listing changed a moment ago. Reload it and try again." } as const;
+  // A one-loan award can claim its loan in the instant before this write. That sale stands, and the listing goes back.
+  const busy = (await prisma.closing.count({ where: { listingId, status: "OPEN" } })) + (await prisma.note.count({ where: { listingId, tradeStatus: "IN_CONTRACT" } }));
+  if (busy > 0) {
+    await prisma.listing.updateMany({ where: { id: listingId, status: "WITHDRAWN" }, data: { status: listing.status, withdrawnAt: listing.withdrawnAt } });
+    return { error: "A bid on this listing was accepted a moment ago, so it can't be withdrawn." } as const;
+  }
+  const declined = await declineLosingBids({ id: null, listingId, noteId: null }, listing.title, {
+    subject: "Listing withdrawn",
+    bidder: "The seller withdrew this listing, so your bid is closed. Nothing is owed. Thank you for bidding.",
+    group: "The seller withdrew this listing, so the group offer closed and your seat is released.",
+    reason: "listing_withdrawn",
+  });
+  // A group still gathering seats has no bid to decline, so it is dissolved here.
+  const groups = await prisma.groupBuy.findMany({ where: { listingId, status: { in: [...OPEN_GROUPS] } }, select: { id: true } });
+  for (const group of groups) {
+    const closed = await prisma.groupBuy.updateMany({ where: { id: group.id, status: { in: [...OPEN_GROUPS] } }, data: { status: "DISSOLVED" } });
+    if (closed.count === 1) await notifySeats(group.id, `Group closed · ${listing.title}`, "The seller withdrew this listing, so the group closed and your seat is released.");
+  }
+  const who = listing.brokerId === actorId ? "filing broker" : "seller";
+  const bids = declined ? ` ${declined} open bid${declined === 1 ? " was" : "s were"} declined.` : "";
+  await prisma.reviewComment.create({ data: { listingId, authorId: actorId, action: "WITHDRAW", comment: `Withdrawn by the ${who}.${bids}` } });
+  await audit(actorId, "LISTING_WITHDRAWN", "listing", listingId, `${listing.title} · was ${listing.status.replaceAll("_", " ").toLowerCase()}${bids}`);
+  await notifyDesk(`Listing withdrawn · ${listing.title}`, `The ${who} withdrew ${listing.title}.${bids || " It had no open bids."}`);
+  if (listing.sellerId !== actorId) {
+    await notify(listing.seller.email, `Listing withdrawn · ${listing.title}`, `Your broker withdrew ${listing.title} from the book.${bids}`);
+  }
+  return { error: null, declined } as const;
 }

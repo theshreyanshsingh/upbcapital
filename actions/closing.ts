@@ -7,7 +7,7 @@ import { audit } from "@/lib/audit";
 import { requireUser } from "@/lib/auth";
 import { notify } from "@/lib/email";
 import { canCompleteStep } from "@/lib/closing";
-import { buyerSideEmails, cancelOpenClosing, completeDepositFromWire, finalizeClosing, isClosingStepKey } from "@/lib/closing-service";
+import { buyerSideEmails, cancelOpenClosing, completeDepositFromWire, finalizeClosing, isClosingStepKey, walkAwayFromClosing } from "@/lib/closing-service";
 import { prisma } from "@/lib/prisma";
 import { OFAC_HOLD_MESSAGE, ofacHold } from "@/lib/screening";
 import { moneyGate } from "@/lib/settlement";
@@ -161,6 +161,20 @@ export async function cancelClosing(formData: FormData) {
   revalidatePath("/admin");
   revalidatePath("/marketplace");
   redirect(`/closings/${closingId}?notice=closing_canceled`);
+}
+
+// The buyer walks away inside the diligence window, with a reason the seller reads.
+export async function walkAway(formData: FormData) {
+  const closingId = String(formData.get("closingId") || "");
+  const reason = String(formData.get("reason") || "");
+  const { user } = await participant(closingId);
+  const result = await walkAwayFromClosing(closingId, user.id, reason);
+  if (result.error !== null) redirect(`/closings/${closingId}?error=${encodeURIComponent(result.error)}`);
+  revalidatePath(`/closings/${closingId}`);
+  revalidatePath("/closings");
+  revalidatePath("/buyer/offers");
+  revalidatePath("/marketplace");
+  redirect(`/closings/${closingId}?notice=${encodeURIComponent("You walked away. The closing is canceled, and the seller and the desk were told.")}`);
 }
 
 function dateInput(raw: FormDataEntryValue | null) {

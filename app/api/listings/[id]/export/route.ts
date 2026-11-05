@@ -4,6 +4,7 @@ import { loanOpenTo } from "@/lib/acl";
 import { audit } from "@/lib/audit";
 import { getApiUser } from "@/lib/auth";
 import { toCsv } from "@/lib/csv";
+import { isoDate } from "@/lib/format";
 import { dealAccess } from "@/lib/data-room";
 import { showableAvm } from "@/lib/enrichment";
 import { prisma } from "@/lib/prisma";
@@ -31,11 +32,15 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
   const open = (note: { id: string; tradeStatus: string }) =>
     !deal || loanOpenTo({ tradeStatus: note.tradeStatus, listingStatus: listing.status, signedNda: listing.ndas.length > 0, wholeParty: deal.whole, loanParty: deal.loans.has(note.id) });
   const format = new URL(request.url).searchParams.get("format") === "xlsx" ? "xlsx" : "csv";
+  const yesNo = (flag: boolean | null) => (flag == null ? "" : flag ? "yes" : "no");
   const loans = listing.notes.map((note) => {
     const upb = Number(note.upb);
     const value = Number(note.estimatedValue);
+    // The loan number finds the loan at its servicer, so it follows the street address.
+    const visible = open(note);
     return {
-      street: open(note) ? note.streetAddress : "",
+      loanNumber: visible ? note.loanNumber ?? "" : "",
+      street: visible ? note.streetAddress : "",
       city: note.city,
       state: note.state,
       lien: note.lienPosition,
@@ -49,6 +54,20 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       ltvBucket: ltvBucket(upb, value),
       couponBucket: couponBucket(Number(note.interestRate)),
       avm: showableAvm({ avmValue: note.avmValue == null ? null : Number(note.avmValue), avmProvider: note.avmProvider }) ?? "",
+      servicer: note.servicerName ?? "",
+      payString: note.payString ?? "",
+      nextDue: isoDate(note.nextDueDate) ?? "",
+      modified: yesNo(note.modified),
+      modificationDate: isoDate(note.modificationDate) ?? "",
+      lossMitigation: note.lossMitigation ?? "",
+      bankruptcyChapter: note.bankruptcyChapter ?? "",
+      bankruptcyFiled: isoDate(note.bankruptcyFiledAt) ?? "",
+      foreclosureFiled: isoDate(note.foreclosureFiledAt) ?? "",
+      valueSource: note.valueType ?? "",
+      valueDate: isoDate(note.valueAsOf) ?? "",
+      loanPurpose: note.loanPurpose ?? "",
+      hoaLien: yesNo(note.hoaLien),
+      taxDelinquent: yesNo(note.taxDelinquent),
     };
   });
   const strata = stratify(loans.map((loan) => ({

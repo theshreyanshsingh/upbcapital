@@ -8,19 +8,23 @@ import { LoanBid } from "@/components/loan-bid";
 import { NdaDialog } from "@/components/nda-dialog";
 import { Notice } from "@/components/notice";
 import { GroupPanel } from "@/components/group-panel";
+import { FieldBadge, LoanFacts, LoanFileView } from "@/components/loan-file-view";
 import { OfferPanel } from "@/components/offer-panel";
 import { StatusPill } from "@/components/status-pill";
 import { StrataPanel } from "@/components/strata-panel";
 import { UsMap } from "@/components/us-map";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { dataRoomOpenTo, isPrivateDocument, loanOpenTo } from "@/lib/acl";
+import { canReadDocument, dataRoomOpenTo, isPrivateDocument, loanFileAccess, loanOpenTo } from "@/lib/acl";
 import { dealAccess } from "@/lib/data-room";
 import { requireUser } from "@/lib/auth";
 import { canOpenListing, openableListingIds } from "@/lib/access";
 import { enrichListing, notifyIfAuctionClosed, rememberView } from "@/lib/listing-intel";
 import { stratify } from "@/lib/strata";
-import { money, num, pct, prettyDate, q } from "@/lib/format";
+import { money, num, prettyDate, q } from "@/lib/format";
 import { docLabel, labelOf } from "@/lib/labels";
+import { completeness, fieldState, groupByNote } from "@/lib/loan-file";
+import { depositTerms } from "@/lib/closing-clock";
+import { diligenceDays } from "@/lib/closing-service";
 import { noteMetrics, poolMetrics } from "@/lib/metrics";
 import { bpsToPercent } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
@@ -143,9 +147,44 @@ export default async function ListingPage({
     include: { positions: { include: { user: true }, orderBy: { seat: "asc" } } },
   });
   const premium = (asking * settings.buyerPremiumBps) / 10000;
+  // What a winning bidder owes, for the bid confirmation. A 0% deposit says nothing.
+  const terms = depositTerms(settings);
+  const deposit: [number, number] | undefined = terms.bps > 0 ? [terms.bps / 100, terms.days] : undefined;
+  const diligence = diligenceDays(settings.diligenceDays) || undefined;
   const lead = notes[0];
   const stateCounts = countBy(notes.map((note) => note.state));
   const performingSlice = sliceForAnalyzer(forSale);
+  // The verified loan file, one loan at a time. A pool's table carries each loan's summary and links here.
+  const noteIds = listing.notes.map((note) => note.id);
+  const [collateralRows, riskRows] = await Promise.all([
+    prisma.collateralItem.findMany({ where: { noteId: { in: noteIds } }, orderBy: [{ sequence: "asc" }, { createdAt: "asc" }] }),
+    prisma.riskCheck.findMany({ where: { noteId: { in: noteIds } }, orderBy: { checkedAt: "desc" } }),
+  ]);
+  const collateralByNote = groupByNote(collateralRows);
+  const risksByNote = groupByNote(riskRows);
+  const holder = listing.clientSellerName || listing.seller.companyName || listing.seller.name || null;
+  const fileNote = listing.notes.find((note) => note.id === q(query, "loan")) ?? listing.notes[0];
+  const filePosition = listing.notes.findIndex((note) => note.id === fileNote.id);
+  const fileOpen = notes[filePosition]?.open ?? false;
+  // The same rule the download route applies to a loan's own files.
+  const fileDocsOpen = canReadDocument({
+    owner: listing.sellerId === user.id,
+    admin: user.role === "ADMIN",
+    ownNda: false,
+    privateFile: true,
+    proBuyer: user.role === "BUYER" && isPro(user),
+    signedNda: listing.ndas.length > 0,
+    listingStatus: listing.status,
+    closingParty,
+    loan: loanFileAccess({ note: fileNote, listingId: listing.id, listingStatus: listing.status, signedNda: listing.ndas.length > 0, wholeParty: deal.whole, loanIds: deal.loans }),
+  });
+  const fileHref = (index: number) => (index >= 0 && index < listing.notes.length ? `/marketplace/${listing.id}?loan=${listing.notes[index].id}#loan-file` : null);
+  const rawById = new Map(listing.notes.map((note) => [note.id, note]));
+  const fileSummary = (noteId: string) => {
+    const raw = rawById.get(noteId);
+    return raw ? completeness(raw, collateralByNote.get(noteId) ?? [], risksByNote.get(noteId) ?? [], { holder }) : null;
+  };
+  const rawLead = listing.notes[0];
   const poolStrata = stratify(notes.map((note) => ({
     state: note.state,
     lien: note.lienPosition,
@@ -199,8 +238,14 @@ export default async function ListingPage({
           {listing.kind === "SINGLE" ? (
             <>
               <p className="mt-3 font-semibold tracking-tight text-3xl text-foreground">{lead.open ? lead.streetAddress : "Street withheld"}</p>
-              <p className="mt-2 text-muted-foreground">{lead.city}, {lead.state}{lead.open && lead.zip ? ` ${lead.zip}` : ""}</p>
-              <p className="mt-4 text-sm text-muted-foreground">Borrower: {lead.open ? lead.borrowerName || "Not provided" : "Withheld until confidentiality"}</p>
+              <p className="mt-2 flex flex-wrap items-center gap-2 text-muted-foreground">
+                {lead.city}, {lead.state}{lead.open && lead.zip ? ` ${lead.zip}` : ""}
+                <FieldBadge field="streetAddress" state={fieldState(rawLead, "streetAddress")} showValue={lead.open} />
+              </p>
+              <p className="mt-4 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                Borrower: {lead.open ? lead.borrowerName || "Not provided" : "Withheld until confidentiality"}
+                <FieldBadge field="borrowerName" state={fieldState(rawLead, "borrowerName")} showValue={lead.open} />
+              </p>
               {!unlocked && !roomClosed && user.role === "BUYER" && <div className="mt-5"><NdaDialog listingId={listing.id} listingTitle={listing.title} /></div>}
               {unlocked && listing.ndas[0]?.signerName && (
                 <p className="mt-4 text-sm text-muted-foreground">Signed by {listing.ndas[0].signerName} on {prettyDate(listing.ndas[0].acknowledgedAt)}.</p>
@@ -305,7 +350,10 @@ export default async function ListingPage({
         )}
 
         {listing.kind === "SINGLE" ? (
-          <Facts note={lead} showMetrics={pro} />
+          <>
+            <LoanFacts note={rawLead} open={lead.open} pro={pro} withAddress={false} />
+            {lead.memo && <p className="mt-4 text-sm leading-relaxed text-muted-foreground">{lead.memo}</p>}
+          </>
         ) : (
           <div className="mt-8">
             <Tabs defaultValue="tape">
@@ -317,7 +365,7 @@ export default async function ListingPage({
                 <table className="min-w-full text-left text-sm">
                   <thead className="text-xs font-medium text-muted-foreground">
                     <tr>
-                      {["Collateral", "Lien", "Status", "UPB", "Ask", "Value", "Trade"].concat(user.role === "BUYER" ? ["Bid"] : []).map((heading) => <th key={heading} className="px-3 py-2 font-normal">{heading}</th>)}
+                      {["Collateral", "Lien", "Status", "UPB", "Ask", "Value", "Trade", "File"].concat(user.role === "BUYER" ? ["Bid"] : []).map((heading) => <th key={heading} className="px-3 py-2 font-normal">{heading}</th>)}
                     </tr>
                   </thead>
                   <tbody>
@@ -330,11 +378,15 @@ export default async function ListingPage({
                         <td className="px-3 py-3">{pro ? money(note.askingPrice) : "—"}</td>
                         <td className="px-3 py-3">{pro ? money(note.estimatedValue) : "—"}</td>
                         <td className="px-3 py-3 text-[13px] font-medium text-muted-foreground">{note.tradeStatus.replaceAll("_", " ").toLowerCase()}</td>
+                        <td className="px-3 py-3"><FileCell href={`/marketplace/${listing.id}?loan=${note.id}#loan-file`} file={fileSummary(note.id)} /></td>
                         {user.role === "BUYER" && (
                           <td className="px-3 py-3">
                             <LoanBid
                               listingId={listing.id}
                               noteId={note.id}
+                              loanName={note.open ? note.streetAddress : `the loan in ${note.city}, ${note.state}`}
+                              deposit={deposit}
+                              diligenceDays={diligence}
                               premiumBps={settings.buyerPremiumBps}
                               verified={verified}
                               closed={listing.status !== "APPROVED" || note.tradeStatus !== "AVAILABLE"}
@@ -350,6 +402,23 @@ export default async function ListingPage({
             </Tabs>
           </div>
         )}
+
+        <LoanFileView
+          note={fileNote}
+          collateral={collateralByNote.get(fileNote.id) ?? []}
+          risks={risksByNote.get(fileNote.id) ?? []}
+          documents={listing.documents.filter((document) => document.noteId === fileNote.id)}
+          open={fileOpen}
+          docsOpen={fileDocsOpen}
+          docGate={roomClosed || (fileNote.tradeStatus !== "AVAILABLE" && !fileOpen) ? "Closed" : pro ? "NDA required" : "Pro"}
+          holder={holder}
+          pro={pro}
+          facts={listing.kind === "POOL"}
+          heading={listing.kind === "POOL"
+            ? `${fileOpen ? `${fileNote.streetAddress}, ` : ""}${fileNote.city}, ${fileNote.state} · ${labelOf("lien", fileNote.lienPosition)} lien`
+            : `${labelOf("lien", fileNote.lienPosition)} lien in ${fileNote.city}, ${fileNote.state}`}
+          nav={listing.kind === "POOL" ? { previous: fileHref(filePosition - 1), next: fileHref(filePosition + 1), position: `Loan ${filePosition + 1} of ${listing.notes.length}` } : undefined}
+        />
 
         <section className="mt-10">
           <p className="eyebrow">Data room</p>
@@ -424,6 +493,8 @@ export default async function ListingPage({
         <OfferPanel
           listingId={listing.id}
           premiumBps={settings.buyerPremiumBps}
+          deposit={deposit}
+          diligenceDays={diligence}
           canOffer={listing.status === "APPROVED" && wholeOpen && user.role === "BUYER"}
           pro={pro}
           verified={verified}
@@ -436,35 +507,15 @@ export default async function ListingPage({
   );
 }
 
-function Facts({ note, showMetrics }: { note: { propertyType: string; occupancy: string; lienPosition: string; paymentStatus: string; monthsDelinquent: number; foreclosureStatus: string; interestRate: number; monthlyPi: number; upb: number; estimatedValue: number; lastPaidDate: string | null; originationDate: string | null; maturityDate: string | null; memo: string }; showMetrics: boolean }) {
-  const rows = [
-    ["Property", labelOf("property", note.propertyType)],
-    ["Occupancy", labelOf("occupancy", note.occupancy)],
-    ["Lien", labelOf("lien", note.lienPosition)],
-    ["Performance", labelOf("payment", note.paymentStatus)],
-    ["Months delinquent", String(note.monthsDelinquent)],
-    ["Foreclosure", labelOf("foreclosure", note.foreclosureStatus)],
-    ["Note rate", showMetrics ? pct(note.interestRate, 3) : "—"],
-    ["Monthly P&I", showMetrics ? money(note.monthlyPi) : "—"],
-    ["UPB", showMetrics ? money(note.upb) : "—"],
-    ["Estimated value", showMetrics ? money(note.estimatedValue) : "—"],
-    ["Last paid", prettyDate(note.lastPaidDate)],
-    ["Origination", prettyDate(note.originationDate)],
-    ["Maturity", prettyDate(note.maturityDate)],
-  ];
+// A loan's file in a few words for the pool table, linking to the full file below it.
+function FileCell({ href, file }: { href: string; file: ReturnType<typeof completeness> | null }) {
+  if (!file) return null;
+  const open = file.defects.length + file.chainBreaks;
   return (
-    <section className="mt-8">
-      <p className="eyebrow">The note</p>
-      <dl className="mt-4 grid gap-px bg-muted sm:grid-cols-2">
-        {rows.map(([key, value]) => (
-          <div key={key} className="bg-card/80 px-4 py-3">
-            <dt className="text-xs font-medium text-muted-foreground">{key}</dt>
-            <dd className="mt-1 text-foreground">{value}</dd>
-          </div>
-        ))}
-      </dl>
-      {note.memo && <p className="mt-4 text-sm leading-relaxed text-muted-foreground">{note.memo}</p>}
-    </section>
+    <Link href={href} className="text-[13px] font-medium text-link tabular-nums">
+      {file.reviewed ? `${file.collateral.present} of ${file.collateral.required} on file` : "Not reviewed"}
+      {open > 0 && <span className="block text-xs text-bad">{open} open defect{open === 1 ? "" : "s"}</span>}
+    </Link>
   );
 }
 

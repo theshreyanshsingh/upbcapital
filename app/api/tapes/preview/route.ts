@@ -3,7 +3,7 @@ import { getApiUser } from "@/lib/auth";
 import { extensionOf } from "@/lib/storage";
 import { parseTapeBuffer, suggestMapping } from "@/lib/tape";
 import { saveTapeDraft } from "@/lib/tape-draft";
-import { reviewTape } from "@/lib/tape-quality";
+import { flagSummary, reviewTape } from "@/lib/tape-quality";
 
 export const runtime = "nodejs";
 
@@ -33,13 +33,16 @@ export async function POST(request: Request) {
   if (!matrix.headers.length) return NextResponse.json({ error: "The tape has no header row." }, { status: 400 });
   const token = crypto.randomUUID();
   await saveTapeDraft({ token, userId: user.id, filename: file.name, bytes: buffer });
+  const suggestions = suggestMapping(matrix.headers);
+  const summary = flagSummary(reviewTape(matrix.rows, suggestions));
   return NextResponse.json({
     token,
     filename: file.name,
     headers: matrix.headers,
     rowCount: matrix.rows.length,
     preview: matrix.rows.slice(0, 6),
-    suggestions: suggestMapping(matrix.headers),
-    flags: reviewTape(matrix.rows, suggestMapping(matrix.headers)).slice(0, 40),
+    suggestions,
+    flags: summary.flags,
+    counts: { errors: summary.errors, warnings: summary.warnings, fixes: summary.fixes },
   });
 }

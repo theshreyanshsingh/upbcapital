@@ -1,20 +1,27 @@
 import { notFound } from "next/navigation";
-import { adminUpdateListing, decideInquiry, reviewListing } from "@/actions/admin";
+import Link from "next/link";
+import { adminUpdateListing, reviewListing } from "@/actions/admin";
 import { placeDeskBid } from "@/actions/desk-book";
 import { sendToBuyers } from "@/actions/outreach";
 import { AuctionForm } from "@/components/auction-form";
 import { ComplianceNote } from "@/components/compliance-note";
 import { DeskNotes } from "@/components/desk-notes";
+import { LoanFileDesk } from "@/components/loan-file-desk";
+import { ConfirmSubmit } from "@/components/confirm-submit";
 import { Notice } from "@/components/notice";
 import { StatusPill } from "@/components/status-pill";
 import { SubmitButton } from "@/components/submit-button";
+import { isPrivateDocument } from "@/lib/acl";
 import { listingActivity } from "@/lib/activity";
 import { deadlinePassed } from "@/lib/auction";
 import { requireRole } from "@/lib/auth";
 import { bidSheet, type BidRow } from "@/lib/bid-sheet";
 import { money, num, pct, prettyDate, q } from "@/lib/format";
 import { labelOf } from "@/lib/labels";
+import { completeness, completenessLine, groupByNote, verifiedMap } from "@/lib/loan-file";
 import { RESEND_AFTER, sendAudience } from "@/lib/outreach";
+import { buyerPrice } from "@/lib/offers";
+import { DUPLICATE_REASONS, duplicatesFor } from "@/lib/duplicates";
 import { prisma } from "@/lib/prisma";
 import { getSettings } from "@/lib/settings";
 import { deskDecisionAllowed } from "@/lib/listing-status";
@@ -38,7 +45,7 @@ export default async function AdminListingPage({
       seller: true,
       broker: true,
       documents: true,
-      inquiries: { include: { buyer: true }, orderBy: { createdAt: "desc" } },
+      inquiries: { include: { buyer: true, messages: { select: { kind: true, amount: true, createdAt: true, authorId: true } } }, orderBy: { createdAt: "desc" } },
       reviews: { include: { author: true }, orderBy: { createdAt: "desc" } },
       matches: { include: { buyBox: { include: { user: true } } }, orderBy: { score: "desc" } },
       deskBids: { orderBy: { createdAt: "desc" }, take: 5 },
@@ -60,6 +67,30 @@ export default async function AdminListingPage({
   const biddingOpen = listing.bidMode !== "NONE" && !deadlinePassed(listing.bidDeadline, new Date(now));
   const canMarkSold = deskDecisionAllowed("MARK_SOLD", listing.status) && !biddingOpen;
   const listingHref = `/admin/listings/${listing.id}`;
+  // The loan file shows one loan at a time, so a 2,000-loan pool is one set of forms, not 2,000.
+  const fileNote = listing.notes.find((item) => item.id === q(query, "loan")) ?? note;
+  // Loans that look like ones on another open listing. A relist is legitimate, so this informs and never blocks.
+  const duplicates = await duplicatesFor(listing.id);
+  const noteIds = listing.notes.map((item) => item.id);
+  const [allCollateral, allRisks] = await Promise.all([
+    prisma.collateralItem.findMany({ where: { noteId: { in: noteIds } }, orderBy: [{ sequence: "asc" }, { createdAt: "asc" }] }),
+    prisma.riskCheck.findMany({ where: { noteId: { in: noteIds } }, orderBy: { checkedAt: "desc" } }),
+  ]);
+  const holder = listing.clientSellerName || listing.seller.companyName || listing.seller.name || null;
+  const collateralByNote = groupByNote(allCollateral);
+  const risksByNote = groupByNote(allRisks);
+  const fileCollateral = fileNote ? collateralByNote.get(fileNote.id) ?? [] : [];
+  const fileRisks = fileNote ? risksByNote.get(fileNote.id) ?? [] : [];
+  const deskIds = [
+    ...fileCollateral.map((item) => item.updatedById),
+    ...fileRisks.map((check) => check.checkedById),
+    ...Object.values(verifiedMap(fileNote?.verifiedFields)).map((entry) => entry.by),
+  ].filter((value): value is string => Boolean(value));
+  const deskPeople = deskIds.length
+    ? Object.fromEntries((await prisma.user.findMany({ where: { id: { in: [...new Set(deskIds)] } }, select: { id: true, name: true } })).map((person) => [person.id, person.name]))
+    : {};
+  const filePosition = fileNote ? listing.notes.findIndex((item) => item.id === fileNote.id) : -1;
+  const fileHref = (index: number) => (index >= 0 && index < listing.notes.length ? `${listingHref}?loan=${listing.notes[index].id}#loan-file` : null);
 
   return (
     <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_340px]">
@@ -215,11 +246,11 @@ export default async function AdminListingPage({
                   {listing.notes.map((item) => (
                     <tr key={item.id} className="border-t border-border">
                       <td className="px-2 py-2">{item.city}, {item.state}</td>
-                      <td className="px-2 py-2"><input name={`upb_${item.id}`} defaultValue={num(item.upb)} className="desk-input" /></td>
-                      <td className="px-2 py-2"><input name={`ask_${item.id}`} defaultValue={num(item.askingPrice)} className="desk-input" /></td>
-                      <td className="px-2 py-2"><input name={`value_${item.id}`} defaultValue={num(item.estimatedValue)} className="desk-input" /></td>
+                      <td className="px-2 py-2"><input name={`upb_${item.id}`} inputMode="decimal" aria-label={`UPB, loan in ${item.city}, ${item.state}`} defaultValue={num(item.upb)} className="desk-input" /></td>
+                      <td className="px-2 py-2"><input name={`ask_${item.id}`} inputMode="decimal" aria-label={`Ask, loan in ${item.city}, ${item.state}`} defaultValue={num(item.askingPrice)} className="desk-input" /></td>
+                      <td className="px-2 py-2"><input name={`value_${item.id}`} inputMode="decimal" aria-label={`Value, loan in ${item.city}, ${item.state}`} defaultValue={num(item.estimatedValue)} className="desk-input" /></td>
                       <td className="px-2 py-2">
-                        <select name={`status_${item.id}`} defaultValue={item.paymentStatus} className="desk-input">
+                        <select name={`status_${item.id}`} aria-label={`Status, loan in ${item.city}, ${item.state}`} defaultValue={item.paymentStatus} className="desk-input">
                           <option value="PERFORMING">Performing</option>
                           <option value="SUB_PERFORMING">Sub-performing</option>
                           <option value="NON_PERFORMING">Non-performing</option>
@@ -233,6 +264,43 @@ export default async function AdminListingPage({
           )}
           <SubmitButton className="h-11 text-[13px] font-medium">Save edits</SubmitButton>
         </form>
+
+        {duplicates.length > 0 && (
+          <section className="mt-8 border border-warn/40 bg-warn/5 p-4 rounded-xl" aria-labelledby="duplicates-heading">
+            <p id="duplicates-heading" className="eyebrow">Possible duplicate</p>
+            <ul className="mt-2 space-y-1 text-sm text-foreground">
+              {duplicates.map((match) => (
+                <li key={`${match.noteId}-${match.note.id}`}>
+                  Loan in {match.note.city}, {match.note.state} · {DUPLICATE_REASONS[match.reason]} ·{" "}
+                  <Link href={`/admin/listings/${match.listing.id}`} className="text-link">{match.listing.title}</Link>
+                  {" "}· {match.listing.status.replaceAll("_", " ").toLowerCase()} · {match.seller.name}
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
+        {fileNote && (
+          <LoanFileDesk
+            note={fileNote}
+            collateral={fileCollateral}
+            risks={fileRisks}
+            documents={listing.documents.filter((document) => document.noteId === fileNote.id || !isPrivateDocument(document, listing))}
+            holder={holder}
+            people={deskPeople}
+            heading={`${fileNote.streetAddress || "No street"} · ${fileNote.city}, ${fileNote.state}${fileNote.borrowerName ? ` · ${fileNote.borrowerName}` : ""} · ${labelOf("lien", fileNote.lienPosition)} lien`}
+            picker={listing.kind === "POOL" ? {
+              action: listingHref,
+              previous: fileHref(filePosition - 1),
+              next: fileHref(filePosition + 1),
+              position: `Loan ${filePosition + 1} of ${listing.notes.length}`,
+              options: listing.notes.map((item, index) => ({
+                id: item.id,
+                label: `${index + 1}. ${item.city}, ${item.state} · ${item.streetAddress || "No street"} · ${completenessLine(completeness(item, collateralByNote.get(item.id) ?? [], risksByNote.get(item.id) ?? [], { holder }))}`,
+              })),
+            } : undefined}
+          />
+        )}
 
         <section id="bids" className="mt-8 scroll-mt-6">
           <p className="eyebrow">Bid sheet</p>
@@ -277,16 +345,16 @@ export default async function AdminListingPage({
             {listing.inquiries.map((inquiry) => (
               <li key={inquiry.id} className="border border-border p-4 rounded-xl">
                 <p className="text-sm text-foreground">{inquiry.buyer.name} · {inquiry.type.replaceAll("_", " ").toLowerCase()} · {inquiry.status.toLowerCase()}</p>
-                {inquiry.amount && <p className="font-semibold tracking-tight text-3xl">{money(num(inquiry.amount))}</p>}
+                {inquiry.amount && (
+                  <p className="font-semibold tracking-tight text-3xl tabular-nums">
+                    {money(buyerPrice(num(inquiry.amount), inquiry.messages.map((message) => ({ ...message, amount: message.amount == null ? null : num(message.amount) })), inquiry.buyerId) ?? num(inquiry.amount))}
+                  </p>
+                )}
                 <p className="text-sm text-muted-foreground">{inquiry.message}</p>
-                <div className="mt-3 flex gap-2">
-                  {inquiry.type === "OFFER" && inquiry.status === "OPEN" && (
-                    <form action={decideInquiry}><input type="hidden" name="inquiryId" value={inquiry.id} /><input type="hidden" name="decision" value="ACCEPT" /><SubmitButton className="h-9 text-[13px] font-medium">Accept</SubmitButton></form>
-                  )}
-                  {inquiry.status === "OPEN" && (
-                    <form action={decideInquiry}><input type="hidden" name="inquiryId" value={inquiry.id} /><input type="hidden" name="decision" value="DECLINE" /><SubmitButton variant="outline" className="h-9 text-[13px] font-medium">Decline</SubmitButton></form>
-                  )}
-                </div>
+                {/* Awards and declines happen on the offer book, which shows the counters, the seller's answer and the all-in. */}
+                {(inquiry.status === "OPEN" || inquiry.status === "REVIEWED") && (
+                  <Link href={`/admin/offers#offer-${inquiry.id}`} className="mt-3 inline-block text-[13px] font-medium text-link">Decide on the offer book</Link>
+                )}
               </li>
             ))}
           </ul>
@@ -304,7 +372,10 @@ export default async function AdminListingPage({
         <p className="eyebrow">Decision</p>
         <form action={reviewListing} className="space-y-3">
           <input type="hidden" name="listingId" value={listing.id} />
-          <textarea name="comment" placeholder="Comment to the seller" className="desk-input min-h-28" />
+          <label className="block text-sm text-muted-foreground">
+            Comment to the seller
+            <textarea name="comment" className="desk-input mt-2 min-h-28" />
+          </label>
           {canMarkSold && (
             <>
               <label className="block text-sm text-muted-foreground">
@@ -362,18 +433,65 @@ function fundsLabel(bid: BidRow) {
   return "No verified amount";
 }
 
+// Mark sold and Reject can't be taken back from this page, so they ask first and restate what was typed.
 function Decision({ action, label }: { action: string; label: string }) {
-  const quiet = action === "REJECT" || action === "REQUEST_CHANGES";
+  if (action === "MARK_SOLD") {
+    return (
+      <ConfirmSubmit
+        name="action"
+        value={action}
+        title="Mark this listing sold?"
+        consequence="This records the sale at the price below, posts the premium and commission, marks every loan sold, emails the seller and declines the open bids. It can't be undone from here."
+        typed={[["Sale price", "salePrice", "money"], ["Seller's agreement", "consent", "text"]]}
+        confirmLabel="Mark sold"
+        pendingLabel="Recording…"
+        className="h-10 w-full text-[13px] font-medium"
+      >
+        {label}
+      </ConfirmSubmit>
+    );
+  }
+  if (action === "REJECT") {
+    return (
+      <ConfirmSubmit
+        name="action"
+        value={action}
+        title="Reject this listing?"
+        consequence="The seller is told it was rejected, with your comment, and it comes off the book. To list it again they file a new one."
+        typed={[["Comment to the seller", "comment", "text"]]}
+        confirmLabel="Reject the listing"
+        pendingLabel="Rejecting…"
+        tone="danger"
+        className="h-10 w-full text-[13px] font-medium"
+      >
+        {label}
+      </ConfirmSubmit>
+    );
+  }
+  if (action === "MARK_PENDING") {
+    return (
+      <ConfirmSubmit
+        name="action"
+        value={action}
+        title="Mark this listing in contract?"
+        consequence="It stops taking bids and its data room closes to everyone but the desk. Use this only when a sale is agreed outside the offer book."
+        confirmLabel="Mark in contract"
+        pendingLabel="Saving…"
+        className="h-10 w-full text-[13px] font-medium"
+      >
+        {label}
+      </ConfirmSubmit>
+    );
+  }
   return (
-    <button
-      type="submit"
+    <SubmitButton
       name="action"
       value={action}
-      className={quiet
-        ? "h-10 w-full border border-border text-[13px] font-medium text-foreground rounded-lg"
-        : "h-10 w-full bg-primary text-[13px] font-medium text-primary-foreground rounded-lg"}
+      variant={action === "REQUEST_CHANGES" ? "outline" : "default"}
+      pendingLabel="Saving…"
+      className="h-10 w-full text-[13px] font-medium"
     >
       {label}
-    </button>
+    </SubmitButton>
   );
 }

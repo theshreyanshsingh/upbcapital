@@ -54,6 +54,8 @@ enum ListingStatus {
   CHANGES_REQUESTED
   PENDING
   SOLD
+  // The seller took it off the book before a sale. Open bids are declined with it.
+  WITHDRAWN
 }
 
 enum PropertyType {
@@ -106,6 +108,11 @@ enum DocType {
   TAPE
   NDA
   OTHER
+  // Collateral and third-party reports the desk files against one loan.
+  ALLONGE
+  ASSIGNMENT
+  OE_REPORT
+  RISK_SEARCH
 }
 
 enum NdaMethod {
@@ -173,6 +180,44 @@ enum InquiryStatus {
   REVIEWED
   ACCEPTED
   DECLINED
+  // The buyer took the bid back before an award, or its good-until date passed.
+  WITHDRAWN
+  EXPIRED
+}
+
+// One line of a loan's collateral file: the original note, each allonge and assignment in the chain, the
+// mortgage, title and the desk's third-party reports.
+enum CollateralKind {
+  ORIGINAL_NOTE
+  ALLONGE
+  MORTGAGE
+  ASSIGNMENT
+  TITLE_POLICY
+  OE_REPORT
+  PAY_HISTORY
+  BPO
+}
+
+enum CollateralStatus {
+  PRESENT
+  MISSING
+  DEFECTIVE
+  NOT_REQUIRED
+}
+
+// The checks a buyer would otherwise run alone: bankruptcy, property tax, other liens, pre-foreclosure and occupancy.
+enum RiskKind {
+  BANKRUPTCY
+  TAX
+  LIENS
+  PRE_FORECLOSURE
+  OCCUPANCY
+}
+
+enum RiskResult {
+  CLEAR
+  FLAG
+  UNKNOWN
 }
 
 enum ReviewAction {
@@ -184,6 +229,8 @@ enum ReviewAction {
   MARK_PENDING
   MARK_SOLD
   EDIT
+  WITHDRAW
+  RESUBMIT
 }
 
 enum RevenueType {
@@ -301,6 +348,8 @@ model PlatformSettings {
   // Deposit at award, as a share of the price, and the days the buyer has to wire it. Missing means the defaults.
   depositBps           Int?
   depositDays          Int?
+  // Days after an award in which the buyer may walk away for a diligence finding. Missing or 0 means none.
+  diligenceDays        Int?
   // Two-step sign-in for every account that can see borrower data. Missing means on.
   requireTwoStep       Boolean?
   updatedAt            DateTime @updatedAt
@@ -378,6 +427,7 @@ model Listing {
   // The seller's standing approval: a bid at or above this needs no further sign-off. Buyers never see it.
   reservePrice         Float?
   sellerFinanced       Boolean       @default(false)
+  withdrawnAt          DateTime?
   notes                Note[]
   documents            Document[]
   inquiries            Inquiry[]
@@ -431,9 +481,32 @@ model Note {
   avmValue          Float?
   avmProvider       String            @default("")
   avmAsOf           DateTime?
-  inquiries         Inquiry[]
-  filings           CourtFiling[]
-  createdAt         DateTime          @default(now())
+  // Tape v2: the servicing record a buyer prices from. All optional, since older tapes and wizard filings lack them.
+  loanNumber         String?
+  // Months newest first, one character each: 0 paid on time, 1 to 9 months behind, X nothing due.
+  payString          String?
+  nextDueDate        DateTime?
+  servicerName       String?
+  modified           Boolean?
+  modificationDate   DateTime?
+  lossMitigation     String?
+  bankruptcyChapter  String?
+  bankruptcyFiledAt  DateTime?
+  foreclosureFiledAt DateTime?
+  // Where the estimated value came from (BPO, AVM, APPRAISAL, SELLER) and when.
+  valueType          String?
+  valueAsOf          DateTime?
+  // PURCHASE, REFINANCE, CASH_OUT, SELLER_FINANCED or BUSINESS.
+  loanPurpose        String?
+  hoaLien            Boolean?
+  taxDelinquent      Boolean?
+  // Fields the desk checked against a document: { field: { at, by, source } }. Anything absent is seller-stated.
+  verifiedFields     Json?
+  inquiries          Inquiry[]
+  filings            CourtFiling[]
+  collateral         CollateralItem[]
+  riskChecks         RiskCheck[]
+  createdAt          DateTime          @default(now())
 
   @@index([listingId])
   @@index([state])
@@ -444,6 +517,8 @@ model Document {
   id           String   @id @default(cuid()) @map("_id")
   listingId    String
   listing      Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  // Set when the file belongs to one loan of the listing, such as a desk's O&E report.
+  noteId       String?
   type         DocType
   originalName String
   storedName   String
@@ -472,9 +547,53 @@ model Inquiry {
   sellerApprovedAmount Float?
   sellerAnsweredAt     DateTime?
   sellerDeclined       Boolean?
+  // The seller's counter, relayed to the buyer. A buyer who accepts it sells at a price the seller already agreed.
+  sellerCounterAmount  Float?
+  sellerCounteredAt    DateTime?
+  // The buyer's good-until date. Past it, the bid can't be awarded and is marked expired.
+  expiresAt            DateTime?
+  withdrawnAt          DateTime?
 
   @@index([listingId])
   @@index([buyerId])
+}
+
+model CollateralItem {
+  id          String           @id @default(cuid()) @map("_id")
+  noteId      String
+  note        Note             @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  kind        CollateralKind
+  // Order in the chain, for allonges and assignments from the originator to today's holder.
+  sequence    Int              @default(0)
+  status      CollateralStatus
+  // What the desk saw, such as "First Bank to Coastal Capital, recorded 2019".
+  detail      String           @default("")
+  cureOwner   String           @default("")
+  cureBy      DateTime?
+  documentId  String?
+  recordedAt  DateTime?
+  recording   String           @default("")
+  updatedById String?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  @@index([noteId])
+}
+
+model RiskCheck {
+  id          String     @id @default(cuid()) @map("_id")
+  noteId      String
+  note        Note       @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  kind        RiskKind
+  result      RiskResult
+  detail      String     @default("")
+  // Where the desk looked: "PACER", "County tax collector", or a vendor's name.
+  source      String     @default("")
+  documentId  String?
+  checkedById String?
+  checkedAt   DateTime   @default(now())
+
+  @@index([noteId])
 }
 
 model Favorite {
@@ -578,6 +697,8 @@ model Closing {
   // The deposit set at award and what the desk recorded against it.
   depositCents          Int?
   depositDueAt          DateTime?
+  // The end of the buyer's diligence window, when one applies. Until then the buyer may walk away for a finding.
+  diligenceEndsAt       DateTime?
   depositReceivedCents  Int?
   depositReceivedAt     DateTime?
   depositReference      String?

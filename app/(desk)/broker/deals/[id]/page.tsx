@@ -1,13 +1,17 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { answerDeskBid } from "@/actions/desk-book";
-import { SaleApproval } from "@/components/sale-approval";
+import { resubmitBrokerDeal } from "@/actions/broker";
+import { ConfirmSubmit } from "@/components/confirm-submit";
+import { SubmitButton } from "@/components/submit-button";
+import { SaleApproval, WithdrawListing } from "@/components/sale-approval";
 import { Notice } from "@/components/notice";
 import { requireRole } from "@/lib/auth";
 import { brokerRoleLabel } from "@/lib/broker-fees";
 import { money, num, prettyDate, q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 import { deskBidNotAcceptable } from "@/lib/awards";
+import { reviewLabel } from "@/lib/listing-status";
 
 export const metadata = { title: "Deal" };
 
@@ -23,8 +27,15 @@ function stageIndex(status: string) {
   if (status === "SOLD") return 4;
   if (status === "PENDING") return 3;
   if (status === "APPROVED") return 2;
-  if (status === "REJECTED") return 1;
   return 1;
+}
+
+// What the desk review step says while the file sits there.
+function reviewDetail(status: string, fallback: string) {
+  if (status === "REJECTED") return "The desk declined this file.";
+  if (status === "CHANGES_REQUESTED") return "The desk asked for changes. Answer them below and resubmit.";
+  if (status === "WITHDRAWN") return "This file was withdrawn from the book.";
+  return fallback;
 }
 
 export default async function BrokerDealPage({
@@ -39,14 +50,24 @@ export default async function BrokerDealPage({
   const query = await searchParams;
   const listing = await prisma.listing.findUnique({
     where: { id },
-    include: { notes: true, closings: { include: { brokerFees: true } }, deskBids: { where: { status: "OPEN" }, orderBy: { createdAt: "desc" } }, inquiries: { where: { type: "OFFER" }, include: { buyer: true, messages: { select: { kind: true, amount: true, createdAt: true, authorId: true } } } } },
+    include: {
+      notes: true,
+      closings: { include: { brokerFees: true } },
+      deskBids: { where: { status: "OPEN" }, orderBy: { createdAt: "desc" } },
+      inquiries: { where: { type: "OFFER" }, include: { buyer: true, messages: { select: { kind: true, amount: true, createdAt: true, authorId: true } } } },
+      reviews: { orderBy: { createdAt: "desc" } },
+    },
   });
   if (!listing || listing.brokerId !== user.id) notFound();
   const ask = listing.notes.reduce((sum, note) => sum + num(note.askingPrice), 0);
   const deskBidBlock = deskBidNotAcceptable(listing);
   const index = stageIndex(listing.status);
   const fees = listing.closings.flatMap((closing) => closing.brokerFees.filter((fee) => fee.brokerId === user.id));
-  const declined = listing.status === "REJECTED";
+  const declined = listing.status === "REJECTED" || listing.status === "WITHDRAWN";
+  const openClosings = listing.closings.filter((closing) => closing.status === "OPEN").length;
+  // The desk's decisions and notes, newest first. The broker's own filing note and resubmits show too, for the thread.
+  const reviews = listing.reviews;
+  const changeRequest = listing.status === "CHANGES_REQUESTED" ? reviews.find((review) => review.action === "REQUEST_CHANGES") : undefined;
 
   return (
     <div className="mx-auto max-w-3xl">
@@ -65,7 +86,26 @@ export default async function BrokerDealPage({
         <Stat k="Filed" v={prettyDate(listing.submittedAt)} />
       </dl>
       {listing.summary && <p className="mt-6 text-sm leading-relaxed text-foreground/85">{listing.summary}</p>}
-      {listing.status !== "REJECTED" && <SaleApproval listing={listing} offers={listing.inquiries} canAnswer={listing.sellerId === user.id} />}
+      {changeRequest && (
+        <section className="mt-8 border border-warn/40 bg-warn/10 p-5 rounded-xl" aria-labelledby="changes-heading">
+          <p id="changes-heading" className="eyebrow">The desk asked for changes · {prettyDate(changeRequest.createdAt)}</p>
+          <p className="mt-2 text-sm text-foreground">{changeRequest.comment}</p>
+          <form action={resubmitBrokerDeal} className="mt-4 space-y-4">
+            <input type="hidden" name="listingId" value={listing.id} />
+            <label className="block">
+              <span className="text-[13px] text-muted-foreground">Summary buyers read</span>
+              <textarea name="summary" defaultValue={listing.summary} required minLength={10} className="desk-input mt-2 min-h-28" />
+            </label>
+            <label className="block">
+              <span className="text-[13px] text-muted-foreground">What you changed, for the desk</span>
+              <textarea name="changes" required minLength={3} className="desk-input mt-2 min-h-20" />
+            </label>
+            <p className="text-xs text-muted-foreground">Loan figures and documents can&apos;t be edited here yet. If the desk asked for those, say so above and write the desk with the corrected file.</p>
+            <SubmitButton className="h-11 text-[13px] font-medium" pendingLabel="Resubmitting…">Save and resubmit</SubmitButton>
+          </form>
+        </section>
+      )}
+      {listing.status !== "REJECTED" && listing.status !== "WITHDRAWN" && <SaleApproval listing={listing} offers={listing.inquiries} canAnswer={listing.sellerId === user.id} />}
       {listing.deskBids.map((bid) => (
         <div key={bid.id} className="mt-6 border border-link/30 bg-link/5 p-4 rounded-xl">
           <p className="eyebrow">The desk bid on this</p>
@@ -75,8 +115,20 @@ export default async function BrokerDealPage({
           <form action={answerDeskBid} className="mt-3 flex flex-wrap gap-2">
             {/* Not name="id": it shadows form.id in the DOM, and React then drops the clicked button's value. */}
             <input type="hidden" name="bidId" value={bid.id} />
-            {!deskBidBlock && <button type="submit" name="answer" value="ACCEPTED" className="h-9 rounded-lg bg-foreground px-3 text-[13px] font-medium text-background">Accept</button>}
-            <button type="submit" name="answer" value="DECLINED" className="h-9 rounded-lg border border-border px-3 text-[13px] font-medium hover:bg-hover">Decline</button>
+            {!deskBidBlock && (
+                  <ConfirmSubmit
+                    name="answer"
+                    value="ACCEPTED"
+                    title={`Sell to UPB Capital at ${money(num(bid.amount))}?`}
+                    consequence="Accepting binds your client to sell. It opens a closing with UPB Capital as the buyer at this price, and the other open bids on it are declined."
+                    confirmLabel="Accept the desk's bid"
+                    pendingLabel="Accepting…"
+                    className="h-9 px-3 text-[13px] font-medium"
+                  >
+                    Accept
+                  </ConfirmSubmit>
+                )}
+            <SubmitButton name="answer" value="DECLINED" variant="outline" pendingLabel="Declining…" className="h-9 px-3 text-[13px] font-medium">Decline</SubmitButton>
           </form>
           {deskBidBlock && <p className="mt-2 text-sm text-muted-foreground">{deskBidBlock}</p>}
         </div>
@@ -93,12 +145,26 @@ export default async function BrokerDealPage({
               </div>
               <div className="pb-8">
                 <p className={`font-semibold tracking-tight text-2xl ${state === "wait" ? "text-muted-foreground" : "text-foreground"}`}>{step.label}</p>
-                <p className="mt-1 text-sm text-muted-foreground">{declined && stepIndex === 1 ? "The desk declined this file." : step.detail}</p>
+                <p className="mt-1 text-sm text-muted-foreground">{stepIndex === 1 ? reviewDetail(listing.status, step.detail) : step.detail}</p>
               </div>
             </li>
           );
         })}
       </ol>
+
+      {reviews.length > 0 && (
+        <section className="mb-8" aria-labelledby="reviews-heading">
+          <p id="reviews-heading" className="eyebrow">Desk review</p>
+          <ul className="mt-4 space-y-3">
+            {reviews.map((review) => (
+              <li key={review.id} className="border border-border px-4 py-3 rounded-xl">
+                <p className="text-[13px] font-medium text-link">{reviewLabel(review.action)} · {prettyDate(review.createdAt)}</p>
+                <p className="mt-2 text-sm text-foreground">{review.comment}</p>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       <section className="glass p-5 md:p-6">
         <p className="eyebrow">Fee</p>
@@ -113,6 +179,7 @@ export default async function BrokerDealPage({
         </ul>
         {listing.authorizationName && <p className="mt-4 text-xs text-muted-foreground">Authorization on file · {listing.authorizationName}</p>}
       </section>
+      <WithdrawListing listing={listing} offers={listing.inquiries} ask={ask} openClosings={openClosings} canWithdraw />
     </div>
   );
 }

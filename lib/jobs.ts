@@ -56,6 +56,7 @@ export async function runJobs(now = new Date()) {
     ["Digests", () => sendDueDigests(now)],
     ["Task reminders", () => remindTasks(now)],
     ["Bid reminders", () => remindBidDeadlines(now)],
+    ["Bid expiry", () => expireBids(now)],
     ["Closing reminders", () => remindClosingSteps(now)],
     ["Sale notice reminders", () => remindSaleNotices(now)],
     ["Closed auctions", () => notifyClosedAuctions().then(() => "closed auctions checked")],
@@ -141,6 +142,31 @@ async function remindBidDeadlines(now: Date) {
     await notifyDesk(subject, body);
     // A buyer with several offers on the listing hears once.
     for (const email of new Set(listing.inquiries.map((inquiry) => inquiry.buyer.email))) await notify(email, subject, body);
+    return true;
+  });
+}
+
+// A bid past its good-until date closes. Each is claimed with a conditional write, so an award or a withdrawal that
+// lands first wins, and an overlapping run tells nobody twice. The buyer hears, and so does a seller who was asked
+// to approve it, so they don't answer a bid that is gone.
+export async function expireBids(now = new Date()) {
+  const bids = await prisma.inquiry.findMany({
+    where: { type: "OFFER", status: { in: ["OPEN", "REVIEWED"] }, expiresAt: { lte: now } },
+    include: { buyer: true, listing: { include: { seller: true } } },
+  });
+  return eachItem("bid expiry", bids, (bid) => `inquiry ${bid.id}`, async (bid) => {
+    const claim = await prisma.inquiry.updateMany({
+      where: { id: bid.id, status: { in: ["OPEN", "REVIEWED"] }, expiresAt: { lte: now } },
+      data: { status: "EXPIRED" },
+    });
+    if (claim.count !== 1) return false;
+    const day = bid.expiresAt?.toISOString().slice(0, 10) ?? "";
+    const title = bid.listing.title;
+    await notify(bid.buyer.email, `Bid expired · ${title}`, `Your bid on ${title} reached its good-until date of ${day}, so it is closed. You can send a new one while the listing is live.`);
+    if (bid.sellerAskedAt) {
+      await notify(bid.listing.seller.email, `Bid expired · ${title}`, `The bid the desk asked you to approve reached the buyer's good-until date, so it is closed. Nothing is waiting for your answer on it.`);
+    }
+    await notifyDesk(`Bid expired · ${title}`, `${bid.buyer.name}'s bid reached its good-until date of ${day} and is closed.`);
     return true;
   });
 }

@@ -52,9 +52,9 @@ export default async function SellPage({
         </label>
         <label className="block"><span className="text-[13px] text-muted-foreground">Unpaid principal</span><input name="upb" inputMode="decimal" required className="desk-input mt-2" aria-label="Unpaid principal" /></label>
         <label className="block"><span className="text-[13px] text-muted-foreground">Estimated value</span><input name="estimatedValue" inputMode="decimal" required className="desk-input mt-2" aria-label="Estimated value" /></label>
-        <label className="block"><span className="text-[13px] text-muted-foreground">Note rate %</span><input name="interestRate" inputMode="decimal" required className="desk-input mt-2" aria-label="Note rate" /></label>
-        <label className="block"><span className="text-[13px] text-muted-foreground">Monthly P&I</span><input name="monthlyPi" inputMode="decimal" required className="desk-input mt-2" aria-label="Monthly payment" /></label>
-        <label className="block md:col-span-2"><span className="text-[13px] text-muted-foreground">Anything else</span><textarea name="note" className="desk-input mt-2 min-h-24" aria-label="Note" /></label>
+        <label className="block"><span className="text-[13px] text-muted-foreground">Note rate %</span><input name="interestRate" inputMode="decimal" required className="desk-input mt-2" /></label>
+        <label className="block"><span className="text-[13px] text-muted-foreground">Monthly P&I</span><input name="monthlyPi" inputMode="decimal" required className="desk-input mt-2" /></label>
+        <label className="block md:col-span-2"><span className="text-[13px] text-muted-foreground">Anything else</span><textarea name="note" className="desk-input mt-2 min-h-24" /></label>
         <div className="md:col-span-2">
           <SubmitButton className="h-11 px-6 text-[13px] font-medium">See the range</SubmitButton>
         </div>

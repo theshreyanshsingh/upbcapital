@@ -1,7 +1,9 @@
 import type { ClosingStepKey } from "@prisma/client";
+import { audit } from "@/lib/audit";
 import { CLOSING_STEPS, canCompleteStep, closingTotals } from "@/lib/closing";
 import { closingSchedule, depositCents, depositTerms, targetDays } from "@/lib/closing-clock";
 import { deskFeeBps } from "@/lib/desk-fees";
+import { notify, notifyDesk } from "@/lib/email";
 import { getEscrowProvider } from "@/lib/escrow";
 import { postRevenueOnce } from "@/lib/ledger";
 import { ensureBuyerHolding } from "@/lib/portfolio";
@@ -11,6 +13,23 @@ import { variance } from "@/lib/settlement";
 import { getSettings } from "@/lib/settings";
 import { postBrokerFees } from "@/lib/broker-pay";
 import { ensureClosingThread } from "@/lib/threads";
+
+const DAY = 24 * 60 * 60 * 1000;
+
+// The buyer's diligence window after an award, in days. Missing, 0 or out of range means none.
+export function diligenceDays(setting: number | null | undefined) {
+  return setting != null && setting >= 1 && setting <= 60 ? Math.round(setting) : 0;
+}
+
+// When a new closing's diligence window ends. The desk buying for its own book has done its diligence already.
+export function diligenceEnd(setting: number | null | undefined, deskPurchase: boolean, openedAt = new Date()) {
+  const days = diligenceDays(setting);
+  return !deskPurchase && days > 0 ? new Date(openedAt.getTime() + days * DAY) : null;
+}
+
+export function diligenceOpen(closing: { status: string; diligenceEndsAt: Date | null }, now = new Date()) {
+  return closing.status === "OPEN" && Boolean(closing.diligenceEndsAt && closing.diligenceEndsAt.getTime() > now.getTime());
+}
 
 // One open closing per loan. A whole-listing award needs every loan free, and a one-loan award needs
 // that loan free and no whole-listing closing open. Returns why the award can't go ahead, or null.
@@ -68,6 +87,7 @@ export async function openClosing(input: {
   const deposit = depositTerms(settings);
   const depositDue = !input.deskBidId && deposit.bps > 0 ? new Date(Date.now() + deposit.days * 24 * 60 * 60 * 1000) : null;
   if (depositDue) schedule.due.BUYER_DEPOSIT = depositDue;
+  const diligenceEndsAt = diligenceEnd(settings.diligenceDays, Boolean(input.deskBidId));
   const created = await prisma.closing.create({
     data: {
       listingId: input.listingId,
@@ -84,6 +104,7 @@ export async function openClosing(input: {
       wireInstructions: preview.instructions,
       targetCloseAt: schedule.targetCloseAt,
       ...(depositDue ? { depositCents: depositCents(input.salePrice, deposit.bps), depositDueAt: depositDue } : {}),
+      ...(diligenceEndsAt ? { diligenceEndsAt } : {}),
       steps: {
         create: CLOSING_STEPS.map((step) => ({ key: step.key, dueAt: schedule.due[step.key] })),
       },
@@ -206,17 +227,24 @@ export async function finalizeClosing(closingId: string) {
 
 // Nothing posts to the ledger until a closing completes, so a cancel has no money entries to reverse.
 // A listing an admin never approved goes back to review rather than live.
-export async function cancelOpenClosing(closingId: string, reason: string) {
+// A buyer's walk-away in diligence passes `withinDiligence`, so the cancel only lands while the window is still open,
+// and marks the bid withdrawn rather than declined.
+export async function cancelOpenClosing(closingId: string, reason: string, options: { withinDiligence?: Date } = {}) {
   const closing = await prisma.closing.findUnique({ where: { id: closingId }, include: { listing: true } });
   if (!closing || closing.status !== "OPEN") return null;
   // Only the write that moves it off OPEN cancels, so a close that landed first stays closed.
   const claimed = await prisma.closing.updateMany({
-    where: { id: closingId, status: "OPEN" },
+    where: { id: closingId, status: "OPEN", ...(options.withinDiligence ? { diligenceEndsAt: { gt: options.withinDiligence } } : {}) },
     data: { status: "CANCELED", canceledAt: new Date(), cancelReason: reason },
   });
   if (claimed.count !== 1) return null;
   if (closing.noteId) await prisma.note.update({ where: { id: closing.noteId }, data: { tradeStatus: "AVAILABLE" } });
-  if (closing.inquiryId) await prisma.inquiry.update({ where: { id: closing.inquiryId }, data: { status: "DECLINED" } });
+  if (closing.inquiryId) {
+    await prisma.inquiry.update({
+      where: { id: closing.inquiryId },
+      data: options.withinDiligence ? { status: "WITHDRAWN", withdrawnAt: options.withinDiligence } : { status: "DECLINED" },
+    });
+  }
   if (closing.deskBidId) await prisma.deskBid.update({ where: { id: closing.deskBidId }, data: { status: "WITHDRAWN" } });
   const others = await prisma.closing.count({ where: { listingId: closing.listingId, status: "OPEN", id: { not: closingId } } });
   await prisma.listing.update({
@@ -227,6 +255,37 @@ export async function cancelOpenClosing(closingId: string, reason: string) {
     },
   });
   return closing;
+}
+
+// The buyer walks away inside the diligence window, with a reason both sides read. It cancels through the same path
+// as a desk cancel. A group's closing is the seats' money, so one seat can't end it for the rest; the desk does.
+export async function walkAwayFromClosing(closingId: string, buyerId: string, reason: string, now = new Date()) {
+  const closing = await prisma.closing.findUnique({ where: { id: closingId }, include: { listing: { include: { seller: true } }, funders: { select: { userId: true } } } });
+  if (!closing) return { error: "That closing no longer exists." } as const;
+  const inquiry = closing.inquiryId ? await prisma.inquiry.findUnique({ where: { id: closing.inquiryId }, include: { buyer: true } }) : null;
+  const seat = closing.funders.some((funder) => funder.userId === buyerId);
+  if (!inquiry || (inquiry.buyerId !== buyerId && !seat)) return { error: "Only the buyer on this closing can walk away." } as const;
+  if (closing.funders.length > 1) return { error: "A group closing is ended by the desk, so every seat is heard. Write the desk on the closing thread." } as const;
+  if (closing.status !== "OPEN") return { error: "This closing is already finished." } as const;
+  if (!diligenceOpen(closing, now)) return { error: "The diligence window has closed, so the purchase terms govern from here. Write the desk on the closing thread." } as const;
+  const why = reason.replace(/\s+/g, " ").trim().slice(0, 500);
+  if (why.length < 10) return { error: "Say what you found, in a sentence. The seller reads it." } as const;
+  if (!(await cancelOpenClosing(closingId, `The buyer walked away in diligence: ${why}`, { withinDiligence: now }))) {
+    return { error: "The diligence window closed or the closing finished a moment ago." } as const;
+  }
+  await audit(buyerId, "DILIGENCE_WALK_AWAY", "closing", closingId, why);
+  // Counsel: confirm that "returned per the purchase terms" matches the deposit and refund language in the purchase
+  // agreement before launch, and whether a walk-away in diligence needs a written notice beyond this.
+  const message = `The buyer walked away during the diligence window. Reason: ${why} The note goes back on the book. Money already wired is returned per the purchase terms. Write the desk with any questions.`;
+  const { emitWebhook } = await import("@/lib/webhooks");
+  await emitWebhook(closing.listing.sellerId, "offer.declined", { inquiryId: inquiry.id, listingId: closing.listingId, reason: "diligence_walk_away" });
+  const subject = `Buyer walked away · ${closing.listing.title}`;
+  await notify(closing.listing.seller.email, subject, message);
+  for (const email of await buyerSideEmails(closingId)) await notify(email, subject, message);
+  await notifyDesk(subject, `${inquiry.buyer.name} walked away in diligence. Reason: ${why} Check for wired money to return.`);
+  const thread = await prisma.deskThread.findUnique({ where: { closingId } });
+  if (thread) await prisma.threadPost.create({ data: { threadId: thread.id, authorId: buyerId, body: message } });
+  return { error: null } as const;
 }
 
 // The lead buyer and every group seat holder each wire money, so each of them hears about anything that touches it.

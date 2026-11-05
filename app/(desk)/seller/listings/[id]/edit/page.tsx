@@ -5,6 +5,7 @@ import { requireRole } from "@/lib/auth";
 import { isoDate, num } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 import { getSettings } from "@/lib/settings";
+import { servicingDraft } from "@/lib/validators";
 
 export const metadata = { title: "Edit listing" };
 
@@ -45,6 +46,8 @@ export default async function EditListingPage({ params }: { params: Promise<{ id
           foreclosureStatus: note.foreclosureStatus,
           borrowerName: note.borrowerName,
           narrative: listing.summary,
+          // The servicing record saved last time, so an edit doesn't show it blank.
+          ...servicingDraft(note),
         }}
       />
     </div>

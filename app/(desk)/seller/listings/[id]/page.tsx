@@ -2,7 +2,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { bulkReprice, duplicateListing } from "@/actions/desk";
 import { answerDeskBid } from "@/actions/desk-book";
-import { SaleApproval } from "@/components/sale-approval";
+import { ConfirmSubmit } from "@/components/confirm-submit";
+import { SaleApproval, WithdrawListing } from "@/components/sale-approval";
 import { updateOwnListingMeta } from "@/actions/listings";
 import { AuctionForm } from "@/components/auction-form";
 import { ComplianceNote } from "@/components/compliance-note";
@@ -19,6 +20,7 @@ import { buyerPrice } from "@/lib/offers";
 import { bpsToPercent } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
 import { deskBidNotAcceptable } from "@/lib/awards";
+import { reviewLabel } from "@/lib/listing-status";
 import { getSettings } from "@/lib/settings";
 
 export const metadata = { title: "Your listing" };
@@ -39,6 +41,7 @@ export default async function SellerListingPage({
   });
   if (!listing || (listing.sellerId !== user.id && user.role !== "ADMIN")) notFound();
   const settings = await getSettings();
+  const openClosings = await prisma.closing.count({ where: { listingId: listing.id, status: "OPEN" } });
   const deskBidBlock = deskBidNotAcceptable(listing);
   const ask = listing.notes.reduce((sum, note) => sum + num(note.askingPrice), 0);
   const commission = listing.sellerCommissionCents != null ? listing.sellerCommissionCents / 100 : (ask * settings.sellerCommissionBps) / 10000;
@@ -79,7 +82,8 @@ export default async function SellerListingPage({
             <SubmitButton className="h-11 text-[13px] font-medium">Save and resubmit</SubmitButton>
           </form>
         )}
-        <SaleApproval listing={listing} offers={listing.inquiries} canAnswer={listing.sellerId === user.id} />
+        {listing.status !== "WITHDRAWN" && <SaleApproval listing={listing} offers={listing.inquiries} canAnswer={listing.sellerId === user.id} />}
+        <WithdrawListing listing={listing} offers={listing.inquiries} ask={ask} openClosings={openClosings} canWithdraw={listing.sellerId === user.id} />
         <section className="mt-10">
           {listing.deskBids.map((bid) => (
             <div key={bid.id} className="mb-6 border border-link/30 bg-link/5 p-4 rounded-xl">
@@ -91,8 +95,20 @@ export default async function SellerListingPage({
                 <form action={answerDeskBid} className="mt-3 flex flex-wrap gap-2">
                   {/* Not name="id": it shadows form.id in the DOM, and React then drops the clicked button's value. */}
                   <input type="hidden" name="bidId" value={bid.id} />
-                  {!deskBidBlock && <button type="submit" name="answer" value="ACCEPTED" className="h-9 rounded-lg bg-foreground px-3 text-[13px] font-medium text-background">Accept</button>}
-                  <button type="submit" name="answer" value="DECLINED" className="h-9 rounded-lg border border-border px-3 text-[13px] font-medium hover:bg-hover">Decline</button>
+                  {!deskBidBlock && (
+                  <ConfirmSubmit
+                    name="answer"
+                    value="ACCEPTED"
+                    title={`Sell to UPB Capital at ${money(num(bid.amount))}?`}
+                    consequence="Accepting binds you to sell. It opens a closing with UPB Capital as the buyer at this price, and the other open bids on it are declined."
+                    confirmLabel="Accept the desk's bid"
+                    pendingLabel="Accepting…"
+                    className="h-9 px-3 text-[13px] font-medium"
+                  >
+                    Accept
+                  </ConfirmSubmit>
+                )}
+                  <SubmitButton name="answer" value="DECLINED" variant="outline" pendingLabel="Declining…" className="h-9 px-3 text-[13px] font-medium">Decline</SubmitButton>
                 </form>
               )}
               {deskBidBlock && <p className="mt-2 text-sm text-muted-foreground">{deskBidBlock}</p>}
@@ -116,7 +132,7 @@ export default async function SellerListingPage({
           <ul className="mt-4 space-y-3">
             {listing.reviews.map((review) => (
               <li key={review.id} className="border border-border px-4 py-3 rounded-xl">
-                <p className="text-[13px] font-medium text-link">{review.action.replaceAll("_", " ").toLowerCase()} · {prettyDate(review.createdAt)}</p>
+                <p className="text-[13px] font-medium text-link">{reviewLabel(review.action)} · {prettyDate(review.createdAt)}</p>
                 <p className="mt-2 text-sm text-foreground">{review.comment}</p>
               </li>
             ))}
@@ -157,7 +173,7 @@ export default async function SellerListingPage({
             <input type="hidden" name="listingId" value={listing.id} />
             <label className="block">
               <span className="text-[13px] text-muted-foreground">Percent of UPB</span>
-              <input name="percent" type="number" min={1} max={150} step="0.1" defaultValue={80} className="desk-input mt-2" aria-label="Percent of unpaid principal" />
+              <input name="percent" type="number" min={1} max={150} step="0.1" defaultValue={80} className="desk-input mt-2" />
             </label>
             <SubmitButton variant="outline" className="h-10 text-[13px] font-medium">Reprice the tape</SubmitButton>
           </form>

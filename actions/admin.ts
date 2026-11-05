@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import type { AccountStatus, ReviewAction } from "@prisma/client";
+import type { AccountStatus, Prisma, ReviewAction } from "@prisma/client";
 import { alertMatchingSearches } from "@/lib/search-alerts";
 import { audit } from "@/lib/audit";
 import { deadlinePassed } from "@/lib/auction";
@@ -54,9 +54,17 @@ export async function reviewListing(formData: FormData) {
   if (needsComment && comment.length < 3) {
     redirect(`/admin/listings/${listingId}?error=${encodeURIComponent("A comment is required for that decision.")}`);
   }
+  // The status moves only if it is still the one this decision was checked against. A seller's withdrawal or
+  // another desk decision landing at the same moment wins, and this one asks for a reload instead of overwriting it.
+  const moveTo = async (data: Prisma.ListingUpdateManyMutationInput) => {
+    const moved = await prisma.listing.updateMany({ where: { id: listingId, status: listing.status }, data });
+    if (moved.count !== 1) {
+      redirect(`/admin/listings/${listingId}?error=${encodeURIComponent("The listing changed a moment ago. Reload and decide again.")}`);
+    }
+  };
 
   if (action === "UNDER_REVIEW") {
-    await prisma.listing.update({ where: { id: listingId }, data: { status: "UNDER_REVIEW" } });
+    await moveTo({ status: "UNDER_REVIEW" });
     await record(user.id, listingId, "UNDER_REVIEW", comment || "Moved into review.");
     await notify(listing.seller.email, `In review · ${listing.title}`, comment || "The desk is reading the file.");
     back(listingId, "Moved to review");
@@ -68,10 +76,7 @@ export async function reviewListing(formData: FormData) {
     if (await ofacHold({ listingId, userIds: [listing.sellerId] })) {
       redirect(`/admin/listings/${listingId}?error=${encodeURIComponent(OFAC_HOLD_MESSAGE)}`);
     }
-    await prisma.listing.update({
-      where: { id: listingId },
-      data: { status: "APPROVED", approvedAt: new Date() },
-    });
+    await moveTo({ status: "APPROVED", approvedAt: new Date() });
     await record(user.id, listingId, "APPROVE", comment || "Approved for the book.");
     await notify(listing.seller.email, `Live · ${listing.title}`, comment || "Your listing is live to approved buyers.");
     await alertMatchingSearches(listingId);
@@ -80,14 +85,14 @@ export async function reviewListing(formData: FormData) {
   }
 
   if (action === "REJECT") {
-    await prisma.listing.update({ where: { id: listingId }, data: { status: "REJECTED" } });
+    await moveTo({ status: "REJECTED" });
     await record(user.id, listingId, "REJECT", comment);
     await notify(listing.seller.email, `Declined · ${listing.title}`, comment);
     back(listingId, "Listing declined");
   }
 
   if (action === "REQUEST_CHANGES") {
-    await prisma.listing.update({ where: { id: listingId }, data: { status: "CHANGES_REQUESTED" } });
+    await moveTo({ status: "CHANGES_REQUESTED" });
     await record(user.id, listingId, "REQUEST_CHANGES", comment);
     await notify(listing.seller.email, `Changes requested · ${listing.title}`, comment);
     back(listingId, "Changes requested");
@@ -104,7 +109,7 @@ export async function reviewListing(formData: FormData) {
   }
 
   if (action === "MARK_PENDING") {
-    await prisma.listing.update({ where: { id: listingId }, data: { status: "PENDING" } });
+    await moveTo({ status: "PENDING" });
     await record(user.id, listingId, "MARK_PENDING", comment || "Marked in contract.");
     await notify(listing.seller.email, `In contract · ${listing.title}`, comment || "The desk marked this listing in contract.");
     back(listingId, "Marked in contract");
@@ -132,17 +137,14 @@ export async function reviewListing(formData: FormData) {
     }
     const settings = await getSettings();
     const fees = feeBreakdown(salePrice, settings.buyerPremiumBps, settings.sellerCommissionBps);
-    await prisma.listing.update({
-      where: { id: listingId },
-      data: {
-        status: "SOLD",
-        soldAt: new Date(),
-        salePrice,
-        buyerPremiumCents: fees.premiumCents,
-        sellerCommissionCents: fees.commissionCents,
-        buyerTotalCents: fees.buyerTotalCents,
-        netToSellerCents: fees.netToSellerCents,
-      },
+    await moveTo({
+      status: "SOLD",
+      soldAt: new Date(),
+      salePrice,
+      buyerPremiumCents: fees.premiumCents,
+      sellerCommissionCents: fees.commissionCents,
+      buyerTotalCents: fees.buyerTotalCents,
+      netToSellerCents: fees.netToSellerCents,
     });
     // Keyed like the closing path's rows, so marking the same sale twice leaves one entry each.
     await postRevenueOnce([
@@ -399,6 +401,9 @@ export async function saveSettings(formData: FormData) {
   const depositDays = Number(formData.get("depositDays") || DEFAULT_DEPOSIT_DAYS);
   if (!Number.isFinite(depositPercent) || depositPercent < 0 || depositPercent > 50) redirect("/admin/settings?error=Keep the deposit between 0% and 50%.");
   if (!Number.isFinite(depositDays) || depositDays < 1 || depositDays > 30) redirect("/admin/settings?error=Give buyers between 1 and 30 days to wire the deposit.");
+  // Blank or 0 means no diligence window, so a cleared box turns it off.
+  const diligenceDays = Number(formData.get("diligenceDays") || 0);
+  if (!Number.isInteger(diligenceDays) || diligenceDays < 0 || diligenceDays > 60) redirect("/admin/settings?error=Set the diligence window between 0 and 60 whole days.");
   const requireTwoStep = formData.get("requireTwoStep") === "on";
   const brokerBasis = String(formData.get("brokerFeeBasis") || "PERCENT");
   const affiliateBasis = String(formData.get("affiliateFeeBasis") || "PERCENT");
@@ -430,6 +435,7 @@ export async function saveSettings(formData: FormData) {
       closingTargetDays: Math.round(closingDays),
       depositBps: percentToBps(depositPercent),
       depositDays: Math.round(depositDays),
+      diligenceDays,
       requireTwoStep,
       wireInstructions,
       chargeDeskFees: formData.get("chargeDeskFees") === "on",
@@ -450,6 +456,7 @@ export async function saveSettings(formData: FormData) {
       closingTargetDays: Math.round(closingDays),
       depositBps: percentToBps(depositPercent),
       depositDays: Math.round(depositDays),
+      diligenceDays,
       requireTwoStep,
       wireInstructions,
       chargeDeskFees: formData.get("chargeDeskFees") === "on",
@@ -481,7 +488,7 @@ export async function saveSettings(formData: FormData) {
     "FEE_SCHEDULE",
     "settings",
     "default",
-    `Premium ${premium}%, commission ${commission}%, Pro $${priceKept ? (before.proMonthlyPriceCents / 100).toFixed(2) : price}${priceKept ? " (kept, Stripe failed)" : ""}, early access ${Math.round(early)}h, free browse ${Math.round(limit)}, target close ${Math.round(closingDays)} days. Default wires ${wireInstructions === before.wireInstructions ? "unchanged" : "changed"}.`,
+    `Premium ${premium}%, commission ${commission}%, Pro $${priceKept ? (before.proMonthlyPriceCents / 100).toFixed(2) : price}${priceKept ? " (kept, Stripe failed)" : ""}, early access ${Math.round(early)}h, free browse ${Math.round(limit)}, target close ${Math.round(closingDays)} days, diligence ${diligenceDays ? `${diligenceDays} days` : "none"}. Default wires ${wireInstructions === before.wireInstructions ? "unchanged" : "changed"}.`,
   );
   clearSettingsCache();
   revalidatePath("/admin/settings");

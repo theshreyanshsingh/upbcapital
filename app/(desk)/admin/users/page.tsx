@@ -1,7 +1,8 @@
 import { forceSignOut, resetTwoFactor, setAccountStatus, setMembership } from "@/actions/admin";
+import { ConfirmSubmit } from "@/components/confirm-submit";
+import { SubmitButton } from "@/components/submit-button";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
-import { Button } from "@/components/ui/button";
 import { requireRole } from "@/lib/auth";
 import { q } from "@/lib/format";
 import { roleLabel } from "@/lib/labels";
@@ -62,47 +63,47 @@ export default async function UsersPage({
                       <form action={setAccountStatus}>
                         <input type="hidden" name="userId" value={user.id} />
                         <input type="hidden" name="status" value="APPROVED" />
-                        <Button type="submit" className="h-8 text-[13px] font-medium">{user.accountStatus === "SUSPENDED" ? "Reinstate" : "Approve"}</Button>
+                        <SubmitButton className="h-8 text-[13px] font-medium" pendingLabel="Saving…">{user.accountStatus === "SUSPENDED" ? "Reinstate" : "Approve"}</SubmitButton>
                       </form>
                     )}
                     {user.role !== "ADMIN" && user.accountStatus !== "REJECTED" && user.accountStatus !== "SUSPENDED" && (
                       <form action={setAccountStatus}>
                         <input type="hidden" name="userId" value={user.id} />
                         <input type="hidden" name="status" value="REJECTED" />
-                        <Button type="submit" variant="outline" className="h-8 text-[13px] font-medium">Decline</Button>
+                        <ConfirmSubmit title={`Decline ${user.name}'s account?`} consequence="They're told the desk declined the account and can't sign in to trade. Approve them later if this changes." confirmLabel="Decline the account" pendingLabel="Declining…" tone="danger" variant="outline" className="h-8 text-[13px] font-medium">Decline</ConfirmSubmit>
                       </form>
                     )}
                     {user.role !== "ADMIN" && user.accountStatus === "APPROVED" && (
                       <form action={setAccountStatus}>
                         <input type="hidden" name="userId" value={user.id} />
                         <input type="hidden" name="status" value="SUSPENDED" />
-                        <Button type="submit" variant="outline" className="h-8 text-[13px] font-medium">Suspend</Button>
+                        <ConfirmSubmit title={`Suspend ${user.name}?`} consequence="They're signed out everywhere and can't sign in, bid or answer a sale until the desk reinstates them. Open closings stay open." confirmLabel="Suspend the account" pendingLabel="Suspending…" tone="danger" variant="outline" className="h-8 text-[13px] font-medium">Suspend</ConfirmSubmit>
                       </form>
                     )}
                     {user.id !== actor.id && (
                       <form action={forceSignOut}>
                         <input type="hidden" name="userId" value={user.id} />
-                        <Button type="submit" variant="ghost" className="h-8 text-[13px] font-medium">Sign out</Button>
+                        <SubmitButton variant="ghost" className="h-8 text-[13px] font-medium" pendingLabel="Signing out…">Sign out</SubmitButton>
                       </form>
                     )}
                     {user.id !== actor.id && user.totpEnabled && (
                       <form action={resetTwoFactor}>
                         <input type="hidden" name="userId" value={user.id} />
-                        <Button type="submit" variant="ghost" className="h-8 text-[13px] font-medium">Clear 2FA</Button>
+                        <ConfirmSubmit title={`Clear ${user.name}'s second factor?`} consequence="They're signed out, emailed that it was cleared, and set two-step sign-in up again next time. Do this only after confirming who asked." confirmLabel="Clear it" pendingLabel="Clearing…" variant="ghost" className="h-8 text-[13px] font-medium">Clear 2FA</ConfirmSubmit>
                       </form>
                     )}
                     {user.role === "BUYER" && user.subscriptionTier !== "PRO" && (
                       <form action={setMembership}>
                         <input type="hidden" name="userId" value={user.id} />
                         <input type="hidden" name="tier" value="PRO" />
-                        <Button type="submit" variant="ghost" className="h-8 text-[13px] font-medium">Comp Pro</Button>
+                        <ConfirmSubmit title={`Comp Pro for ${user.name}?`} consequence="They get Pro until the desk sets them back to free. A Stripe subscription on file is canceled first, so they aren't charged for it." confirmLabel="Comp Pro" pendingLabel="Saving…" variant="ghost" className="h-8 text-[13px] font-medium">Comp Pro</ConfirmSubmit>
                       </form>
                     )}
                     {user.role === "BUYER" && user.subscriptionTier === "PRO" && (
                       <form action={setMembership}>
                         <input type="hidden" name="userId" value={user.id} />
                         <input type="hidden" name="tier" value="FREE" />
-                        <Button type="submit" variant="ghost" className="h-8 text-[13px] font-medium">Set free</Button>
+                        <ConfirmSubmit title={`Set ${user.name} to free?`} consequence="They lose Pro now. A Stripe subscription on file is canceled, with no refund from here." confirmLabel="Set to free" pendingLabel="Saving…" tone="danger" variant="ghost" className="h-8 text-[13px] font-medium">Set free</ConfirmSubmit>
                       </form>
                     )}
                   </div>

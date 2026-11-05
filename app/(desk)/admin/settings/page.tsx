@@ -8,6 +8,7 @@ import { q } from "@/lib/format";
 import { bpsToPercent } from "@/lib/money";
 import { getSettings } from "@/lib/settings";
 import { depositTerms, targetDays } from "@/lib/closing-clock";
+import { diligenceDays } from "@/lib/closing-service";
 import { launchReadiness } from "@/lib/readiness";
 
 export const metadata = { title: "Fee schedule" };
@@ -91,6 +92,11 @@ export default async function SettingsPage({
           <span className="text-[13px] text-muted-foreground">Days to wire the deposit</span>
           <input name="depositDays" defaultValue={depositTerms(settings).days} className="desk-input mt-2" />
           <span className="mt-1 block text-xs text-muted-foreground">Set on each new closing. Zero percent means no deposit. The desk records the wire in the closing room.</span>
+        </label>
+        <label className="block">
+          <span className="text-[13px] text-muted-foreground">Buyer diligence window (days after an award)</span>
+          <input name="diligenceDays" inputMode="numeric" defaultValue={diligenceDays(settings.diligenceDays) || ""} placeholder="None" className="desk-input mt-2" />
+          <span className="mt-1 block text-xs text-muted-foreground">Until it ends, the buyer can walk away from the closing for a finding, with a reason both sides read. Zero or blank means none. Desk purchases have no window. Set on each new closing.</span>
         </label>
         <label className="flex items-start gap-3">
           <input type="checkbox" name="requireTwoStep" defaultChecked={settings.requireTwoStep !== false} className="mt-1" />

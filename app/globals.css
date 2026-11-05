@@ -195,7 +195,6 @@
 
 .desk-input:focus {
   border-color: var(--ring);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 18%, transparent);
 }
 
 :focus-visible {
@@ -203,8 +202,14 @@
   outline-offset: 2px;
 }
 
+/* A solid ring, so keyboard users can see where they are on a dense form. */
 .desk-input:focus-visible {
-  outline: none;
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+.desk-input[aria-invalid="true"] {
+  border-color: var(--destructive);
 }
 
 textarea.desk-input {

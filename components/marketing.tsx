@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Logo } from "@/components/logo";
+import { isReleaseBuild } from "@/lib/deploy";
 import { Menu } from "lucide-react";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 
@@ -55,6 +56,11 @@ export function MarketingHeader({ authed }: { authed: boolean }) {
               <Link href={authed ? "/marketplace" : "/login"} className="mt-4 text-[13px] font-medium text-link">
                 {authed ? "Enter the desk" : "Sign in"}
               </Link>
+              {!authed && (
+                <Link href="/signup" className="inline-flex h-11 items-center justify-center rounded-lg bg-primary px-5 text-[13px] font-medium text-primary-foreground">
+                  Request access
+                </Link>
+              )}
             </div>
           </SheetContent>
         </Sheet>
@@ -71,7 +77,7 @@ export function MarketingFooter() {
         <div>
           <Logo />
           <p className="mt-4 max-w-sm text-sm leading-relaxed text-muted-foreground">
-            A South Florida desk for mortgage notes. Demo listings, borrowers, and documents are fictional.
+            A South Florida desk for mortgage notes.{isReleaseBuild(process.env) ? "" : " Demo listings, borrowers, and documents are fictional."}
           </p>
         </div>
         <div className="flex gap-8 text-[13px] font-medium text-muted-foreground">

@@ -7,7 +7,7 @@ import { deadlinePassed, sealedFromSeller } from "@/lib/auction";
 import { audit } from "@/lib/audit";
 import { requireUser } from "@/lib/auth";
 import { notify, notifyDesk } from "@/lib/email";
-import { canCounter, openCounter } from "@/lib/offers";
+import { bidExpired, canCounter, counterFrom, openCounter } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
 import { emitWebhook } from "@/lib/webhooks";
 
@@ -36,6 +36,9 @@ export async function postOfferMessage(formData: FormData) {
   if (amount != null && !canCounter(inquiry.status)) {
     redirect(`${back.split("?")[0]}?error=${encodeURIComponent("This offer is already decided.")}`);
   }
+  if (amount != null && bidExpired(inquiry.expiresAt)) {
+    redirect(`${back.split("?")[0]}?error=${encodeURIComponent("This bid passed its good-until date, so its price can't move. The buyer can send a new bid from the listing.")}`);
+  }
   if (!body && amount == null) {
     redirect(`${back.split("?")[0]}?error=${encodeURIComponent("Write a note or a counter.")}`);
   }
@@ -45,11 +48,11 @@ export async function postOfferMessage(formData: FormData) {
   }
   // A buyer naming the desk's open counter is accepting it. Anything else is a new price, which the bid rules
   // limit: none after the deadline, and none at all in best and final, where the first bid is the bid.
-  const counter = openCounter(
-    inquiry.messages.map((message) => ({ kind: message.kind, amount: message.amount, createdAt: message.createdAt, authorId: message.authorId })),
-    inquiry.buyerId,
-  );
+  const priced = inquiry.messages.map((message) => ({ kind: message.kind, amount: message.amount, createdAt: message.createdAt, authorId: message.authorId }));
+  const counter = openCounter(priced, inquiry.buyerId);
   const accepting = buyer && amount != null && counter != null && Math.abs(counter - amount) < 0.005;
+  // The seller's own counter is already their approval, so the desk hears the bid is ready to award.
+  const sellerCounter = accepting && counterFrom(priced, inquiry.buyerId, inquiry.listing.sellerId) === "seller";
   if (buyer && amount != null && !accepting && inquiry.listing.bidMode !== "NONE") {
     if (deadlinePassed(inquiry.listing.bidDeadline)) {
       redirect(`${back.split("?")[0]}?error=${encodeURIComponent("The bid deadline has passed. You can accept a desk counter, but not name a new price.")}`);
@@ -64,7 +67,7 @@ export async function postOfferMessage(formData: FormData) {
       authorId: user.id,
       kind: amount != null ? "COUNTER" : "NOTE",
       amount,
-      body: body || (accepting ? `Accepted the desk's counter at ${money(amount!)}.` : amount != null ? `Counter at ${money(amount)}.` : ""),
+      body: body || (accepting ? `Accepted the ${sellerCounter ? "seller" : "desk"}'s counter at ${money(amount!)}.` : amount != null ? `Counter at ${money(amount)}.` : ""),
     },
   });
   if (inquiry.status === "OPEN" && desk) {
@@ -84,7 +87,10 @@ export async function postOfferMessage(formData: FormData) {
   const subject = amount != null ? `Counter · ${inquiry.listing.title}` : `Note on ${inquiry.listing.title}`;
   const text = `${user.name}: ${body || money(amount || 0)}`;
   if (desk) await notify(inquiry.buyer.email, subject, text);
-  else {
+  else if (sellerCounter) {
+    await notify(inquiry.listing.seller.email, `Counter accepted · ${inquiry.listing.title}`, `The buyer accepted your counter at ${money(amount!)}. The desk awards it next.`);
+    await notifyDesk(`Seller counter accepted · ${inquiry.listing.title}`, `${user.name} accepted the seller's counter at ${money(amount!)}. The seller already agreed to that price, so it can be awarded from the offer book.`);
+  } else {
     await notify(inquiry.listing.seller.email, subject, sealed ? `${user.name} wrote on a sealed bid. It opens at the deadline.` : text);
     await notifyDesk(subject, text);
   }

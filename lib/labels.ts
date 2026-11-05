@@ -47,6 +47,7 @@ export const LISTING_STATUSES = [
   { value: "CHANGES_REQUESTED", label: "Changes requested" },
   { value: "PENDING", label: "In contract" },
   { value: "SOLD", label: "Sold" },
+  { value: "WITHDRAWN", label: "Withdrawn" },
 ] as const;
 
 export const DOC_TYPES = [
@@ -115,8 +116,16 @@ export function homeFor(role: string) {
   }
 }
 
+// Files the desk attaches to one loan. They stay out of the seller's wizard, which files DOC_TYPES.
+export const LOAN_DOC_TYPES = [
+  { value: "ALLONGE", label: "Allonge", hint: "Endorsement attached to the note" },
+  { value: "ASSIGNMENT", label: "Assignment", hint: "Assignment of the mortgage or deed of trust" },
+  { value: "OE_REPORT", label: "O&E report", hint: "Owner and encumbrance report" },
+  { value: "RISK_SEARCH", label: "Risk search", hint: "Bankruptcy, tax, lien or foreclosure search" },
+] as const;
+
 // A tape comes from the pool upload, not the note wizard's file list, so its label lives here.
 export function docLabel(type: string) {
   if (type === "TAPE") return "Loan tape";
-  return DOC_TYPES.find((doc) => doc.value === type)?.label ?? type;
+  return [...DOC_TYPES, ...LOAN_DOC_TYPES].find((doc) => doc.value === type)?.label ?? type;
 }

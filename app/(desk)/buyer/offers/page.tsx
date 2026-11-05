@@ -1,10 +1,12 @@
 import Link from "next/link";
+import { withdrawInquiry } from "@/actions/buyer";
+import { ConfirmSubmit } from "@/components/confirm-submit";
 import { OfferThread } from "@/components/offer-thread";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { requireRole } from "@/lib/auth";
 import { money, num, prettyDate, q } from "@/lib/format";
-import { buyerPrice, canCounter, openCounter } from "@/lib/offers";
+import { bidExpired, buyerPrice, canCounter, counterFrom, openCounter, withdrawBlock } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
 
 export const metadata = { title: "Inquiries" };
@@ -22,8 +24,8 @@ export default async function OffersPage({
     orderBy: { createdAt: "desc" },
   });
   const closings = await prisma.closing.findMany({ where: { inquiryId: { in: inquiries.map((item) => item.id) } } });
-  // A group's counter is answered seat by seat on the group page, not by the lead accepting it here.
-  const groupBids = new Set((await prisma.groupBuy.findMany({ where: { inquiryId: { in: inquiries.map((item) => item.id) } }, select: { inquiryId: true } })).map((group) => group.inquiryId));
+  // A group's counter is answered seat by seat on the group page, and its bid is withdrawn there too, not by the lead here.
+  const groupFor = new Map((await prisma.groupBuy.findMany({ where: { inquiryId: { in: inquiries.map((item) => item.id) } }, select: { id: true, inquiryId: true } })).map((group) => [group.inquiryId, group.id]));
   const closingFor = new Map(closings.map((closing) => [closing.inquiryId, closing.id]));
   return (
     <div>
@@ -36,6 +38,10 @@ export default async function OffersPage({
           const amount = buyerPrice(inquiry.amount ? num(inquiry.amount) : null, priced, inquiry.buyerId);
           const counter = openCounter(priced, inquiry.buyerId);
           const closingId = closingFor.get(inquiry.id);
+          const groupId = groupFor.get(inquiry.id);
+          const live = inquiry.type === "OFFER" && canCounter(inquiry.status);
+          const lapsed = live && bidExpired(inquiry.expiresAt);
+          const withdrawProblem = withdrawBlock({ type: inquiry.type, status: inquiry.status, bidMode: inquiry.listing.bidMode, bidDeadline: inquiry.listing.bidDeadline, group: Boolean(groupId) });
           return (
             <li key={inquiry.id} className="glass p-5">
               <div className="flex flex-wrap items-baseline justify-between gap-3">
@@ -46,19 +52,46 @@ export default async function OffersPage({
                 {inquiry.type.replaceAll("_", " ").toLowerCase()}
                 {inquiry.note ? ` · ${inquiry.note.city}` : ""}
                 {amount != null ? ` · ${money(amount)}` : ""} · {prettyDate(inquiry.createdAt)}
+                {inquiry.type === "OFFER" && inquiry.expiresAt ? ` · ${inquiry.status === "EXPIRED" || lapsed ? "lapsed" : "good until"} ${prettyDate(inquiry.expiresAt)}` : ""}
+                {inquiry.status === "WITHDRAWN" && inquiry.withdrawnAt ? ` · withdrawn ${prettyDate(inquiry.withdrawnAt)}` : ""}
               </p>
               {closingId && <Link href={`/closings/${closingId}`} className="mt-3 inline-block text-[13px] font-medium text-link">Closing checklist</Link>}
+              {live && !lapsed && groupId && (
+                <p className="mt-3 text-sm text-muted-foreground">
+                  A group&apos;s bid is withdrawn by the group.{" "}
+                  <Link href={`/groups/${groupId}`} className="text-link">Drop your seat or dissolve it on the group page</Link>.
+                </p>
+              )}
+              {live && !lapsed && !groupId && withdrawProblem && <p className="mt-3 text-sm text-muted-foreground">{withdrawProblem}</p>}
+              {live && !lapsed && !withdrawProblem && amount != null && (
+                <form action={withdrawInquiry} className="mt-3">
+                  <input type="hidden" name="inquiryId" value={inquiry.id} />
+                  <ConfirmSubmit
+                    title={`Withdraw your ${money(amount)} bid?`}
+                    consequence={`The bid on ${inquiry.listing.title} closes and the desk is told. ${inquiry.listing.bidMode === "BEST_AND_FINAL" ? "Best and final allows one bid, so you can't bid on it again." : "You can send a new bid while the listing is live."}`}
+                    confirmLabel="Withdraw the bid"
+                    pendingLabel="Withdrawing…"
+                    tone="danger"
+                    variant="outline"
+                    className="h-9 text-[13px] font-medium"
+                  >
+                    Withdraw bid
+                  </ConfirmSubmit>
+                </form>
+              )}
               {inquiry.type === "OFFER" ? (
                 <OfferThread
                   inquiryId={inquiry.id}
-                  canCounter={canCounter(inquiry.status)}
-                  acceptAmount={groupBids.has(inquiry.id) ? null : counter}
+                  canCounter={canCounter(inquiry.status) && !lapsed}
+                  acceptAmount={groupId ? null : counter}
+                  acceptFrom={counterFrom(priced, inquiry.buyerId, inquiry.listing.sellerId) ?? "desk"}
                   messages={inquiry.messages.map((message) => ({
                     id: message.id,
                     kind: message.kind,
                     body: message.body,
                     amount: message.amount ? num(message.amount) : null,
-                    author: message.author.name,
+                    // Buyers don't learn who the seller is from the thread.
+                    author: message.authorId === inquiry.listing.sellerId ? "Seller" : message.author.name,
                     when: prettyDate(message.createdAt),
                   }))}
                 />

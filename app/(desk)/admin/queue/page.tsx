@@ -3,6 +3,7 @@ import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { StatusPill } from "@/components/status-pill";
 import { requireRole } from "@/lib/auth";
+import { DUPLICATE_COMMENT } from "@/lib/duplicates";
 import { q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 
@@ -31,7 +32,15 @@ export default async function QueuePage({
   const tab = TABS.find((item) => item.id === q(params, "tab")) ?? TABS[0];
   const listings = await prisma.listing.findMany({
     where: { status: { in: [...tab.statuses] } },
-    include: { seller: true, broker: true, notes: true, inquiries: true, _count: { select: { matches: true } } },
+    include: {
+      seller: true,
+      broker: true,
+      notes: true,
+      inquiries: true,
+      _count: { select: { matches: true } },
+      // The duplicate check leaves this comment when a submitted loan looks like one already on the book.
+      reviews: { where: { comment: { startsWith: DUPLICATE_COMMENT } }, select: { id: true }, take: 1 },
+    },
     // The review column runs oldest first, so nothing waits behind newer paper.
     orderBy: tab.id === "review" ? { submittedAt: "asc" } : { updatedAt: "desc" },
   });
@@ -61,6 +70,9 @@ export default async function QueuePage({
                 </p>
               </div>
               <div className="flex items-center gap-3">
+                {listing.reviews.length > 0 && (
+                  <span className="inline-flex items-center rounded-full bg-warn/12 px-2 py-0.5 text-xs font-semibold text-warn">Possible duplicate</span>
+                )}
                 {tab.id === "review" && (listing.status === "CHANGES_REQUESTED"
                   ? <span className="text-[13px] font-medium text-muted-foreground">With the seller</span>
                   : <Waiting days={Math.floor((now - listing.submittedAt.getTime()) / 86400000)} />)}

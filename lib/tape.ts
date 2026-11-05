@@ -8,7 +8,19 @@ import {
   PROPERTY_TYPES,
   US_STATES,
 } from "@/lib/labels";
-import { suggestMapping, type TapeFieldKey } from "@/lib/tape-fields";
+import {
+  parseBankruptcyChapter,
+  parseLoanPurpose,
+  parseValueType,
+  parseYesNo,
+  payStringMonths,
+  payStringWidth,
+  parsePayString,
+  restorePayString,
+  suggestMapping,
+  type ServicingRecord,
+  type TapeFieldKey,
+} from "@/lib/tape-fields";
 
 export type TapeMatrix = {
   headers: string[];
@@ -79,7 +91,7 @@ export type NormalizedLoan = {
   foreclosureStatus: (typeof FORECLOSURES)[number]["value"];
   borrowerName: string;
   memo: string;
-};
+} & ServicingRecord;
 
 export type TapeError = { row: number; message: string };
 
@@ -98,7 +110,7 @@ function money(raw: string) {
   return Number.isFinite(value) ? value : null;
 }
 
-function parseDate(raw: string) {
+export function parseDate(raw: string) {
   if (!raw) return null;
   if (/^\d{5}$/.test(raw)) {
     const excel = Number(raw);
@@ -127,6 +139,139 @@ function pickEnum<T extends readonly { value: string; label: string }[]>(options
   return direct?.value ?? null;
 }
 
+export function parsePaymentStatus(raw: string) {
+  return pickEnum(PAYMENT_STATUSES, raw, {
+    performing: "PERFORMING",
+    current: "PERFORMING",
+    p: "PERFORMING",
+    perf: "PERFORMING",
+    subperforming: "SUB_PERFORMING",
+    sub: "SUB_PERFORMING",
+    reperforming: "SUB_PERFORMING",
+    nonperforming: "NON_PERFORMING",
+    npl: "NON_PERFORMING",
+    np: "NON_PERFORMING",
+    default: "NON_PERFORMING",
+  });
+}
+
+// A blank months-delinquent cell reads the pay string's newest month, and 0 without one, as before.
+export function monthsDelinquentFrom(raw: string, payString: string | null | undefined) {
+  if (!raw) return payStringMonths(payString) ?? 0;
+  const months = Number(raw.replace(/[^0-9.]/g, ""));
+  return Number.isFinite(months) ? Math.round(months) : 0;
+}
+
+export type ServicingNote = { field: TapeFieldKey; level: "warn" | "fix"; message: string };
+
+// Placeholders a servicer leaves in an empty cell.
+const EMPTY = new Set(["", "na", "none", "null", "unknown", "notapplicable", "tbd"]);
+const NO_BANKRUPTCY = new Set(["no", "n", "0", "false"]);
+
+function squash(raw: string) {
+  return raw.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function clip(raw: string) {
+  return raw.length > 40 ? `${raw.slice(0, 40)}…` : raw;
+}
+
+function put<K extends keyof ServicingRecord>(record: ServicingRecord, key: K, value: ServicingRecord[K] | null | undefined) {
+  if (value != null) record[key] = value;
+}
+
+// The servicing columns are optional, so a value that can't be read is left off with a warning, never a row error.
+// The import and the preview both read them here, so the preview says what the import will store.
+export function readServicing(
+  row: Record<string, string>,
+  mapping: Partial<Record<TapeFieldKey, string>>,
+  payWidth = 0,
+): { record: ServicingRecord; notes: ServicingNote[] } {
+  const record: ServicingRecord = {};
+  const notes: ServicingNote[] = [];
+  const warn = (field: TapeFieldKey, message: string) => notes.push({ field, level: "warn", message });
+  const get = (key: TapeFieldKey) => {
+    const raw = cell(row, mapping, key);
+    return EMPTY.has(squash(raw)) ? "" : raw;
+  };
+  const date = (key: TapeFieldKey, label: string) => {
+    const raw = get(key);
+    if (!raw) return null;
+    const parsed = parseDate(raw);
+    if (!parsed) warn(key, `${label} “${clip(raw)}” wasn't read as a date and will be left off.`);
+    return parsed;
+  };
+  // "None" in an HOA lien column means no lien, so yes and no are read before the placeholders.
+  const yesNo = (key: TapeFieldKey, label: string) => {
+    const raw = cell(row, mapping, key);
+    const parsed = parseYesNo(raw);
+    if (parsed == null && get(key)) warn(key, `${label} “${clip(raw)}” wasn't read as yes or no and will be left off.`);
+    return parsed;
+  };
+
+  const loanNumber = get("loanNumber");
+  // Excel shows a long loan number as 1.23457E+11, and the digits it dropped can't be recovered.
+  if (/^\d(\.\d+)?E\+\d+$/i.test(loanNumber)) {
+    warn("loanNumber", `Loan number “${clip(loanNumber)}” was rounded by a spreadsheet and will be left off. Format the column as text and export again.`);
+  } else {
+    put(record, "loanNumber", loanNumber.slice(0, 40) || null);
+  }
+  put(record, "servicerName", get("servicerName").slice(0, 120) || null);
+
+  const payRaw = get("payString");
+  if (payRaw) {
+    const pay = restorePayString(payRaw, payWidth);
+    if (!pay) {
+      warn("payString", `Pay string “${clip(payRaw)}” wasn't read and will be left off. Use 0 to 9 or X for each month, newest first.`);
+    } else {
+      record.payString = pay;
+      if (pay !== parsePayString(payRaw)) {
+        notes.push({ field: "payString", level: "fix", message: `Pay string ${clip(payRaw)} lost its leading zeros in the spreadsheet and will be read as ${pay}.` });
+      } else if (pay !== payRaw.trim()) {
+        notes.push({ field: "payString", level: "fix", message: `Pay string “${clip(payRaw)}” will be stored as ${pay}.` });
+      }
+    }
+  }
+
+  put(record, "nextDueDate", date("nextDueDate", "Next due date"));
+  put(record, "modified", yesNo("modified", "Modified"));
+  put(record, "modificationDate", date("modificationDate", "Modification date"));
+  // A modification date answers the question when the modified column is blank.
+  if (record.modificationDate && record.modified === undefined) record.modified = true;
+  put(record, "lossMitigation", get("lossMitigation").slice(0, 200) || null);
+
+  const chapterRaw = get("bankruptcyChapter");
+  if (chapterRaw && !NO_BANKRUPTCY.has(squash(chapterRaw))) {
+    const chapter = parseBankruptcyChapter(chapterRaw);
+    if (!chapter) warn("bankruptcyChapter", `Bankruptcy chapter “${clip(chapterRaw)}” wasn't recognized and will be left off. Use 7, 11, 12 or 13.`);
+    put(record, "bankruptcyChapter", chapter);
+  }
+  put(record, "bankruptcyFiledAt", date("bankruptcyFiledAt", "Bankruptcy filed date"));
+  put(record, "foreclosureFiledAt", date("foreclosureFiledAt", "Foreclosure filed date"));
+
+  const valueTypeRaw = get("valueType");
+  if (valueTypeRaw) {
+    const valueType = parseValueType(valueTypeRaw);
+    if (!valueType) warn("valueType", `Value source “${clip(valueTypeRaw)}” isn't a BPO, AVM, appraisal or seller estimate and will be left off.`);
+    put(record, "valueType", valueType);
+  }
+  put(record, "valueAsOf", date("valueAsOf", "Value date"));
+
+  const purposeRaw = get("loanPurpose");
+  if (purposeRaw) {
+    const purpose = parseLoanPurpose(purposeRaw);
+    if (!purpose) warn("loanPurpose", `Loan purpose “${clip(purposeRaw)}” wasn't recognized and will be left off.`);
+    put(record, "loanPurpose", purpose);
+  }
+  put(record, "hoaLien", yesNo("hoaLien", "HOA lien"));
+  put(record, "taxDelinquent", yesNo("taxDelinquent", "Taxes delinquent"));
+  return { record, notes };
+}
+
+export function tapePayWidth(rows: Record<string, string>[], mapping: Partial<Record<TapeFieldKey, string>>) {
+  return mapping.payString ? payStringWidth(rows.map((row) => cell(row, mapping, "payString"))) : 0;
+}
+
 export function normalizeTapeRows(input: {
   rows: Record<string, string>[];
   mapping: Partial<Record<TapeFieldKey, string>>;
@@ -136,6 +281,8 @@ export function normalizeTapeRows(input: {
 }): { loans: NormalizedLoan[]; errors: TapeError[] } {
   const errors: TapeError[] = [];
   const drafts: Array<Omit<NormalizedLoan, "askingPrice"> & { askingPrice: number | null; upb: number }> = [];
+
+  const payWidth = tapePayWidth(input.rows, input.mapping);
 
   input.rows.forEach((row, index) => {
     const rowNumber = index + 2;
@@ -175,19 +322,7 @@ export function normalizeTapeRows(input: {
       third: "THIRD",
       other: "OTHER",
     });
-    const paymentStatus = pickEnum(PAYMENT_STATUSES, cell(row, input.mapping, "paymentStatus"), {
-      performing: "PERFORMING",
-      current: "PERFORMING",
-      p: "PERFORMING",
-      perf: "PERFORMING",
-      subperforming: "SUB_PERFORMING",
-      sub: "SUB_PERFORMING",
-      reperforming: "SUB_PERFORMING",
-      nonperforming: "NON_PERFORMING",
-      npl: "NON_PERFORMING",
-      np: "NON_PERFORMING",
-      default: "NON_PERFORMING",
-    });
+    const paymentStatus = parsePaymentStatus(cell(row, input.mapping, "paymentStatus"));
     const occupancy = pickEnum(OCCUPANCIES, cell(row, input.mapping, "occupancy"), {
       owneroccupied: "OWNER_OCCUPIED",
       owner: "OWNER_OCCUPIED",
@@ -219,8 +354,8 @@ export function normalizeTapeRows(input: {
     const interestRate = rateRaw == null ? null : rateRaw < 1 && !rateText.includes("%") ? rateRaw * 100 : rateRaw;
     const monthlyRaw = cell(row, input.mapping, "monthlyPi");
     const monthlyPi = monthlyRaw ? money(monthlyRaw) : 0;
-    const monthsRaw = cell(row, input.mapping, "monthsDelinquent");
-    const monthsDelinquent = monthsRaw ? Number(monthsRaw.replace(/[^0-9.]/g, "")) : 0;
+    const servicing = readServicing(row, input.mapping, payWidth).record;
+    const monthsDelinquent = monthsDelinquentFrom(cell(row, input.mapping, "monthsDelinquent"), servicing.payString);
     const askingRaw = cell(row, input.mapping, "askingPrice");
     const askingPrice = askingRaw ? money(askingRaw) : null;
 
@@ -251,7 +386,7 @@ export function normalizeTapeRows(input: {
       interestRate: interestRate!,
       monthlyPi: monthlyPi ?? 0,
       paymentStatus: paymentStatus as NormalizedLoan["paymentStatus"],
-      monthsDelinquent: Number.isFinite(monthsDelinquent) ? Math.round(monthsDelinquent) : 0,
+      monthsDelinquent,
       lastPaidDate: parseDate(cell(row, input.mapping, "lastPaidDate")),
       originationDate: parseDate(cell(row, input.mapping, "originationDate")),
       maturityDate: parseDate(cell(row, input.mapping, "maturityDate")),
@@ -261,6 +396,7 @@ export function normalizeTapeRows(input: {
       foreclosureStatus: foreclosureStatus as NormalizedLoan["foreclosureStatus"],
       borrowerName: cell(row, input.mapping, "borrowerName"),
       memo: cell(row, input.mapping, "memo"),
+      ...servicing,
     });
   });
 

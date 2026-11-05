@@ -1,5 +1,6 @@
 import { US_STATES } from "@/lib/labels";
-import type { TapeFieldKey } from "@/lib/tape-fields";
+import { monthsDelinquentFrom, parsePaymentStatus, readServicing, tapePayWidth } from "@/lib/tape";
+import { payStringMonths, type ServicingRecord, type TapeFieldKey } from "@/lib/tape-fields";
 
 export type TapeFlag = {
   row: number;
@@ -47,8 +48,9 @@ function cell(row: Record<string, string>, mapping: Partial<Record<TapeFieldKey,
   return (row[header] ?? "").trim();
 }
 
-export function reviewTape(rows: Record<string, string>[], mapping: Partial<Record<TapeFieldKey, string>>): TapeFlag[] {
+export function reviewTape(rows: Record<string, string>[], mapping: Partial<Record<TapeFieldKey, string>>, now = new Date()): TapeFlag[] {
   const flags: TapeFlag[] = [];
+  const payWidth = tapePayWidth(rows, mapping);
   rows.forEach((row, index) => {
     const rowNumber = index + 2;
     const city = cell(row, mapping, "city");
@@ -103,7 +105,81 @@ export function reviewTape(rows: Record<string, string>[], mapping: Partial<Reco
     if (statusRaw && /^(current|npl|re-?performing)$/i.test(statusRaw.trim())) {
       flags.push({ row: rowNumber, level: "fix", field: "status", message: `Status “${statusRaw}” will be mapped to a desk status.` });
     }
+    const servicing = readServicing(row, mapping, payWidth);
+    for (const note of servicing.notes) flags.push({ row: rowNumber, ...note });
+    flags.push(...servicingFlags(rowNumber, servicing.record, parsePaymentStatus(statusRaw), cell(row, mapping, "monthsDelinquent"), now));
   });
+  return flags;
+}
+
+const SEVERITY = { error: 0, warn: 1, fix: 2 } as const;
+
+// The preview shows the first 40 flags, so errors go first and the counts cover the whole tape.
+export function flagSummary(flags: TapeFlag[], limit = 40) {
+  return {
+    flags: [...flags].sort((a, b) => SEVERITY[a.level] - SEVERITY[b.level]).slice(0, limit),
+    errors: flags.filter((flag) => flag.level === "error").length,
+    warnings: flags.filter((flag) => flag.level === "warn").length,
+    fixes: flags.filter((flag) => flag.level === "fix").length,
+  };
+}
+
+const DAY = 86400000;
+
+// Whole months since the next due date: a payment due 1 October is a month behind on 5 November, current on 30 October.
+export function monthsPastDue(nextDue: Date, now: Date) {
+  const months =
+    (now.getUTCFullYear() - nextDue.getUTCFullYear()) * 12 +
+    now.getUTCMonth() -
+    nextDue.getUTCMonth() -
+    (now.getUTCDate() < nextDue.getUTCDate() ? 1 : 0);
+  return Math.max(0, months);
+}
+
+function monthsText(months: number) {
+  return months === 1 ? "1 month" : `${months} months`;
+}
+
+function day(date: Date) {
+  return date.toISOString().slice(0, 10);
+}
+
+// Checks a real servicing record needs: the pay string, the next due date and months delinquent should tell one story,
+// filing dates can't be ahead of today, and a value over a year old needs refreshing before anyone prices from it.
+function servicingFlags(row: number, record: ServicingRecord, status: string | null, monthsRaw: string, now: Date) {
+  const flags: TapeFlag[] = [];
+  const warn = (field: TapeFieldKey, message: string) => flags.push({ row, level: "warn", field, message });
+  const latest = record.payString?.[0];
+  const behind = latest && latest !== "X" ? Number(latest) : null;
+  const behindText = behind === 9 ? "9 or more months" : behind != null ? monthsText(behind) : "";
+  if (behind != null && behind >= 2 && status === "PERFORMING") {
+    warn("payString", `The pay string's newest month is ${behindText} behind, but the status is performing.`);
+  }
+  if (behind === 0 && status === "NON_PERFORMING") {
+    warn("payString", "The pay string's newest month was paid on time, but the status is non-performing.");
+  }
+  const months = monthsDelinquentFrom(monthsRaw, record.payString);
+  if (behind != null && monthsRaw && (behind === 9 ? months < 9 : behind !== months)) {
+    warn("payString", `The pay string's newest month is ${behindText} behind, but months delinquent says ${months}.`);
+  }
+  if (record.nextDueDate) {
+    const due = monthsPastDue(record.nextDueDate, now);
+    // A 9 in the pay string means nine or more, so months read from it are a floor. A month either way is cutoff timing.
+    const floor = !monthsRaw && payStringMonths(record.payString) === 9;
+    if (Math.abs(due - months) > 1 && !(floor && due >= 8)) {
+      const reading = due === 0 ? "current" : `about ${monthsText(due)} behind`;
+      warn("nextDueDate", `Next due ${day(record.nextDueDate)} puts the loan ${reading}, but months delinquent ${monthsRaw ? "says" : "will be stored as"} ${months}.`);
+    }
+  }
+  // A day of slack, so a date typed in a timezone ahead of the server isn't called the future.
+  const future = (date: Date | undefined) => date != null && date.getTime() > now.getTime() + DAY;
+  if (future(record.bankruptcyFiledAt)) warn("bankruptcyFiledAt", `Bankruptcy filed date ${day(record.bankruptcyFiledAt!)} is in the future.`);
+  if (future(record.foreclosureFiledAt)) warn("foreclosureFiledAt", `Foreclosure filed date ${day(record.foreclosureFiledAt!)} is in the future.`);
+  const yearAgo = new Date(now);
+  yearAgo.setUTCFullYear(yearAgo.getUTCFullYear() - 1);
+  if (record.valueAsOf && record.valueAsOf < yearAgo) {
+    warn("valueAsOf", `The value is dated ${day(record.valueAsOf)}, more than 12 months ago.`);
+  }
   return flags;
 }
 

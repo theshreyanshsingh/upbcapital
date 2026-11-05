@@ -41,7 +41,8 @@ async function uniqueReferralCode(name: string) {
   return referralCodeFor(`${name}${Date.now()}`);
 }
 
-export async function signup(_prev: { error: string }, formData: FormData) {
+// `field` names the input an error is about, so the form can mark it and move focus there.
+export async function signup(_prev: { error: string; field?: string }, formData: FormData) {
   const meta = await requestMeta();
   if (!(await consumeRateLimit(`signup:${meta.ipAddress}`, 8, 60 * 60 * 1000))) {
     return { error: "Too many new accounts from this network. Wait and try again." };
@@ -56,28 +57,28 @@ export async function signup(_prev: { error: string }, formData: FormData) {
     companyType: formData.get("companyType") || undefined,
     referral: formData.get("referral") || "",
   });
-  if (!parsed.success) return { error: firstZodError(parsed.error) };
+  if (!parsed.success) return { error: firstZodError(parsed.error), field: String(parsed.error.issues[0]?.path[0] ?? "") };
   const data = parsed.data;
   if (data.role === "INSTITUTIONAL_SELLER" && !data.companyName) {
-    return { error: "Institutional accounts need a company name." };
+    return { error: "Institutional accounts need a company name.", field: "companyName" };
   }
   // The demo domain belongs to the seeded seats. A release mails codes, resets and alerts, so the address has to take
   // mail. Whether the signer owns it is not confirmed yet.
-  if (demoAddress(data.email)) return { error: "That address is for the demo desk. Sign up with your own email." };
+  if (demoAddress(data.email)) return { error: "That address is for the demo desk. Sign up with your own email.", field: "email" };
   if (isReleaseBuild(process.env) && !deliverable(data.email)) {
-    return { error: "That address can't receive mail. Sign up with your own email." };
+    return { error: "That address can't receive mail. Sign up with your own email.", field: "email" };
   }
   const existing = await prisma.user.findUnique({ where: { email: data.email } });
-  if (existing) return { error: "An account with that email is already on the desk." };
+  if (existing) return { error: "An account with that email is already on the desk.", field: "email" };
   // The desk's own inbox takes alerts, so nobody may register it as an account.
   if (process.env.DESK_EMAIL && data.email === process.env.DESK_EMAIL.trim().toLowerCase()) {
-    return { error: "That address belongs to the desk. Sign up with your own email." };
+    return { error: "That address belongs to the desk. Sign up with your own email.", field: "email" };
   }
   const code = (data.referral || "").trim().toUpperCase();
   const referrer = code ? await prisma.user.findUnique({ where: { referralCode: code } }) : null;
-  if (code && !referrer) return { error: "That referral code is not on the desk." };
+  if (code && !referrer) return { error: "That referral code is not on the desk.", field: "referral" };
   if (referrer?.role === "BROKER" && referrer.accountStatus !== "APPROVED") {
-    return { error: "That broker is not approved to take introductions yet." };
+    return { error: "That broker is not approved to take introductions yet.", field: "referral" };
   }
 
   const approved = data.role === "INDIVIDUAL_SELLER";

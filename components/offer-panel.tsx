@@ -7,7 +7,9 @@ import { SubmitButton } from "@/components/submit-button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { bpsToPercent } from "@/lib/money";
+import { ConfirmRows, ConfirmSubmit } from "@/components/confirm-submit";
 import { money } from "@/lib/format";
+import { bidTerms, goodUntilRow } from "@/lib/offers";
 
 export function OfferPanel({
   listingId,
@@ -18,6 +20,8 @@ export function OfferPanel({
   noteId,
   heading,
   closedText = "This listing is not taking new bids.",
+  deposit,
+  diligenceDays,
 }: {
   listingId: string;
   premiumBps: number;
@@ -27,8 +31,13 @@ export function OfferPanel({
   noteId?: string;
   heading?: string;
   closedText?: string;
+  // The deposit a winning bidder owes, so the confirmation can say so: [percent, days to wire].
+  deposit?: [number, number];
+  // Days after an award in which the buyer may walk away. The listing page passes it when the desk sets one.
+  diligenceDays?: number;
 }) {
   const [amount, setAmount] = useState("");
+  const [goodUntil, setGoodUntil] = useState("");
   const offer = Number(amount.replace(/[$,]/g, ""));
   const premium = Number.isFinite(offer) ? (offer * premiumBps) / 10000 : 0;
   return (
@@ -43,14 +52,17 @@ export function OfferPanel({
           <input type="hidden" name="listingId" value={listingId} />
           <input type="hidden" name="type" value="OFFER" />
           {noteId ? <input type="hidden" name="noteId" value={noteId} /> : null}
-          <Input
-            name="amount"
-            inputMode="decimal"
-            placeholder="Offer price"
-            value={amount}
-            onChange={(event) => setAmount(event.target.value)}
-            className="h-12 bg-card"
-          />
+          <label className="block text-[13px] text-muted-foreground">
+            Your bid
+            <Input
+              name="amount"
+              inputMode="decimal"
+              required
+              value={amount}
+              onChange={(event) => setAmount(event.target.value)}
+              className="mt-1 h-12 bg-card"
+            />
+          </label>
           {offer > 0 && (
             <div className="space-y-1 text-sm text-muted-foreground">
               <div className="flex justify-between"><span>Your bid</span><span className="text-foreground">{money(offer)}</span></div>
@@ -60,10 +72,25 @@ export function OfferPanel({
               </div>
             </div>
           )}
-          <Textarea name="message" placeholder="Terms, proof of funds, questions" className="min-h-28 bg-card" />
-          <SubmitButton className="h-11 w-full text-[13px] font-medium" pendingLabel="Sending…">
+          <label className="block text-[13px] text-muted-foreground">
+            Good until (optional)
+            <Input name="goodUntil" type="date" value={goodUntil} onChange={(event) => setGoodUntil(event.target.value)} className="mt-1 h-12 bg-card" />
+            <span className="mt-1 block text-xs">Leave it blank and the bid stands until you withdraw it or the desk decides it.</span>
+          </label>
+          <label className="block text-[13px] text-muted-foreground">
+            Note to the desk (optional)
+            <Textarea name="message" placeholder="Terms, proof of funds, questions" className="mt-1 min-h-28 bg-card" />
+          </label>
+          <ConfirmSubmit
+            title={`Bid ${money(offer)}?`}
+            consequence={`If the desk accepts it, you're committed to buy at this price plus the buyer premium${deposit ? `, and a ${deposit[0]}% deposit is due within ${deposit[1]} day${deposit[1] === 1 ? "" : "s"}` : ""}.${bidTerms(diligenceDays)}`}
+            details={<ConfirmRows rows={[["Your bid", money(offer)], ["Buyer premium", money(premium)], ["All-in", money(offer + premium)], goodUntilRow(goodUntil)]} />}
+            confirmLabel="Place the bid"
+            pendingLabel="Sending…"
+            className="h-11 w-full text-[13px] font-medium"
+          >
             Submit offer
-          </SubmitButton>
+          </ConfirmSubmit>
         </form>
       ) : canOffer ? (
         <p className="mt-6 text-sm leading-relaxed text-muted-foreground">

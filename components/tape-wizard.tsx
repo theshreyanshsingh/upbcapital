@@ -11,6 +11,12 @@ import { bpsToPercent, typedNumber } from "@/lib/money";
 import { TAPE_FIELDS, type TapeFieldKey } from "@/lib/tape-fields";
 
 type TapeFlag = { row: number; level: "error" | "warn" | "fix"; field: string; message: string };
+type FlagCounts = { errors: number; warnings: number; fixes: number };
+type TapeField = (typeof TAPE_FIELDS)[number];
+type Mapping = Partial<Record<TapeFieldKey, string>>;
+
+const CORE_FIELDS = TAPE_FIELDS.filter((field) => field.group === "core");
+const SERVICING_FIELDS = TAPE_FIELDS.filter((field) => field.group === "servicing");
 
 type Preview = {
   token: string;
@@ -20,6 +26,7 @@ type Preview = {
   preview: Record<string, string>[];
   suggestions: Partial<Record<TapeFieldKey, string>>;
   flags?: TapeFlag[];
+  counts?: FlagCounts;
 };
 
 export function TapeWizard({
@@ -36,10 +43,12 @@ export function TapeWizard({
   const [pricePercent, setPricePercent] = useState("70");
   const [poolTotal, setPoolTotal] = useState("");
   const [preview, setPreview] = useState<Preview | null>(null);
-  const [mapping, setMapping] = useState<Partial<Record<TapeFieldKey, string>>>({});
+  const [mapping, setMapping] = useState<Mapping>({});
   const [error, setError] = useState("");
   const [flags, setFlags] = useState<TapeFlag[]>([]);
+  const [counts, setCounts] = useState<FlagCounts | null>(null);
   const [pending, start] = useTransition();
+  const servicingMapped = SERVICING_FIELDS.filter((field) => mapping[field.key]).length;
 
   async function onFile(file: File | undefined) {
     if (!file) return;
@@ -55,6 +64,7 @@ export function TapeWizard({
     setPreview(json);
     setMapping(json.suggestions ?? {});
     setFlags(json.flags ?? []);
+    setCounts(json.counts ?? null);
     setStep(2);
   }
 
@@ -71,6 +81,7 @@ export function TapeWizard({
       return;
     }
     setFlags(json.flags ?? []);
+    setCounts(json.counts ?? null);
   }
 
   function submit() {
@@ -80,10 +91,10 @@ export function TapeWizard({
       setStep(0);
       return;
     }
-    const missing = TAPE_FIELDS.filter((field) => field.required && !mapping[field.key]);
-    if (priceMode === "COLUMN" && !mapping.askingPrice) missing.push({ key: "askingPrice", label: "Asking price", required: false });
+    const missing = TAPE_FIELDS.filter((field) => field.required && !mapping[field.key]).map((field) => field.label as string);
+    if (priceMode === "COLUMN" && !mapping.askingPrice) missing.push("Asking price");
     if (missing.length) {
-      setError(`Map ${missing.map((field) => field.label).join(", ")}.`);
+      setError(`Map ${missing.join(", ")}.`);
       return;
     }
     const formData = new FormData();
@@ -143,7 +154,8 @@ export function TapeWizard({
       )}
       {step === 1 && (
         <div className="space-y-6">
-          <label className="flex min-h-72 cursor-pointer flex-col items-center justify-center border border-dashed border-link/40 bg-link/5 px-6 text-center rounded-lg">
+          {/* The file input is hidden, so the drop area shows its focus ring. */}
+          <label className="flex min-h-72 cursor-pointer flex-col items-center justify-center border border-dashed border-link/40 bg-link/5 px-6 text-center rounded-lg has-[input:focus-visible]:outline-2 has-[input:focus-visible]:outline-offset-2 has-[input:focus-visible]:outline-ring">
             <span className="eyebrow">Upload the tape</span>
             <span className="mt-4 font-semibold tracking-tight text-[28px] text-foreground">CSV or Excel</span>
             <span className="mt-3 max-w-md text-sm text-muted-foreground">The first row should be headers. We will suggest a mapping. Nothing is listed until you confirm.</span>
@@ -168,25 +180,23 @@ export function TapeWizard({
             <Button type="button" variant="outline" onClick={() => setStep(1)}>Replace file</Button>
           </div>
           <div className="grid gap-3 md:grid-cols-2">
-            {TAPE_FIELDS.map((field) => (
-              <label key={field.key} className="block">
-                <span className="text-[13px] text-muted-foreground">{field.label}{field.required || (field.key === "askingPrice" && priceMode === "COLUMN") ? " · required" : ""}</span>
-                <select
-                  className="desk-input mt-2"
-                  value={mapping[field.key] ?? ""}
-                  onChange={(event) => setMapping((current) => ({ ...current, [field.key]: event.target.value }))}
-                >
-                  <option value="">Do not map</option>
-                  {preview.headers.map((header) => (
-                    <option key={header} value={header}>{header}</option>
-                  ))}
-                </select>
-                <span className="mt-1 block truncate text-xs text-muted-foreground">
-                  {mapping[field.key] ? preview.preview[0]?.[mapping[field.key]!] || "—" : " "}
-                </span>
-              </label>
+            {CORE_FIELDS.map((field) => (
+              <MapField key={field.key} field={field} required={field.required || (field.key === "askingPrice" && priceMode === "COLUMN")} preview={preview} mapping={mapping} setMapping={setMapping} />
             ))}
           </div>
+          <section className="space-y-3 border-t border-border pt-6">
+            <div>
+              <p className="eyebrow">Servicing record</p>
+              <p className="mt-2 max-w-xl text-sm text-muted-foreground">
+                Optional. Map what the servicer&apos;s tape carries. Pay strings run newest month first: 0 paid on time, 1 to 9 months behind, X nothing due.
+              </p>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              {SERVICING_FIELDS.map((field) => (
+                <MapField key={field.key} field={field} required={false} preview={preview} mapping={mapping} setMapping={setMapping} />
+              ))}
+            </div>
+          </section>
           <div className="overflow-x-auto border border-border rounded-xl">
             <table className="min-w-full text-left text-xs">
               <thead className="text-xs font-medium text-muted-foreground">
@@ -211,7 +221,7 @@ export function TapeWizard({
             <Button type="button" variant="outline" onClick={recheck}>Recheck rows</Button>
             <Button type="button" className="h-11 px-5 text-[13px] font-medium" onClick={() => setStep(3)}>Review pool</Button>
           </div>
-          <TapeFlags flags={flags} />
+          <TapeFlags flags={flags} counts={counts} />
         </div>
       )}
       {step === 3 && preview && (
@@ -220,6 +230,9 @@ export function TapeWizard({
           <h2 className="mt-2 font-semibold tracking-tight text-[28px] text-foreground">{title}</h2>
           <p className="mt-4 max-w-xl text-sm leading-relaxed text-muted-foreground">{summary || "No narrative."}</p>
           <p className="mt-6 text-sm text-foreground">{preview.rowCount} loans · {priceMode === "COLUMN" ? "priced from the tape" : priceMode === "PERCENT" ? `${typedNumber(pricePercent)}% of UPB` : money(typedNumber(poolTotal) || 0) + " allocated by UPB"}</p>
+          <p className="mt-2 text-sm text-muted-foreground">
+            {servicingMapped === 0 ? "No servicing columns mapped." : `${servicingMapped} of ${SERVICING_FIELDS.length} servicing columns mapped.`}
+          </p>
           <p className="mt-2 text-sm text-muted-foreground">Commission of {bpsToPercent(commissionBps).toFixed(2)}% is deducted from the accepted sale price, not from UPB.</p>
           <div className="mt-8 flex justify-between">
             <Button type="button" variant="ghost" onClick={() => setStep(2)}>Back</Button>
@@ -229,16 +242,51 @@ export function TapeWizard({
           </div>
         </div>
       )}
-      {error && <p className="text-sm text-bad">{error}</p>}
+      {error && <p role="alert" className="text-sm text-bad">{error}</p>}
     </div>
   );
 }
 
-function TapeFlags({ flags }: { flags: TapeFlag[] }) {
+function MapField({
+  field,
+  required,
+  preview,
+  mapping,
+  setMapping,
+}: {
+  field: TapeField;
+  required: boolean;
+  preview: Preview;
+  mapping: Mapping;
+  setMapping: React.Dispatch<React.SetStateAction<Mapping>>;
+}) {
+  const header = mapping[field.key];
+  return (
+    <label className="block">
+      <span className="text-[13px] text-muted-foreground">{field.label}{required ? " · required" : ""}</span>
+      <select
+        className="desk-input mt-2"
+        value={header ?? ""}
+        onChange={(event) => setMapping((current) => ({ ...current, [field.key]: event.target.value }))}
+      >
+        <option value="">Do not map</option>
+        {preview.headers.map((option) => (
+          <option key={option} value={option}>{option}</option>
+        ))}
+      </select>
+      <span className="mt-1 block truncate text-xs text-muted-foreground">
+        {header ? preview.preview[0]?.[header] || "—" : " "}
+      </span>
+    </label>
+  );
+}
+
+function TapeFlags({ flags, counts }: { flags: TapeFlag[]; counts: FlagCounts | null }) {
   if (!flags.length) return <p className="text-sm text-muted-foreground">No data issues on the mapped columns.</p>;
-  const errors = flags.filter((flag) => flag.level === "error").length;
-  const warnings = flags.filter((flag) => flag.level === "warn").length;
-  const fixes = flags.filter((flag) => flag.level === "fix").length;
+  // The server sends 40 flags at most, so its counts cover the rows the list leaves out.
+  const errors = counts?.errors ?? flags.filter((flag) => flag.level === "error").length;
+  const warnings = counts?.warnings ?? flags.filter((flag) => flag.level === "warn").length;
+  const fixes = counts?.fixes ?? flags.filter((flag) => flag.level === "fix").length;
   return (
     <div className="border border-border p-4 rounded-xl">
       <p className="eyebrow">{errors} errors · {warnings} warnings · {fixes} auto-fixes</p>

@@ -118,58 +118,94 @@ export default async function MarketplacePage({
       />
       <Notice notice={q(params, "notice")} error={q(params, "error")} />
       <form className="mt-8 grid gap-3 border border-border p-4 md:grid-cols-4 lg:grid-cols-8 rounded-xl">
-        <input name="q" defaultValue={filters.q ?? ""} placeholder="City" className="desk-input lg:col-span-2" />
-        <select name="state" defaultValue={filters.state ?? ""} className="desk-input">
-          <option value="">Any state</option>
-          {states.map((state) => <option key={state}>{state}</option>)}
-        </select>
-        <select name="paymentStatus" defaultValue={filters.paymentStatus ?? ""} className="desk-input">
-          <option value="">Any performance</option>
-          <option value="PERFORMING">Performing</option>
-          <option value="SUB_PERFORMING">Sub-performing</option>
-          <option value="NON_PERFORMING">Non-performing</option>
-        </select>
-        <select name="lienPosition" defaultValue={filters.lienPosition ?? ""} className="desk-input">
-          <option value="">Any lien</option>
-          <option value="FIRST">First</option>
-          <option value="SECOND">Second</option>
-          <option value="THIRD">Third</option>
-        </select>
-        <select name="propertyType" defaultValue={filters.propertyType ?? ""} className="desk-input">
-          <option value="">Any property</option>
-          <option value="SFR">Single family</option>
-          <option value="CONDO">Condo</option>
-          <option value="TOWNHOUSE">Townhouse</option>
-          <option value="MULTIFAMILY">Multifamily</option>
-          <option value="LAND">Land</option>
-          <option value="COMMERCIAL">Commercial</option>
-        </select>
+        <label className="block text-xs text-muted-foreground lg:col-span-2">
+          City
+          <input name="q" defaultValue={filters.q ?? ""} placeholder="Any city" className="desk-input mt-1" />
+        </label>
+        <label className="block text-xs text-muted-foreground">
+          State
+          <select name="state" defaultValue={filters.state ?? ""} className="desk-input mt-1">
+            <option value="">Any state</option>
+            {states.map((state) => <option key={state}>{state}</option>)}
+          </select>
+        </label>
+        <label className="block text-xs text-muted-foreground">
+          Performance
+          <select name="paymentStatus" defaultValue={filters.paymentStatus ?? ""} className="desk-input mt-1">
+            <option value="">Any performance</option>
+            <option value="PERFORMING">Performing</option>
+            <option value="SUB_PERFORMING">Sub-performing</option>
+            <option value="NON_PERFORMING">Non-performing</option>
+          </select>
+        </label>
+        <label className="block text-xs text-muted-foreground">
+          Lien
+          <select name="lienPosition" defaultValue={filters.lienPosition ?? ""} className="desk-input mt-1">
+            <option value="">Any lien</option>
+            <option value="FIRST">First</option>
+            <option value="SECOND">Second</option>
+            <option value="THIRD">Third</option>
+          </select>
+        </label>
+        <label className="block text-xs text-muted-foreground">
+          Property
+          <select name="propertyType" defaultValue={filters.propertyType ?? ""} className="desk-input mt-1">
+            <option value="">Any property</option>
+            <option value="SFR">Single family</option>
+            <option value="CONDO">Condo</option>
+            <option value="TOWNHOUSE">Townhouse</option>
+            <option value="MULTIFAMILY">Multifamily</option>
+            <option value="LAND">Land</option>
+            <option value="COMMERCIAL">Commercial</option>
+          </select>
+        </label>
         {pro && (
           <>
-            <input name="upbMin" defaultValue={q(params, "upbMin")} placeholder="UPB min" className="desk-input" />
-            <input name="upbMax" defaultValue={q(params, "upbMax")} placeholder="UPB max" className="desk-input" />
-            <input name="priceMin" defaultValue={q(params, "priceMin")} placeholder="Price min" className="desk-input" />
-            <input name="priceMax" defaultValue={q(params, "priceMax")} placeholder="Price max" className="desk-input" />
+            <label className="block text-xs text-muted-foreground">
+              UPB from
+              <input name="upbMin" inputMode="decimal" defaultValue={q(params, "upbMin")} placeholder="UPB min" className="desk-input mt-1" />
+            </label>
+            <label className="block text-xs text-muted-foreground">
+              UPB to
+              <input name="upbMax" inputMode="decimal" defaultValue={q(params, "upbMax")} placeholder="UPB max" className="desk-input mt-1" />
+            </label>
+            <label className="block text-xs text-muted-foreground">
+              Price from
+              <input name="priceMin" inputMode="decimal" defaultValue={q(params, "priceMin")} placeholder="Price min" className="desk-input mt-1" />
+            </label>
+            <label className="block text-xs text-muted-foreground">
+              Price to
+              <input name="priceMax" inputMode="decimal" defaultValue={q(params, "priceMax")} placeholder="Price max" className="desk-input mt-1" />
+            </label>
           </>
         )}
-        <select name="kind" defaultValue={filters.kind ?? ""} className="desk-input">
-          <option value="">Notes and pools</option>
-          <option value="SINGLE">Notes</option>
-          <option value="POOL">Pools</option>
-        </select>
-        <select name="sort" defaultValue={order} className="desk-input">
-          <option value="new">Newest</option>
-          {pro && <option value="discount">Deepest discount</option>}
-          {pro && <option value="yield">Highest yield</option>}
-          {pro && <option value="upb">Largest UPB</option>}
-        </select>
-        <Button type="submit" className="h-11 text-[13px] font-medium">Apply</Button>
-        <Link href="/marketplace" className="inline-flex h-11 items-center text-[13px] font-medium text-muted-foreground">Reset</Link>
+        <label className="block text-xs text-muted-foreground">
+          Type
+          <select name="kind" defaultValue={filters.kind ?? ""} className="desk-input mt-1">
+            <option value="">Notes and pools</option>
+            <option value="SINGLE">Notes</option>
+            <option value="POOL">Pools</option>
+          </select>
+        </label>
+        <label className="block text-xs text-muted-foreground">
+          Sort
+          <select name="sort" defaultValue={order} className="desk-input mt-1">
+            <option value="new">Newest</option>
+            {pro && <option value="discount">Deepest discount</option>}
+            {pro && <option value="yield">Highest yield</option>}
+            {pro && <option value="upb">Largest UPB</option>}
+          </select>
+        </label>
+        <Button type="submit" className="h-10 self-end text-[13px] font-medium">Apply</Button>
+        <Link href="/marketplace" className="inline-flex h-10 items-center self-end text-[13px] font-medium text-muted-foreground">Reset</Link>
       </form>
       {pro && filtersActive(applied) && (
         <form action={saveSearch} className="mt-4 flex flex-wrap items-center gap-3">
           <input type="hidden" name="filters" value={JSON.stringify(applied)} />
-          <input name="name" placeholder="Name this search" className="desk-input max-w-xs" />
+          <label className="block text-xs text-muted-foreground">
+            Name this search
+            <input name="name" required minLength={2} className="desk-input mt-1 max-w-xs" />
+          </label>
           <Button type="submit" variant="outline" className="h-11 text-[13px] font-medium">Save alert</Button>
         </form>
       )}
