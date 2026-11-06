@@ -237,9 +237,22 @@
     letter-spacing: -0.006em;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    /* A long link or loan number breaks inside its panel rather than pushing past the screen. */
+    /* A tap flashes a faint wash of the accent rather than the browser's grey box. Controls with their own
+       pressed state turn it off (see the tab bar and buttons below). */
+    -webkit-tap-highlight-color: color-mix(in oklab, var(--brand) 14%, transparent);
+    /* A long link, address or reference breaks inside its panel rather than running off a phone screen. */
     overflow-wrap: break-word;
+  }
+  [data-slot="button"],
+  [data-slot="dock"] :is(a, button) {
     -webkit-tap-highlight-color: transparent;
+  }
+  /* Figures never break: a number split over two lines would read as two numbers. Set on the figure itself, so it
+     holds whatever it inherits. */
+  .figure,
+  .tabular-nums,
+  [data-figure] {
+    overflow-wrap: normal;
   }
   /* Real heading defaults. h1 is the page title, set in the display serif; h2 and h3 stay in Inter. */
   h1 {
@@ -357,7 +370,7 @@
     border: 1px solid var(--input);
     background: var(--field);
     padding: 0 0.75rem;
-    /* 16px on phones so iOS doesn't zoom into the field; 14px once there's a keyboard and a mouse. */
+    /* 16px on touch screens so iOS doesn't zoom into the field; 14px on a wide screen with a mouse. */
     font-size: 1rem;
     line-height: 1.5;
     color: var(--foreground);
@@ -367,7 +380,9 @@
       background-color var(--dur-1) var(--ease-standard);
   }
 
-  @media (min-width: 768px) {
+  /* Only with a mouse or trackpad: on any touch screen, a phone in landscape included, a field under 16px makes iOS
+     zoom in. */
+  @media (min-width: 768px) and (pointer: fine) {
     .desk-input {
       font-size: 0.875rem;
     }
@@ -426,6 +441,12 @@
   outline-offset: 1px;
 }
 
+/* In the phone's tab bar the ring sits inside each tab, so a neighbour or the screen edge never clips it. This
+   rule is unlayered like the one above, which a utility class couldn't override. */
+[data-slot="dock"] :focus-visible {
+  outline-offset: -2px;
+}
+
 /* A field drawn by its wrapper (an icon and a bare input in one box) rings the wrapper instead. */
 .field-shell:focus-within {
   outline: 2px solid var(--ring);
@@ -479,32 +500,75 @@
   }
 }
 
-/*
-  Phones. The desk's tab bar (components/mobile-dock.tsx) sits at the bottom, within reach of a thumb. --dock is
-  its height including the home-indicator inset, so anything else pinned to the bottom (the bid bar, the compare
-  tray, a wizard's footer, toasts) sits just above it. While a text field has focus the bar steps aside, so the
-  keyboard and the field get the whole screen.
-*/
+/* A strip that runs edge to edge through the desk's page gutter (--gutter-l/-r, set on <main> in
+   components/app-shell.tsx), keeping its content on the gutter line. */
+@utility bleed-x {
+  margin-left: calc(-1 * var(--gutter-l, 1rem));
+  margin-right: calc(-1 * var(--gutter-r, 1rem));
+  padding-left: var(--gutter-l, 1rem);
+  padding-right: var(--gutter-r, 1rem);
+}
+
+/* Item titles and big figures, set for a desk screen, come down a step on a phone. */
 @media (max-width: 47.99rem) {
   :root {
-    /* Item titles and big figures, set for a desk screen, come down a step on a phone. */
     --text-2xl: 1.25rem;
     --text-3xl: 1.5rem;
   }
+}
 
+/*
+  Phones and tablets (below 1024px, where the sidebar takes over). The desk's tab bar (components/mobile-dock.tsx)
+  sits at the bottom, within reach of a thumb. --dock is its height: 3.75rem of tabs, its 1px top rule and the
+  home-indicator inset. Anything else pinned to the bottom (the bid bar, the compare tray, a wizard's footer,
+  toasts) sits just above it. Jumps to an anchor and focus land clear of the top bar and of the tab bar.
+*/
+@media (max-width: 63.99rem) {
   html:has([data-slot="dock"]) {
-    --dock: calc(3.75rem + env(safe-area-inset-bottom));
+    --dock: calc(3.75rem + 1px + env(safe-area-inset-bottom));
+    scroll-padding-top: calc(3.25rem + 1px + env(safe-area-inset-top) + 0.75rem);
     scroll-padding-bottom: calc(var(--dock) + 1rem);
   }
 
-  @media (pointer: coarse) {
-    html:has(:is(input:not([type="checkbox"], [type="radio"], [type="submit"], [type="button"], [type="file"], [type="range"]), textarea):focus) {
-      --dock: 0px;
-    }
+  /* A listing's section tabs hold under the top bar too (components/listing-tabs.tsx), so jumps clear both. */
+  html:has([data-slot="listing-tabs"]) {
+    scroll-padding-top: calc(3.25rem + 1px + env(safe-area-inset-top) + 2.75rem + 1px + 0.75rem);
+  }
+}
 
-    html:has(:is(input:not([type="checkbox"], [type="radio"], [type="submit"], [type="button"], [type="file"], [type="range"]), textarea):focus) :is([data-slot="dock"], [data-slot="bid-bar"]) {
-      display: none;
-    }
+/* A listing's bid bar (components/bid-bar.tsx) shows below 1024px, or on any screen too short for the offer panel to
+   stay in view. --bar is its height, so the tour and toasts sit above it and focus scrolls clear of it. */
+@media (max-width: 63.99rem), (max-height: 49.99rem) {
+  html:has([data-slot="bid-bar"]) {
+    --bar: calc(4rem + 1px);
+    scroll-padding-bottom: calc(var(--dock, 0px) + var(--bar) + 1rem);
+  }
+}
+
+/* A phone on its side is short: the top bar and a listing's tabs scroll away with the page rather than holding,
+   so the tab bar and the bid bar aren't joined by two more pinned strips. */
+@media (max-width: 63.99rem) and (max-height: 30rem) {
+  :is([data-slot="phone-header"], [data-slot="listing-tabs"]) {
+    position: static;
+  }
+
+  html:has([data-slot="dock"]),
+  html:has([data-slot="listing-tabs"]) {
+    scroll-padding-top: 0.75rem;
+  }
+}
+
+/* While a text field has focus on a phone (upright or on its side) the tab bar and the bid bar step aside, so the
+   keyboard and the field get the screen. A tablet keeps them: there is room, and a hardware keyboard raises no
+   on-screen one. */
+@media (pointer: coarse) and (max-width: 47.99rem), (pointer: coarse) and (max-height: 30rem) {
+  html:has(:is(input:not([type="checkbox"], [type="radio"], [type="submit"], [type="button"], [type="file"], [type="range"]), textarea):focus) {
+    --dock: 0px;
+    --bar: 0px;
+  }
+
+  html:has(:is(input:not([type="checkbox"], [type="radio"], [type="submit"], [type="button"], [type="file"], [type="range"]), textarea):focus) :is([data-slot="dock"], [data-slot="bid-bar"]) {
+    display: none;
   }
 }
 

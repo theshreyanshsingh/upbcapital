@@ -229,17 +229,29 @@ export function NoteWizard({
 
   return (
     <div className="grid gap-5 sm:gap-8 lg:grid-cols-[200px_minmax(0,1fr)]">
-      {/* Below a wide screen the steps are one line, which step of how many, and a bar that fills as they go. */}
-      <div className="lg:hidden" aria-live="polite">
-        <div className="flex items-baseline justify-between gap-3">
+      {/* Below a wide screen the steps are one line, which step of how many, and a bar that fills as they go. A
+          finished step's segment goes back to it, as the step list does on a wide screen. */}
+      <div className="lg:hidden">
+        <div className="flex items-baseline justify-between gap-3" aria-live="polite">
           <p className="text-[13px] font-medium text-link tabular-nums">Step {step + 1} of {steps.length}</p>
           <p className="truncate text-sm font-semibold text-foreground">{steps[step]}</p>
         </div>
-        <div aria-hidden className="mt-2 flex gap-1">
+        <ol className="mt-1 flex gap-1">
           {steps.map((label, index) => (
-            <span key={label} className={`step-bar h-1 flex-1 rounded-full ${index <= step ? "bg-link" : "bg-muted"}`} />
+            <li key={label} className="flex-1">
+              <button
+                type="button"
+                disabled={index >= step}
+                onClick={() => setStep(index)}
+                aria-label={index < step ? `Back to step ${index + 1}, ${label}` : `Step ${index + 1}, ${label}`}
+                aria-current={index === step ? "step" : undefined}
+                className="flex h-6 w-full items-center disabled:cursor-default"
+              >
+                <span className={`step-bar h-1 w-full rounded-full ${index <= step ? "bg-link" : "bg-muted"}`} />
+              </button>
+            </li>
           ))}
-        </div>
+        </ol>
       </div>
       <ol className="relative hidden lg:block lg:space-y-4">
         {steps.map((label, index) => (

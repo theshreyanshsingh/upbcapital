@@ -11,7 +11,7 @@ export type ChipGroup = { label: string; chips: Chip[] };
 export function BookChips({ groups, applied, clearHref }: { groups: ChipGroup[]; applied: { label: string; href: string }[]; clearHref: string }) {
   return (
     <div className="mt-4 space-y-3">
-      <div className="relative flex items-center gap-x-5 gap-y-2 max-md:-mx-4 max-md:no-scrollbar max-md:overflow-x-auto max-md:overscroll-x-contain max-md:px-4 md:flex-wrap">
+      <div className="relative flex items-center gap-x-5 gap-y-2 max-md:bleed-x max-md:no-scrollbar max-md:overflow-x-auto max-md:overscroll-x-contain md:flex-wrap">
         {groups.filter((group) => group.chips.length > 0).map((group) => (
           <div key={group.label} role="group" aria-label={group.label} className="flex shrink-0 items-center gap-1.5 md:flex-wrap">
             <span className="mr-1 shrink-0 text-xs font-medium text-muted-foreground">{group.label}</span>
@@ -31,7 +31,7 @@ export function BookChips({ groups, applied, clearHref }: { groups: ChipGroup[];
         ))}
       </div>
       {applied.length > 0 && (
-        <div className="relative flex items-center gap-1.5 max-md:-mx-4 max-md:no-scrollbar max-md:overflow-x-auto max-md:px-4 md:flex-wrap">
+        <div className="relative flex items-center gap-1.5 max-md:bleed-x max-md:no-scrollbar max-md:overflow-x-auto md:flex-wrap">
           <span className="mr-1 shrink-0 text-xs font-medium text-muted-foreground">Applied</span>
           {applied.map((chip) => (
             <Link key={chip.label} href={chip.href} className="inline-flex min-h-7 shrink-0 items-center gap-1 rounded-full bg-muted px-2.5 text-xs font-medium whitespace-nowrap text-foreground hover:bg-muted/70 pointer-coarse:min-h-9 pointer-coarse:px-3">

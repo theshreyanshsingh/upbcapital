@@ -38,6 +38,9 @@ export function SheetHandle({ className, children }: { className?: string; child
     const speed = dy / Math.max(1, performance.now() - held.at);
     held.popup.style.transition = "";
     if (dy > 96 || (dy > 24 && speed > 0.6)) {
+      // A dialog leaves by keyframes that end 2rem below where it opened; aim them past where the finger let go, so
+      // it carries on down instead of jumping back up. A sheet leaves by transition and is unaffected.
+      held.popup.style.setProperty("--tw-exit-translate-y", `${dy + 32}px`);
       close.current?.click();
       return;
     }

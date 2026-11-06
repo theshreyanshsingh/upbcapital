@@ -37,7 +37,7 @@ export function OnboardingTour({ role }: { role: string }) {
     setIndex(null);
   }
   return (
-    <div className="fixed inset-x-3 bottom-[calc(var(--dock,0px)+0.75rem)] z-40 rounded-[14px] border border-border bg-popover p-4 shadow-[var(--shadow)] sm:inset-x-auto sm:right-6 sm:bottom-[calc(var(--dock,0px)+1.5rem)] sm:w-96">
+    <div className="fixed right-[max(0.75rem,env(safe-area-inset-right))] bottom-[calc(var(--dock,0px)+var(--bar,0px)+0.75rem)] left-[max(0.75rem,env(safe-area-inset-left))] z-40 rounded-[14px] border border-border bg-popover p-4 shadow-[var(--shadow)] sm:right-[max(1.5rem,env(safe-area-inset-right))] sm:bottom-[calc(var(--dock,0px)+var(--bar,0px)+1.5rem)] sm:left-auto sm:w-96">
       <p className="eyebrow">First look · {index + 1} of {steps.length}</p>
       <h2 className="mt-1 text-base font-semibold tracking-tight text-foreground">{step.title}</h2>
       <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{step.body}</p>

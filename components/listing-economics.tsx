@@ -94,7 +94,7 @@ function Figure({ term, value, basis }: { term: string; value: string; basis: st
   return (
     <div>
       <dt className="text-xs font-medium text-muted-foreground">{term}</dt>
-      <dd className="mt-1 font-semibold tracking-tight text-xl text-foreground tabular-nums break-words @md:text-2xl">{value}</dd>
+      <dd className="mt-1 font-semibold tracking-tight text-xl text-foreground tabular-nums @md:text-2xl">{value}</dd>
       <dd className="mt-1 text-xs leading-relaxed text-muted-foreground">{basis}</dd>
     </div>
   );

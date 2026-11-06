@@ -205,7 +205,7 @@ export default async function ClosingPage({
                       step.files.length > 0 && <p className="mt-3 text-xs text-muted-foreground">{step.files.length} file{step.files.length === 1 ? "" : "s"} with the parties.</p>
                     )}
                     {forms && (
-                      <StepForms open={next} label={done ? "Add a file" : "Add a file or sign off"}>
+                      <StepForms open={next} label={done || !isAdmin ? "Add a file" : "Add a file or sign off"}>
                         {party && closing.status === "OPEN" && (
                           <form action={uploadClosingFile} className="mt-4 flex flex-wrap items-center gap-3">
                             <input type="hidden" name="closingId" value={closing.id} />

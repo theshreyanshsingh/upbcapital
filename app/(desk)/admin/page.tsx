@@ -125,9 +125,10 @@ function Kpi({ k, v, hint }: { k: string; v: string; hint: string }) {
 
 function Figure({ k, v, hint }: { k: string; v: string; hint?: string }) {
   return (
-    <div className="glass p-4 sm:p-6">
+    <div className="glass @container p-4 sm:p-6">
       <p className="eyebrow">{k}</p>
-      <p className="mt-2 font-semibold tracking-tight text-xl break-words text-foreground sm:mt-3 sm:text-[28px]">{v}</p>
+      {/* Sized to the card, so a long figure shrinks to fit rather than overflowing or breaking mid-number. */}
+      <p className="figure mt-2 text-[clamp(1.125rem,13cqi,1.75rem)] leading-tight font-semibold tracking-tight whitespace-nowrap text-foreground sm:mt-3">{v}</p>
       {hint && <p className="mt-2 text-xs text-muted-foreground">{hint}</p>}
     </div>
   );

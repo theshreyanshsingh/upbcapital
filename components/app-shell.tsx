@@ -20,7 +20,7 @@ export function AppShell({ user, children }: { user: ShellUser; children: React.
   const items = navFor(user);
   return (
     <div className="min-h-screen">
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-72 flex-col border-r border-sidebar-border bg-sidebar px-3 pt-3 pb-3 md:flex">
+      <aside className="fixed inset-y-0 left-0 z-30 hidden w-72 flex-col border-r border-sidebar-border bg-sidebar px-3 pt-3 pb-3 lg:flex print:hidden">
         <div className="flex h-11 items-center px-2 pb-1">
           <Logo href={homeFor(user.role)} />
         </div>
@@ -29,9 +29,10 @@ export function AppShell({ user, children }: { user: ShellUser; children: React.
         <SideNav items={items} />
         <Account user={user} />
       </aside>
-      <div className="md:pl-72">
-        {/* On a phone: the mark and search up top, and the tab bar below within reach of a thumb. */}
-        <header className="sticky top-0 z-30 border-b border-border/70 bg-background/88 pt-[env(safe-area-inset-top)] backdrop-blur-xl supports-backdrop-filter:bg-background/72 md:hidden">
+      <div className="lg:pl-72 print:pl-0">
+        {/* Below 1024px (phones and tablets): the mark and search up top, and the tab bar below within reach of a
+            thumb. The sidebar takes over from 1024px. */}
+        <header data-slot="phone-header" className="sticky top-0 z-30 border-b border-border/70 bg-background/88 pt-[env(safe-area-inset-top)] backdrop-blur-xl supports-backdrop-filter:bg-background/72 lg:hidden print:hidden">
           <div className="flex h-13 items-center justify-between gap-3 pr-[max(0.75rem,env(safe-area-inset-right))] pl-[max(1rem,env(safe-area-inset-left))]">
             <Logo href={homeFor(user.role)} />
             <button
@@ -44,9 +45,11 @@ export function AppShell({ user, children }: { user: ShellUser; children: React.
             </button>
           </div>
         </header>
+        {/* The page gutter is --gutter-l/-r, never less than the notch's inset in landscape. A full-bleed strip
+            (sticky tabs, a swipe row) uses the bleed-x utility to reach the edges through it. */}
         <main
           id="desk"
-          className="min-w-0 pt-5 pr-[max(1rem,env(safe-area-inset-right))] pb-[calc(var(--dock,0px)+2.5rem)] pl-[max(1rem,env(safe-area-inset-left))] md:px-8 md:pt-7 md:pb-12"
+          className="min-w-0 pt-5 pr-(--gutter-r) pb-[calc(var(--dock,0px)+2.5rem)] pl-(--gutter-l) [--gutter-l:max(1rem,env(safe-area-inset-left))] [--gutter-r:max(1rem,env(safe-area-inset-right))] md:pt-7 md:[--gutter-l:max(2rem,env(safe-area-inset-left))] md:[--gutter-r:max(2rem,env(safe-area-inset-right))] lg:pb-12 print:pb-0"
         >
           {children}
         </main>

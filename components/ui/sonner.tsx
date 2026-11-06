@@ -12,8 +12,9 @@ const Toaster = ({ ...props }: ToasterProps) => {
     <Sonner
       theme={theme}
       className="toaster group"
-      // On a phone toasts stack just above the desk's tab bar.
-      mobileOffset={{ bottom: "calc(var(--dock, 0px) + 12px)" }}
+      // Toasts stack just above the desk's tab bar (below 1024px) and a listing's bid bar, wherever those show.
+      offset={{ bottom: "calc(var(--dock, 0px) + var(--bar, 0px) + 24px)" }}
+      mobileOffset={{ bottom: "calc(var(--dock, 0px) + var(--bar, 0px) + 12px)" }}
       icons={{
         success: (
           <CircleCheckIcon className="size-4 text-good" />

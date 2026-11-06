@@ -12,35 +12,41 @@ import { active, dockFor, initials, tabActive, type NavItem, type ShellUser } fr
 import { roleLabel } from "@/lib/labels";
 import { cn } from "@/lib/utils";
 
-// The phone's tab bar: the four places this role goes most, and More for everything else. It sits above the
-// home indicator, and --dock in globals.css tells the rest of the page how tall it is.
+// The tab bar for phones and tablets (below 1024px, where the sidebar takes over): the four places this role goes
+// most, and More for everything else. It sits above the home indicator, and --dock in globals.css tells the rest
+// of the page how tall it is.
 export function MobileDock({ user, items }: { user: ShellUser; items: NavItem[] }) {
   const path = usePathname();
   const [open, setOpen] = useState(false);
   // The sheet opens with focus on its header, so the desk search field doesn't raise the keyboard.
   const header = useRef<HTMLDivElement>(null);
-  // A tapped tab lights at once, before its page arrives; the address takes over once it changes.
-  const [tapped, setTapped] = useState<{ href: string; from: string } | null>(null);
-  const pending = tapped && tapped.from === path ? tapped.href : null;
+  // A tapped tab lights at once, before its page arrives. Any change of address (the tap landing, Back, a link in
+  // the page) clears it, so from then on the bar follows the address alone.
+  const [tapped, setTapped] = useState<string | null>(null);
+  const [seenPath, setSeenPath] = useState(path);
+  if (seenPath !== path) {
+    setSeenPath(path);
+    setTapped(null);
+  }
   const tabs = dockFor(user);
-  const isOn = (href: string) => (pending ? pending === href : tabActive(path, href));
+  const isOn = (href: string) => (tapped ? tapped === href : tabActive(path, href));
   const onTab = tabs.some((tab) => isOn(tab.href));
   const rest = items.filter((item) => !tabs.some((tab) => tab.href === item.href));
   return (
     <nav
       data-slot="dock"
       aria-label="Main"
-      className="fixed inset-x-0 bottom-0 z-30 border-t border-border/70 bg-background/88 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl supports-backdrop-filter:bg-background/72 md:hidden"
+      className="fixed inset-x-0 bottom-0 z-30 border-t border-border/70 bg-background/88 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl supports-backdrop-filter:bg-background/72 lg:hidden print:hidden"
     >
       <ul className="mx-auto grid h-15 max-w-lg grid-cols-5 pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)]">
         {tabs.map((tab) => (
           <li key={tab.href}>
-            <DockTab item={tab} on={isOn(tab.href)} onTap={() => setTapped({ href: tab.href, from: path })} />
+            <DockTab item={tab} on={isOn(tab.href)} onTap={() => setTapped(tab.href)} />
           </li>
         ))}
         <li>
           <Sheet open={open} onOpenChange={setOpen}>
-            <SheetTrigger className={cn(tabClass, !onTab && "text-foreground")} aria-current={!onTab ? "page" : undefined}>
+            <SheetTrigger className={cn(tabClass, !onTab && "text-foreground")}>
               <span className={cn(pillClass, !onTab && "bg-link/12")}>
                 <Ellipsis className={cn("size-[22px]", !onTab && "text-link")} strokeWidth={!onTab ? 2.2 : 1.8} />
               </span>
@@ -50,7 +56,7 @@ export function MobileDock({ user, items }: { user: ShellUser; items: NavItem[] 
               side="bottom"
               showCloseButton={false}
               initialFocus={header}
-              className="max-h-[88dvh] gap-0 rounded-t-[22px] border-border bg-sidebar p-0 pb-[env(safe-area-inset-bottom)]"
+              className="max-h-[88dvh] gap-0 rounded-t-[22px] border-border bg-sidebar p-0 pb-[env(safe-area-inset-bottom)] sm:mx-auto sm:max-w-lg sm:border-x"
             >
               <SheetHandle>
                 <div ref={header} tabIndex={-1} className="flex items-center gap-3 px-5 pt-3 pb-4 outline-none">
@@ -94,8 +100,9 @@ export function MobileDock({ user, items }: { user: ShellUser; items: NavItem[] 
   );
 }
 
+// Keyboard focus shows the global ring, inset inside the tab by a rule in globals.css.
 const tabClass =
-  "group flex h-full w-full flex-col items-center justify-center gap-0.5 text-[11px] leading-4 font-medium text-muted-foreground outline-none select-none focus-visible:text-foreground";
+  "group flex h-full w-full flex-col items-center justify-center gap-0.5 rounded-xl text-[11px] leading-4 font-medium text-muted-foreground select-none focus-visible:text-foreground";
 const pillClass =
   "relative grid h-8 w-14 place-items-center rounded-full transition-[background-color,scale] duration-(--dur-1) ease-(--ease-standard) group-active:scale-90";
 
@@ -103,7 +110,16 @@ function DockTab({ item, on, onTap }: { item: NavItem; on: boolean; onTap: () =>
   const Icon = item.icon;
   const count = item.count ? (item.count > 99 ? "99+" : String(item.count)) : null;
   return (
-    <Link href={item.href} onClick={onTap} aria-current={on ? "page" : undefined} className={cn(tabClass, on && "text-foreground")}>
+    <Link
+      href={item.href}
+      onClick={(event) => {
+        // A click that opens a new tab or window leaves this page where it is, so it lights nothing.
+        if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+        onTap();
+      }}
+      aria-current={on ? "page" : undefined}
+      className={cn(tabClass, on && "text-foreground")}
+    >
       <span className={cn(pillClass, on && "bg-link/12")}>
         <Icon className={cn("size-[21px]", on && "text-link")} strokeWidth={on ? 2.2 : 1.8} />
         {count && (
@@ -169,12 +185,13 @@ function SheetRow({ href, icon: Icon, label, onPick }: { href: string; icon: Luc
   );
 }
 
-// The desk's record search, by name, email, loan number or address. 16px on a phone so iOS doesn't zoom in.
+// The desk's record search, by name, email, loan number or address. In the More sheet (below 1024px) it is a
+// finger tall; on any touch screen its text is 16px, so iOS doesn't zoom in. In the sidebar it is the compact field.
 export function DeskSearch() {
   return (
-    <form action="/admin/search" role="search" className="mb-3 px-0.5 max-md:mb-4 max-md:px-0">
-      <label className="field-shell flex h-8 items-center gap-2 rounded-lg border border-input bg-field px-2.5 text-sm transition-colors focus-within:border-ring max-md:h-11 max-md:rounded-xl max-md:text-base">
-        <Search className="size-3.5 shrink-0 text-muted-foreground max-md:size-4" />
+    <form action="/admin/search" role="search" className="mb-3 px-0.5 max-lg:mb-4 max-lg:px-0">
+      <label className="field-shell flex h-8 items-center gap-2 rounded-lg border border-input bg-field px-2.5 text-sm transition-colors focus-within:border-ring max-lg:h-11 max-lg:rounded-xl max-lg:text-base pointer-coarse:text-base">
+        <Search className="size-3.5 shrink-0 text-muted-foreground max-lg:size-4" />
         <input name="q" type="search" placeholder="Search the desk" aria-label="Search the desk" className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-faint" />
       </label>
     </form>

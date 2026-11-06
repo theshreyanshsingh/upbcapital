@@ -198,9 +198,10 @@ export default async function BrokerHome() {
 
 function FeeCard({ k, v, hint, delay }: { k: string; v: string; hint: string; delay: string }) {
   return (
-    <div className={`glass rise p-4 sm:p-5 ${delay}`}>
+    <div className={`glass rise @container p-4 sm:p-5 ${delay}`}>
       <p className="eyebrow">{k}</p>
-      <p className="mt-2 font-semibold tracking-tight text-xl break-words text-foreground sm:mt-3 sm:text-3xl">{v}</p>
+      {/* Sized to the card, so a long figure shrinks to fit rather than overflowing or breaking mid-number. */}
+      <p className="figure mt-2 text-[clamp(1.125rem,13cqi,1.875rem)] leading-tight font-semibold tracking-tight whitespace-nowrap text-foreground sm:mt-3">{v}</p>
       <p className="mt-2 text-xs text-muted-foreground">{hint}</p>
     </div>
   );

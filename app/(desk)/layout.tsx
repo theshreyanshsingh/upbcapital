@@ -16,14 +16,12 @@ export const metadata: Metadata = {
   appleWebApp: { capable: true, title: "UPB Capital", statusBarStyle: "default" },
 };
 
-// The status bar matches the top bar (the page colour) in each system theme. The page runs under the notch and
-// the home indicator, and the shell pads itself with the safe-area insets.
+// The page runs under the notch and the home indicator, and the shell pads itself with the safe-area insets. On
+// Android the keyboard shrinks the page rather than covering it, so a sheet's footer or the reply box stays above
+// it (iOS ignores this). The status bar's colour comes from the theme script in app/layout.tsx.
 export const viewport: Viewport = {
   viewportFit: "cover",
-  themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#f6f5f2" },
-    { media: "(prefers-color-scheme: dark)", color: "#12110f" },
-  ],
+  interactiveWidget: "resizes-content",
 };
 
 export default async function DeskLayout({ children }: { children: React.ReactNode }) {

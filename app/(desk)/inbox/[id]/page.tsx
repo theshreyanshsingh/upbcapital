@@ -62,7 +62,7 @@ export default async function ThreadPage({
       {/* On a phone the reply box rides at the bottom, above the tab bar, while the thread scrolls under it. */}
       <form
         action={postThread}
-        className="sticky bottom-[var(--dock,0px)] z-10 -mx-4 mt-6 border-t border-border bg-background/92 px-4 pt-3 pb-3 backdrop-blur-xl md:static md:mx-0 md:mt-8 md:rounded-xl md:border md:bg-card md:p-5 md:backdrop-blur-none"
+        className="sticky bottom-[var(--dock,0px)] z-10 mt-6 bleed-x border-t border-border bg-background/92 pt-3 pb-3 backdrop-blur-xl md:static md:mx-0 md:mt-8 md:rounded-xl md:border md:bg-card md:p-5 md:backdrop-blur-none"
       >
         <input type="hidden" name="threadId" value={thread.id} />
         <label className="block">

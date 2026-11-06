@@ -1,12 +1,44 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useCallback, useId, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { submitInquiry } from "@/actions/buyer";
 import { ConfirmRows, ConfirmSubmit } from "@/components/confirm-submit";
 import { money } from "@/lib/format";
 import { bidTerms, goodUntilRow } from "@/lib/offers";
 import { bidTarget, credentialRows, headroomAfter, type BidStanding } from "@/lib/verification";
+
+// The pool tape renders each loan's box twice, as a phone card and as a table row, with one showing at a time. Both
+// read one draft per loan, so a bid typed in one is still there when a rotation swaps to the other. The draft goes
+// once neither box is on the page.
+type Draft = { amount: string; goodUntil: string };
+const EMPTY: Draft = { amount: "", goodUntil: "" };
+const drafts = new Map<string, Draft>();
+const watchers = new Map<string, Set<() => void>>();
+
+function watch(key: string, onChange: () => void) {
+  let set = watchers.get(key);
+  if (!set) watchers.set(key, (set = new Set()));
+  set.add(onChange);
+  return () => {
+    set.delete(onChange);
+    if (set.size === 0) {
+      watchers.delete(key);
+      drafts.delete(key);
+    }
+  };
+}
+
+function useDraft(key: string) {
+  // One subscription per box for the life of its loan, so a re-render never drops the last watcher and the draft.
+  const subscribe = useCallback((onChange: () => void) => watch(key, onChange), [key]);
+  const draft = useSyncExternalStore(subscribe, () => drafts.get(key) ?? EMPTY, () => EMPTY);
+  const update = (patch: Partial<Draft>) => {
+    drafts.set(key, { ...(drafts.get(key) ?? EMPTY), ...patch });
+    watchers.get(key)?.forEach((onChange) => onChange());
+  };
+  return [draft, update] as const;
+}
 
 export function LoanBid({
   listingId,
@@ -36,8 +68,7 @@ export function LoanBid({
 }) {
   // The tape renders this box twice, as a phone card and as a table row, so the field ids come from useId.
   const ids = useId();
-  const [amount, setAmount] = useState("");
-  const [goodUntil, setGoodUntil] = useState("");
+  const [{ amount, goodUntil }, updateDraft] = useDraft(`${listingId}:${noteId}`);
   const offer = Number(amount.replace(/[$,]/g, ""));
   const premium = Number.isFinite(offer) && offer > 0 ? (offer * premiumBps) / 10000 : 0;
   const credential = standing?.credential ?? null;
@@ -71,7 +102,7 @@ export function LoanBid({
         inputMode="decimal"
         required
         value={amount}
-        onChange={(event) => setAmount(event.target.value)}
+        onChange={(event) => updateDraft({ amount: event.target.value })}
         placeholder="Bid this loan"
         className="desk-input h-9 px-2 tabular-nums max-md:h-11 max-md:px-3"
       />
@@ -83,7 +114,7 @@ export function LoanBid({
         name="goodUntil"
         type="date"
         value={goodUntil}
-        onChange={(event) => setGoodUntil(event.target.value)}
+        onChange={(event) => updateDraft({ goodUntil: event.target.value })}
         className="desk-input h-9 px-2 max-md:h-11 max-md:px-3"
       />
       <ConfirmSubmit

@@ -2,6 +2,7 @@
 
 import { useSyncExternalStore } from "react";
 import { Monitor, Moon, Sun, type LucideIcon } from "lucide-react";
+import { PAGE_COLORS } from "@/lib/theme-colors";
 import { cn } from "@/lib/utils";
 
 // The theme follows the system until someone picks Light or Dark here; the pick is remembered under
@@ -47,7 +48,18 @@ export function chooseTheme(choice: ThemeChoice) {
   const root = document.documentElement;
   root.classList.toggle("dark", dark);
   root.style.colorScheme = dark ? "dark" : "light";
+  syncThemeColor(dark);
   window.dispatchEvent(new Event(CHANGE));
+}
+
+// Points the status bar at the theme now on screen, through the theme script's own tag (app/layout.tsx).
+function syncThemeColor(dark: boolean) {
+  let tag = document.getElementById("theme-color");
+  if (!tag) {
+    tag = Object.assign(document.createElement("meta"), { name: "theme-color", id: "theme-color" });
+    document.head.appendChild(tag);
+  }
+  tag.setAttribute("content", dark ? PAGE_COLORS.dark : PAGE_COLORS.light);
 }
 
 const OPTIONS: { value: ThemeChoice; label: string; icon: LucideIcon }[] = [

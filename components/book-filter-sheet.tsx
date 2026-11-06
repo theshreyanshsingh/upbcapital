@@ -26,7 +26,7 @@ export function BookFilterSheet({ count, summary, children }: { count: number; s
           </span>
         )}
       </SheetTrigger>
-      <SheetContent side="bottom" initialFocus={heading} className="max-h-[92dvh] gap-0 rounded-t-[22px] p-0">
+      <SheetContent side="bottom" initialFocus={heading} className="max-h-[92dvh] gap-0 rounded-t-[22px] p-0 sm:mx-auto sm:max-w-lg sm:border-x">
         <SheetHandle>
           <div ref={heading} tabIndex={-1} className="px-5 pt-3 pb-1 outline-none">
             <SheetTitle>Filter the book</SheetTitle>

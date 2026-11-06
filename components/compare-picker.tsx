@@ -36,7 +36,7 @@ export function CompareBar() {
     return () => document.removeEventListener("change", sync);
   }, []);
   return (
-    <div className={picked ? "sticky bottom-[calc(var(--dock,0px)+0.75rem)] z-20 mt-6 md:bottom-4" : "mt-6"}>
+    <div className={picked ? "sticky bottom-[calc(var(--dock,0px)+0.75rem)] z-20 mt-6 lg:bottom-4" : "mt-6"}>
       <form id={FORM_ID} action="/marketplace/compare" method="get" className={`glass flex flex-wrap items-center justify-between gap-3 px-4 py-3 ${picked ? "shadow-lg" : ""}`}>
         <p className="text-[13px] text-muted-foreground tabular-nums" aria-live="polite">
           {picked ? `${picked} of ${COMPARE_MAX} picked to compare.` : `Tick Compare on up to ${COMPARE_MAX} listings to see them side by side.`}

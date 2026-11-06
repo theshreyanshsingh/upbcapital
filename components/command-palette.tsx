@@ -364,7 +364,7 @@ export function CommandPalette({ userKey, commands, placeholder }: { userKey: st
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={onInputKey}
-            className="h-12 min-w-0 flex-1 bg-transparent text-base text-foreground outline-none placeholder:text-faint sm:text-[15px]"
+            className="h-12 min-w-0 flex-1 bg-transparent text-base text-foreground outline-none placeholder:text-faint sm:pointer-fine:text-[15px]"
           />
           {searching && <span className="shrink-0 text-xs text-muted-foreground">Searching…</span>}
         </div>

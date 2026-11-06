@@ -25,11 +25,13 @@ export function ListingTabs({ tabs, fallback, children }: { tabs: ListingTab[]; 
   }
   return (
     <Tabs value={active} onValueChange={choose} className="mt-8">
-      {/* On a phone the tabs hold under the top bar while the section scrolls, and swipe sideways if they run long. */}
-      <div className="sticky top-[calc(3.25rem+env(safe-area-inset-top))] z-20 -mx-4 overflow-x-auto border-b border-border bg-background/92 px-4 no-scrollbar backdrop-blur-xl md:static md:mx-0 md:bg-transparent md:px-0 md:backdrop-blur-none">
-        <TabsList variant="line" aria-label="Listing sections" className="group-data-horizontal/tabs:h-11 md:group-data-horizontal/tabs:h-10">
+      {/* Below 1024px the tabs hold under the top bar while the section scrolls, edge to edge, and swipe sideways
+          if they run long. With the sidebar they sit in the page. The active tab's underline is drawn at the tab's own
+          foot, inside the strip: the line variant's default hangs it below the tab, where a scrolling strip clips it. */}
+      <div data-slot="listing-tabs" className="sticky top-[calc(3.25rem+1px+env(safe-area-inset-top))] z-20 bleed-x overflow-x-auto overflow-y-hidden border-b border-border bg-background/92 no-scrollbar backdrop-blur-xl lg:static lg:mx-0 lg:bg-transparent lg:px-0 lg:backdrop-blur-none">
+        <TabsList variant="line" aria-label="Listing sections" className="pb-0 group-data-horizontal/tabs:h-11 md:group-data-horizontal/tabs:h-10">
           {tabs.map((tab) => (
-            <TabsTrigger key={tab.value} value={tab.value} className="px-3.5 text-sm md:px-3 md:text-[13px]">
+            <TabsTrigger key={tab.value} value={tab.value} className="px-3.5 text-sm group-data-horizontal/tabs:after:bottom-0 md:px-3 md:text-[13px]">
               {tab.label}
               {tab.count != null && <span className="text-xs text-muted-foreground tabular-nums">{tab.count}</span>}
             </TabsTrigger>

@@ -30,29 +30,26 @@ export function BidBar({
           ? `Buy it now at ${money(buyNow)}`
           : "Make a bid";
   const href = canOffer && verified && acknowledgeFirst ? "#eligibility" : ready && buyNow != null ? "#buy-now" : "#offer";
+  // Below 1024px it rides just above the tab bar; on a short wide screen it sits on the bottom edge beside the
+  // sidebar, clear of the home indicator. globals.css gives focus room above it (--bar).
   return (
-    <>
-      {/* Focused fields scroll clear of the bar (and the phone's tab bar under it), so it never hides where the keyboard is. */}
-      <style>{"@media (max-width: 63.99rem), (max-height: 49.99rem) { html { scroll-padding-bottom: calc(var(--dock, 0px) + 5rem); } }"}</style>
-      {/* On a phone it rides just above the tab bar; elsewhere it sits on the bottom edge, clear of the home indicator. */}
-      <div
-        data-slot="bid-bar"
-        className="fixed inset-x-0 bottom-[var(--dock,0px)] z-20 flex items-center justify-between gap-3 border-t border-border bg-card/95 px-4 pt-2.5 pb-[calc(0.625rem+max(0px,env(safe-area-inset-bottom)-var(--dock,0px)))] backdrop-blur-xl md:left-72 [@media(min-width:64rem)_and_(min-height:50rem)]:hidden"
-      >
-        <p className="min-w-0 truncate text-sm text-foreground tabular-nums">
-          {asking == null ? (
-            <span className="text-muted-foreground">Ask and yield on Pro</span>
-          ) : (
-            <>
-              <span className="font-semibold">{money(asking)}</span>
-              <span className="text-muted-foreground"> ask · {pct(priceToUpb, 0)} of UPB</span>
-            </>
-          )}
-        </p>
-        <a href={href} className="inline-flex h-11 shrink-0 items-center rounded-xl bg-primary px-4 text-sm font-semibold text-primary-foreground tabular-nums transition-[scale] duration-(--dur-1) active:scale-[0.97] md:h-10 md:rounded-lg md:text-[13px] md:font-medium">
-          {action}
-        </a>
-      </div>
-    </>
+    <div
+      data-slot="bid-bar"
+      className="fixed inset-x-0 bottom-[var(--dock,0px)] z-20 flex items-center justify-between gap-3 border-t border-border bg-card/95 pt-2.5 pr-[max(1rem,env(safe-area-inset-right))] pb-[calc(0.625rem+max(0px,env(safe-area-inset-bottom)-var(--dock,0px)))] pl-[max(1rem,env(safe-area-inset-left))] backdrop-blur-xl lg:left-72 print:hidden [@media(min-width:64rem)_and_(min-height:50rem)]:hidden"
+    >
+      <p className="min-w-0 truncate text-sm text-foreground tabular-nums">
+        {asking == null ? (
+          <span className="text-muted-foreground">Ask and yield on Pro</span>
+        ) : (
+          <>
+            <span className="font-semibold">{money(asking)}</span>
+            <span className="text-muted-foreground"> ask · {pct(priceToUpb, 0)} of UPB</span>
+          </>
+        )}
+      </p>
+      <a href={href} className="inline-flex h-11 shrink-0 items-center rounded-xl bg-primary px-4 text-sm font-semibold text-primary-foreground tabular-nums transition-[scale] duration-(--dur-1) active:scale-[0.97] md:h-10 md:rounded-lg md:text-[13px] md:font-medium">
+        {action}
+      </a>
+    </div>
   );
 }

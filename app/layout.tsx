@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Inter, Newsreader } from "next/font/google";
 import { Toaster } from "@/components/ui/sonner";
+import { PAGE_COLORS } from "@/lib/theme-colors";
 import "./globals.css";
 
 // Inter for everything people read, with its optical-size axis so titles get the tighter display cut.
@@ -19,8 +20,10 @@ export const metadata: Metadata = {
 
 // Runs before first paint, so the page never flashes the wrong theme. The system setting decides unless
 // the person picked Light or Dark (stored under upb-theme by components/theme-toggle.tsx). It keeps
-// following the system, and other tabs, for the life of the page.
-const themeScript = `(function(){var k="upb-theme",d=document.documentElement,m=window.matchMedia("(prefers-color-scheme: dark)");function pick(){try{return localStorage.getItem(k)}catch(e){return null}}function apply(){var c=pick(),dark=c==="dark"||(c!=="light"&&m.matches);d.classList.toggle("dark",dark);d.style.colorScheme=dark?"dark":"light"}apply();if(m.addEventListener)m.addEventListener("change",apply);window.addEventListener("storage",function(e){if(e.key===k)apply()})})();`;
+// following the system, and other tabs, for the life of the page. It also keeps one theme-color tag of its own
+// (id theme-color) on the page colour, so the phone's status bar matches whichever theme is showing. React never
+// renders that tag, so changing it can't upset hydration.
+const themeScript = `(function(){var k="upb-theme",d=document.documentElement,m=window.matchMedia("(prefers-color-scheme: dark)");function pick(){try{return localStorage.getItem(k)}catch(e){return null}}function apply(){var c=pick(),dark=c==="dark"||(c!=="light"&&m.matches);d.classList.toggle("dark",dark);d.style.colorScheme=dark?"dark":"light";var t=document.getElementById("theme-color");if(!t){t=document.createElement("meta");t.name="theme-color";t.id="theme-color";document.head.appendChild(t)}t.setAttribute("content",dark?${JSON.stringify(PAGE_COLORS.dark)}:${JSON.stringify(PAGE_COLORS.light)})}apply();if(m.addEventListener)m.addEventListener("change",apply);window.addEventListener("storage",function(e){if(e.key===k)apply()})})();`;
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (

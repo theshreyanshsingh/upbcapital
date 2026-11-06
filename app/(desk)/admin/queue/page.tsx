@@ -50,7 +50,7 @@ export default async function QueuePage({
       <PageIntro eyebrow="Review" title="The queue." lede="Nothing reaches buyers until the desk releases it." />
       <Notice notice={q(params, "notice")} error={q(params, "error")} />
       {/* One row of columns; on a phone it swipes sideways rather than wrapping. */}
-      <nav aria-label="Queue columns" className="relative mt-6 flex gap-2 max-md:-mx-4 max-md:no-scrollbar max-md:overflow-x-auto max-md:px-4 md:flex-wrap">
+      <nav aria-label="Queue columns" className="relative mt-6 flex gap-2 max-md:bleed-x max-md:no-scrollbar max-md:overflow-x-auto md:flex-wrap">
         {TABS.map((item) => (
           <Link
             key={item.id}
