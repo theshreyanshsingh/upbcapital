@@ -3,8 +3,11 @@ import { headers } from "next/headers";
 import QRCode from "qrcode";
 import { EarningsChart } from "@/components/broker-chart";
 import { ReferralKit } from "@/components/broker-share";
+import { MarketView } from "@/components/market-view";
 import { requireRole } from "@/lib/auth";
 import { brokerGate, brokerRoleLabel, feeMonths, portraitSrc } from "@/lib/broker-fees";
+import { loadClosedTrades, marketView } from "@/lib/comps";
+import { isReleaseBuild } from "@/lib/deploy";
 import { money, num } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 import { redirect } from "next/navigation";
@@ -17,7 +20,7 @@ export default async function BrokerHome() {
   const next = brokerGate({ accountStatus: user.accountStatus, profile });
   if (next) redirect(next);
 
-  const [listings, fees, buyers] = await Promise.all([
+  const [listings, fees, buyers, trades] = await Promise.all([
     prisma.listing.findMany({
       where: { brokerId: user.id },
       include: { notes: true },
@@ -29,6 +32,7 @@ export default async function BrokerHome() {
       orderBy: { createdAt: "desc" },
     }),
     prisma.user.findMany({ where: { referredById: user.id }, orderBy: { createdAt: "desc" } }),
+    loadClosedTrades(),
   ]);
 
   const earned = fees.reduce((sum, fee) => sum + fee.amountCents, 0);
@@ -83,7 +87,7 @@ export default async function BrokerHome() {
         </section>
       )}
 
-      <section className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <section className="mt-8 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <FeeCard k="Earned" v={money(earned / 100)} hint="Paid and still owed." delay="" />
         <FeeCard k="Pending" v={money(pending / 100)} hint="Owed, not sent." delay="rise-1" />
         <FeeCard k="Paid" v={money(paid / 100)} hint="Marked paid by the desk." delay="rise-2" />
@@ -123,7 +127,7 @@ export default async function BrokerHome() {
             <h2 className="mt-2 font-semibold tracking-tight text-lg text-foreground">Where each file sits.</h2>
           </div>
         </div>
-        <div className="mt-5 flex snap-x gap-3 overflow-x-auto pb-2 md:grid md:grid-cols-4 md:overflow-visible">
+        <div className="mt-5 flex snap-x gap-3 relative overflow-x-auto pb-2 md:grid md:grid-cols-4 md:overflow-visible">
           {columns.map((column) => {
             const cards = listings.filter((listing) => column.statuses.includes(listing.status));
             return (
@@ -151,6 +155,10 @@ export default async function BrokerHome() {
           })}
         </div>
       </section>
+
+      <div className="mt-10">
+        <MarketView view={marketView(trades)} audience="broker" demo={!isReleaseBuild(process.env)} />
+      </div>
 
       <section className="mt-10 grid gap-4 lg:grid-cols-2">
         <div className="glass p-5 md:p-6">
@@ -190,9 +198,9 @@ export default async function BrokerHome() {
 
 function FeeCard({ k, v, hint, delay }: { k: string; v: string; hint: string; delay: string }) {
   return (
-    <div className={`glass rise p-5 ${delay}`}>
+    <div className={`glass rise p-4 sm:p-5 ${delay}`}>
       <p className="eyebrow">{k}</p>
-      <p className="mt-3 font-semibold tracking-tight text-3xl text-foreground">{v}</p>
+      <p className="mt-2 font-semibold tracking-tight text-xl break-words text-foreground sm:mt-3 sm:text-3xl">{v}</p>
       <p className="mt-2 text-xs text-muted-foreground">{hint}</p>
     </div>
   );

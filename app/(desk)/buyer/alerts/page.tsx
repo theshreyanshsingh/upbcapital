@@ -3,6 +3,7 @@ import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { Button } from "@/components/ui/button";
 import { requireRole } from "@/lib/auth";
+import { appliedChips, filtersFromSaved } from "@/lib/filters";
 import { q } from "@/lib/format";
 import { resolveMailTransport } from "@/lib/mail-config";
 import { prisma } from "@/lib/prisma";
@@ -42,7 +43,9 @@ export default async function AlertsPage({
           <li key={search.id} className="flex flex-wrap items-center justify-between gap-3 px-5 py-5">
             <div>
               <p className="font-semibold tracking-tight text-2xl text-foreground">{search.name}</p>
-              <p className="mt-1 text-xs text-muted-foreground">{JSON.stringify(search.filters)}</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {appliedChips(filtersFromSaved(search.filters)).map((chip) => chip.label).join(" · ") || "Every listing on the book"}
+              </p>
             </div>
             <div className="flex gap-2">
               <form action={toggleSearchAlert}>

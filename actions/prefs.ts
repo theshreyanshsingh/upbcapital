@@ -15,6 +15,8 @@ export async function saveNotificationPrefs(formData: FormData) {
       notifyEmail: formData.get("notifyEmail") === "on",
       notifyInApp: formData.get("notifyInApp") === "on",
       digest: digest as "WEEKLY",
+      // The monthly market dispatch is opt-in, for every role.
+      marketDispatch: formData.get("marketDispatch") === "on",
       ...(user.role === "BUYER" ? { dealAlerts: formData.get("dealAlerts") === "on" } : {}),
     },
   });

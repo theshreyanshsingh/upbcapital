@@ -1,3 +1,4 @@
+import { pushReady } from "@/lib/push";
 import { stripeConfigured } from "@/lib/billing";
 import { aiMode } from "@/lib/desk-ai";
 import { isReleaseBuild } from "@/lib/deploy";
@@ -51,6 +52,9 @@ export async function launchReadiness(settings: { stripePriceId?: string | null;
       ? { label: "Property values", state: "standin", detail: release ? "Stand-in values are hidden from buyers. Set AVM_PROVIDER and its key." : "A stand-in: the seller's figure nudged a few percent, labelled mock. Set AVM_PROVIDER and its key." }
       : { label: "Property values", state: "live", detail: `From ${avm}.` },
     { label: "Escrow", state: "standin", detail: `${env.ESCROW_PROVIDER || "Manual"} wires. The desk records deposits, funds, and proceeds. A title or escrow agent should hold the money.` },
+    pushReady(env)
+      ? { label: "Push notices", state: "live", detail: "Installed apps can receive notices on the lock screen. Payloads carry no names, amounts or codes." }
+      : { label: "Push notices", state: "off", detail: "Push notices are off. Set VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY and VAPID_SUBJECT (npx web-push generate-vapid-keys)." },
     aiMode(env) === "live"
       ? { label: "Desk assistant", state: "live", detail: "A live model drafts desk notes." }
       : { label: "Desk assistant", state: "standin", detail: "Canned sketches. Set LLM_API_KEY on an account UPB owns." },

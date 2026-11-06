@@ -113,7 +113,7 @@ export default async function GroupPage({
         <form action={joinGroup} className="mt-8 grid max-w-xl gap-3 border border-border p-5 rounded-xl">
           <p className="eyebrow">Take a seat</p>
           <input type="hidden" name="groupId" value={group.id} />
-          <input name="amount" className="desk-input" aria-label="Seat amount" placeholder="Dollars" />
+          <input name="amount" inputMode="decimal" className="desk-input" aria-label="Seat amount" placeholder="Dollars" />
           <input name="percent" className="desk-input" aria-label="Seat percent" placeholder="Or percent of the price" />
           {group.structure === "SENIOR_JUNIOR" && (
             <select name="slice" className="desk-input" aria-label="Slice">

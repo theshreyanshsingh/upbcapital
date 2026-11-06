@@ -28,7 +28,7 @@ export default async function CostsPage({ searchParams }: { searchParams: Promis
       <form action={saveUnitCost} className="mt-8 grid max-w-xl gap-3 sm:grid-cols-3">
         <input name="trade" className="desk-input" aria-label="Trade" placeholder="Trade" required />
         <input name="unit" className="desk-input" aria-label="Unit" placeholder="sqft, each, square" required />
-        <input name="cost" className="desk-input" aria-label="Cost" placeholder="Cost in dollars" required />
+        <input name="cost" inputMode="decimal" className="desk-input" aria-label="Cost" placeholder="Cost in dollars" required />
         <SubmitButton className="h-11 text-[13px] font-medium">Save cost</SubmitButton>
       </form>
     </div>

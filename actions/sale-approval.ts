@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { audit } from "@/lib/audit";
 import { requireUser } from "@/lib/auth";
-import { askedPriceStands, awaitingSeller, awardOffer, recordSellerCounter, sameQuestion, sellerPage } from "@/lib/awards";
+import { askedPriceStands, awaitingSeller, awardOffer, recordSellerCounter, sameQuestion, sellerPage, setBuyNow } from "@/lib/awards";
 import { notifyDesk } from "@/lib/email";
 import { bidExpired, buyerPrice } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
@@ -77,4 +77,29 @@ export async function setReserve(formData: FormData) {
   await audit(user.id, "RESERVE", "listing", listingId, reserve === null ? "Removed" : `$${reserve.toLocaleString("en-US")}`);
   revalidatePath(back);
   redirect(`${back}?notice=reserve`);
+}
+
+// The seller of record, or the broker who filed the listing, commits to a buy-it-now price, changes it, or takes it
+// off. Setting it is confirmed in the browser with the consent text, which the lib stores with the date.
+export async function saveBuyNow(formData: FormData) {
+  const user = await requireUser();
+  const listingId = String(formData.get("listingId") || "");
+  const listing = await prisma.listing.findUnique({ where: { id: listingId }, select: { id: true, sellerId: true, brokerId: true } });
+  if (!listing || (listing.sellerId !== user.id && listing.brokerId !== user.id)) redirect(user.role === "BROKER" ? "/broker" : user.role === "BUYER" ? "/buyer/portfolio" : "/seller");
+  const back = sellerPage(listing, user.role);
+  const clearing = String(formData.get("intent") || "") === "clear";
+  const raw = String(formData.get("buyNowPrice") || "").replace(/[$,\s]/g, "");
+  const price = clearing ? null : raw ? Number(raw) : NaN;
+  const result = await setBuyNow(listingId, user.id, price);
+  if (result.error !== null) redirect(`${back}?error=${encodeURIComponent(result.error)}#buy-now`);
+  revalidatePath(back);
+  revalidatePath(`/marketplace/${listingId}`);
+  revalidatePath(`/admin/listings/${listingId}`);
+  // Counsel: the set notice restates the seller's commitment.
+  const notice = clearing
+    ? "Buy it now is off. Bids go by your reserve and your approval again."
+    : result.unchanged
+      ? "The buy-it-now price is unchanged."
+      : `Buy it now is set at $${Number(result.price).toLocaleString("en-US")}. The first verified buyer who confirms it opens the closing.`;
+  redirect(`${back}?notice=${encodeURIComponent(notice)}#buy-now`);
 }

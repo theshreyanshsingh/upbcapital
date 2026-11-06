@@ -2,49 +2,24 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { canSubmitBid, sealedFromSeller } from "@/lib/auction";
 import { audit } from "@/lib/audit";
 import { requireUser } from "@/lib/auth";
-import { notify, notifyDesk } from "@/lib/email";
+import { notify } from "@/lib/email";
+import { acknowledgeRoad, announceInquiry, buyerCanOpen, checkOffer, inquiryBlock, logEligibility, writeInquiry, type OfferCheck } from "@/lib/inquiry";
 import { buildNdaPdf, pngFromDataUrl } from "@/lib/nda-pdf";
-import { canOpenListing, openableListingIds } from "@/lib/access";
-import { getSettings, isPro } from "@/lib/settings";
+import { isPro } from "@/lib/settings";
 import { prisma } from "@/lib/prisma";
 import { requestMeta } from "@/lib/request-meta";
 import { putBytes } from "@/lib/storage";
-import { ensureInquiryThread } from "@/lib/threads";
 import { sendForSignature } from "@/lib/vendors";
-import { canSubmitOffer } from "@/lib/verification";
-import type { ListingStatus } from "@prisma/client";
 import { parseFilters } from "@/lib/filters";
-import { unset } from "@/lib/db-filters";
 import { withdrawBid } from "@/lib/awards";
-import { readGoodUntil } from "@/lib/offers";
 
 async function requireBuyer() {
   const user = await requireUser();
   if (user.role !== "BUYER") redirect("/");
   if (user.accountStatus !== "APPROVED") redirect("/buyer/pending");
   return user;
-}
-
-// The listing page refuses early-access listings and those outside the free slice. The actions behind it hold
-// the same line, since their IDs are in the page bundle.
-async function canOpen(user: Awaited<ReturnType<typeof requireBuyer>>, listing: { id: string; status: ListingStatus; approvedAt: Date | null; sellerId: string; brokerId: string | null }) {
-  const settings = await getSettings();
-  const live = isPro(user)
-    ? []
-    : await prisma.listing.findMany({ where: { status: { in: ["APPROVED", "PENDING"] } }, select: { id: true, status: true, approvedAt: true } });
-  return canOpenListing({
-    viewer: user,
-    status: listing.status,
-    approvedAt: listing.approvedAt,
-    earlyAccessHours: settings.earlyAccessHours,
-    openableIds: openableListingIds(live, settings.earlyAccessHours, settings.freeBrowseLimit),
-    listingId: listing.id,
-    sellerId: listing.sellerId,
-    brokerId: listing.brokerId,
-  }).ok;
 }
 
 export async function toggleFavorite(formData: FormData) {
@@ -79,7 +54,7 @@ export async function signNda(formData: FormData) {
   // Only a live listing takes NDAs. Anything else would tell a buyer, and email the seller, about a file
   // the desk hasn't released, or reopen one that has gone to contract.
   if (listing.status !== "APPROVED") redirect(`${back}?error=${encodeURIComponent("This listing isn't open for diligence.")}`);
-  if (!(await canOpen(user, listing))) redirect(`${back}?error=${encodeURIComponent("This listing isn't open on your membership yet.")}`);
+  if (!(await buyerCanOpen(user, listing))) redirect(`${back}?error=${encodeURIComponent("This listing isn't open on your membership yet.")}`);
   const meta = await requestMeta();
   const signedAt = new Date();
   const signatureKey = drawn ? `signatures/${user.id}/${listingId}.png` : "";
@@ -155,97 +130,44 @@ export async function submitInquiry(formData: FormData) {
   const listingId = String(formData.get("listingId") || "");
   const type = String(formData.get("type") || "INFO_REQUEST");
   const message = String(formData.get("message") || "").trim();
+  const back = `/marketplace/${listingId}`;
   const listing = await prisma.listing.findUnique({ where: { id: listingId }, include: { seller: true } });
-  if (!listing || listing.status !== "APPROVED") {
-    redirect(`/marketplace/${listingId}?error=This listing is not taking new inquiries.`);
-  }
-  if (!(await canOpen(user, listing))) {
-    redirect(`/marketplace/${listingId}?error=${encodeURIComponent("This listing isn't open on your membership yet.")}`);
-  }
-  if (type === "DATA_ROOM" && !isPro(user)) {
-    redirect("/buyer/subscription?reason=dataroom");
-  }
   const noteId = String(formData.get("noteId") || "");
   let amount: number | null = null;
   let expiresAt: Date | null = null;
+  let passed: Extract<OfferCheck, { error: null }> | null = null;
   if (type === "OFFER") {
-    const profile = await prisma.buyerProfile.findUnique({ where: { userId: user.id } });
-    const gate = canSubmitOffer({ role: user.role, accountStatus: user.accountStatus, verificationStatus: profile?.status ?? null });
-    if (!gate.ok) redirect(`/buyer/verification?error=${encodeURIComponent("The desk has to approve your buyer file before you can offer.")}`);
+    // The same checks a confirmed standing bid runs, in lib/inquiry.ts.
     amount = Number(String(formData.get("amount") || "").replace(/[$,]/g, ""));
-    if (!Number.isFinite(amount) || amount <= 0) {
-      redirect(`/marketplace/${listingId}?error=Enter an offer amount.`);
-    }
-    if (noteId) {
-      const note = await prisma.note.findFirst({ where: { id: noteId, listingId } });
-      if (!note || note.tradeStatus !== "AVAILABLE") {
-        redirect(`/marketplace/${listingId}?error=${encodeURIComponent("That loan is not open for a bid.")}`);
-      }
-    } else if (listing.kind === "POOL" && (await prisma.note.count({ where: { listingId, tradeStatus: { not: "AVAILABLE" } } })) > 0) {
-      // A whole-pool bid on a pool with traded loans could never be awarded.
-      redirect(`/marketplace/${listingId}?error=${encodeURIComponent("Some loans in this pool have traded, so it can't be bid whole. Bid the loans still for sale.")}`);
-    }
-    const goodUntil = readGoodUntil(String(formData.get("goodUntil") || ""), listing);
-    if (goodUntil.error) redirect(`/marketplace/${listingId}?error=${encodeURIComponent(goodUntil.error)}`);
-    expiresAt = goodUntil.expiresAt;
-    const existing = await prisma.inquiry.findFirst({
-      // A whole-listing offer may have no noteId field at all, which `noteId: null` alone would miss.
-      // Best and final is one bid per buyer, so one they withdrew still counts; otherwise withdrawing would be a way
-      // to change the price.
-      where: {
-        listingId,
-        buyerId: user.id,
-        type: "OFFER",
-        ...(noteId ? { noteId } : unset("noteId")),
-        status: { in: listing.bidMode === "BEST_AND_FINAL" ? ["OPEN", "REVIEWED", "ACCEPTED", "WITHDRAWN", "EXPIRED"] : ["OPEN", "REVIEWED", "ACCEPTED"] },
-      },
-    });
-    const gateBid = canSubmitBid({ bidMode: listing.bidMode, deadline: listing.bidDeadline, alreadyBid: Boolean(existing) });
-    if (!gateBid.ok) {
-      const reason = gateBid.reason === "deadline"
-        ? "The bid deadline has passed."
-        : "Best and final allows one bid on this listing.";
-      redirect(`/marketplace/${listingId}?error=${encodeURIComponent(reason)}`);
-    }
-  }
-  const inquiry = await prisma.inquiry.create({
-    data: {
-      listingId,
-      buyerId: user.id,
-      noteId: type === "OFFER" && noteId ? noteId : null,
-      type: type === "OFFER" ? "OFFER" : type === "DATA_ROOM" ? "DATA_ROOM" : "INFO_REQUEST",
-      amount,
-      message,
-      ...(expiresAt ? { expiresAt } : {}),
-    },
-  });
-  if (type === "OFFER" && amount != null) {
-    await prisma.offerMessage.create({
-      data: { inquiryId: inquiry.id, authorId: user.id, kind: "OFFER", amount, body: message || "Opening bid." },
-    });
-  }
-  await ensureInquiryThread(inquiry.id);
-  const label = type === "OFFER" ? `Offer of $${Math.round(amount || 0).toLocaleString("en-US")}` : type === "DATA_ROOM" ? "Data room request" : "Information request";
-  const until = expiresAt ? ` Good until ${expiresAt.toISOString().slice(0, 10)}.` : "";
-  const sealed = type === "OFFER" && sealedFromSeller(listing);
-  if (sealed) {
-    await notify(listing.seller.email, `Sealed bid · ${listing.title}`, `${user.name} (${user.email}) placed a sealed bid. The amount opens at the deadline.`);
+    const check = await checkOffer({ user, listing, noteId, amount, goodUntil: String(formData.get("goodUntil") || "") });
+    if (check.error !== null) redirect(check.verification ? `/buyer/verification?error=${encodeURIComponent(check.error)}` : `${back}?error=${encodeURIComponent(check.error)}`);
+    expiresAt = check.expiresAt;
+    passed = check;
   } else {
-    await notify(listing.seller.email, `${label} · ${listing.title}`, `${user.name} (${user.email}) wrote: ${message || "No message."}`);
+    const blocked = await inquiryBlock(user, listing);
+    if (blocked) redirect(`${back}?error=${encodeURIComponent(blocked)}`);
+    if (type === "DATA_ROOM" && !isPro(user)) redirect("/buyer/subscription?reason=dataroom");
   }
-  await notifyDesk(`${label} · ${listing.title}`, `From ${user.name} (${user.email}).${until} ${message || ""}`);
-  if (type === "OFFER") {
-    const { emitWebhook } = await import("@/lib/webhooks");
-    await emitWebhook(listing.sellerId, "offer.created", {
-      inquiryId: inquiry.id,
-      listingId: listing.id,
-      amount: sealed ? null : amount,
-      sealed,
-      status: inquiry.status,
-    });
-  }
+  if (!listing) redirect(back);
+  const input = { user, listing, type, noteId, amount, message, expiresAt };
+  const inquiry = await writeInquiry(input);
+  await announceInquiry(inquiry, input);
+  if (passed) await logEligibility(user.id, inquiry.id, passed);
   revalidatePath("/admin/offers");
-  redirect(`/marketplace/${listingId}?notice=inquiry`);
+  redirect(`${back}?notice=inquiry`);
+}
+
+// A buyer who says they control 350 or more homes acknowledges the ROAD Act notice once on a listing, before
+// bidding on it. The acknowledgement is logged with their stated count.
+export async function acknowledgeRoadNotice(formData: FormData) {
+  const user = await requireBuyer();
+  const listingId = String(formData.get("listingId") || "");
+  const back = `/marketplace/${listingId}`;
+  if (String(formData.get("acknowledged") || "") !== "yes") redirect(`${back}?error=${encodeURIComponent("Tick the box to acknowledge the notice.")}#eligibility`);
+  const result = await acknowledgeRoad(user, listingId);
+  if (result.error !== null) redirect(`${back}?error=${encodeURIComponent(result.error)}`);
+  revalidatePath(back);
+  redirect(`${back}?notice=${encodeURIComponent("Acknowledged. You can bid on this listing.")}#offer`);
 }
 
 // The buyer takes back a bid the desk hasn't accepted. A group's bid comes back through the group page instead.

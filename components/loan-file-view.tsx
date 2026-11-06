@@ -1,4 +1,6 @@
 import Link from "next/link";
+import { DiscrepancyLog } from "@/components/discrepancy-log";
+import { changeLog, type DiscrepancyRow } from "@/lib/discrepancies";
 import { prettyDate } from "@/lib/format";
 import { docLabel } from "@/lib/labels";
 import {
@@ -6,13 +8,16 @@ import {
   collateralLines,
   collateralStatusLabel,
   completeness,
+  cureCountdown,
   displayValue,
+  endorsementLabel,
   fieldSpec,
   fieldState,
   inlineSource,
   isChainKind,
   latestChecks,
   LOAN_FIELDS,
+  originLabel,
   RISK_KINDS,
   riskResultLabel,
   superLien,
@@ -22,15 +27,18 @@ import {
   type FieldState,
   type RiskRow,
 } from "@/lib/loan-file";
+import { prisma } from "@/lib/prisma";
 import { cn } from "@/lib/utils";
 
-type Tone = "good" | "warn" | "bad" | "plain";
+type Tone = "good" | "warn" | "bad" | "plain" | "source";
 
 const TONES: Record<Tone, string> = {
   good: "bg-good/10 text-good",
   warn: "bg-warn/12 text-warn",
   bad: "bg-bad/10 text-bad",
   plain: "bg-muted text-muted-foreground",
+  // A third party's record: stronger than the seller's word, short of the desk's check.
+  source: "bg-link/10 text-link",
 };
 
 export function Tag({ tone, children, title }: { tone: Tone; children: React.ReactNode; title?: string }) {
@@ -51,21 +59,41 @@ export function riskTone(result: string | null | undefined): Tone {
 }
 
 // The fact's provenance in words. A value the viewer can't see stays out of the badge too.
+// A servicer's report reads "Servicer report · FCI · Nov 6, 2026". The holder's own software reads as its word, so
+// it takes the seller-stated colour.
 export function FieldBadge({ field, state, showValue }: { field: string; state: FieldState; showValue: boolean }) {
   const spec = fieldSpec(field);
-  if (state.state === "verified") return <Tag tone="good">Verified · {inlineSource(state.source)}, {prettyDate(state.at)}</Tag>;
+  if (state.state === "verified") return <Tag tone="good">Desk-verified against {inlineSource(state.source)} · {prettyDate(state.at)}</Tag>;
+  if (state.state === "sourced") {
+    return <Tag tone={state.origin === "servicer" ? "source" : "plain"}>{originLabel(state.origin, state.source)} · {prettyDate(state.at)}</Tag>;
+  }
   if (state.state === "disputed") {
+    const where = state.origin ? originLabel(state.origin, state.source) : state.source;
     return (
       <Tag tone="warn">
-        {showValue && spec ? `${state.source} shows ${displayValue(spec, state.document)}` : `Differs from the ${inlineSource(state.source)}`} · checked {prettyDate(state.at)}
+        {showValue && spec ? `${where} shows ${displayValue(spec, state.document)}` : `Differs from the ${inlineSource(where)}`} · {state.origin ? "read" : "checked"} {prettyDate(state.at)}
       </Tag>
     );
   }
-  if (state.changed) return <Tag tone="plain">Seller-stated · changed after the desk&apos;s check of {prettyDate(state.changed.at)}</Tag>;
+  if (state.changed) {
+    const after = state.changed.origin ? `the ${state.changed.origin === "servicer" ? "servicer report" : "holder's software"}` : "the desk's check";
+    return <Tag tone="plain">Seller-stated · changed after {after} of {prettyDate(state.changed.at)}</Tag>;
+  }
   return <Tag tone="plain">Seller-stated</Tag>;
 }
 
-type LoanRecord = { id: string; state: string; propertyType: string; lienPosition: string; hoaLien?: boolean | null; verifiedFields?: unknown } & object;
+type LoanRecord = { id: string; listingId?: string; state: string; propertyType: string; lienPosition: string; hoaLien?: boolean | null; verifiedFields?: unknown } & object;
+
+// "Cure by Dec 1, 2026 · 26 days to cure", with an overdue cure in the bad colour.
+export function CureBy({ cureBy, owner }: { cureBy: Date; owner?: string }) {
+  const countdown = cureCountdown(cureBy);
+  return (
+    <span className="tabular-nums">
+      Cure by {prettyDate(cureBy)}{owner ? ` · ${owner}` : ""}
+      {countdown && <span className={countdown.overdue ? "font-medium text-bad" : undefined}> · {countdown.text}</span>}
+    </span>
+  );
+}
 
 const ADDRESS = new Set(["streetAddress", "borrowerName"]);
 
@@ -96,7 +124,7 @@ export function LoanFacts({ note, open, pro, withAddress, title = "The note" }: 
 
 type FileDocument = { id: string; type: string; originalName: string; createdAt: Date };
 
-export function LoanFileView({
+export async function LoanFileView({
   note,
   collateral,
   risks,
@@ -109,6 +137,8 @@ export function LoanFileView({
   facts,
   heading,
   nav,
+  discrepancies,
+  listedAt,
 }: {
   note: LoanRecord;
   collateral: CollateralRow[];
@@ -124,11 +154,20 @@ export function LoanFileView({
   facts: boolean;
   heading: string;
   nav?: { previous: string | null; next: string | null; position: string };
+  // This loan's tape differences and when the listing was filed. Loaded here when the page doesn't pass them.
+  discrepancies?: DiscrepancyRow[];
+  listedAt?: Date | null;
 }) {
+  const [rows, filed] = await Promise.all([
+    discrepancies ?? prisma.fieldDiscrepancy.findMany({ where: { noteId: note.id } }),
+    listedAt !== undefined || !note.listingId
+      ? listedAt ?? null
+      : prisma.listing.findUnique({ where: { id: note.listingId }, select: { submittedAt: true } }).then((row) => row?.submittedAt ?? null),
+  ]);
   // A chain that ends with someone other than the seller counts for everyone. Only the names stay hidden.
   const file = completeness(note, collateral, risks, { holder });
   const lines = collateralLines(note.lienPosition, collateral);
-  const chain = chainOfTitle(collateral, holder);
+  const chain = chainOfTitle(collateral, holder, { listedAt: filed });
   const latest = latestChecks(risks);
   const flag = superLien(note);
   const defects = file.defects.length + file.chainBreaks;
@@ -146,14 +185,14 @@ export function LoanFileView({
       </div>
       <p className="mt-2 text-sm font-medium text-foreground">{heading}</p>
       <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-        The UPB desk checks the paper before the price, and every bidder sees this same record. Anything not marked verified is as the seller stated it.
+        The UPB desk checks the paper before the price, and every bidder sees this same record. Anything not marked verified, or sourced from a servicer&apos;s report, is as the seller stated it.
       </p>
       {!file.reviewed && <p className="mt-3 text-sm text-foreground">The desk hasn&apos;t reviewed this loan&apos;s file yet.</p>}
 
       <dl className="mt-5 grid grid-cols-2 gap-px bg-muted sm:grid-cols-4">
         <Summary k="Collateral on file" v={`${file.collateral.present} of ${file.collateral.required}`} hint={collateralHint(file.collateral)} />
         <Summary k="Checks run" v={`${file.checks.run} of ${file.checks.total}`} hint={file.checks.flagged ? `${file.checks.flagged} flagged` : file.checks.unknown ? `${file.checks.unknown} unknown` : undefined} />
-        <Summary k="Key fields verified" v={`${file.fields.verified} of ${file.fields.total}`} hint={file.fields.disputed ? `${file.fields.disputed} ${file.fields.disputed === 1 ? "differs" : "differ"} from the tape` : undefined} />
+        <Summary k="Key fields verified" v={`${file.fields.verified} of ${file.fields.total}`} hint={fieldsHint(file)} />
         <Summary k="Open defects" v={String(defects)} hint={file.chainBreaks ? `${file.chainBreaks} in the chain of title` : undefined} />
       </dl>
 
@@ -185,7 +224,7 @@ export function LoanFileView({
                       <Tag tone={collateralTone(item.status)}>{collateralStatusLabel(item.status)}</Tag>
                     </div>
                     {(item.status === "MISSING" || item.status === "DEFECTIVE") && item.cureBy && (
-                      <p className="mt-1 text-xs text-muted-foreground tabular-nums">Cure by {prettyDate(item.cureBy)}{open && item.cureOwner ? ` · ${item.cureOwner}` : ""}</p>
+                      <p className="mt-1 text-xs text-muted-foreground"><CureBy cureBy={item.cureBy} owner={open ? item.cureOwner : undefined} /></p>
                     )}
                     {open && !isChainKind(item.kind) && item.detail && <p className="mt-1 text-xs text-muted-foreground">{item.detail}</p>}
                   </li>
@@ -221,8 +260,11 @@ export function LoanFileView({
           <ChainSummary chain={chain.endorsements} open={open} />
           <ChainSummary chain={chain.assignments} open={open} />
         </div>
+        {chain.cautions.map((item) => <p key={item} className="mt-2 text-xs text-warn">{item}</p>)}
         {!open && <p className="mt-3 text-xs text-muted-foreground">Party names open with the loan&apos;s street and borrower.</p>}
       </div>
+
+      <DiscrepancyLog entries={changeLog(rows, { open, pro })} />
 
       {documents.length > 0 && (
         <div className="mt-8">
@@ -249,6 +291,14 @@ export function LoanFileView({
       {facts && <LoanFacts note={note} open={open} pro={pro} withAddress title="This loan's facts" />}
     </section>
   );
+}
+
+function fieldsHint(file: { fields: { disputed: number }; sourced: number }) {
+  const parts = [
+    file.fields.disputed ? `${file.fields.disputed} ${file.fields.disputed === 1 ? "differs" : "differ"} from the tape` : "",
+    file.sourced ? `${file.sourced} from a servicer report` : "",
+  ].filter(Boolean);
+  return parts.length ? parts.join(" · ") : undefined;
 }
 
 function collateralHint(counts: { missing: number; defective: number; unreviewed: number }) {
@@ -288,7 +338,7 @@ function ChainSummary({ chain, open }: { chain: Chain; open: boolean }) {
                 <span className="text-muted-foreground tabular-nums">{link.position}.</span> {link.from || "Not named"} → {link.to || "Not named"}
               </p>
               <p className="text-xs text-muted-foreground tabular-nums">
-                {collateralStatusLabel(link.status)}{link.recordedAt ? ` · recorded ${prettyDate(link.recordedAt)}` : ""}{link.recording ? ` · ${link.recording}` : ""}
+                {collateralStatusLabel(link.status)}{endorsementLabel(link.endorsement) ? ` · ${endorsementLabel(link.endorsement)?.toLowerCase()}` : ""}{link.datedOn ? ` · dated ${prettyDate(link.datedOn)}` : ""}{link.attachedAt ? ` · fixed to the note by ${prettyDate(link.attachedAt)}` : ""}{link.loanNumberMatch ? " · loan number matches" : ""}{link.photoDocumentId ? " · photographed at intake" : ""}{link.recordedAt ? ` · recorded ${prettyDate(link.recordedAt)}` : ""}{link.recording ? ` · ${link.recording}` : ""}
               </p>
             </li>
           ))}
@@ -306,6 +356,11 @@ function ChainSummary({ chain, open }: { chain: Chain; open: boolean }) {
         ) : (
           <p className="mt-1 text-xs text-bad tabular-nums">{closedBreaks(chain)}</p>
         )
+      )}
+      {chain.cautions.length > 0 && (
+        <ul className="mt-1 space-y-0.5 text-xs text-warn">
+          {chain.cautions.map((item) => <li key={item}>{item}</li>)}
+        </ul>
       )}
     </div>
   );

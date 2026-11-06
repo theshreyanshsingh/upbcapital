@@ -180,6 +180,32 @@ function servicingFlags(row: number, record: ServicingRecord, status: string | n
   if (record.valueAsOf && record.valueAsOf < yearAgo) {
     warn("valueAsOf", `The value is dated ${day(record.valueAsOf)}, more than 12 months ago.`);
   }
+  flags.push(...termsFlags(row, record, now, yearAgo));
+  return flags;
+}
+
+// Tape v2.1. Any one ARM term says the rate adjusts, and a buyer can't project the payment without both the index
+// and the margin. A reset date already past, or a credit score over a year old, means the tape is out of date.
+function termsFlags(row: number, record: ServicingRecord, now: Date, yearAgo: Date) {
+  const flags: TapeFlag[] = [];
+  const warn = (field: TapeFieldKey, message: string) => flags.push({ row, level: "warn", field, message });
+  const arm = Boolean(record.armIndex) || record.armMargin != null || record.armNextReset != null;
+  if (arm && !record.armIndex && record.armMargin == null) {
+    warn("armIndex", "This loan reads as an adjustable rate, but the index and the margin are missing.");
+  } else if (arm && !record.armIndex) {
+    warn("armIndex", "This loan reads as an adjustable rate, but the index is missing.");
+  } else if (arm && record.armMargin == null) {
+    warn("armMargin", "This loan reads as an adjustable rate, but the margin is missing.");
+  }
+  if (record.armNextReset && record.armNextReset.getTime() < now.getTime() - DAY) {
+    warn("armNextReset", `The next rate reset, ${day(record.armNextReset)}, is in the past. Ask the servicer for the current reset date.`);
+  }
+  if (record.creditScore != null && !record.creditScoreType) {
+    warn("creditScoreType", "The credit score has no model. FICO and VantageScore read differently, so map a score model column.");
+  }
+  if (record.creditScoreDate && record.creditScoreDate < yearAgo) {
+    warn("creditScoreDate", `The credit score is dated ${day(record.creditScoreDate)}, more than 12 months ago.`);
+  }
   return flags;
 }
 

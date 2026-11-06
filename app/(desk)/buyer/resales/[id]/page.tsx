@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { answerDeskBid } from "@/actions/desk-book";
 import { ConfirmSubmit } from "@/components/confirm-submit";
 import { SubmitButton } from "@/components/submit-button";
+import { DiscrepancyAnswers } from "@/components/discrepancy-answers";
 import { Notice } from "@/components/notice";
 import { SaleApproval, WithdrawListing } from "@/components/sale-approval";
 import { requireRole } from "@/lib/auth";
@@ -46,7 +47,10 @@ export default async function ResalePage({
   if (!listing || listing.sellerId !== user.id) notFound();
   const ask = listing.notes.reduce((sum, note) => sum + num(note.askingPrice), 0);
   const deskBidBlock = deskBidNotAcceptable(listing);
-  const openClosings = await prisma.closing.count({ where: { listingId: listing.id, status: "OPEN" } });
+  const [openClosings, differences] = await Promise.all([
+    prisma.closing.count({ where: { listingId: listing.id, status: "OPEN" } }),
+    prisma.fieldDiscrepancy.findMany({ where: { listingId: listing.id }, orderBy: { createdAt: "desc" } }),
+  ]);
   return (
     <div className="mx-auto max-w-3xl">
       <Link href="/buyer/portfolio" className="text-[13px] font-medium text-link">Back to your portfolio</Link>
@@ -58,6 +62,12 @@ export default async function ResalePage({
       <p className="mt-3 text-sm text-muted-foreground">
         {STATUS[listing.status] ?? listing.status} Asking {money(ask)} across {listing.notes.length} loan{listing.notes.length === 1 ? "" : "s"}.
       </p>
+      <DiscrepancyAnswers
+        rows={differences}
+        loanLabels={Object.fromEntries(listing.notes.map((note) => [note.id, `${note.streetAddress || "No street"}, ${note.city}, ${note.state}`]))}
+        canAnswer
+        listingStatus={listing.status}
+      />
       {listing.status !== "REJECTED" && listing.status !== "SOLD" && listing.status !== "WITHDRAWN" && (
         <SaleApproval listing={listing} offers={listing.inquiries} canAnswer />
       )}

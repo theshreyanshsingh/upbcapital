@@ -1,3 +1,5 @@
+// The page title is the one display moment on a desk page: an Inter eyebrow, the title in the serif,
+// and the lede at reading size.
 export function PageIntro({
   eyebrow,
   title,
@@ -8,10 +10,10 @@ export function PageIntro({
   lede?: string;
 }) {
   return (
-    <header className="mb-6 max-w-3xl">
+    <header className="mb-6 max-w-3xl sm:mb-8">
       <p className="eyebrow">{eyebrow}</p>
-      <h1 className="mt-1 text-[28px] font-semibold leading-tight tracking-tight text-foreground">{title}</h1>
-      {lede && <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">{lede}</p>}
+      <h1 className="mt-1.5 type-display font-semibold text-balance text-foreground">{title}</h1>
+      {lede && <p className="mt-3 max-w-2xl type-body text-pretty text-muted-foreground">{lede}</p>}
     </header>
   );
 }
@@ -27,9 +29,9 @@ export function Field({
 }) {
   return (
     <label className="block">
-      <span className="text-[13px] text-muted-foreground">{label}</span>
-      <div className="mt-2">{children}</div>
-      {hint && <span className="mt-2 block text-xs leading-relaxed text-muted-foreground">{hint}</span>}
+      <span className="type-label font-medium text-foreground">{label}</span>
+      <div className="mt-1.5">{children}</div>
+      {hint && <span className="mt-1.5 block type-label text-pretty text-muted-foreground">{hint}</span>}
     </label>
   );
 }

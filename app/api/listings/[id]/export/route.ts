@@ -10,6 +10,7 @@ import { showableAvm } from "@/lib/enrichment";
 import { prisma } from "@/lib/prisma";
 import { isPro } from "@/lib/settings";
 import { couponBucket, ltvBucket, stratify, upbBucket } from "@/lib/strata";
+import { termsExportColumns } from "@/lib/tape-fields";
 
 export const runtime = "nodejs";
 
@@ -36,7 +37,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
   const loans = listing.notes.map((note) => {
     const upb = Number(note.upb);
     const value = Number(note.estimatedValue);
-    // The loan number finds the loan at its servicer, so it follows the street address.
+    // The loan number, MERS MIN and eNote ID find the loan at its servicer or registry, so they follow the street.
     const visible = open(note);
     return {
       loanNumber: visible ? note.loanNumber ?? "" : "",
@@ -68,6 +69,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       loanPurpose: note.loanPurpose ?? "",
       hoaLien: yesNo(note.hoaLien),
       taxDelinquent: yesNo(note.taxDelinquent),
+      ...termsExportColumns(note, visible),
     };
   });
   const strata = stratify(loans.map((loan) => ({

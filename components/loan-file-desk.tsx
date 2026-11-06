@@ -1,8 +1,15 @@
 import Link from "next/link";
+import { cookies } from "next/headers";
 import { clearField, logRisk, moveCollateral, removeCollateral, saveCollateral, uploadLoanReport, verifyField } from "@/actions/loan-file";
+import { applyServicerReport, discardServicerReport, previewServicerReport } from "@/actions/servicer-import";
 import { ConfirmSubmit } from "@/components/confirm-submit";
-import { collateralTone, FieldBadge, riskTone, Tag } from "@/components/loan-file-view";
+import { DiscrepancyRaise } from "@/components/discrepancy-desk";
+import { collateralTone, CureBy, FieldBadge, riskTone, Tag } from "@/components/loan-file-view";
 import { SubmitButton } from "@/components/submit-button";
+import type { DiscrepancyRow } from "@/lib/discrepancies";
+import { prisma } from "@/lib/prisma";
+import { getCurrentUser } from "@/lib/auth";
+import { answerable } from "@/lib/discrepancies";
 import { isoDate, prettyDate } from "@/lib/format";
 import { docLabel } from "@/lib/labels";
 import {
@@ -14,6 +21,9 @@ import {
   completeness,
   completenessLine,
   displayValue,
+  endorsementLabel,
+  ENDORSEMENTS,
+  fieldSpec,
   fieldState,
   isChainKind,
   latestChecks,
@@ -32,11 +42,21 @@ import {
   type FieldSpec,
   type RiskRow,
 } from "@/lib/loan-file";
+import {
+  readPreviewCookie,
+  SERVICER_COOKIE,
+  SERVICER_SOURCES,
+  stagedReport,
+  type LineAction,
+  type StagedReport,
+} from "@/lib/servicer-import";
 
 type DeskDocument = { id: string; type: string; originalName: string; createdAt: Date; noteId: string | null };
-type LoanRecord = { id: string; state: string; propertyType: string; lienPosition: string; hoaLien?: boolean | null; verifiedFields?: unknown } & object;
+type LoanRecord = { id: string; listingId?: string; state: string; propertyType: string; lienPosition: string; hoaLien?: boolean | null; verifiedFields?: unknown } & object;
 
 const RECORDED = new Set(["MORTGAGE", "ASSIGNMENT"]);
+// The paper that travels physically, so the desk photographs it as received.
+const PHOTOGRAPHED = new Set(["ORIGINAL_NOTE", "ALLONGE"]);
 const RISK_SOURCES = ["PACER", "County tax collector", "County recorder", "ATTOM", "Servicer", "Drive-by inspection", "Borrower contact"];
 
 // Desk-only. Render this only on pages an admin is viewing: it shows every party and every value.
@@ -49,6 +69,8 @@ export function LoanFileDesk({
   people,
   heading,
   picker,
+  discrepancies = [],
+  listedAt = null,
 }: {
   note: LoanRecord;
   collateral: CollateralRow[];
@@ -59,10 +81,14 @@ export function LoanFileDesk({
   people: Record<string, string>;
   heading: string;
   picker?: { action: string; options: { id: string; label: string }[]; previous: string | null; next: string | null; position: string };
+  // This loan's tape differences, and when the listing was filed, for the "fixed after listing" caution.
+  discrepancies?: DiscrepancyRow[];
+  listedAt?: Date | null;
 }) {
   const file = completeness(note, collateral, risks, { holder });
   const lines = collateralLines(note.lienPosition, collateral);
-  const chain = chainOfTitle(collateral, holder);
+  const chain = chainOfTitle(collateral, holder, { listedAt });
+  const openFields = new Set(discrepancies.filter((row) => row.noteId === note.id && row.status === "OPEN").map((row) => row.field));
   const latest = latestChecks(risks);
   const flag = superLien(note);
   const entries = verifiedMap(note.verifiedFields);
@@ -118,13 +144,14 @@ export function LoanFileDesk({
                   <Tag tone={collateralTone(item.status)}>{collateralStatusLabel(item.status)}</Tag>
                   {(item.status === "MISSING" || item.status === "DEFECTIVE") && (
                     <span className="text-xs text-muted-foreground tabular-nums">
-                      {item.cureOwner ? `Cure: ${item.cureOwner}` : "No cure owner"}{item.cureBy ? ` by ${prettyDate(item.cureBy)}` : ""}
+                      {item.cureBy ? <CureBy cureBy={item.cureBy} owner={item.cureOwner || "no cure owner"} /> : item.cureOwner ? `Cure: ${item.cureOwner} · no date` : "No cure owner or date"}
                     </span>
                   )}
                   {item.recording && <span className="text-xs text-muted-foreground tabular-nums">{item.recording}{item.recordedAt ? ` · ${prettyDate(item.recordedAt)}` : ""}</span>}
                   <span className="text-xs text-muted-foreground">{who(item.updatedById)} · {prettyDate(item.updatedAt ?? item.createdAt)}</span>
                 </summary>
                 <CollateralForm noteId={note.id} kind={item.kind} item={item} documents={documents} />
+                {item.photoDocumentId && <p className="mt-2 text-xs"><a className="text-link" href={`/api/documents/${item.photoDocumentId}`}>Intake photo</a></p>}
                 <div className="mt-3 flex flex-wrap gap-2">
                   {isChainKind(item.kind) && index > 0 && (
                     <form action={moveCollateral}>
@@ -175,9 +202,10 @@ export function LoanFileDesk({
         <DeskChain chain={chain.endorsements} />
         <DeskChain chain={chain.assignments} />
       </div>
+      {chain.cautions.map((item) => <p key={item} className="mt-2 text-xs text-warn">{item}</p>)}
 
       <h3 className="mt-8 text-[13px] font-medium text-foreground">Risk card</h3>
-      <div className="mt-2 overflow-x-auto">
+      <div className="mt-2 relative overflow-x-auto">
         <table className="min-w-full text-left text-sm">
           <thead className="text-xs font-medium text-muted-foreground">
             <tr>{["Check", "Result", "Source", "Checked", "Detail"].map((heading) => <th key={heading} className="px-2 py-2 font-normal">{heading}</th>)}</tr>
@@ -261,6 +289,7 @@ export function LoanFileDesk({
                 <span className="text-foreground tabular-nums">{displayValue(spec, tape)}</span>
                 <span className="flex flex-wrap items-center gap-2">
                   <FieldBadge field={spec.field} state={state} showValue />
+                  {openFields.has(spec.field) && <Tag tone="warn">Open difference</Tag>}
                   {entry && <span className="text-xs text-muted-foreground">{who(entry.by)}</span>}
                 </span>
               </summary>
@@ -274,7 +303,7 @@ export function LoanFileDesk({
                   </label>
                   <label className="block">
                     <span className="text-[13px] text-muted-foreground">Source</span>
-                    <select name="source" defaultValue={entry?.source ?? spec.source} className="desk-input mt-2 w-52">
+                    <select name="source" defaultValue={entry && !entry.origin ? entry.source : spec.source} className="desk-input mt-2 w-52">
                       {VERIFY_SOURCES.map((source) => <option key={source} value={source}>{source}</option>)}
                     </select>
                   </label>
@@ -284,7 +313,7 @@ export function LoanFileDesk({
                   <form action={clearField}>
                     <input type="hidden" name="noteId" value={note.id} />
                     <input type="hidden" name="field" value={spec.field} />
-                    <SubmitButton variant="outline" className="h-10 text-[13px] font-medium" pendingLabel="Clearing…">Clear the check</SubmitButton>
+                    <SubmitButton variant="outline" className="h-10 text-[13px] font-medium" pendingLabel="Clearing…">{entry.origin ? "Clear the report's badge" : "Clear the check"}</SubmitButton>
                   </form>
                 )}
               </div>
@@ -292,6 +321,8 @@ export function LoanFileDesk({
           );
         })}
       </div>
+      <p className="mt-2 text-xs text-muted-foreground">A document that differs from the tape raises a difference the seller fixes or explains. Approval waits until each one has an answer.</p>
+      <DiscrepancyRaise noteId={note.id} />
 
       <h3 className="mt-8 text-[13px] font-medium text-foreground">Files on this loan</h3>
       {loanDocs.length === 0 ? (
@@ -321,7 +352,191 @@ export function LoanFileDesk({
         <p className="text-xs text-muted-foreground sm:col-span-2">It opens to the desk, the seller, and buyers who can open this loan&apos;s street and borrower. Pro is needed unless the buyer is buying this loan.</p>
         <div className="sm:col-span-2"><SubmitButton className="h-9 text-[13px] font-medium" pendingLabel="Uploading…">Add to this loan</SubmitButton></div>
       </form>
+
+      {note.listingId && <ServicerReportPanel listingId={note.listingId} from="desk" loanId={note.id} nested />}
     </section>
+  );
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Servicer report: for the seller of record on their listing page and for the desk here. It shows only what the
+// listing's own tape already holds, so it is safe on both. The file waits as a draft until it is applied.
+
+const ACTION_TAGS: Record<LineAction, { tone: "good" | "warn" | "plain" | "source"; text: string }> = {
+  fill: { tone: "good", text: "Fills a blank" },
+  confirm: { tone: "source", text: "Agrees" },
+  differ: { tone: "warn", text: "Differs · opens a question" },
+  held: { tone: "plain", text: "Differs · no new question" },
+};
+
+const SHOWN_LOANS = 25;
+
+export async function ServicerReportPanel({ listingId, from, loanId, nested = false }: { listingId: string; from: "seller" | "desk"; loanId?: string; nested?: boolean }) {
+  const [viewer, jar, listing] = await Promise.all([
+    getCurrentUser(),
+    cookies(),
+    prisma.listing.findUnique({ where: { id: listingId }, select: { status: true } }),
+  ]);
+  const open = Boolean(listing && answerable(listing.status));
+  const saved = readPreviewCookie(jar.get(SERVICER_COOKIE)?.value);
+  const staged = open && viewer && saved && saved.listingId === listingId ? await stagedReport(viewer.id, saved) : null;
+  const hidden = (
+    <>
+      <input type="hidden" name="listingId" value={listingId} />
+      <input type="hidden" name="from" value={from} />
+      {loanId && <input type="hidden" name="loan" value={loanId} />}
+    </>
+  );
+  const Heading = nested ? "h3" : "h2";
+  const sub = nested ? "h4" : "h3";
+  return (
+    <section id="servicer-report" className={nested ? "mt-8 scroll-mt-6" : "mt-8 scroll-mt-6 border border-border p-5 rounded-xl"} aria-labelledby="servicer-report-heading">
+      <Heading id="servicer-report-heading" className={nested ? "text-[13px] font-medium text-foreground" : "eyebrow"}>Servicer report</Heading>
+      <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+        Upload the servicer&apos;s export for this listing. Rows match its loans by loan number, then by street and ZIP. Blank fields are filled, fields that agree carry the report&apos;s badge, and a field that differs opens a question for the seller. You see every change before anything is saved.
+      </p>
+      {!open ? (
+        <p className="mt-3 text-sm text-muted-foreground">This listing is in contract or closed, so a servicer report can&apos;t change its tape here.</p>
+      ) : staged ? <StagedPreview staged={staged} hidden={hidden} sub={sub} /> : (
+        <form action={previewServicerReport} className="mt-4 grid gap-3 rounded-lg border border-border p-4 sm:grid-cols-2">
+          {hidden}
+          <label className="block">
+            <span className="text-[13px] text-muted-foreground">Where the report comes from</span>
+            <select name="source" required defaultValue="" className="desk-input mt-2">
+              <option value="" disabled>Choose</option>
+              <optgroup label="Servicer">
+                {SERVICER_SOURCES.filter((row) => row.kind === "servicer").map((row) => <option key={row.value} value={row.value}>{row.label}</option>)}
+              </optgroup>
+              <optgroup label="Software the holder runs">
+                {SERVICER_SOURCES.filter((row) => row.kind === "holder").map((row) => <option key={row.value} value={row.value}>{row.label}</option>)}
+              </optgroup>
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-[13px] text-muted-foreground">Name, if it isn&apos;t listed</span>
+            <input name="sourceName" className="desk-input mt-2" maxLength={28} autoComplete="off" />
+          </label>
+          <label className="block sm:col-span-2">
+            <span className="text-[13px] text-muted-foreground">Servicer&apos;s export</span>
+            <input type="file" name="file" required accept=".csv,.xlsx,.xls" className="mt-2 block w-full text-sm" />
+          </label>
+          <p className="text-xs text-muted-foreground sm:col-span-2">
+            A third-party servicer&apos;s report reads as &ldquo;Servicer report&rdquo; on each field it supports. Software the holder runs, such as Terra Notes or NoteSmith, is the holder&apos;s own record and reads as seller-stated.
+          </p>
+          <div className="sm:col-span-2"><SubmitButton className="h-9 text-[13px] font-medium" pendingLabel="Reading…">Preview the changes</SubmitButton></div>
+        </form>
+      )}
+    </section>
+  );
+}
+
+function StagedPreview({ staged, hidden, sub: Sub }: { staged: StagedReport; hidden: React.ReactNode; sub: "h3" | "h4" }) {
+  const { preview, source } = staged;
+  const totals = preview.totals;
+  const changed = preview.loans.filter((loan) => loan.lines.some((line) => line.action !== "confirm"));
+  const quiet = preview.loans.length - changed.length;
+  const value = (field: string, raw: string | null) => {
+    const spec = fieldSpec(field);
+    return spec ? displayValue(spec, raw) : raw ?? "—";
+  };
+  return (
+    <div className="mt-4 space-y-5">
+      <div>
+        <p className="text-sm font-medium text-foreground">{staged.filename} · {source.kind === "servicer" ? `Servicer report · ${source.name}` : `Holder's servicing software · ${source.name}`}</p>
+        <dl className="mt-3 grid grid-cols-2 gap-px bg-muted sm:grid-cols-5">
+          {[
+            ["Rows matched", `${totals.matched} of ${totals.rows}`],
+            ["Blanks filled", String(totals.fill)],
+            ["Fields agree", String(totals.confirm)],
+            ["Questions opened", String(totals.differ)],
+            ["Loans without a row", String(preview.missing.length)],
+          ].map(([k, v]) => (
+            <div key={k} className="bg-card/80 px-3 py-2">
+              <dt className="text-xs font-medium text-muted-foreground">{k}</dt>
+              <dd className="mt-1 text-lg font-semibold tracking-tight text-foreground tabular-nums">{v}</dd>
+            </div>
+          ))}
+        </dl>
+        <p className="mt-2 text-xs text-muted-foreground">
+          Columns read: {preview.columns.map((column) => `${column.label} (${column.header})`).join(", ") || "none"}.
+          {preview.unused.length > 0 && ` Not used: ${preview.unused.slice(0, 12).join(", ")}${preview.unused.length > 12 ? ", and more" : ""}.`}
+        </p>
+      </div>
+
+      {changed.length > 0 && (
+        <div>
+          <Sub className="text-[13px] font-medium text-foreground">What changes</Sub>
+          <ul className="mt-2 space-y-3">
+            {changed.slice(0, SHOWN_LOANS).map((loan) => (
+              <li key={loan.noteId} className="rounded-lg border border-border p-3">
+                <p className="text-sm text-foreground">{loan.label}</p>
+                <p className="text-xs text-muted-foreground tabular-nums">Row {loan.row} · matched by {loan.by === "loanNumber" ? "loan number" : "street and ZIP"} · {loan.lines.filter((line) => line.action === "confirm").length} fields agree</p>
+                <ul className="mt-2 space-y-1 text-sm">
+                  {loan.lines.filter((line) => line.action !== "confirm").map((line) => (
+                    <li key={line.field} className="flex flex-wrap items-center gap-2">
+                      <span className="text-muted-foreground">{line.label}</span>
+                      <span className="text-foreground tabular-nums">{line.tape == null ? value(line.field, line.report) : `${value(line.field, line.tape)} on the tape, ${value(line.field, line.report)} in the report`}</span>
+                      <Tag tone={ACTION_TAGS[line.action].tone}>{ACTION_TAGS[line.action].text}</Tag>
+                      {line.note && <span className="text-xs text-muted-foreground">{line.note}</span>}
+                    </li>
+                  ))}
+                </ul>
+              </li>
+            ))}
+          </ul>
+          {changed.length > SHOWN_LOANS && <p className="mt-2 text-xs text-muted-foreground tabular-nums">And {changed.length - SHOWN_LOANS} more loans with changes.</p>}
+        </div>
+      )}
+      {quiet > 0 && <p className="text-sm text-muted-foreground tabular-nums">{quiet === 1 ? "1 more matched loan agrees" : `${quiet} more matched loans agree`} with the report on every field it carries.</p>}
+
+      {preview.unmatched.length > 0 && (
+        <div>
+          <Sub className="text-[13px] font-medium text-foreground">Rows that matched no loan</Sub>
+          <ul className="mt-1 space-y-0.5 text-sm text-muted-foreground tabular-nums">
+            {preview.unmatched.slice(0, 20).map((row) => <li key={row.row}>Row {row.row} · {row.label} · {row.reason}</li>)}
+          </ul>
+          {preview.unmatched.length > 20 && <p className="mt-1 text-xs text-muted-foreground tabular-nums">And {preview.unmatched.length - 20} more.</p>}
+        </div>
+      )}
+      {preview.missing.length > 0 && (
+        <div>
+          <Sub className="text-[13px] font-medium text-foreground">Loans the report doesn&apos;t cover</Sub>
+          <ul className="mt-1 space-y-0.5 text-sm text-muted-foreground">
+            {preview.missing.slice(0, 20).map((loan) => <li key={loan.noteId}>{loan.label}</li>)}
+          </ul>
+          {preview.missing.length > 20 && <p className="mt-1 text-xs text-muted-foreground tabular-nums">And {preview.missing.length - 20} more.</p>}
+        </div>
+      )}
+      {preview.notes.length > 0 && (
+        <div>
+          <Sub className="text-[13px] font-medium text-foreground">Values left off</Sub>
+          <ul className="mt-1 space-y-0.5 text-sm text-muted-foreground tabular-nums">
+            {preview.notes.slice(0, 12).map((note, index) => <li key={`${note.row}-${index}`}>Row {note.row}: {note.message}</li>)}
+          </ul>
+          {preview.notes.length > 12 && <p className="mt-1 text-xs text-muted-foreground tabular-nums">And {preview.notes.length - 12} more.</p>}
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-2">
+        <form action={applyServicerReport}>
+          {hidden}
+          <input type="hidden" name="token" value={staged.token} />
+          <ConfirmSubmit
+            title={`Apply the ${source.name} report?`}
+            consequence={`${totals.fill} blank fields are filled and ${totals.confirm} carry the report's badge. ${totals.differ} differences open as questions for the seller. The file is kept with the listing's tape, and the import is logged.`}
+            confirmLabel="Apply the report"
+            pendingLabel="Applying…"
+            className="h-9 text-[13px] font-medium"
+          >
+            Apply the report
+          </ConfirmSubmit>
+        </form>
+        <form action={discardServicerReport}>
+          {hidden}
+          <SubmitButton variant="outline" className="h-9 text-[13px] font-medium" pendingLabel="Setting aside…">Set it aside</SubmitButton>
+        </form>
+      </div>
+    </div>
   );
 }
 
@@ -376,6 +591,37 @@ function CollateralForm({ noteId, kind, item, documents }: { noteId: string; kin
         <span className="text-[13px] text-muted-foreground">Cure by</span>
         <input type="date" name="cureBy" defaultValue={isoDate(item?.cureBy) ?? ""} className="desk-input mt-2" />
       </label>
+      {chain && (
+        <label className="block">
+          <span className="text-[13px] text-muted-foreground">Dated on the document</span>
+          <input type="date" name="datedOn" defaultValue={isoDate(item?.datedOn) ?? ""} className="desk-input mt-2" />
+        </label>
+      )}
+      {kind === "ALLONGE" && (
+        <>
+          <label className="block">
+            <span className="text-[13px] text-muted-foreground">Fixed to the note by</span>
+            <input type="date" name="attachedAt" defaultValue={isoDate(item?.attachedAt) ?? ""} className="desk-input mt-2" aria-describedby={`attached-hint-${item?.id ?? "new"}`} />
+            <span id={`attached-hint-${item?.id ?? "new"}`} className="mt-1 block text-xs text-muted-foreground">The earliest date the file shows it attached, such as a custodian receipt or the intake photo.</span>
+          </label>
+          <label className="block">
+            <span className="text-[13px] text-muted-foreground">Endorsement</span>
+            <select name="endorsement" defaultValue={item?.endorsement ?? ""} className="desk-input mt-2">
+              <option value="">Not recorded</option>
+              {ENDORSEMENTS.map((row) => <option key={row.value} value={row.value}>{row.label}</option>)}
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-[13px] text-muted-foreground">Loan number on it matches the note</span>
+            <select name="loanNumberMatch" defaultValue={item?.loanNumberMatch == null ? "" : item.loanNumberMatch ? "yes" : "no"} className="desk-input mt-2">
+              <option value="">Not checked</option>
+              <option value="yes">Yes</option>
+              <option value="no">No</option>
+            </select>
+          </label>
+        </>
+      )}
+      {PHOTOGRAPHED.has(kind) && <DocumentSelect documents={documents} value={item?.photoDocumentId ?? ""} name="photoDocumentId" label="Photo of the original at intake" />}
       {RECORDED.has(kind) && (
         <>
           <label className="block">
@@ -395,11 +641,11 @@ function CollateralForm({ noteId, kind, item, documents }: { noteId: string; kin
   );
 }
 
-function DocumentSelect({ documents, value = "" }: { documents: DeskDocument[]; value?: string }) {
+function DocumentSelect({ documents, value = "", name = "documentId", label = "File on record" }: { documents: DeskDocument[]; value?: string; name?: string; label?: string }) {
   return (
     <label className="block">
-      <span className="text-[13px] text-muted-foreground">File on record</span>
-      <select name="documentId" defaultValue={value} className="desk-input mt-2">
+      <span className="text-[13px] text-muted-foreground">{label}</span>
+      <select name={name} defaultValue={value} className="desk-input mt-2">
         <option value="">None</option>
         {documents.map((document) => (
           <option key={document.id} value={document.id}>{docLabel(document.type)} · {document.originalName.slice(0, 60)}{document.noteId ? "" : " · listing"}</option>
@@ -442,7 +688,7 @@ function DeskChain({ chain }: { chain: Chain }) {
               {link.gap && <p className="text-xs font-medium text-bad">Break before this step</p>}
               <p className="text-foreground"><span className="text-muted-foreground tabular-nums">{link.position}.</span> {link.from || "Not named"} → {link.to || "Not named"}</p>
               <p className="text-xs text-muted-foreground tabular-nums">
-                {collateralStatusLabel(link.status)}{link.recordedAt ? ` · recorded ${prettyDate(link.recordedAt)}` : ""}{link.recording ? ` · ${link.recording}` : ""}{link.note ? ` · ${link.note}` : ""}
+                {collateralStatusLabel(link.status)}{endorsementLabel(link.endorsement) ? ` · ${endorsementLabel(link.endorsement)?.toLowerCase()}` : ""}{link.datedOn ? ` · dated ${prettyDate(link.datedOn)}` : ""}{link.attachedAt ? ` · fixed to the note by ${prettyDate(link.attachedAt)}` : ""}{link.loanNumberMatch === true ? " · loan number matches" : ""}{link.photoDocumentId ? " · photographed at intake" : ""}{link.recordedAt ? ` · recorded ${prettyDate(link.recordedAt)}` : ""}{link.recording ? ` · ${link.recording}` : ""}{link.note ? ` · ${link.note}` : ""}
               </p>
             </li>
           ))}
@@ -456,6 +702,11 @@ function DeskChain({ chain }: { chain: Chain }) {
             {chain.breaks.map((item) => <li key={item.message}>{item.message}</li>)}
           </ul>
         )
+      )}
+      {chain.cautions.length > 0 && (
+        <ul className="mt-1 space-y-0.5 text-xs text-warn">
+          {chain.cautions.map((item) => <li key={item}>{item}</li>)}
+        </ul>
       )}
     </div>
   );

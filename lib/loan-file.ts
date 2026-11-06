@@ -1,10 +1,12 @@
 import type { CollateralKind, CollateralStatus, DocType, RiskKind, RiskResult } from "@prisma/client";
 import { audit } from "@/lib/audit";
+import { tellSellerOfDifferences } from "@/lib/discrepancy-notice";
 import { money, pct, prettyDate } from "@/lib/format";
 import { FORECLOSURES, LIEN_POSITIONS, OCCUPANCIES, PAYMENT_STATUSES, PROPERTY_TYPES } from "@/lib/labels";
 import { typedNumber } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
 import { extensionOf, mimeFor, putBytes, safeBasename } from "@/lib/storage";
+import { CREDIT_SCORE_TYPES, LOSS_MIT_STAGES } from "@/lib/tape-fields";
 import { uploadProblem } from "@/lib/uploads";
 
 // The verified loan file: the desk checks the paper once, before the price, and every bidder sees the same
@@ -81,11 +83,44 @@ export type CollateralRow = {
   cureBy?: Date | null;
   recordedAt?: Date | null;
   recording?: string;
+  datedOn?: Date | null;
+  attachedAt?: Date | null;
+  endorsement?: string | null;
+  loanNumberMatch?: boolean | null;
+  photoDocumentId?: string | null;
   documentId?: string | null;
   updatedById?: string | null;
   createdAt?: Date;
   updatedAt?: Date;
 };
+
+// How an allonge endorses the note. In blank makes it bearer paper; special names the next holder; none moves nothing.
+export const ENDORSEMENTS = [
+  { value: "BLANK", label: "In blank" },
+  { value: "SPECIAL", label: "Special, to a named holder" },
+  { value: "NONE", label: "No endorsement" },
+] as const;
+
+export function endorsementLabel(value: string | null | undefined) {
+  return ENDORSEMENTS.find((row) => row.value === value)?.label ?? null;
+}
+
+const DAY = 24 * 60 * 60 * 1000;
+const utcDay = (date: Date) => Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+
+// Whole days from today to the cure date, counted in UTC as the date was entered. Negative is overdue.
+export function daysToCure(cureBy: Date | null | undefined, now = new Date()) {
+  if (!cureBy || Number.isNaN(cureBy.getTime())) return null;
+  return Math.round((utcDay(cureBy) - utcDay(now)) / DAY);
+}
+
+export function cureCountdown(cureBy: Date | null | undefined, now = new Date()) {
+  const days = daysToCure(cureBy, now);
+  if (days == null) return null;
+  if (days === 0) return { days, overdue: false, text: "Due today" };
+  if (days > 0) return { days, overdue: false, text: `${days} ${days === 1 ? "day" : "days"} to cure` };
+  return { days, overdue: true, text: `${-days} ${days === -1 ? "day" : "days"} overdue` };
+}
 
 export function sortChain<T extends { sequence: number; createdAt?: Date }>(rows: T[]) {
   return [...rows].sort((a, b) => a.sequence - b.sequence || (a.createdAt?.getTime() ?? 0) - (b.createdAt?.getTime() ?? 0));
@@ -150,8 +185,8 @@ function sameParty(a: string, b: string) {
 }
 
 // An endorsement in blank makes the note bearer paper, so whoever holds it may endorse it on.
-function follows(previousTo: string, from: string) {
-  return inBlank(previousTo) || sameParty(previousTo, from);
+function follows(previousTo: string, previousBlank: boolean, from: string) {
+  return previousBlank || inBlank(previousTo) || sameParty(previousTo, from);
 }
 
 export type ChainLink = {
@@ -164,7 +199,14 @@ export type ChainLink = {
   status: string;
   recordedAt: Date | null;
   recording: string;
+  datedOn: Date | null;
+  attachedAt: Date | null;
+  endorsement: string | null;
+  loanNumberMatch: boolean | null;
+  photoDocumentId: string | null;
   documentId: string | null;
+  // Endorsed in blank, by the desk's record or by the endorsee's wording.
+  blank: boolean;
   // Nothing on file moves the paper from the previous link's holder to this link's grantor.
   gap: boolean;
 };
@@ -181,23 +223,47 @@ export type Chain = {
   // The desk marked the chain not required. The reason, which may be empty, is in the detail.
   waived: string | null;
   endsInBlank: boolean;
+  // Weaknesses that aren't breaks: an undated allonge, one not confirmed fixed to the note or fixed after the listing
+  // was filed, or one whose loan number doesn't match. Worded without party names, so any buyer who can open the
+  // listing may read them.
+  cautions: string[];
 };
 
-function buildChain(kind: ChainKind, items: CollateralRow[], holder: string | null | undefined): Chain {
+const dayKey = (date: Date) => date.toISOString().slice(0, 10);
+
+function buildChain(kind: ChainKind, items: CollateralRow[], holder: string | null | undefined, listedAt: Date | null | undefined): Chain {
   const rows = sortChain(items.filter((item) => item.kind === kind));
   const live = rows.filter((row) => row.status !== "NOT_REQUIRED");
   const waivedRow = rows.length > 0 && live.length === 0 ? rows[rows.length - 1] : null;
   const noun = kind === "ALLONGE" ? "endorsement" : "assignment";
   const breaks: ChainBreak[] = [];
-  const links = live.map((row, index): ChainLink => {
+  const cautions: string[] = [];
+  // A blank endorsement names no endorsee, so it reads as "In blank" when the desk left the field empty.
+  const read = live.map((row) => {
     const parties = chainParties(row.detail);
-    const previous = index > 0 ? chainParties(live[index - 1].detail) : null;
+    const blank = (kind === "ALLONGE" && row.endorsement === "BLANK") || inBlank(parties.to);
+    return { ...parties, to: parties.to || (blank ? "In blank" : ""), blank };
+  });
+  const links = live.map((row, index): ChainLink => {
+    const parties = read[index];
+    const previous = index > 0 ? read[index - 1] : null;
     const position = index + 1;
-    const gap = Boolean(previous && previous.to && parties.from && !follows(previous.to, parties.from));
-    if (!parties.from || !parties.to) breaks.push({ position, message: `The ${noun} at step ${position} doesn't name both parties.` });
+    const unendorsed = kind === "ALLONGE" && row.endorsement === "NONE";
+    const gap = Boolean(previous && previous.to && parties.from && !follows(previous.to, previous.blank, parties.from));
+    if (unendorsed && row.status === "PRESENT") breaks.push({ position, message: `The allonge at step ${position} carries no endorsement.` });
+    else if (!parties.from || !parties.to) breaks.push({ position, message: `The ${noun} at step ${position} doesn't name both parties.` });
     if (gap && previous) breaks.push({ position, message: `Nothing on file moves it from ${previous.to} to ${parties.from}.` });
     if (row.status === "MISSING") breaks.push({ position, message: `The ${noun} at step ${position} is missing.`, fromStatus: true });
     if (row.status === "DEFECTIVE") breaks.push({ position, message: `The ${noun} at step ${position} is defective.`, fromStatus: true });
+    // New York (U.S. Bank v. Sukljian, App. Div. 3d Dept, Oct 2026) and Wisconsin (May 2026) courts refused
+    // standing on undated allonges, and on ones attached after suit, without proof of when they were affixed.
+    if (kind === "ALLONGE" && row.status === "PRESENT") {
+      if (!row.datedOn) cautions.push(`The endorsement at step ${position} is undated.`);
+      if (!row.attachedAt) cautions.push(`The desk hasn't confirmed the endorsement at step ${position} is fixed to the note.`);
+      else if (listedAt && dayKey(row.attachedAt) > dayKey(listedAt)) cautions.push(`The endorsement at step ${position} was fixed to the note after the listing was filed.`);
+      // An allonge has to identify the note it endorses.
+      if (row.loanNumberMatch === false) cautions.push(`The loan number on the endorsement at step ${position} doesn't match the note.`);
+    }
     return {
       id: row.id,
       sequence: row.sequence,
@@ -208,12 +274,18 @@ function buildChain(kind: ChainKind, items: CollateralRow[], holder: string | nu
       status: row.status,
       recordedAt: row.recordedAt ?? null,
       recording: row.recording ?? "",
+      datedOn: row.datedOn ?? null,
+      attachedAt: row.attachedAt ?? null,
+      endorsement: kind === "ALLONGE" ? row.endorsement ?? null : null,
+      loanNumberMatch: kind === "ALLONGE" ? row.loanNumberMatch ?? null : null,
+      photoDocumentId: row.photoDocumentId ?? null,
       documentId: row.documentId ?? null,
+      blank: parties.blank,
       gap,
     };
   });
   const last = links[links.length - 1];
-  const endsInBlank = Boolean(last && inBlank(last.to));
+  const endsInBlank = Boolean(last && last.blank);
   if (last && last.to && holder && !endsInBlank && !sameParty(last.to, holder)) {
     breaks.push({ position: null, message: `The chain ends with ${last.to}, not the seller on file, ${holder}.` });
   }
@@ -224,17 +296,25 @@ function buildChain(kind: ChainKind, items: CollateralRow[], holder: string | nu
     breaks,
     waived: waivedRow ? chainParties(waivedRow.detail).note : null,
     endsInBlank,
+    cautions,
   };
 }
 
 // The note travels by endorsement and the mortgage by recorded assignment. Each chain should run from the
 // originator to today's holder with no gap. Breaks are listed in plain words, not scored. `breaks` counts the
 // gaps, unnamed parties and wrong last holders; a missing link is already counted as a collateral defect.
-export function chainOfTitle(items: CollateralRow[], holder?: string | null) {
-  const endorsements = buildChain("ALLONGE", items, holder);
-  const assignments = buildChain("ASSIGNMENT", items, holder);
+// `listedAt` is when the listing was filed, so an allonge fixed to the note after it can be called out.
+export function chainOfTitle(items: CollateralRow[], holder?: string | null, options: { listedAt?: Date | null } = {}) {
+  const endorsements = buildChain("ALLONGE", items, holder, options.listedAt);
+  const assignments = buildChain("ASSIGNMENT", items, holder, options.listedAt);
   const gaps = [...endorsements.breaks, ...assignments.breaks].filter((item) => !item.fromStatus).length;
-  return { endorsements, assignments, breaks: gaps };
+  // The mortgage follows the note. An assignee of the mortgage who doesn't own the debt may not foreclose
+  // (Connecticut Supreme Court, June 2026), so the two chains should end with the same holder.
+  const noteEnd = endorsements.links[endorsements.links.length - 1]?.to ?? "";
+  const mortgageEnd = assignments.links[assignments.links.length - 1]?.to ?? "";
+  const split = Boolean(noteEnd && mortgageEnd && !endorsements.endsInBlank && !sameParty(noteEnd, mortgageEnd));
+  const cautions = split ? ["The mortgage is assigned to a different party than the note is endorsed to. A mortgage holder who doesn't own the note may not be able to foreclose."] : [];
+  return { endorsements, assignments, breaks: gaps, cautions };
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -341,6 +421,19 @@ export const LOAN_FIELDS: FieldSpec[] = [
   { field: "loanPurpose", label: "Loan purpose", kind: "choice", options: LOAN_PURPOSES, optional: true, source: "Original note" },
   { field: "hoaLien", label: "HOA lien", kind: "bool", optional: true, source: "O&E report" },
   { field: "taxDelinquent", label: "Tax delinquent", kind: "bool", optional: true, source: "County records" },
+  // Tape v2.1.
+  { field: "lossMitStage", label: "Loss mitigation stage", kind: "choice", options: LOSS_MIT_STAGES, optional: true, source: "Servicer statement" },
+  { field: "armIndex", label: "ARM index", kind: "text", optional: true, source: "Original note" },
+  { field: "armMargin", label: "ARM margin", kind: "percent", pro: true, optional: true, source: "Original note" },
+  { field: "armNextReset", label: "Next rate reset", kind: "date", optional: true, source: "Servicer statement" },
+  { field: "creditScore", label: "Credit score", kind: "number", optional: true, source: "Servicer statement" },
+  { field: "creditScoreType", label: "Score model", kind: "choice", options: CREDIT_SCORE_TYPES, optional: true, source: "Servicer statement" },
+  { field: "creditScoreDate", label: "Score date", kind: "date", optional: true, source: "Servicer statement" },
+  { field: "mersMin", label: "MERS MIN", kind: "text", identity: true, optional: true, source: "Mortgage or deed of trust" },
+  { field: "eNoteId", label: "eNote ID", kind: "text", identity: true, optional: true, source: "Original note" },
+  { field: "originatingPlatform", label: "Originating platform", kind: "text", optional: true, source: "Original note" },
+  { field: "inheritedCovenants", label: "Inherited sale covenants", kind: "text", optional: true, source: "Other" },
+  { field: "originatorLicense", label: "Originator license", kind: "text", identity: true, optional: true, source: "Original note" },
 ];
 
 const FIELD_BY_NAME = new Map(LOAN_FIELDS.map((spec) => [spec.field, spec]));
@@ -355,7 +448,7 @@ export function fieldLabel(field: string) {
 
 export const KEY_FIELDS = LOAN_FIELDS.filter((spec) => spec.key).map((spec) => spec.field);
 
-// Where the desk looked. Kept short, since it reads inline in a badge: "Verified · pay history, Oct 2 2026".
+// Where the desk looked. Kept short, since it reads inline in a badge: "Desk-verified against pay history · Oct 2, 2026".
 export const VERIFY_SOURCES = [
   "Original note",
   "Allonge",
@@ -405,6 +498,20 @@ function sameValue(spec: FieldSpec, a: string | null, b: string | null) {
   return spec.kind === "text" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
+// Two readings of a field, in any spelling, say the same thing. An empty string reads as nothing stated.
+export function sameReading(spec: FieldSpec, a: string | null | undefined, b: string | null | undefined) {
+  return sameValue(spec, a ? canonical(spec, a) : null, b ? canonical(spec, b) : null);
+}
+
+// The value as the document gives it, kept for writing back to the tape. canonical() rounds a rate to two places
+// for comparing, but a 7.125% note rate has to stay 7.125% if it becomes the tape's value.
+export function exactValue(spec: FieldSpec, raw: unknown): string | null {
+  if (raw == null) return null;
+  if (spec.kind !== "percent") return canonical(spec, raw);
+  const value = typeof raw === "number" ? raw : typedNumber(raw);
+  return Number.isFinite(value) ? String(Math.round(value * 10000) / 10000) : null;
+}
+
 export function displayValue(spec: FieldSpec, value: string | null) {
   if (value == null) return "—";
   if (spec.kind === "money") return money(Number(value));
@@ -420,7 +527,20 @@ export function tapeValue(note: object, field: string) {
   return spec ? canonical(spec, (note as Record<string, unknown>)[field]) : null;
 }
 
-export type VerifiedEntry = { at: string; by: string; source: string; value?: string | null; document?: string | null };
+// Where a value came from when the desk didn't check it: a third-party servicer's report, or software the holder
+// runs to service its own loans (Terra Notes, NoteSmith), which is the holder's own record.
+export type FieldOrigin = "servicer" | "holder";
+
+// A desk check has no origin. A servicer import writes the same shape with an origin and the servicer's name as the
+// source, so an edit or a correction reads the same way for both.
+export type VerifiedEntry = { at: string; by: string; source: string; value?: string | null; document?: string | null; origin?: FieldOrigin };
+
+const ORIGINS = new Set<string>(["servicer", "holder"]);
+
+// "Servicer report · FCI", "Holder's servicing software · Terra Notes".
+export function originLabel(origin: FieldOrigin, name: string) {
+  return `${origin === "servicer" ? "Servicer report" : "Holder's servicing software"} · ${name}`;
+}
 
 // Reads Note.verifiedFields defensively. Anything malformed is dropped, so it reads as seller-stated.
 export function verifiedMap(json: unknown): Record<string, VerifiedEntry> {
@@ -436,6 +556,7 @@ export function verifiedMap(json: unknown): Record<string, VerifiedEntry> {
       source: row.source,
       ...(row.value === undefined ? {} : { value: typeof row.value === "string" ? row.value : null }),
       ...(typeof row.document === "string" ? { document: row.document } : {}),
+      ...(typeof row.origin === "string" && ORIGINS.has(row.origin) ? { origin: row.origin as FieldOrigin } : {}),
     };
   }
   return out;
@@ -443,10 +564,12 @@ export function verifiedMap(json: unknown): Record<string, VerifiedEntry> {
 
 export type FieldState =
   | { state: "verified"; at: Date; by: string; source: string }
-  // The desk checked the document and it says something else. The tape value still stands as the seller's.
-  | { state: "disputed"; at: Date; by: string; source: string; document: string }
-  // Nothing checked, or the tape changed after the desk checked it.
-  | { state: "seller-stated"; changed?: { at: Date; by: string; source: string } };
+  // From a servicer's report or the holder's own software, not checked by the desk. `source` is the servicer's name.
+  | { state: "sourced"; origin: FieldOrigin; at: Date; by: string; source: string }
+  // The desk, or a servicer's report, says something else. The tape value still stands as the seller's.
+  | { state: "disputed"; at: Date; by: string; source: string; document: string; origin?: FieldOrigin }
+  // Nothing checked, or the tape changed after the desk checked it or the report was read.
+  | { state: "seller-stated"; changed?: { at: Date; by: string; source: string; origin?: FieldOrigin } };
 
 export function fieldState(note: { verifiedFields?: unknown }, field: string): FieldState {
   const spec = fieldSpec(field);
@@ -454,19 +577,37 @@ export function fieldState(note: { verifiedFields?: unknown }, field: string): F
   if (!spec || !entry) return { state: "seller-stated" };
   const at = new Date(entry.at);
   const current = tapeValue(note, field);
+  const origin = entry.origin ? { origin: entry.origin } : {};
+  const holds = (): FieldState =>
+    entry.origin ? { state: "sourced", origin: entry.origin, at, by: entry.by, source: entry.source } : { state: "verified", at, by: entry.by, source: entry.source };
+  // The tape was corrected to what the desk read in the document, so the desk's check now holds for it.
+  if (entry.document != null && sameValue(spec, entry.document, current)) return holds();
   // A check holds only for the value it was made against. An edit or a new tape since then reopens it.
   if (entry.value !== undefined && !sameValue(spec, entry.value ?? null, current)) {
-    return { state: "seller-stated", changed: { at, by: entry.by, source: entry.source } };
+    return { state: "seller-stated", changed: { at, by: entry.by, source: entry.source, ...origin } };
   }
   if (entry.document != null && !sameValue(spec, entry.document, current)) {
-    return { state: "disputed", at, by: entry.by, source: entry.source, document: entry.document };
+    return { state: "disputed", at, by: entry.by, source: entry.source, document: entry.document, ...origin };
   }
-  return { state: "verified", at, by: entry.by, source: entry.source };
+  return holds();
+}
+
+// The desk's own check stands over a servicer's report: true while it still holds for the tape, either way.
+export function deskHolds(note: { verifiedFields?: unknown }, field: string) {
+  const entry = verifiedMap(note.verifiedFields)[field];
+  if (!entry || entry.origin) return false;
+  const state = fieldState(note, field).state;
+  return state === "verified" || state === "disputed";
 }
 
 // "Pay history" reads as "pay history" mid-sentence. "BPO" and "O&E report" keep their capitals.
 export function inlineSource(source: string) {
   return /^[A-Z][a-z]/.test(source) ? source[0].toLowerCase() + source.slice(1) : source;
+}
+
+// "the pay history", "the BPO". A source the desk named "Other" reads as the document itself.
+export function sourcePhrase(source: string) {
+  return source === "Other" || !source ? "the document" : `the ${inlineSource(source)}`;
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -537,6 +678,8 @@ export type Completeness = {
   fields: { verified: number; total: number; disputed: number };
   defects: { id: string; kind: string; label: string; status: string; cureOwner: string; cureBy: Date | null }[];
   chainBreaks: number;
+  // Key fields a third-party servicer's report supports and the desk hasn't checked.
+  sourced: number;
   // Whether the desk has touched the file at all. An untouched file is all seller-stated.
   reviewed: boolean;
 };
@@ -587,7 +730,9 @@ export function completeness(
     },
     defects,
     chainBreaks: chainOfTitle(collateral, options.holder).breaks,
-    reviewed: collateral.length > 0 || risks.length > 0 || Object.keys(verifiedMap(note.verifiedFields)).length > 0,
+    sourced: keyStates.filter((row) => row.state.state === "sourced" && row.state.origin === "servicer").length,
+    // A servicer import alone isn't a desk review.
+    reviewed: collateral.length > 0 || risks.length > 0 || Object.values(verifiedMap(note.verifiedFields)).some((entry) => !entry.origin),
   };
 }
 
@@ -606,12 +751,13 @@ const plural = (count: number, one: string, many = `${one}s`) => `${count} ${cou
 
 // One line for a table cell or a picker: "6 of 8 on file · 4 of 5 checks · 9 of 12 fields verified · 1 defect".
 export function completenessLine(file: Completeness) {
-  if (!file.reviewed) return "Not yet reviewed by the desk";
+  if (!file.reviewed) return file.sourced ? `Not yet reviewed by the desk · ${file.sourced} from a servicer report` : "Not yet reviewed by the desk";
   const parts = [
     `${file.collateral.present} of ${file.collateral.required} on file`,
     `${file.checks.run} of ${file.checks.total} checks`,
     `${file.fields.verified} of ${file.fields.total} fields verified`,
   ];
+  if (file.sourced) parts.push(`${file.sourced} from a servicer report`);
   const open = file.defects.length + file.chainBreaks;
   if (open) parts.push(plural(open, "open defect"));
   return parts.join(" · ");
@@ -655,20 +801,39 @@ export type CollateralInput = {
   cureBy?: string | null;
   recordedAt?: string | null;
   recording?: string;
+  datedOn?: string | null;
+  attachedAt?: string | null;
+  // An allonge's endorsement (BLANK, SPECIAL or NONE) and whether its loan number matches the note.
+  endorsement?: string | null;
+  loanNumberMatch?: boolean | null;
+  // A photo of the original as the desk received it at intake: one of this loan's files.
+  photoDocumentId?: string | null;
   documentId?: string | null;
 };
 
 export async function saveCollateralItem(actorId: string, input: CollateralInput) {
   if (!(input.kind in COLLATERAL_LABELS)) return fail("Pick a collateral line.");
   if (!COLLATERAL_STATUSES.some((row) => row.value === input.status)) return fail("Pick a status.");
+  const endorsement = (input.endorsement ?? "").trim() || null;
+  if (endorsement && !ENDORSEMENTS.some((row) => row.value === endorsement)) return fail("Pick how the allonge is endorsed.");
   const loan = await loanOnFile(input.noteId);
   if (!loan) return fail("That loan isn't on file.");
   const cureBy = optionalDate(input.cureBy, "cure date");
   if (!cureBy.ok) return cureBy;
   const recordedAt = optionalDate(input.recordedAt, "recording date");
   if (!recordedAt.ok) return recordedAt;
+  const datedOn = optionalDate(input.datedOn, "date on the document");
+  if (!datedOn.ok) return datedOn;
+  const attachedAt = optionalDate(input.attachedAt, "attachment date");
+  if (!attachedAt.ok) return attachedAt;
   const documentId = await documentForLoan(input.documentId, loan);
   if (!documentId.ok) return documentId;
+  const photoDocumentId = await documentForLoan(input.photoDocumentId, loan);
+  if (!photoDocumentId.ok) return photoDocumentId;
+  const existing = input.id ? await prisma.collateralItem.findUnique({ where: { id: input.id } }) : null;
+  if (input.id && (!existing || existing.noteId !== loan.id)) return fail("That line isn't on this loan.");
+  // An edit keeps the line's kind, so the endorsement fields follow the stored kind, not the form's.
+  const allonge = (existing?.kind ?? input.kind) === "ALLONGE";
   const data = {
     status: input.status as CollateralStatus,
     detail: (input.detail ?? "").trim().slice(0, 400),
@@ -676,13 +841,16 @@ export async function saveCollateralItem(actorId: string, input: CollateralInput
     cureBy: cureBy.value,
     recordedAt: recordedAt.value,
     recording: (input.recording ?? "").trim().slice(0, 120),
+    datedOn: datedOn.value,
+    attachedAt: attachedAt.value,
+    endorsement: allonge ? endorsement : null,
+    loanNumberMatch: allonge ? input.loanNumberMatch ?? null : null,
+    photoDocumentId: photoDocumentId.value,
     documentId: documentId.value,
     updatedById: actorId,
   };
   let item;
-  if (input.id) {
-    const existing = await prisma.collateralItem.findUnique({ where: { id: input.id } });
-    if (!existing || existing.noteId !== loan.id) return fail("That line isn't on this loan.");
+  if (existing) {
     item = await prisma.collateralItem.update({ where: { id: existing.id }, data });
   } else {
     const kind = input.kind as CollateralKind;
@@ -766,19 +934,64 @@ export async function markFieldVerified(actorId: string, input: { noteId: string
   const document = typed ? canonical(spec, typed) : null;
   if (typed && document == null) return fail(`That doesn't read as a ${spec.kind === "money" || spec.kind === "percent" ? "number" : spec.kind === "bool" ? "yes or no" : spec.kind}.`);
   if (current == null && document == null) return fail("The tape has nothing here. Enter what the document shows.");
+  const differs = document != null && !sameValue(spec, document, current);
   const entry: VerifiedEntry = {
     at: new Date().toISOString(),
     by: actorId,
     source,
     value: current,
-    ...(document != null && !sameValue(spec, document, current) ? { document } : {}),
+    ...(differs ? { document } : {}),
   };
   const map = verifiedMap(note.verifiedFields);
   map[spec.field] = entry;
   await prisma.note.update({ where: { id: note.id }, data: { verifiedFields: map } });
+  const reading = await syncReading(actorId, note, spec, {
+    tape: exactValue(spec, (note as Record<string, unknown>)[spec.field]),
+    document: differs ? exactValue(spec, typed) : null,
+    source,
+  });
   // Values stay out of the log: a street or a borrower's name doesn't belong in the audit trail.
   await audit(actorId, "FIELD_VERIFY", "note", note.id, `${spec.field} · ${source}${entry.document != null ? " · differs from the tape" : ""}`);
-  return { ok: true as const, value: entry };
+  return { ok: true as const, value: { ...entry, raised: reading.raised } };
+}
+
+const answered = (status: string) => status === "EXPLAINED" || status === "WAIVED";
+
+// The desk's reading set beside the tape. A difference opens a question the seller has to fix or explain before
+// the listing goes live, unless the same difference was already explained or waived. A reading that matches the
+// tape settles any question still open on the field: the tape was corrected, or the earlier reading was wrong.
+async function syncReading(
+  actorId: string,
+  note: { id: string; listingId: string },
+  spec: FieldSpec,
+  reading: { tape: string | null; document: string | null; source: string },
+) {
+  const rows = await prisma.fieldDiscrepancy.findMany({ where: { noteId: note.id, field: spec.field }, orderBy: { createdAt: "desc" } });
+  const open = rows.filter((row) => row.status === "OPEN");
+  if (reading.document != null) {
+    const data = { tapeValue: reading.tape ?? "", documentValue: reading.document, source: reading.source, raisedById: actorId };
+    if (open.length) {
+      await prisma.fieldDiscrepancy.updateMany({ where: { id: open[0].id, status: "OPEN" }, data });
+      return { raised: true };
+    }
+    const settled = rows.some((row) => answered(row.status) && sameReading(spec, row.tapeValue, reading.tape) && sameReading(spec, row.documentValue, reading.document));
+    if (settled) return { raised: false };
+    await prisma.fieldDiscrepancy.create({ data: { noteId: note.id, listingId: note.listingId, field: spec.field, ...data } });
+    await audit(actorId, "DISCREPANCY_RAISED", "note", note.id, `${spec.field} · ${reading.source}`);
+    await tellSellerOfDifferences(note.listingId);
+    return { raised: true };
+  }
+  for (const row of open) {
+    const corrected = sameReading(spec, row.documentValue, reading.tape);
+    const moved = await prisma.fieldDiscrepancy.updateMany({
+      where: { id: row.id, status: "OPEN" },
+      data: corrected
+        ? { status: "ACCEPTED", sellerNote: `The desk checked the corrected tape against ${sourcePhrase(reading.source)}.`, resolvedById: actorId, resolvedAt: new Date() }
+        : { status: "WAIVED", sellerNote: `The desk read ${sourcePhrase(reading.source)} again. It matches the tape.`, resolvedById: actorId, resolvedAt: new Date() },
+    });
+    if (moved.count) await audit(actorId, corrected ? "DISCREPANCY_ACCEPTED" : "DISCREPANCY_WAIVED", "note", note.id, `${spec.field} · read again`);
+  }
+  return { raised: false };
 }
 
 export async function clearFieldVerified(actorId: string, input: { noteId: string; field: string }) {

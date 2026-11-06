@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { answerDeskBid } from "@/actions/desk-book";
 import { resubmitBrokerDeal } from "@/actions/broker";
 import { ConfirmSubmit } from "@/components/confirm-submit";
+import { DiscrepancyAnswers } from "@/components/discrepancy-answers";
 import { SubmitButton } from "@/components/submit-button";
 import { SaleApproval, WithdrawListing } from "@/components/sale-approval";
 import { Notice } from "@/components/notice";
@@ -59,6 +60,7 @@ export default async function BrokerDealPage({
     },
   });
   if (!listing || listing.brokerId !== user.id) notFound();
+  const differences = await prisma.fieldDiscrepancy.findMany({ where: { listingId: listing.id }, orderBy: { createdAt: "desc" } });
   const ask = listing.notes.reduce((sum, note) => sum + num(note.askingPrice), 0);
   const deskBidBlock = deskBidNotAcceptable(listing);
   const index = stageIndex(listing.status);
@@ -86,6 +88,13 @@ export default async function BrokerDealPage({
         <Stat k="Filed" v={prettyDate(listing.submittedAt)} />
       </dl>
       {listing.summary && <p className="mt-6 text-sm leading-relaxed text-foreground/85">{listing.summary}</p>}
+      <DiscrepancyAnswers
+        rows={differences}
+        loanLabels={Object.fromEntries(listing.notes.map((note) => [note.id, `${note.streetAddress || "No street"}, ${note.city}, ${note.state}`]))}
+        canAnswer={listing.brokerId === user.id}
+        listingStatus={listing.status}
+        client={listing.clientSellerName || "your client"}
+      />
       {changeRequest && (
         <section className="mt-8 border border-warn/40 bg-warn/10 p-5 rounded-xl" aria-labelledby="changes-heading">
           <p id="changes-heading" className="eyebrow">The desk asked for changes · {prettyDate(changeRequest.createdAt)}</p>

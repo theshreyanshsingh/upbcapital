@@ -32,9 +32,9 @@ export default async function AdminHome() {
   return (
     <div>
       <PageIntro eyebrow="Desk ledger" title="What the desk has earned." lede="Premiums and commissions post when a listing is marked sold. Membership cash posts from Stripe, or from the simulated checkout." />
-      <section className="mb-10 glass p-6" aria-labelledby="today-heading">
+      <section className="mb-10 glass p-5 sm:p-6" aria-labelledby="today-heading">
         <p id="today-heading" className="eyebrow">Desk today</p>
-        <ul className="mt-4 grid gap-x-6 gap-y-3 sm:grid-cols-2 lg:grid-cols-4">
+        <ul className="mt-4 grid grid-cols-2 gap-x-6 gap-y-4 sm:gap-y-3 lg:grid-cols-4">
           <Waiting href="/admin/queue" k="Listings to review" v={today.review} hint={today.oldestReviewDays != null ? `oldest ${today.oldestReviewDays} day${today.oldestReviewDays === 1 ? "" : "s"}` : undefined} urgent={(today.oldestReviewDays ?? 0) >= 5} />
           <Waiting href="/admin/offers" k="Open bids" v={today.offers} hint={today.toAward ? `${today.toAward} listing${today.toAward === 1 ? "" : "s"} ready to award` : undefined} urgent={today.toAward > 0} />
           <Waiting href="/closings" k="Open closings" v={today.openClosings} hint={today.lateClosings ? `${today.lateClosings} running late` : undefined} urgent={today.lateClosings > 0} />
@@ -42,20 +42,20 @@ export default async function AdminHome() {
           <Waiting href="/admin/verification" k="Buyer files waiting" v={today.files} />
           <Waiting href="/admin/users" k="Accounts waiting" v={today.accounts} />
         </ul>
-        <dl className="mt-6 grid gap-4 border-t border-border pt-4 sm:grid-cols-3">
+        <dl className="mt-6 grid grid-cols-2 gap-4 border-t border-border pt-4 sm:grid-cols-3">
           <Kpi k="Close rate, 180 days" v={today.stats.closeRate == null ? "—" : `${Math.round(today.stats.closeRate * 100)}%`} hint={`${today.stats.complete} closed · ${today.stats.canceled} canceled`} />
           <Kpi k="Average days to close" v={today.stats.averageDays == null ? "—" : today.stats.averageDays.toFixed(0)} hint={`Target ${targetDays(settings.closingTargetDays)} days`} />
           <Kpi k="Bids per live listing" v={today.bidsPerListing == null ? "—" : today.bidsPerListing.toFixed(1)} hint={`${today.liveListings} live`} />
         </dl>
       </section>
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
         <Figure k="Buyer premiums" v={money(sum("BUYER_PREMIUM") / 100)} />
         <Figure k="Seller commissions" v={money(sum("SELLER_COMMISSION") / 100)} />
         <Figure k="Subscription MRR" v={money(mrr / 100)} hint={`${paid.length} paid · ${subscribers.length - paid.length} comped`} />
         <Figure k="Broker fees posted" v={money(events.filter((event) => event.type === "BROKER_FEE").reduce((total, event) => total + event.amountCents, 0) / 100)} hint="Payable to brokers. Not desk income." />
       </div>
       <p className="mt-4 text-[13px] font-medium"><Link href="/admin/payouts" className="text-link">Payout queue</Link></p>
-      <section className="mt-10 glass p-6">
+      <section className="mt-10 glass p-5 sm:p-6">
         <p className="eyebrow">Six months</p>
         <div className="mt-6">
           <RevenueBars months={months} />
@@ -66,7 +66,7 @@ export default async function AdminHome() {
           <p className="eyebrow">Ledger</p>
           <Link href="/admin/settings" className="text-[13px] font-medium text-link">Fee schedule</Link>
         </div>
-        <div className="mt-4 overflow-x-auto border border-border rounded-xl">
+        <div className="mt-4 relative overflow-x-auto border border-border rounded-xl">
           <table className="min-w-full text-left text-sm">
             <thead className="text-xs font-medium text-muted-foreground">
               <tr>
@@ -125,9 +125,9 @@ function Kpi({ k, v, hint }: { k: string; v: string; hint: string }) {
 
 function Figure({ k, v, hint }: { k: string; v: string; hint?: string }) {
   return (
-    <div className="glass p-6">
+    <div className="glass p-4 sm:p-6">
       <p className="eyebrow">{k}</p>
-      <p className="mt-3 font-semibold tracking-tight text-[28px] text-foreground">{v}</p>
+      <p className="mt-2 font-semibold tracking-tight text-xl break-words text-foreground sm:mt-3 sm:text-[28px]">{v}</p>
       {hint && <p className="mt-2 text-xs text-muted-foreground">{hint}</p>}
     </div>
   );

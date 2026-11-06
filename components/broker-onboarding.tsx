@@ -58,7 +58,7 @@ export function BrokerOnboarding({ draft, start }: { draft: BrokerDraft; start: 
   }
 
   const foot = (primary: string, onPrimary: () => void, secondary?: { label: string; onClick: () => void }) => (
-    <div className="sticky bottom-0 z-10 -mx-4 mt-8 flex flex-col gap-2 border-t border-border bg-card/92 px-4 py-4 backdrop-blur md:static md:mx-0 md:flex-row md:border-0 md:bg-transparent md:px-0">
+    <div className="sticky bottom-[var(--dock,0px)] z-10 -mx-4 mt-8 flex flex-col gap-2 border-t border-border bg-card/92 px-4 py-4 backdrop-blur md:static md:mx-0 md:flex-row md:border-0 md:bg-transparent md:px-0">
       {step > 0 && (
         <button type="button" onClick={() => { setError(""); setStep((current) => current - 1); }} className="min-h-12 px-4 text-[13px] font-medium text-muted-foreground">
           Back

@@ -43,15 +43,66 @@ export function targetDays(setting: number | null | undefined) {
   return setting && setting >= 5 && setting <= 180 ? Math.round(setting) : DEFAULT_CLOSING_DAYS;
 }
 
-export function closingSchedule(openedAt: Date, days: number) {
-  const due = Object.fromEntries(CLOSING_STEPS.map((step) => [step.key, new Date(openedAt.getTime() + Math.round(SHARE[step.key] * days) * DAY)]));
-  return { targetCloseAt: new Date(openedAt.getTime() + days * DAY), due: due as Record<string, Date> };
+// Settlement days: the weekdays the desk batches wires on, as "TUE,THU". Dates are UTC, as everywhere on the desk.
+export const SETTLEMENT_WEEKDAYS = [
+  { key: "MON", day: 1, label: "Monday" },
+  { key: "TUE", day: 2, label: "Tuesday" },
+  { key: "WED", day: 3, label: "Wednesday" },
+  { key: "THU", day: 4, label: "Thursday" },
+  { key: "FRI", day: 5, label: "Friday" },
+] as const;
+const BUSINESS_DAYS = SETTLEMENT_WEEKDAYS.map((weekday) => weekday.day);
+
+// The desk's settlement weekdays. Missing, empty or unreadable means any business day.
+export function settlementWeekdays(setting: string | null | undefined): number[] {
+  const keys = String(setting ?? "").toUpperCase().split(",").map((part) => part.trim());
+  const days = SETTLEMENT_WEEKDAYS.filter((weekday) => keys.includes(weekday.key)).map((weekday) => weekday.day);
+  return days.length ? days : BUSINESS_DAYS;
+}
+
+// What the settings form saves: the chosen weekdays in week order, or null for any business day.
+export function settlementSetting(chosen: string[]) {
+  const keys = SETTLEMENT_WEEKDAYS.filter((weekday) => chosen.includes(weekday.key)).map((weekday) => weekday.key);
+  return keys.length && keys.length < SETTLEMENT_WEEKDAYS.length ? keys.join(",") : null;
+}
+
+export function settlementLabel(setting: string | null | undefined) {
+  const days = settlementWeekdays(setting);
+  if (days.length === BUSINESS_DAYS.length) return "any business day";
+  const names = SETTLEMENT_WEEKDAYS.filter((weekday) => days.includes(weekday.day)).map((weekday) => `${weekday.label}s`);
+  return names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+// The first settlement day on or after this date, at the same time of day.
+export function nextSettlementDay(date: Date, weekdays: number[]) {
+  const days = weekdays.length ? weekdays : BUSINESS_DAYS;
+  for (let ahead = 0; ahead < 7; ahead += 1) {
+    const candidate = new Date(date.getTime() + ahead * DAY);
+    if (days.includes(candidate.getUTCDay())) return candidate;
+  }
+  return date;
+}
+
+// "Tuesday, Nov 18".
+export function settlesOn(date: Date) {
+  return new Intl.DateTimeFormat("en-US", { weekday: "long", month: "short", day: "numeric", timeZone: "UTC" }).format(date);
+}
+
+// The money lands and the file closes on a settlement day, so those two steps move to the next one. The rest of the
+// run keeps its spacing. Without weekdays the schedule is the plain spread, which is how older closings read theirs.
+export function closingSchedule(openedAt: Date, days: number, settlement?: number[]) {
+  const due = Object.fromEntries(CLOSING_STEPS.map((step) => [step.key, new Date(openedAt.getTime() + Math.round(SHARE[step.key] * days) * DAY)])) as Record<string, Date>;
+  if (!settlement) return { targetCloseAt: new Date(openedAt.getTime() + days * DAY), due };
+  due.PAYMENT_RECEIVED = nextSettlementDay(due.PAYMENT_RECEIVED, settlement);
+  due.CLOSED = nextSettlementDay(due.CLOSED, settlement);
+  return { targetCloseAt: due.CLOSED, due };
 }
 
 type ClockClosing = { openedAt: Date; targetCloseAt: Date | null };
 type ClockStep = { key: string; status: string; dueAt: Date | null };
 
-// A step's own date wins. Older closings, and steps the desk never dated, fall on the schedule to the target.
+// A step's own date wins. Older closings, and steps the desk never dated, fall on the schedule to the target. That
+// schedule is never snapped to settlement days, so an existing closing keeps the dates it always showed.
 export function effectiveDue(step: ClockStep, closing: ClockClosing, days: number) {
   if (step.dueAt) return step.dueAt;
   const span = closing.targetCloseAt ? Math.max(1, Math.round((closing.targetCloseAt.getTime() - closing.openedAt.getTime()) / DAY)) : days;

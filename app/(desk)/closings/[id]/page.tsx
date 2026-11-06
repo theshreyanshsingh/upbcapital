@@ -1,8 +1,10 @@
 import { notFound, redirect } from "next/navigation";
+import { Check } from "lucide-react";
 import { markShareFunded } from "@/actions/group";
 import { saveBoarding } from "@/actions/boarding";
 import { cancelClosing, completeClosingStep, recordSettlement, saveWireInstructions, setClosingDates, uploadClosingFile, walkAway } from "@/actions/closing";
 import { BorrowerNotices } from "@/components/borrower-notices";
+import { DealTimeline } from "@/components/deal-timeline";
 import { ComplianceNote } from "@/components/compliance-note";
 import { DeskNotes } from "@/components/desk-notes";
 import { ConfirmRows, ConfirmSubmit } from "@/components/confirm-submit";
@@ -12,14 +14,16 @@ import { Textarea } from "@/components/ui/textarea";
 import { closingAccess } from "@/lib/acl";
 import { requireUser } from "@/lib/auth";
 import { stepLabel } from "@/lib/closing";
-import { STEP_OWNER, closingClock, effectiveDue, stepClock, targetDays } from "@/lib/closing-clock";
+import { STEP_OWNER, closingClock, effectiveDue, nextSettlementDay, settlementWeekdays, settlesOn, stepClock, targetDays } from "@/lib/closing-clock";
 import { closingBrokerView } from "@/lib/broker-pay";
-import { diligenceOpen } from "@/lib/closing-service";
+import { diligenceOpen, loadDealTimeline, timelineView } from "@/lib/closing-service";
 import { brokerRoleLabel } from "@/lib/broker-fees";
 import { isoDate, money, prettyDate, q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 import { balanceDueCents, buyerFundsCheck, economicsRows, moneyGate, statementSide, variance, varianceNote, type Variance } from "@/lib/settlement";
 import { getSettings } from "@/lib/settings";
+import { cn } from "@/lib/utils";
+import { faultLabel, strikeLimitOf } from "@/lib/strikes";
 
 export const metadata = { title: "Closing" };
 
@@ -56,8 +60,14 @@ export default async function ClosingPage({
   const party = access === "party";
   const order = ["PURCHASE_AGREEMENT", "BUYER_DEPOSIT", "COLLATERAL_TRANSFER", "ASSIGNMENT", "PAYMENT_RECEIVED", "CLOSED"];
   const steps = [...closing.steps].sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key));
-  const days = targetDays((await getSettings()).closingTargetDays);
+  const settings = await getSettings();
+  const days = targetDays(settings.closingTargetDays);
   const clock = closingClock(closing, steps, days);
+  const closedStep = steps.find((step) => step.key === "CLOSED");
+  // Money moves only on a settlement day. An older closing's close date can fall on a weekend, so the line reads the
+  // next settlement day on or after it rather than claiming a Saturday wire.
+  const closeDue = closedStep && closing.status === "OPEN" ? effectiveDue(closedStep, closing, days) : null;
+  const settles = closeDue ? nextSettlementDay(closeDue, settlementWeekdays(settings.settlementDays)) : null;
   const isAdmin = user.role === "ADMIN";
   const isSeller = user.id === closing.listing.sellerId;
   const isBuyer = user.id === inquiry?.buyerId || closing.funders.some((funder) => funder.userId === user.id);
@@ -77,6 +87,9 @@ export default async function ClosingPage({
   const deposit = closing.depositCents != null ? variance(closing.depositCents, closing.depositReceivedCents) : null;
   const depositLate = Boolean(closing.depositDueAt && closing.depositReceivedCents == null && closing.status === "OPEN" && closing.depositDueAt.getTime() < Date.now());
   const inDiligence = diligenceOpen(closing);
+  // The shared log, cut to what this viewer's side sees on this page.
+  const loaded = await loadDealTimeline(closing.id, side);
+  const timeline = loaded ? timelineView(loaded) : { entries: [], upcoming: [] };
   // A group's closing is the seats' money, so the desk ends it on their word rather than one seat walking away.
   const canWalkAway = inDiligence && !isAdmin && closing.funders.length <= 1 && (user.id === inquiry?.buyerId || closing.funders.some((funder) => funder.userId === user.id));
   return (
@@ -99,6 +112,7 @@ export default async function ClosingPage({
             {clock.next ? ` · next: ${stepLabel(clock.next.key)} by ${prettyDate(clock.next.due)}` : ""}
           </p>
         )}
+        {settles && <p className="mt-2 text-sm font-medium text-foreground">Settles on {settlesOn(settles)}</p>}
         {closing.status === "OPEN" && closing.diligenceEndsAt && (
           <p className="mt-2 text-sm text-muted-foreground">
             {inDiligence
@@ -110,6 +124,7 @@ export default async function ClosingPage({
         {closing.status === "CANCELED" && (
           <p role="status" className="mt-4 border border-bad/40 bg-bad/10 px-4 py-3 text-sm text-foreground rounded-xl">
             Canceled{closing.canceledAt ? ` ${prettyDate(closing.canceledAt)}` : ""}.{closing.cancelReason ? ` ${closing.cancelReason}` : ""} Nothing was posted to the ledger.
+            {isAdmin && closing.cancelFault ? ` Fault: ${faultLabel(closing.cancelFault).toLowerCase()}.` : ""}
           </p>
         )}
         <ComplianceNote
@@ -148,79 +163,104 @@ export default async function ClosingPage({
             </ul>
           </section>
         )}
-        <ol className="mt-8 space-y-4">
-          {steps.map((step, index) => (
-            <li key={step.id} className="glass p-5">
-              <div className="flex flex-wrap items-baseline justify-between gap-3">
-                <p className="font-semibold tracking-tight text-3xl text-foreground">
-                  <span className="mr-3 text-link">0{index + 1}</span>
-                  {stepLabel(step.key)}
-                </p>
-                <p className="text-[13px] font-medium text-link">{step.status === "COMPLETE" ? "Complete" : "Open"}</p>
-              </div>
-              {closing.status === "OPEN" && step.status !== "COMPLETE" && <DueLine due={effectiveDue(step, closing, days)} owner={STEP_OWNER[step.key]} />}
-              {step.note && <p className="mt-2 text-sm text-muted-foreground">{step.note}</p>}
-              {step.completedAt && <p className="mt-1 text-xs text-muted-foreground">{prettyDate(step.completedAt)}</p>}
-              {party ? (
-                <ul className="mt-3 space-y-1">
-                  {step.files.map((file) => (
-                    <li key={file.id}>
-                      <a className="text-sm text-link" href={`/api/closing-files/${file.id}`}>{file.originalName}</a>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                step.files.length > 0 && <p className="mt-3 text-xs text-muted-foreground">{step.files.length} file{step.files.length === 1 ? "" : "s"} with the parties.</p>
-              )}
-              {party && closing.status === "OPEN" && (
-                <form action={uploadClosingFile} className="mt-4 flex flex-wrap items-center gap-3">
-                  <input type="hidden" name="closingId" value={closing.id} />
-                  <input type="hidden" name="stepKey" value={step.key} />
-                  <input name="file" type="file" className="text-xs text-muted-foreground" />
-                  <SubmitButton variant="outline" className="h-9 text-[13px] font-medium" pendingLabel="Uploading…">
-                    Add file
-                  </SubmitButton>
-                </form>
-              )}
-              {user.role === "ADMIN" && closing.status === "OPEN" && step.status === "PENDING" && (
-                <form action={completeClosingStep} className="mt-3 space-y-2">
-                  <input type="hidden" name="closingId" value={closing.id} />
-                  <input type="hidden" name="stepKey" value={step.key} />
-                  <label className="block text-[13px] text-muted-foreground">
-                    Note on this step (optional)
-                    <input name="note" className="desk-input mt-1" />
-                  </label>
-                  <StepGate gate={moneyGate(step.key, closing, closing.funders)} label={stepLabel(step.key)} />
-                  {step.key === "CLOSED" ? (
-                    // Closing finishes the sale: the loans are sold, the fees post and the buyer's holding is made.
-                    <ConfirmSubmit
-                      title={`Close ${closing.listing.title}?`}
-                      consequence="This finishes the sale. The loans are marked sold, the premium and commission post as revenue, broker fees fall due and the buyer gets the holding. It can't be reopened."
-                      details={
-                        <ConfirmRows
-                          rows={[
-                            ["Sale price", money(closing.salePrice)],
-                            ["Buyer all-in", money(closing.buyerTotalCents / 100)],
-                            ["Net to seller", money(closing.netToSellerCents / 100)],
-                          ]}
-                        />
-                      }
-                      confirmLabel="Close the deal"
-                      pendingLabel="Closing…"
-                      className="h-9 text-[13px] font-medium"
-                    >
-                      Mark complete
-                    </ConfirmSubmit>
-                  ) : (
-                    <SubmitButton className="h-9 text-[13px] font-medium" pendingLabel="Saving…">
-                      Mark complete
-                    </SubmitButton>
-                  )}
-                </form>
-              )}
-            </li>
-          ))}
+        {/* A stepper: finished steps stay short, the step due next is marked and open, and later steps keep their
+            forms one tap away, so the page reads as where the file stands rather than six forms in a row. */}
+        <ol className="mt-8 space-y-3">
+          {steps.map((step, index) => {
+            const done = step.status === "COMPLETE";
+            const next = !done && clock.next?.key === step.key;
+            const forms = (party || user.role === "ADMIN") && closing.status === "OPEN";
+            return (
+              <li key={step.id} className={cn("glass p-4 sm:p-5", next && "border-link/45")}>
+                <div className="flex items-start gap-3">
+                  <span
+                    aria-hidden
+                    className={cn(
+                      "figure grid size-8 shrink-0 place-items-center rounded-full text-[13px] font-semibold",
+                      done ? "bg-good/12 text-good" : next ? "bg-link text-background" : "bg-muted text-muted-foreground",
+                    )}
+                  >
+                    {done ? <Check className="size-4" strokeWidth={2.5} /> : index + 1}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 pt-1">
+                      <p className="type-title font-semibold text-foreground">
+                        <span className="sr-only">Step {index + 1}: </span>
+                        {stepLabel(step.key)}
+                      </p>
+                      <p className={cn("text-[13px] font-medium", done ? "text-good" : next ? "text-link" : "text-muted-foreground")}>{done ? "Complete" : next ? "Next" : "Open"}</p>
+                    </div>
+                    {closing.status === "OPEN" && step.status !== "COMPLETE" && <DueLine due={effectiveDue(step, closing, days)} owner={STEP_OWNER[step.key]} />}
+                    {step.note && <p className="mt-2 text-sm text-muted-foreground">{step.note}</p>}
+                    {step.completedAt && <p className="mt-1 text-xs text-muted-foreground">{prettyDate(step.completedAt)}</p>}
+                    {party ? (
+                      step.files.length > 0 && <ul className="mt-3 space-y-1">
+                        {step.files.map((file) => (
+                          <li key={file.id}>
+                            <a className="text-sm text-link" href={`/api/closing-files/${file.id}`}>{file.originalName}</a>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      step.files.length > 0 && <p className="mt-3 text-xs text-muted-foreground">{step.files.length} file{step.files.length === 1 ? "" : "s"} with the parties.</p>
+                    )}
+                    {forms && (
+                      <StepForms open={next} label={done ? "Add a file" : "Add a file or sign off"}>
+                        {party && closing.status === "OPEN" && (
+                          <form action={uploadClosingFile} className="mt-4 flex flex-wrap items-center gap-3">
+                            <input type="hidden" name="closingId" value={closing.id} />
+                            <input type="hidden" name="stepKey" value={step.key} />
+                            <input name="file" type="file" className="text-xs text-muted-foreground" />
+                            <SubmitButton variant="outline" className="h-9 text-[13px] font-medium" pendingLabel="Uploading…">
+                              Add file
+                            </SubmitButton>
+                          </form>
+                        )}
+                        {user.role === "ADMIN" && closing.status === "OPEN" && step.status === "PENDING" && (
+                          <form action={completeClosingStep} className="mt-3 space-y-2">
+                            <input type="hidden" name="closingId" value={closing.id} />
+                            <input type="hidden" name="stepKey" value={step.key} />
+                            <label className="block text-[13px] text-muted-foreground">
+                              Note on this step (optional)
+                              <input name="note" className="desk-input mt-1" />
+                            </label>
+                            <StepGate gate={moneyGate(step.key, closing, closing.funders)} label={stepLabel(step.key)} />
+                            {step.key === "CLOSED" ? (
+                              // Closing finishes the sale: the loans are sold, the fees post and the buyer's holding is made.
+                              <ConfirmSubmit
+                                title={`Close ${closing.listing.title}?`}
+                                consequence="This finishes the sale. The loans are marked sold, the premium and commission post as revenue, broker fees fall due and the buyer gets the holding. It can't be reopened."
+                                details={
+                                  <ConfirmRows
+                                    rows={[
+                                      ["Sale price", money(closing.salePrice)],
+                                      ["Buyer all-in", money(closing.buyerTotalCents / 100)],
+                                      ["Net to seller", money(closing.netToSellerCents / 100)],
+                                    ]}
+                                  />
+                                }
+                                confirmLabel="Close the deal"
+                                pendingLabel="Closing…"
+                                className="h-9 text-[13px] font-medium"
+                              >
+                                Mark complete
+                              </ConfirmSubmit>
+                            ) : (
+                              <SubmitButton className="h-9 text-[13px] font-medium" pendingLabel="Saving…">
+                                Mark complete
+                              </SubmitButton>
+                            )}
+                          </form>
+                        )}
+                      </StepForms>
+                    )}
+                  </div>
+                </div>
+              </li>
+            );
+          })}
         </ol>
+        <DealTimeline entries={timeline.entries} upcoming={timeline.upcoming} csvHref={party ? `/api/closings/${closing.id}/timeline` : null} live={closing.status === "OPEN"} />
         {isAdmin && (
           <div className="mt-10">
             <DeskNotes subjectType="closing" subjectId={closing.id} back={`/closings/${closing.id}`} viewerId={user.id} />
@@ -454,10 +494,28 @@ export default async function ClosingPage({
               Why, in a sentence. Both sides see this.
               <Textarea name="reason" className="mt-1 min-h-20 bg-card" required minLength={3} />
             </label>
+            {/* The values read as words, since the confirmation repeats them. */}
+            <fieldset className="space-y-2">
+              <legend className="text-[13px] text-muted-foreground">Whose failure ended it</legend>
+              {!closing.deskBidId && inquiry && (
+                <label className="flex items-start gap-2 text-sm text-foreground">
+                  <input type="radio" name="fault" value="Buyer" required className="mt-1" />
+                  <span>The buyer didn&apos;t close<span className="block text-xs text-muted-foreground">Records a strike on the buyer file.</span></span>
+                </label>
+              )}
+              <label className="flex items-start gap-2 text-sm text-foreground">
+                <input type="radio" name="fault" value="Seller" required className="mt-1" />
+                <span>The seller didn&apos;t deliver</span>
+              </label>
+              <label className="flex items-start gap-2 text-sm text-foreground">
+                <input type="radio" name="fault" value="Neither" required className="mt-1" />
+                <span>Neither side<span className="block text-xs text-muted-foreground">Such as a title defect or both sides agreeing to part.</span></span>
+              </label>
+            </fieldset>
             <ConfirmSubmit
               title={`Cancel the closing on ${closing.listing.title}?`}
-              consequence="The deal ends for both sides and the note goes back on the book. It can't be reopened, and any money already wired has to be returned outside the app."
-              typed={[["Reason both sides will see", "reason", "text"]]}
+              consequence={`The deal ends for both sides and the note goes back on the book. It can't be reopened, and any money already wired has to be returned outside the app. If the buyer is at fault, a strike goes on their buyer file, and at ${strikeLimitOf(settings.strikeLimit)} strikes their new bids pause until the desk clears one.`}
+              typed={[["Reason both sides will see", "reason", "text"], ["Whose failure", "fault", "text"]]}
               confirmLabel="Cancel the closing"
               pendingLabel="Canceling…"
               tone="danger"
@@ -469,6 +527,17 @@ export default async function ClosingPage({
         )}
       </aside>
     </div>
+  );
+}
+
+// The step due next shows its forms; any other step keeps them behind one tap.
+function StepForms({ open, label, children }: { open: boolean; label: string; children: React.ReactNode }) {
+  if (open) return <>{children}</>;
+  return (
+    <details className="mt-3">
+      <summary className="cursor-pointer text-[13px] font-medium text-link">{label}</summary>
+      {children}
+    </details>
   );
 }
 

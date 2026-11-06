@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { cn } from "cn";
+import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
@@ -81,7 +82,14 @@ export function ConfirmSubmit({
         variant={variant ?? (tone === "danger" ? "destructive" : "default")}
         className={className}
       >
-        {pending ? pendingLabel : children}
+        {pending ? (
+          <>
+            <Loader2 className="size-3.5 animate-spin" aria-hidden />
+            {pendingLabel}
+          </>
+        ) : (
+          children
+        )}
       </Button>
       {/* The submitter carries a name and value when the action reads which button was pressed. */}
       <button ref={submitter} type="submit" name={name} value={value} hidden disabled tabIndex={-1} aria-hidden="true" />
@@ -92,7 +100,7 @@ export function ConfirmSubmit({
             <DialogDescription>{consequence}</DialogDescription>
           </DialogHeader>
           {details || entered.length ? (
-            <div className="space-y-2 rounded-lg border border-border p-3 text-sm text-foreground">
+            <div className="space-y-2 rounded-xl border border-border bg-muted/40 px-3.5 py-3 text-sm text-foreground">
               {details}
               {entered.length ? <ConfirmRows rows={entered} /> : null}
             </div>
@@ -104,7 +112,7 @@ export function ConfirmSubmit({
             <Button
               type="button"
               onClick={confirm}
-              className={cn(tone === "danger" && "bg-destructive text-background hover:bg-destructive/90")}
+              className={cn(tone === "danger" && "bg-destructive text-background shadow-card hover:bg-destructive/90")}
             >
               {confirmLabel}
             </Button>
@@ -118,11 +126,11 @@ export function ConfirmSubmit({
 // Rows of figures for a confirmation, aligned so amounts read down a column.
 export function ConfirmRows({ rows }: { rows: [string, string][] }) {
   return (
-    <dl className="space-y-1">
+    <dl className="space-y-1.5">
       {rows.map(([label, amount]) => (
         <div key={label} className="flex justify-between gap-4">
           <dt className="text-muted-foreground">{label}</dt>
-          <dd className="tabular-nums">{amount}</dd>
+          <dd className="figure text-right font-medium">{amount}</dd>
         </div>
       ))}
     </dl>

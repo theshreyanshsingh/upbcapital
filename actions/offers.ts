@@ -7,6 +7,7 @@ import { deadlinePassed, sealedFromSeller } from "@/lib/auction";
 import { audit } from "@/lib/audit";
 import { requireUser } from "@/lib/auth";
 import { notify, notifyDesk } from "@/lib/email";
+import { fundsLimitBlock } from "@/lib/inquiry";
 import { bidExpired, canCounter, counterFrom, openCounter } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
 import { emitWebhook } from "@/lib/webhooks";
@@ -60,6 +61,11 @@ export async function postOfferMessage(formData: FormData) {
     if (inquiry.listing.bidMode === "BEST_AND_FINAL") {
       redirect(`${back.split("?")[0]}?error=${encodeURIComponent("Best and final allows one bid. You can accept a desk counter, but not change your price.")}`);
     }
+  }
+  // A new price, or a higher counter accepted, holds the buyer to more, so it fits inside their verified funds too.
+  if (buyer && amount != null) {
+    const limit = await fundsLimitBlock({ userId: user.id, listingId: inquiry.listingId, noteId: inquiry.noteId, amount });
+    if (limit.error) redirect(`${limit.verification ? "/buyer/verification" : back.split("?")[0]}?error=${encodeURIComponent(limit.error)}`);
   }
   await prisma.offerMessage.create({
     data: {

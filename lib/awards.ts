@@ -5,6 +5,7 @@ import { audit } from "@/lib/audit";
 import { unset } from "@/lib/db-filters";
 import { openClosing, tradeConflict } from "@/lib/closing-service";
 import { notify, notifyDesk } from "@/lib/email";
+import { buyNowAgreed, buyNowClearBlock, buyNowConsent, buyNowSetBlock, samePrice } from "@/lib/buy-now";
 import { listingWithdrawBlock } from "@/lib/listing-status";
 import { bidExpired, buyerPrice, withdrawBlock, type OfferMoney } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
@@ -65,9 +66,15 @@ export async function claimLoan(noteId: string) {
   return claimed.count === 1;
 }
 
-// The seller's word on a price: a standing reserve at or below it, or an approval of exactly this amount.
-// Without one there is no sale, because nothing binds the seller to it.
-export function sellerAgreed(input: { price: number; reserve: number | null | undefined; approvedAmount: number | null | undefined }) {
+// The seller's word on a price: a buy-it-now bid at exactly their buy-it-now price, a standing reserve at or below
+// it, or an approval of exactly this amount. Without one there is no sale, because nothing binds the seller to it.
+export function sellerAgreed(input: {
+  price: number;
+  reserve: number | null | undefined;
+  approvedAmount: number | null | undefined;
+  buyNow?: { bid: boolean | null | undefined; price: number | null | undefined };
+}) {
+  if (input.buyNow && buyNowAgreed({ buyNow: input.buyNow.bid, price: input.price, buyNowPrice: input.buyNow.price })) return "buyNow" as const;
   if (input.reserve != null && input.reserve > 0 && input.price >= input.reserve) return "reserve" as const;
   if (input.approvedAmount != null && Math.abs(input.approvedAmount - input.price) < 0.005) return "approved" as const;
   return null;
@@ -170,7 +177,12 @@ export async function checkAward(inquiryId: string) {
       return { error: `The group's seats add up to $${Math.round(covered).toLocaleString("en-US")}, not $${Math.round(price).toLocaleString("en-US")}. The seats reconfirm a price before it can be awarded.` } as const;
     }
   }
-  const agreed = sellerAgreed({ price, reserve: offer.listing.reservePrice, approvedAmount: offer.sellerApprovedAmount });
+  const agreed = sellerAgreed({
+    price,
+    reserve: offer.listing.reservePrice,
+    approvedAmount: offer.sellerApprovedAmount,
+    buyNow: { bid: offer.buyNow, price: offer.listing.buyNowPrice },
+  });
   return { error: null, offer, price, agreed } as const;
 }
 
@@ -225,12 +237,16 @@ export async function awardOffer(inquiryId: string, actorId: string) {
       return { error: "The whole listing went into contract a moment ago." } as const;
     }
   } else {
+    // A buy-it-now sale claims on the price too, so a seller who changes or removes it in the same instant either
+    // lands first and stops this sale, or finds the listing already in contract.
     const claimed = await prisma.listing.updateMany({
-      where: { id: offer.listingId, status: "APPROVED" },
+      where: { id: offer.listingId, status: "APPROVED", ...(check.agreed === "buyNow" ? { buyNowPrice: price } : {}) },
       data: { status: "PENDING" satisfies ListingStatus, acceptedInquiryId: offer.id },
     });
     if (claimed.count !== 1) {
       await release();
+      const now = check.agreed === "buyNow" ? await prisma.listing.findUnique({ where: { id: offer.listingId }, select: { status: true } }) : null;
+      if (now?.status === "APPROVED") return { error: "The seller changed the buy-it-now price a moment ago." } as const;
       return { error: "This listing went into contract a moment ago." } as const;
     }
     // A one-loan award that claimed a loan first wins, and the listing goes back on the book.
@@ -248,8 +264,20 @@ export async function awardOffer(inquiryId: string, actorId: string) {
   const { emitWebhook } = await import("@/lib/webhooks");
   await emitWebhook(offer.listing.sellerId, "offer.accepted", { inquiryId: offer.id, listingId: offer.listingId, closingId: closing.id, amount: price });
   const link = `${process.env.NEXT_PUBLIC_APP_URL || ""}/closings/${closing.id}`;
-  await notify(offer.buyer.email, `Offer accepted · ${offer.listing.title}`, `Your bid of $${price.toLocaleString("en-US")} was accepted. The closing checklist is open: ${link}`);
-  await notify(offer.listing.seller.email, `Offer accepted · ${offer.listing.title}`, `${offer.buyer.name}'s offer was accepted. Closing checklist: ${link}`);
+  const buyNow = check.agreed === "buyNow";
+  // Counsel: the buy-it-now notices restate that the sale binds both sides as agreed in advance.
+  await notify(
+    offer.buyer.email,
+    `${buyNow ? "Bought at the buy-it-now price" : "Offer accepted"} · ${offer.listing.title}`,
+    `${buyNow ? `You confirmed the buy-it-now price of ${dollars(price)} first.` : `Your bid of $${price.toLocaleString("en-US")} was accepted.`} The closing checklist is open: ${link}`,
+  );
+  await notify(
+    offer.listing.seller.email,
+    `${buyNow ? "Sold at your buy-it-now price" : "Offer accepted"} · ${offer.listing.title}`,
+    buyNow
+      ? `${offer.buyer.name} confirmed your buy-it-now price of ${dollars(price)}, so the sale went ahead as you agreed. Closing checklist: ${link}`
+      : `${offer.buyer.name}'s offer was accepted. Closing checklist: ${link}`,
+  );
   const declined = await declineLosingBids(offer, offer.listing.title);
   // The seller reads every review comment, so the bidder stays out of it. The audit log keeps the name.
   await prisma.reviewComment.create({
@@ -260,9 +288,62 @@ export async function awardOffer(inquiryId: string, actorId: string) {
     "AWARD",
     "inquiry",
     offer.id,
-    `${offer.listing.title} · ${offer.buyer.name} · ${check.agreed === "reserve" ? "within the seller's reserve" : "approved by the seller"}${declined ? ` · ${declined} other bid${declined === 1 ? "" : "s"} declined` : ""}`,
+    `${offer.listing.title} · ${offer.buyer.name} · ${AGREED_AS[check.agreed]}${declined ? ` · ${declined} other bid${declined === 1 ? "" : "s"} declined` : ""}`,
   );
   return { error: null, closingId: closing.id, declined, price } as const;
+}
+
+const AGREED_AS = {
+  buyNow: "at the seller's buy-it-now price, agreed in advance",
+  reserve: "within the seller's reserve",
+  approved: "approved by the seller",
+} as const;
+
+// Buy-it-now bids still waiting on the desk: confirmed, but the award didn't finish. While one is open the seller's
+// price stands, so the buyer who confirmed first can still be awarded at it.
+export function openBuyNowBids(listingId: string) {
+  return prisma.inquiry.count({ where: { listingId, type: "OFFER", buyNow: true, status: { in: [...LIVE] } } });
+}
+
+// The seller or the filing broker sets, changes or (with a null price) removes the buy-it-now price. The write is
+// conditional on the status and the price as they were read, and a buy-it-now award claims the listing on the same
+// two, so when a buyer confirms in the same instant exactly one of them lands.
+export async function setBuyNow(listingId: string, actorId: string, price: number | null, now = new Date()) {
+  const listing = await prisma.listing.findUnique({ where: { id: listingId }, include: { notes: { select: { tradeStatus: true } } } });
+  if (!listing || (listing.sellerId !== actorId && listing.brokerId !== actorId)) return { error: "That listing isn't yours." } as const;
+  const open = await openBuyNowBids(listingId);
+  const block = price === null
+    ? buyNowClearBlock({ status: listing.status, buyNowPrice: listing.buyNowPrice, openBuyNowBids: open })
+    : buyNowSetBlock({
+      status: listing.status,
+      bidMode: listing.bidMode,
+      price,
+      tradedLoans: listing.notes.filter((note) => note.tradeStatus !== "AVAILABLE").length,
+      openBuyNowBids: open,
+    });
+  if (block) return { error: block } as const;
+  if (price !== null && samePrice(price, listing.buyNowPrice)) return { error: null, price, unchanged: true } as const;
+  const pool = listing.kind === "POOL";
+  const consent = price === null ? null : buyNowConsent({ pool, price });
+  const wrote = await prisma.listing.updateMany({
+    where: { id: listingId, status: listing.status, ...(listing.buyNowPrice == null ? unset("buyNowPrice") : { buyNowPrice: listing.buyNowPrice }) },
+    data: price === null ? { buyNowPrice: null, buyNowSetAt: null, buyNowConsent: null } : { buyNowPrice: price, buyNowSetAt: now, buyNowConsent: consent },
+  });
+  if (wrote.count !== 1) return { error: "This listing changed a moment ago. Reload it and try again." } as const;
+  const who = listing.brokerId === actorId ? "filing broker" : "seller";
+  const shown = listing.status === "APPROVED" ? "Buyers see it now." : "Buyers see it once the listing is live.";
+  if (price === null) {
+    await audit(actorId, "BUY_NOW_CLEARED", "listing", listingId, `Was ${dollars(Number(listing.buyNowPrice))}`);
+    await notifyDesk(`Buy it now removed · ${listing.title}`, `The ${who} took the buy-it-now price of ${dollars(Number(listing.buyNowPrice))} off ${listing.title}.`);
+  } else {
+    // The consent text goes into the log with the price, so the record holds whatever happens to the listing later.
+    await audit(actorId, "BUY_NOW_SET", "listing", listingId, `${dollars(price)} · ${consent}`);
+    await notifyDesk(
+      `Buy it now ${listing.buyNowPrice == null ? "set" : "changed"} · ${listing.title}`,
+      `The ${who} committed to sell ${pool ? "the whole pool" : "the note"} at ${dollars(price)} to the first verified buyer who confirms it. ${shown} The first confirmation opens the closing without asking the desk or the seller.`,
+    );
+  }
+  return { error: null, price, unchanged: false } as const;
 }
 
 function pricedMessages(messages: { kind: string; amount: number | null; createdAt: Date; authorId: string }[]) {

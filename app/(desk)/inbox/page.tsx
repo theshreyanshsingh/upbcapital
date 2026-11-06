@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { PageIntro } from "@/components/page-intro";
 import { requireUser } from "@/lib/auth";
+import { prettyDate } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 import { syncThreadsFor } from "@/lib/threads";
 
@@ -21,7 +22,8 @@ export default async function InboxPage() {
   return (
     <div>
       <PageIntro eyebrow="Inbox" title="One place for the file." lede="Offers, questions, and closings share a thread. Opening a thread marks it read. A reply can carry a file." />
-      <ul className="divide-y divide-border border border-border rounded-xl">
+      {/* A message list: an unread dot, the subject, when, and the latest line. A thread opens at its latest post. */}
+      <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
         {threads.length === 0 && <li className="px-5 py-10 text-sm text-muted-foreground">No threads yet. An offer or a closing opens one.</li>}
         {threads.map((thread) => {
           const mine = thread.members.find((member) => member.userId === user.id);
@@ -29,12 +31,16 @@ export default async function InboxPage() {
           const unread = latest && latest.authorId !== user.id && (!mine?.lastReadAt || mine.lastReadAt < latest.createdAt);
           return (
             <li key={thread.id}>
-              <Link href={`/inbox/${thread.id}`} className="block px-5 py-5 hover:bg-muted/60">
-                <div className="flex flex-wrap items-baseline justify-between gap-2">
-                  <p className="font-semibold tracking-tight text-2xl text-foreground">{thread.subject}</p>
-                  {unread && <span className="text-xs font-medium text-link">Unread</span>}
-                </div>
-                {latest && <p className="mt-2 line-clamp-2 text-sm text-muted-foreground">{latest.author.name}: {latest.body}</p>}
+              <Link href={`/inbox/${thread.id}#latest`} className="flex gap-3 px-4 py-3.5 transition-colors hover:bg-hover active:bg-hover sm:px-5 sm:py-4">
+                <span aria-hidden className={`mt-2 size-2 shrink-0 rounded-full ${unread ? "bg-link" : "bg-transparent"}`} />
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-baseline justify-between gap-3">
+                    <span className={`line-clamp-2 text-[15px] leading-5 ${unread ? "font-semibold text-foreground" : "font-medium text-foreground/90"}`}>{thread.subject}</span>
+                    {latest && <span className="figure shrink-0 text-xs text-muted-foreground">{prettyDate(latest.createdAt)}</span>}
+                  </span>
+                  {latest && <span className="mt-1 block truncate text-sm text-muted-foreground">{latest.author.name}: {latest.body}</span>}
+                  {unread && <span className="sr-only">Unread.</span>}
+                </span>
               </Link>
             </li>
           );

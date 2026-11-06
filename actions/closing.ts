@@ -13,6 +13,7 @@ import { OFAC_HOLD_MESSAGE, ofacHold } from "@/lib/screening";
 import { moneyGate } from "@/lib/settlement";
 import { emitWebhook } from "@/lib/webhooks";
 import { extensionOf, mimeFor, putBytes, safeBasename } from "@/lib/storage";
+import { faultLabel, isCancelFault, strikeStanding } from "@/lib/strikes";
 import { uploadProblem } from "@/lib/uploads";
 
 async function loadClosing(id: string) {
@@ -140,18 +141,30 @@ export async function completeClosingStep(formData: FormData) {
 export async function cancelClosing(formData: FormData) {
   const closingId = String(formData.get("closingId") || "");
   const reason = String(formData.get("reason") || "").trim().slice(0, 500);
+  // The form's values read as words in the confirmation, so "Buyer" arrives and is stored as BUYER.
+  const fault = String(formData.get("fault") || "").trim().toUpperCase();
   const { user, closing, inquiry } = await participant(closingId);
   if (user.role !== "ADMIN") redirect(`/closings/${closingId}?error=Only the desk cancels a closing.`);
   if (closing.status !== "OPEN") redirect(`/closings/${closingId}?error=This closing is already finished.`);
   if (reason.length < 3) redirect(`/closings/${closingId}?error=${encodeURIComponent("Say why the closing is being canceled.")}`);
+  if (!isCancelFault(fault)) redirect(`/closings/${closingId}?error=${encodeURIComponent("Choose whose failure ended the closing: the buyer, the seller or neither.")}`);
+  if (fault === "BUYER" && (closing.deskBidId || !inquiry)) {
+    redirect(`/closings/${closingId}?error=${encodeURIComponent("The desk is the buyer on this closing, so choose the seller or neither.")}`);
+  }
   // A close or another cancel that landed first wins, and nobody is told this one happened.
-  if (!(await cancelOpenClosing(closingId, reason))) redirect(`/closings/${closingId}?error=This closing is already finished.`);
-  await audit(user.id, "CLOSING_CANCELED", "closing", closingId, reason);
+  if (!(await cancelOpenClosing(closingId, reason, { fault, actorId: user.id }))) redirect(`/closings/${closingId}?error=This closing is already finished.`);
+  await audit(user.id, "CLOSING_CANCELED", "closing", closingId, `${faultLabel(fault)}. ${reason}`);
   const message = `The desk canceled this closing. Reason: ${reason} Any money already wired has to be returned outside the app, so write the desk about it.`;
   if (inquiry) {
     await onGroupDeclined(inquiry.id, message);
     await emitWebhook(closing.listing.sellerId, "offer.declined", { inquiryId: inquiry.id, listingId: closing.listingId });
-    await notify(inquiry.buyer.email, `Closing canceled · ${closing.listing.title}`, message);
+    // The strike is the buyer's own record, so only the buyer hears of it.
+    let strikeNote = "";
+    if (fault === "BUYER") {
+      const standing = await strikeStanding(inquiry.buyerId);
+      strikeNote = ` The desk recorded this as the buyer's failure to close, which is a strike on your buyer file. You have ${standing.active} of ${standing.limit}.${standing.paused ? " Your new bids are paused until the desk reviews them." : ""} Your verification page lists them.`;
+    }
+    await notify(inquiry.buyer.email, `Closing canceled · ${closing.listing.title}`, `${message}${strikeNote}`);
   }
   await notify(closing.listing.seller.email, `Closing canceled · ${closing.listing.title}`, message);
   const thread = await prisma.deskThread.findUnique({ where: { closingId } });

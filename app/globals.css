@@ -1,3 +1,25 @@
+/*
+  UPB Capital: the desk's own visual system.
+
+  Direction: a ledger, not a trading screen. Warm paper neutrals and ink, one accent, and colour that
+  only ever means something.
+
+  - Neutrals: a single warm grey ramp in OKLCH (hue 84, chroma at or under 0.012), warm enough to feel
+    like paper and grey enough not to look muddy. Panels sit a step above the page; the sidebar a step
+    below it, so the work area leads.
+  - Ink: near-black warm ink carries text and the primary action. It is not a colour.
+  - One accent, UPB blue (oklch 0.48 0.125 256 on light, 0.765 0.105 256 on dark), a deep ink blue for
+    links, focus, selection and "you are here". It is never used for status.
+  - Semantic good, warn and bad have their own hues and are tuned to pass on their own tints.
+  - Every text pair the app uses clears WCAG 2.2 AA (4.5:1) and every field edge, focus ring and chart
+    mark clears 3:1, in both themes. tests/contrast.test.ts reads this file and checks each pair, so a
+    token change that breaks contrast fails CI.
+  - Type: Inter for everything people read and type, with tabular lining figures on every number;
+    Newsreader, a calm editorial serif, for page titles and display headlines only.
+  - Motion: 100ms feedback, 200ms exits, 280ms entrances, never over 400ms, nothing that celebrates.
+    Reduced motion turns it all off.
+*/
+
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
@@ -8,10 +30,15 @@
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-inter), Inter, ui-sans-serif, system-ui, sans-serif;
-  --font-mono: var(--font-geist-mono);
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --font-heading: var(--font-inter), Inter, ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-newsreader), Newsreader, "Iowan Old Style", Georgia, ui-serif, serif;
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
   --color-link: var(--link);
   --color-faint: var(--faint);
+  --color-field: var(--field);
+  --color-overlay: var(--overlay);
   --color-good: var(--good);
   --color-warn: var(--warn);
   --color-bad: var(--bad);
@@ -47,6 +74,9 @@
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
+  --shadow-card: var(--elevation-1);
+  --shadow-pop: var(--elevation-2);
+  --shadow-float: var(--shadow);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -56,95 +86,136 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-/* The SynergiFund workspace palette: grey page, white panels, ink actions, one blue for links. */
+@theme static {
+  /* 14px dense UI text gets a reading line-height. */
+  --text-sm--line-height: 1.5;
+
+  /* Motion: ease-enter for things arriving, ease-exit for things leaving, ease-standard for state. */
+  --ease-enter: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --default-transition-duration: 100ms;
+  --default-transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
 :root {
-  --background: #f3f4f6;
-  --foreground: #111827;
-  --card: #ffffff;
-  --card-foreground: #111827;
-  --popover: #ffffff;
-  --popover-foreground: #111827;
-  --primary: #111111;
-  --primary-foreground: #ffffff;
-  --secondary: #eef0f3;
-  --secondary-foreground: #111827;
-  --muted: #eef0f3;
-  /* Text tokens clear WCAG AA (4.5:1) on the grey page, white panels, and the pale secondary fill. */
-  --muted-foreground: #5b6371;
-  --accent: #e7e8ec;
-  --accent-foreground: #111827;
-  --destructive: #b42318;
-  --border: #e6e7eb;
-  /* Field edges need 3:1 against their panel, which the hairline border can't give. */
-  --input: #868e9a;
-  --ring: #1a73e8;
-  --link: #1764d4;
-  --faint: #646b79;
-  --good: #17803d;
-  --warn: #92710c;
-  --bad: #b42318;
-  --hover: #e7e8ec;
-  --active: #eceef2;
-  --nav: #374151;
-  --shadow: 0 12px 40px rgba(17, 24, 39, 0.12);
-  --chart-1: #111111;
-  --chart-2: #1a73e8;
-  --chart-3: #17803d;
-  --chart-4: #b42318;
-  --chart-5: #92710c;
+  --dur-1: 100ms; /* feedback: hover, press, toggles */
+  --dur-2: 200ms; /* exits, toasts, small moves */
+  --dur-3: 280ms; /* entrances: sheets, dialogs, panels */
+
+  /* The type scale, used through the type-* utilities below. */
+  --type-meta: 0.75rem;
+  --type-meta-leading: 1rem;
+  --type-label: 0.8125rem;
+  --type-label-leading: 1.25rem;
+  --type-body: 0.9375rem;
+  --type-body-leading: 1.6;
+  --type-title: 1.125rem;
+  --type-title-leading: 1.4;
+  --type-display: clamp(1.625rem, 1.25rem + 1.4vw, 2.125rem);
+  --type-display-leading: 1.15;
+
+  /* Light. Text needs 4.5:1 on every surface it sits on; field edges, rings and chart marks 3:1. */
+  --background: oklch(0.97 0.0045 84);
+  --foreground: oklch(0.215 0.009 70);
+  --card: oklch(0.997 0.0015 84);
+  --card-foreground: var(--foreground);
+  --popover: var(--card);
+  --popover-foreground: var(--foreground);
+  --brand: oklch(0.48 0.125 256);
+  --brand-foreground: oklch(0.985 0.003 84);
+  --primary: oklch(0.235 0.01 70);
+  --primary-foreground: oklch(0.985 0.003 84);
+  --secondary: oklch(0.952 0.005 84);
+  --secondary-foreground: var(--foreground);
+  --muted: oklch(0.952 0.005 84);
+  --muted-foreground: oklch(0.485 0.012 74);
+  --accent: oklch(0.94 0.006 84);
+  --accent-foreground: var(--foreground);
+  --destructive: var(--bad);
+  /* Hairlines are structure you sense rather than see, so they carry no contrast duty. */
+  --border: oklch(0.902 0.006 84);
+  --input: oklch(0.635 0.01 84);
+  --field: var(--card);
+  --ring: var(--brand);
+  --link: var(--brand);
+  --faint: oklch(0.525 0.011 76);
+  --good: oklch(0.485 0.105 152);
+  --warn: oklch(0.505 0.1 68);
+  --bad: oklch(0.5 0.165 27);
+  --hover: oklch(0.94 0.006 84);
+  --active: oklch(0.924 0.007 84);
+  --nav: oklch(0.42 0.01 72);
+  --overlay: oklch(0.2 0.012 70 / 0.32);
+  --elevation-1: 0 1px 2px oklch(0.3 0.02 70 / 0.05);
+  --elevation-2: 0 1px 2px oklch(0.3 0.02 70 / 0.05), 0 10px 28px -8px oklch(0.3 0.02 70 / 0.16);
+  --shadow: 0 2px 6px oklch(0.3 0.02 70 / 0.05), 0 18px 44px -14px oklch(0.3 0.02 70 / 0.22);
+  --chart-1: oklch(0.33 0.01 70);
+  --chart-2: oklch(0.53 0.13 256);
+  --chart-3: oklch(0.56 0.1 165);
+  --chart-4: oklch(0.6 0.135 42);
+  --chart-5: oklch(0.63 0.11 82);
   --radius: 0.625rem;
-  --sidebar: #f3f4f6;
-  --sidebar-foreground: #111827;
-  --sidebar-primary: #111111;
-  --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #eceef2;
-  --sidebar-accent-foreground: #111827;
-  --sidebar-border: #e6e7eb;
-  --sidebar-ring: #1a73e8;
+  --sidebar: oklch(0.958 0.005 84);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: var(--active);
+  --sidebar-accent-foreground: var(--foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='none' stroke='%23716b64' stroke-width='1.5' d='M1 1.5l5 5 5-5'/%3E%3C/svg%3E");
   color-scheme: light;
 }
 
 .dark {
-  --background: #101114;
-  --foreground: #f4f4f5;
-  --card: #1c1f26;
-  --card-foreground: #f4f4f5;
-  --popover: #1c1f26;
-  --popover-foreground: #f4f4f5;
-  --primary: #f4f4f5;
-  --primary-foreground: #111214;
-  --secondary: #2a2e36;
-  --secondary-foreground: #f4f4f5;
-  --muted: #2a2e36;
-  --muted-foreground: #a1a1aa;
-  --accent: #23262d;
-  --accent-foreground: #f4f4f5;
-  --destructive: #f87171;
-  --border: #2c3038;
-  --input: #646a76;
-  --ring: #4c8dff;
-  --link: #4c8dff;
-  --faint: #909099;
-  --good: #4ade80;
-  --warn: #f5d061;
-  --bad: #f87171;
-  --hover: #23262d;
-  --active: #2c313a;
-  --nav: #e4e4e7;
-  --shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
-  --chart-1: #f4f4f5;
-  --chart-2: #4c8dff;
-  --chart-3: #4ade80;
-  --chart-4: #f87171;
-  --chart-5: #f5d061;
-  --sidebar: #16181d;
-  --sidebar-foreground: #f4f4f5;
-  --sidebar-primary: #f4f4f5;
-  --sidebar-primary-foreground: #111214;
-  --sidebar-accent: #2c313a;
-  --sidebar-accent-foreground: #f4f4f5;
-  --sidebar-border: #2c3038;
-  --sidebar-ring: #4c8dff;
+  --background: oklch(0.178 0.005 75);
+  --foreground: oklch(0.955 0.004 84);
+  --card: oklch(0.212 0.006 75);
+  --card-foreground: var(--foreground);
+  --popover: oklch(0.238 0.007 75);
+  --popover-foreground: var(--foreground);
+  --brand: oklch(0.765 0.105 256);
+  --brand-foreground: oklch(0.2 0.006 75);
+  --primary: oklch(0.94 0.005 84);
+  --primary-foreground: oklch(0.2 0.006 75);
+  --secondary: oklch(0.262 0.007 75);
+  --secondary-foreground: var(--foreground);
+  --muted: oklch(0.262 0.007 75);
+  --muted-foreground: oklch(0.735 0.01 80);
+  --accent: oklch(0.27 0.008 75);
+  --accent-foreground: var(--foreground);
+  --destructive: var(--bad);
+  --border: oklch(0.3 0.007 75);
+  --input: oklch(0.54 0.01 80);
+  --field: oklch(0.19 0.006 75);
+  --ring: var(--brand);
+  --link: var(--brand);
+  --faint: oklch(0.69 0.01 80);
+  --good: oklch(0.78 0.13 152);
+  --warn: oklch(0.83 0.115 82);
+  --bad: oklch(0.725 0.155 25);
+  --hover: oklch(0.258 0.007 75);
+  --active: oklch(0.295 0.008 75);
+  --nav: oklch(0.77 0.008 80);
+  --overlay: oklch(0.08 0.005 75 / 0.6);
+  --elevation-1: 0 1px 2px oklch(0 0 0 / 0.28);
+  --elevation-2: 0 0 0 1px oklch(1 0 0 / 0.04), 0 12px 32px -8px oklch(0 0 0 / 0.6);
+  --shadow: 0 0 0 1px oklch(1 0 0 / 0.04), 0 20px 48px -12px oklch(0 0 0 / 0.7);
+  --chart-1: oklch(0.9 0.005 84);
+  --chart-2: oklch(0.72 0.12 256);
+  --chart-3: oklch(0.74 0.11 165);
+  --chart-4: oklch(0.72 0.13 42);
+  --chart-5: oklch(0.8 0.11 82);
+  --sidebar: oklch(0.158 0.005 75);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: var(--active);
+  --sidebar-accent-foreground: var(--foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='none' stroke='%23aaa59e' stroke-width='1.5' d='M1 1.5l5 5 5-5'/%3E%3C/svg%3E");
   color-scheme: dark;
 }
 
@@ -153,80 +224,326 @@
     @apply border-border outline-ring/50;
   }
   html {
-    @apply font-sans scroll-smooth;
+    @apply font-sans;
+    font-optical-sizing: auto;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
   }
   body {
-    @apply bg-background text-foreground;
-    letter-spacing: -0.011em;
+    background: var(--background);
+    color: var(--foreground);
+    font-size: var(--type-body);
+    line-height: 1.55;
+    letter-spacing: -0.006em;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    /* A long link or loan number breaks inside its panel rather than pushing past the screen. */
+    overflow-wrap: break-word;
+    -webkit-tap-highlight-color: transparent;
+  }
+  /* Real heading defaults. h1 is the page title, set in the display serif; h2 and h3 stay in Inter. */
+  h1 {
+    font-family: var(--font-display);
+    font-size: var(--type-display);
+    line-height: var(--type-display-leading);
+    letter-spacing: -0.018em;
+    font-weight: 600;
+    text-wrap: balance;
+  }
+  h2 {
+    font-size: var(--type-title);
+    line-height: 1.35;
+    letter-spacing: -0.012em;
+    font-weight: 600;
+    text-wrap: balance;
+  }
+  h3 {
+    font-size: 1rem;
+    line-height: 1.4;
+    letter-spacing: -0.008em;
+    font-weight: 600;
+  }
+  p {
+    text-wrap: pretty;
+  }
+  /* Money, percents and dates line up down a column wherever they sit in a cell or a definition. */
+  td,
+  dd,
+  [data-figure] {
+    font-variant-numeric: lining-nums tabular-nums;
   }
   ::selection {
-    background: color-mix(in srgb, var(--link) 22%, transparent);
+    background: color-mix(in oklab, var(--brand) 24%, transparent);
   }
   ::placeholder {
     color: var(--faint);
+    opacity: 1;
   }
 }
 
-/* A white panel with a hairline, as on the SynergiFund overview cards. */
-.glass {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 16px;
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
 }
 
-.eyebrow {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--muted-foreground);
+/* Tabular, lining figures for any money or percent outside a table cell. */
+@utility figure {
+  font-variant-numeric: lining-nums tabular-nums;
 }
 
-.desk-input {
-  height: 2.5rem;
-  width: 100%;
-  border-radius: 10px;
-  border: 1px solid var(--input);
-  background: var(--card);
-  padding: 0 0.7rem;
-  font-size: 0.875rem;
-  color: var(--foreground);
-  outline: none;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+/*
+  The type scale. Use these instead of pixel sizes; they set size and line-height, never weight or colour.
+  They are type-* rather than text-* because the cn() merge reads an unknown text-* class as a colour
+  and drops it when a text colour sits beside it.
+    type-meta     12/16  timestamps, footnotes, pill text
+    type-label    13/20  field labels, eyebrows, table heads, nav
+    text-sm       14/21  dense UI (Tailwind's own, retuned to a reading line-height)
+    type-body     15/24  reading text: ledes, descriptions, dialog copy, notices
+    type-title    18/25  card and section titles
+    type-display  26-34  the page title, in the display serif
+*/
+@utility type-meta {
+  font-size: var(--type-meta);
+  line-height: var(--type-meta-leading);
 }
 
-.desk-input:focus {
-  border-color: var(--ring);
+@utility type-label {
+  font-size: var(--type-label);
+  line-height: var(--type-label-leading);
 }
 
+@utility type-body {
+  font-size: var(--type-body);
+  line-height: var(--type-body-leading);
+}
+
+@utility type-title {
+  font-size: var(--type-title);
+  line-height: var(--type-title-leading);
+  letter-spacing: -0.012em;
+}
+
+@utility type-display {
+  font-family: var(--font-display);
+  font-size: var(--type-display);
+  line-height: var(--type-display-leading);
+  letter-spacing: -0.018em;
+}
+
+/* Shared component classes. They sit in the components layer, so a utility on the same element wins. */
+@layer components {
+  /* A panel: one step above the page, a hairline, and the faintest lift. */
+  .glass {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: calc(var(--radius) * 1.4);
+    box-shadow: var(--elevation-1);
+  }
+
+  /* A section label. Where it names a section, render it as an h2 or h3. */
+  .eyebrow {
+    font-size: var(--type-label);
+    line-height: var(--type-label-leading);
+    font-weight: 600;
+    letter-spacing: 0.002em;
+    color: var(--muted-foreground);
+  }
+
+  .desk-input {
+    height: 2.5rem;
+    width: 100%;
+    border-radius: var(--radius);
+    border: 1px solid var(--input);
+    background: var(--field);
+    padding: 0 0.75rem;
+    /* 16px on phones so iOS doesn't zoom into the field; 14px once there's a keyboard and a mouse. */
+    font-size: 1rem;
+    line-height: 1.5;
+    color: var(--foreground);
+    outline: none;
+    transition:
+      border-color var(--dur-1) var(--ease-standard),
+      background-color var(--dur-1) var(--ease-standard);
+  }
+
+  @media (min-width: 768px) {
+    .desk-input {
+      font-size: 0.875rem;
+    }
+  }
+
+  .desk-input:hover:not(:disabled):not(:focus) {
+    border-color: color-mix(in oklab, var(--input), var(--foreground) 22%);
+  }
+
+  .desk-input:focus {
+    border-color: var(--ring);
+  }
+
+  .desk-input:disabled {
+    cursor: not-allowed;
+    background: var(--muted);
+    color: var(--muted-foreground);
+  }
+
+  .desk-input[aria-invalid="true"] {
+    border-color: var(--destructive);
+  }
+
+  textarea.desk-input {
+    height: auto;
+    padding: 0.6rem 0.75rem;
+  }
+
+  /* A file field drawn as a desk input grows to hold its button. */
+  input[type="file"].desk-input {
+    height: auto;
+    min-height: 2.5rem;
+    padding: 0.25rem;
+  }
+
+  select.desk-input {
+    appearance: none;
+    background-image: var(--select-chevron);
+    background-repeat: no-repeat;
+    background-position: right 0.75rem center;
+    padding-right: 2rem;
+  }
+}
+
+/* One focus ring everywhere: 2px of the accent, which clears 3:1 on every surface. */
 :focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
 }
 
-/* A solid ring, so keyboard users can see where they are on a dense form. */
-.desk-input:focus-visible {
+.desk-input:focus-visible,
+[data-slot="input"]:focus-visible,
+[data-slot="textarea"]:focus-visible,
+[data-slot="select-trigger"]:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 1px;
 }
 
-.desk-input[aria-invalid="true"] {
-  border-color: var(--destructive);
+/* A field drawn by its wrapper (an icon and a bare input in one box) rings the wrapper instead. */
+.field-shell:focus-within {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
 }
 
-textarea.desk-input {
-  height: auto;
-  padding: 0.6rem 0.7rem;
+.field-shell :focus-visible {
+  outline: none;
 }
 
-select.desk-input {
-  appearance: none;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path fill='none' stroke='%236b7280' stroke-width='1.5' d='M1 1.5l5 5 5-5'/></svg>");
-  background-repeat: no-repeat;
-  background-position: right 0.75rem center;
-  padding-right: 2rem;
+/* A file field's button is drawn as the desk's outline button, a finger tall on a touch screen, rather than the
+   browser's grey one. The chosen file's name sits beside it in the muted ink. */
+@layer base {
+  input[type="file"] {
+    max-width: 100%;
+    font-size: var(--type-label);
+    color: var(--muted-foreground);
+  }
+
+  input[type="file"]::file-selector-button {
+    height: 2.25rem;
+    margin-right: 0.75rem;
+    padding: 0 0.875rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--card);
+    box-shadow: var(--elevation-1);
+    color: var(--foreground);
+    font: inherit;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background-color var(--dur-1) var(--ease-standard);
+  }
+
+  input[type="file"]::file-selector-button:hover {
+    background: var(--hover);
+  }
+
+  @media (pointer: coarse) {
+    input[type="file"]::file-selector-button {
+      height: 2.75rem;
+    }
+  }
 }
 
+/* A row that scrolls sideways with a finger and shows no bar, for chips and tabs on a phone. */
+@utility no-scrollbar {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/*
+  Phones. The desk's tab bar (components/mobile-dock.tsx) sits at the bottom, within reach of a thumb. --dock is
+  its height including the home-indicator inset, so anything else pinned to the bottom (the bid bar, the compare
+  tray, a wizard's footer, toasts) sits just above it. While a text field has focus the bar steps aside, so the
+  keyboard and the field get the whole screen.
+*/
+@media (max-width: 47.99rem) {
+  :root {
+    /* Item titles and big figures, set for a desk screen, come down a step on a phone. */
+    --text-2xl: 1.25rem;
+    --text-3xl: 1.5rem;
+  }
+
+  html:has([data-slot="dock"]) {
+    --dock: calc(3.75rem + env(safe-area-inset-bottom));
+    scroll-padding-bottom: calc(var(--dock) + 1rem);
+  }
+
+  @media (pointer: coarse) {
+    html:has(:is(input:not([type="checkbox"], [type="radio"], [type="submit"], [type="button"], [type="file"], [type="range"]), textarea):focus) {
+      --dock: 0px;
+    }
+
+    html:has(:is(input:not([type="checkbox"], [type="radio"], [type="submit"], [type="button"], [type="file"], [type="range"]), textarea):focus) :is([data-slot="dock"], [data-slot="bid-bar"]) {
+      display: none;
+    }
+  }
+}
+
+/* A plain disclosure's summary is a full finger tall on a touch screen, with a chevron for the marker. A summary
+   that lays itself out (flex or grid) keeps its own layout. In the base layer, so a utility still wins. */
+@layer base {
+  @media (pointer: coarse) {
+    summary:not([class*="flex"], [class*="grid"]) {
+      min-height: 2.75rem;
+      display: flex;
+      align-items: center;
+      gap: 0.375rem;
+    }
+
+    summary::-webkit-details-marker {
+      display: none;
+    }
+
+    summary:not([class*="flex"], [class*="grid"])::before {
+    content: "";
+    width: 0.4rem;
+    height: 0.4rem;
+    flex: none;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    transform: rotate(-45deg);
+    transition: transform var(--dur-1) var(--ease-standard);
+    opacity: 0.7;
+  }
+
+    details[open] > summary::before {
+      transform: rotate(45deg);
+    }
+  }
+}
+
+/* Motion. Entrances ease out over 280ms and stagger by 60ms; nothing loops for show. */
 .rise {
-  animation: rise 0.9s cubic-bezier(0.16, 0.84, 0.32, 1) both;
+  animation: rise var(--dur-3) var(--ease-enter) both;
 }
 
 .floaty {
@@ -238,13 +555,13 @@ select.desk-input {
 }
 
 @keyframes rise {
-  from { opacity: 0; transform: translateY(18px); }
+  from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: none; }
 }
 
 @keyframes floaty {
   0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-10px); }
+  50% { transform: translateY(-6px); }
 }
 
 @keyframes ticker {
@@ -252,18 +569,18 @@ select.desk-input {
   to { transform: translateX(-50%); }
 }
 
-.rise-1 { animation-delay: 90ms; }
-.rise-2 { animation-delay: 180ms; }
-.rise-3 { animation-delay: 270ms; }
-.rise-4 { animation-delay: 360ms; }
+.rise-1 { animation-delay: 60ms; }
+.rise-2 { animation-delay: 120ms; }
+.rise-3 { animation-delay: 180ms; }
+.rise-4 { animation-delay: 240ms; }
 
 .draw-line {
   transform-origin: left center;
-  animation: draw-line 0.9s cubic-bezier(0.16, 0.84, 0.32, 1) both;
+  animation: draw-line 360ms var(--ease-enter) both;
 }
 
 .step-bar {
-  transition: width 0.45s cubic-bezier(0.16, 0.84, 0.32, 1);
+  transition: width var(--dur-3) var(--ease-standard);
 }
 
 @keyframes draw-line {
@@ -272,6 +589,17 @@ select.desk-input {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .rise, .rise-1, .rise-2, .rise-3, .rise-4, .floaty, .ticker-track, .draw-line { animation: none; }
-  .step-bar { transition: none; }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+  }
+  .floaty,
+  .ticker-track {
+    animation: none !important;
+  }
 }

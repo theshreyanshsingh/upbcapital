@@ -46,6 +46,8 @@ export default async function EditListingPage({ params }: { params: Promise<{ id
           foreclosureStatus: note.foreclosureStatus,
           borrowerName: note.borrowerName,
           narrative: listing.summary,
+          // So the seller-financing answer, and the originator's license it asks for, survive an edit.
+          sellerFinanced: listing.sellerFinanced ? "true" : "false",
           // The servicing record saved last time, so an edit doesn't show it blank.
           ...servicingDraft(note),
         }}

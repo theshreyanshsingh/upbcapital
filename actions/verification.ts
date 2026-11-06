@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import type { InvestorEntity, VerificationStatus } from "@prisma/client";
 import { audit } from "@/lib/audit";
 import { proofExpiry } from "@/lib/bid-sheet";
+import { ROAD_THRESHOLD, readEligibility, reoStrategyLabel } from "@/lib/eligibility";
 import { requireRole, requireUser } from "@/lib/auth";
 import { notify, notifyDesk } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
@@ -28,6 +29,13 @@ export async function submitVerification(formData: FormData) {
     redirect("/buyer/verification?error=Name the investing entity and where it is formed.");
   }
   if (!accredited) redirect("/buyer/verification?error=Offers require the accredited-investor certification.");
+  // An approved buyer's form leaves the two eligibility questions to their own form, so resubmitting keeps the answers.
+  let eligibility: { homesControlled: number; reoStrategy: string; eligibilityAt: Date } | null = null;
+  if (formData.has("homesControlled")) {
+    const read = readEligibility(String(formData.get("homesControlled") || ""), String(formData.get("reoStrategy") || ""));
+    if (read.error !== null) redirect(`/buyer/verification?error=${encodeURIComponent(read.error)}`);
+    eligibility = { homesControlled: read.homesControlled, reoStrategy: read.reoStrategy, eligibilityAt: new Date() };
+  }
   const proofAmount = Number(String(formData.get("proofAmount") || "").replace(/[$,\s]/g, ""));
   if (!Number.isFinite(proofAmount) || proofAmount <= 0 || proofAmount > 10_000_000_000) {
     redirect("/buyer/verification?error=Enter the amount your proof of funds shows.");
@@ -72,6 +80,7 @@ export async function submitVerification(formData: FormData) {
       status: "SUBMITTED",
       submittedAt: new Date(),
       reviewerNote: "",
+      ...(eligibility ?? {}),
     },
     create: {
       userId: user.id,
@@ -86,13 +95,40 @@ export async function submitVerification(formData: FormData) {
       proofAmount,
       status: "SUBMITTED",
       submittedAt: new Date(),
+      ...(eligibility ?? {}),
     },
   });
   screenInBackground(() => screenUser(user.id, "Buyer file"));
-  await notifyDesk(`Verification submitted · ${user.name}`, `${entityName} (${entityType}) in ${jurisdiction} is waiting on the desk.`);
+  if (eligibility) await audit(user.id, "ELIGIBILITY_ANSWERS", "user", user.id, `${eligibility.homesControlled} homes · ${reoStrategyLabel(eligibility.reoStrategy)}`);
+  const homes = eligibility ? ` They state ${eligibility.homesControlled.toLocaleString("en-US")} single-family homes controlled.` : "";
+  await notifyDesk(`Verification submitted · ${user.name}`, `${entityName} (${entityType}) in ${jurisdiction} is waiting on the desk.${homes}`);
   revalidatePath("/buyer/verification");
   revalidatePath("/admin/verification");
   redirect("/buyer/verification?notice=submitted_kyc");
+}
+
+// The two eligibility questions on their own, for a buyer whose file is already open. Saving them never reopens the
+// file or changes its status. They are the buyer's own statement, recorded with the date.
+export async function saveEligibility(formData: FormData) {
+  const user = await requireUser();
+  if (user.role !== "BUYER") redirect("/");
+  const read = readEligibility(String(formData.get("homesControlled") || ""), String(formData.get("reoStrategy") || ""));
+  if (read.error !== null) redirect(`/buyer/verification?error=${encodeURIComponent(read.error)}#eligibility`);
+  const saved = await prisma.buyerProfile.updateMany({
+    where: { userId: user.id },
+    data: { homesControlled: read.homesControlled, reoStrategy: read.reoStrategy, eligibilityAt: new Date() },
+  });
+  if (saved.count !== 1) redirect(`/buyer/verification?error=${encodeURIComponent("Start your buyer file below first.")}`);
+  await audit(user.id, "ELIGIBILITY_ANSWERS", "user", user.id, `${read.homesControlled} homes · ${reoStrategyLabel(read.reoStrategy)}`);
+  if (read.homesControlled >= ROAD_THRESHOLD) {
+    await notifyDesk(
+      `Eligibility answers · ${user.name}`,
+      `${user.name} states ${read.homesControlled.toLocaleString("en-US")} single-family homes controlled, and ${reoStrategyLabel(read.reoStrategy).toLowerCase()} for homes taken by foreclosure. They acknowledge the ROAD Act notice before bidding on non-performing one- and two-unit loans.`,
+    );
+  }
+  revalidatePath("/buyer/verification");
+  revalidatePath("/admin/verification");
+  redirect(`/buyer/verification?notice=${encodeURIComponent("Your answers are saved. Your file's status is unchanged.")}#eligibility`);
 }
 
 export async function reviewVerification(formData: FormData) {

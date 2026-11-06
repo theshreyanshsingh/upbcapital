@@ -51,21 +51,27 @@ export default async function AdminOffersPage({
           const amount = buyerPrice(inquiry.amount ? num(inquiry.amount) : null, messages, inquiry.buyerId);
           const counter = openCounter(messages, inquiry.buyerId);
           const closingId = closingFor.get(inquiry.id);
-          const agreed = amount ? sellerAgreed({ price: amount, reserve: inquiry.listing.reservePrice, approvedAmount: inquiry.sellerApprovedAmount }) : null;
+          const agreed = amount
+            ? sellerAgreed({ price: amount, reserve: inquiry.listing.reservePrice, approvedAmount: inquiry.sellerApprovedAmount, buyNow: { bid: inquiry.buyNow, price: inquiry.listing.buyNowPrice } })
+            : null;
           const live = inquiry.type === "OFFER" && (inquiry.status === "OPEN" || inquiry.status === "REVIEWED");
           const lapsed = live && bidExpired(inquiry.expiresAt);
           const counterBy = counterFrom(messages, inquiry.buyerId, inquiry.listing.sellerId);
           const sellerLine = awaitingSeller(inquiry)
             ? `Waiting on the seller since ${prettyDate(inquiry.sellerAskedAt)}`
-            : agreed === "reserve"
-              ? `Within the seller's reserve of ${money(Number(inquiry.listing.reservePrice))}`
-              : agreed === "approved"
-                ? inquiry.sellerCounterAmount != null && Math.abs(Number(inquiry.sellerCounterAmount) - (amount ?? 0)) < 0.005
-                  ? "The buyer accepted the seller's counter, so the seller has agreed this price"
-                  : "The seller approved this price"
-                : inquiry.sellerDeclined
-                  ? `The seller declined ${money(Number(inquiry.sellerAskedAmount))} on ${prettyDate(inquiry.sellerAnsweredAt)}`
-                  : "Accepting sends this to the seller for approval first";
+            : agreed === "buyNow"
+              ? `At the seller's buy-it-now price, agreed in advance on ${prettyDate(inquiry.listing.buyNowSetAt)}, so awarding needs no further approval`
+              : agreed === "reserve"
+                ? `Within the seller's reserve of ${money(Number(inquiry.listing.reservePrice))}`
+                : agreed === "approved"
+                  ? inquiry.sellerCounterAmount != null && Math.abs(Number(inquiry.sellerCounterAmount) - (amount ?? 0)) < 0.005
+                    ? "The buyer accepted the seller's counter, so the seller has agreed this price"
+                    : "The seller approved this price"
+                  : inquiry.sellerDeclined
+                    ? `The seller declined ${money(Number(inquiry.sellerAskedAmount))} on ${prettyDate(inquiry.sellerAnsweredAt)}`
+                    : inquiry.buyNow
+                      ? "Placed at buy it now, but the seller has changed that price since. Accepting sends this to the seller for approval first"
+                      : "Accepting sends this to the seller for approval first";
           return (
             <li key={inquiry.id} id={`offer-${inquiry.id}`} className="glass scroll-mt-6 p-5">
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -78,7 +84,9 @@ export default async function AdminOffersPage({
                     {inquiry.note ? ` · loan in ${inquiry.note.city}` : inquiry.type === "OFFER" ? " · whole listing" : ""}
                   </p>
                 </div>
-                <p className="text-[13px] font-medium text-link">{inquiry.type.replaceAll("_", " ").toLowerCase()} · {inquiry.status.toLowerCase()}</p>
+                <p className="text-[13px] font-medium text-link">
+                  {inquiry.buyNow ? "buy it now" : inquiry.type.replaceAll("_", " ").toLowerCase()} · {inquiry.status.toLowerCase()}
+                </p>
               </div>
               {amount != null && (
                 <p className="mt-3 text-sm text-muted-foreground">

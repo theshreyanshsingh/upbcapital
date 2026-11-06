@@ -20,3 +20,17 @@ export function hideCompetingBids(input: { bidMode: string; deadline: Date | nul
 export function sealedFromSeller(listing: { bidMode: string; bidDeadline: Date | null }, now = new Date()) {
   return hideCompetingBids({ bidMode: listing.bidMode, deadline: listing.bidDeadline, isDesk: false, now });
 }
+
+// A dated sale event runs a listing's rounds from the event's two dates: sealed indications, then one best-and-final
+// bid each. While the event is open its terms stand in for the listing's own, so nobody sets them by hand.
+export const EVENT_OPEN = ["PLANNED", "INDICATIONS", "BEST_AND_FINAL"] as const;
+
+export function eventSetsTerms(eventStatus: string | null | undefined) {
+  return Boolean(eventStatus && (EVENT_OPEN as readonly string[]).includes(eventStatus));
+}
+
+// The terms a listing carries in each round. Both rounds share the best-and-final date as the deadline, so every
+// check that waits for a deadline (awards, desk bids, marking sold, the closed-bids notice) waits for the second round.
+export function eventTerms(round: "INDICATIONS" | "BEST_AND_FINAL", bestFinalAt: Date) {
+  return { bidMode: round === "INDICATIONS" ? ("SEALED" as const) : ("BEST_AND_FINAL" as const), bidDeadline: bestFinalAt };
+}

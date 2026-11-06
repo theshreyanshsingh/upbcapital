@@ -9,8 +9,15 @@ import {
   US_STATES,
 } from "@/lib/labels";
 import {
+  CREDIT_SCORE_MAX,
+  CREDIT_SCORE_MIN,
+  normalizeHeader,
   parseBankruptcyChapter,
+  parseCreditScore,
+  parseCreditScoreType,
   parseLoanPurpose,
+  parseLossMitStage,
+  parseMersMin,
   parseValueType,
   parseYesNo,
   payStringMonths,
@@ -101,13 +108,20 @@ function cell(row: Record<string, string>, mapping: Partial<Record<TapeFieldKey,
   return (row[header] ?? "").trim();
 }
 
-function money(raw: string) {
+export function parseMoney(raw: string) {
   if (!raw) return null;
   // Accounting style "(1,000)" is a negative, which the checks below refuse, not a positive 1,000.
   const cleaned = raw.replace(/[$,\s]/g, "").replace(/^\((.*)\)$/, "-$1");
   if (!cleaned) return null;
   const value = Number(cleaned);
   return Number.isFinite(value) ? value : null;
+}
+
+// "6.50%" is already a percent; a bare 0.065 is a fraction. The quality check reads rates the same way.
+export function parseRate(text: string) {
+  const raw = parseMoney(text.replace(/%/g, ""));
+  if (raw == null) return null;
+  return raw < 1 && !text.includes("%") ? raw * 100 : raw;
 }
 
 export function parseDate(raw: string) {
@@ -265,7 +279,91 @@ export function readServicing(
   }
   put(record, "hoaLien", yesNo("hoaLien", "HOA lien"));
   put(record, "taxDelinquent", yesNo("taxDelinquent", "Taxes delinquent"));
+  readTerms(record, get, warn, mapping, notes);
   return { record, notes };
+}
+
+const ROUNDED = /^\d(\.\d+)?E\+\d+$/i;
+
+// Tape v2.1: rate terms, credit, registry and sale terms. Same rule as the servicing record: what can't be read is
+// left off with a warning.
+function readTerms(
+  record: ServicingRecord,
+  get: (key: TapeFieldKey) => string,
+  warn: (field: TapeFieldKey, message: string) => void,
+  mapping: Partial<Record<TapeFieldKey, string>>,
+  notes: ServicingNote[],
+) {
+  const date = (key: TapeFieldKey, label: string) => {
+    const raw = get(key);
+    if (!raw) return null;
+    const parsed = parseDate(raw);
+    if (!parsed) warn(key, `${label} “${clip(raw)}” wasn't read as a date and will be left off.`);
+    return parsed;
+  };
+
+  // A column called "Index" is sometimes a row counter, not a rate index.
+  const index = get("armIndex");
+  if (index && /^[\d.,\s]+$/.test(index)) {
+    warn("armIndex", `ARM index “${clip(index)}” is a number, not an index such as SOFR or the 1-year Treasury, and will be left off.`);
+  } else {
+    put(record, "armIndex", index.slice(0, 60) || null);
+  }
+  const marginRaw = get("armMargin");
+  if (marginRaw) {
+    const margin = parseRate(marginRaw);
+    if (margin == null || margin < 0 || margin > 20) warn("armMargin", `ARM margin “${clip(marginRaw)}” wasn't read as a percent from 0 to 20 and will be left off.`);
+    else record.armMargin = Math.round(margin * 10000) / 10000;
+  }
+  put(record, "armNextReset", date("armNextReset", "Next rate reset"));
+
+  const scoreRaw = get("creditScore");
+  if (scoreRaw) {
+    const score = parseCreditScore(scoreRaw);
+    if (score == null) warn("creditScore", `Credit score “${clip(scoreRaw)}” wasn't read as a number and will be left off.`);
+    else if (score < CREDIT_SCORE_MIN || score > CREDIT_SCORE_MAX) warn("creditScore", `Credit score ${score} is outside ${CREDIT_SCORE_MIN}–${CREDIT_SCORE_MAX} and will be left off.`);
+    else record.creditScore = score;
+  }
+  const typeRaw = get("creditScoreType");
+  if (typeRaw) {
+    const type = parseCreditScoreType(typeRaw);
+    if (!type) warn("creditScoreType", `Score model “${clip(typeRaw)}” isn't FICO, VantageScore or other and will be left off.`);
+    put(record, "creditScoreType", type);
+  } else if (record.creditScore != null && mapping.creditScore) {
+    // A column headed "FICO" or "VantageScore" names its own model.
+    put(record, "creditScoreType", parseCreditScoreType(normalizeHeader(mapping.creditScore)));
+  }
+  put(record, "creditScoreDate", date("creditScoreDate", "Score date"));
+
+  const minRaw = get("mersMin");
+  if (minRaw) {
+    if (ROUNDED.test(minRaw)) warn("mersMin", `MERS MIN “${clip(minRaw)}” was rounded by a spreadsheet and will be left off. Format the column as text and export again.`);
+    else {
+      const min = parseMersMin(minRaw);
+      if (!min) warn("mersMin", `MERS MIN “${clip(minRaw)}” isn't 18 digits and will be left off.`);
+      put(record, "mersMin", min);
+    }
+  }
+  const eNote = get("eNoteId");
+  // Some tapes carry "eNote" as a yes or no flag, which says nothing about the ID.
+  if (eNote && parseYesNo(eNote) != null) warn("eNoteId", `eNote “${clip(eNote)}” is a yes or no, not an eNote ID, and will be left off.`);
+  else put(record, "eNoteId", eNote.slice(0, 60) || null);
+  put(record, "originatingPlatform", get("originatingPlatform").slice(0, 120) || null);
+
+  const stageRaw = get("lossMitStage");
+  if (stageRaw) {
+    const stage = parseLossMitStage(stageRaw);
+    if (stage) record.lossMitStage = stage;
+    else if (!record.lossMitigation) {
+      // "Forbearance" in a status column is the outcome, so it's kept as one rather than dropped.
+      record.lossMitigation = stageRaw.slice(0, 200);
+      notes.push({ field: "lossMitStage", level: "fix", message: `Loss mitigation status “${clip(stageRaw)}” isn't a stage, so it will be stored as the loss mitigation outcome.` });
+    } else {
+      warn("lossMitStage", `Loss mitigation stage “${clip(stageRaw)}” isn't requested, options offered or decided, and will be left off.`);
+    }
+  }
+  put(record, "inheritedCovenants", get("inheritedCovenants").slice(0, 600) || null);
+  put(record, "originatorLicense", get("originatorLicense").slice(0, 200) || null);
 }
 
 export function tapePayWidth(rows: Record<string, string>[], mapping: Partial<Record<TapeFieldKey, string>>) {
@@ -346,18 +444,15 @@ export function normalizeTapeRows(input: {
       unknown: "UNKNOWN",
     }) ?? "NONE";
 
-    const upb = money(cell(row, input.mapping, "upb"));
-    const estimatedValue = money(cell(row, input.mapping, "estimatedValue"));
-    // "6.50%" is already a percent; a bare 0.065 is a fraction. The quality check reads rates the same way.
-    const rateText = cell(row, input.mapping, "interestRate");
-    const rateRaw = money(rateText.replace(/%/g, ""));
-    const interestRate = rateRaw == null ? null : rateRaw < 1 && !rateText.includes("%") ? rateRaw * 100 : rateRaw;
+    const upb = parseMoney(cell(row, input.mapping, "upb"));
+    const estimatedValue = parseMoney(cell(row, input.mapping, "estimatedValue"));
+    const interestRate = parseRate(cell(row, input.mapping, "interestRate"));
     const monthlyRaw = cell(row, input.mapping, "monthlyPi");
-    const monthlyPi = monthlyRaw ? money(monthlyRaw) : 0;
+    const monthlyPi = monthlyRaw ? parseMoney(monthlyRaw) : 0;
     const servicing = readServicing(row, input.mapping, payWidth).record;
     const monthsDelinquent = monthsDelinquentFrom(cell(row, input.mapping, "monthsDelinquent"), servicing.payString);
     const askingRaw = cell(row, input.mapping, "askingPrice");
-    const askingPrice = askingRaw ? money(askingRaw) : null;
+    const askingPrice = askingRaw ? parseMoney(askingRaw) : null;
 
     const problems: string[] = [];
     if (!city) problems.push("city is required");

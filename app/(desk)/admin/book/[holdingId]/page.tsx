@@ -59,6 +59,9 @@ export default async function LossFilePage({
       <p className="mt-3 max-w-2xl text-sm text-muted-foreground">
         Cost {money(Number(holding.costBasis))} · UPB {money(Number(holding.upb))} · {borrower}. Outreach, a workout, foreclosure dates, and a rehab exit live on this file.
       </p>
+      <a href={`/api/holdings/${holding.id}/lender-pack`} className="mt-3 inline-block text-[13px] font-medium text-link">
+        Download the lender pack
+      </a>
 
       <section className="glass mt-8 p-6">
         <p className="eyebrow">File status</p>
@@ -120,7 +123,7 @@ export default async function LossFilePage({
               <option value="MODIFICATION">Modification</option>
             </select>
             <div className="grid gap-3 sm:grid-cols-3">
-              <input name="amount" className="desk-input" aria-label="Plan amount" placeholder="Amount" />
+              <input name="amount" inputMode="decimal" className="desk-input" aria-label="Plan amount" placeholder="Amount" />
               <input name="months" className="desk-input" aria-label="Plan months" placeholder="Months" />
               <input name="rate" className="desk-input" aria-label="Plan rate" placeholder="Rate %" />
             </div>
@@ -228,7 +231,7 @@ export default async function LossFilePage({
           <p className="eyebrow">Relist the note</p>
           <p className="mt-2 text-sm text-muted-foreground">One price puts this note back on the book, with the same documents, the payment log, and the loan facts. It goes live as a desk listing.</p>
           <input type="hidden" name="holdingId" value={holding.id} />
-          <input name="askingPrice" className="desk-input mt-4" aria-label="Relist asking price" placeholder="Asking price" required />
+          <input name="askingPrice" inputMode="decimal" className="desk-input mt-4" aria-label="Relist asking price" placeholder="Asking price" required />
           <SubmitButton className="mt-3 h-11 text-[13px] font-medium">Relist</SubmitButton>
         </form>
         <div className="border border-border p-5 rounded-xl">
@@ -239,7 +242,7 @@ export default async function LossFilePage({
             <input type="hidden" name="side" value="desk" />
             <input name="percent" className="desk-input" aria-label="Percent sold" placeholder="Percent" defaultValue="50" />
             <input name="paymentCount" className="desk-input" aria-label="Payments sold" placeholder="Or payment count" />
-            <input name="price" className="desk-input sm:col-span-2" aria-label="Slice price" placeholder="Price for the slice" required />
+            <input name="price" inputMode="decimal" className="desk-input sm:col-span-2" aria-label="Slice price" placeholder="Price for the slice" required />
             <SubmitButton className="h-11 text-[13px] font-medium">Model the split</SubmitButton>
           </form>
           <ul className="mt-4 space-y-3">

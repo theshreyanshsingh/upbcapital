@@ -124,7 +124,7 @@ export function RehabPanel({
           <form action={addContractorBid} className="mt-4 grid gap-3">
             <input type="hidden" name="holdingId" value={holdingId} />
             <input name="contractor" className="desk-input" aria-label="Contractor" placeholder="Contractor" />
-            <input name="amount" className="desk-input" aria-label="Bid amount" placeholder="Bid" />
+            <input name="amount" inputMode="decimal" className="desk-input" aria-label="Bid amount" placeholder="Bid" />
             <input name="days" className="desk-input" aria-label="Bid days" placeholder="Days" />
             <SubmitButton variant="outline" className="h-10 text-[13px] font-medium">Add bid</SubmitButton>
           </form>

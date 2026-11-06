@@ -26,14 +26,19 @@ test("performing IRR is the note rate when the bid equals the balance", () => {
   assert.ok(Math.abs(npv) < 1);
 });
 
-test("unknown states use Florida judicial timing", () => {
+// Changed with the 51-row table: an unknown code used to borrow Florida's 18 months and $12,000, which priced a
+// territory or a typo as a Florida judicial file. It now gets ATTOM's national average, marked assumed, and keeps
+// its own code.
+test("unknown states use the national average, marked assumed", () => {
   const rule = foreclosureFor("ZZ");
   assert.equal(rule.assumed, true);
-  assert.equal(rule.state, "FL");
-  assert.equal(rule.process, "Judicial");
+  assert.equal(rule.state, "ZZ");
+  assert.equal(rule.process, "Unknown");
+  assert.equal(rule.days, 563);
   assert.equal(rule.months, 18);
-  assert.equal(rule.cost, 12000);
+  assert.equal(rule.basis, "National average");
   assert.equal(foreclosureFor("fl").assumed, false);
+  assert.equal(foreclosureFor("fl").state, "FL");
 });
 
 test("strata weights by unpaid principal", () => {

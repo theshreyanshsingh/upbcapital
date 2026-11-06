@@ -6,6 +6,7 @@ import type { AccountStatus, Prisma, ReviewAction } from "@prisma/client";
 import { alertMatchingSearches } from "@/lib/search-alerts";
 import { audit } from "@/lib/audit";
 import { deadlinePassed } from "@/lib/auction";
+import { approvalHold } from "@/lib/discrepancies";
 import { askSeller, awardOffer, checkAward, declineLosingBids } from "@/lib/awards";
 import { endSessions, requireRole } from "@/lib/auth";
 import { notify, sendAlert } from "@/lib/email";
@@ -20,6 +21,7 @@ import { clearSettingsCache, getSettings } from "@/lib/settings";
 import { cancelBuyerSubscription } from "@/lib/stripe-billing";
 import { syncProPrice } from "@/lib/stripe-sync";
 import { deskDecisionAllowed } from "@/lib/listing-status";
+import { settleByEdit } from "@/lib/discrepancies";
 
 async function admin() {
   return requireRole(["ADMIN"]);
@@ -71,6 +73,9 @@ export async function reviewListing(formData: FormData) {
   }
 
   if (action === "APPROVE") {
+    // The discrepancy gate: nothing goes live while a difference between the tape and a document the desk read is unanswered.
+    const hold = await approvalHold(listingId);
+    if (hold) redirect(`/admin/listings/${listingId}?error=${encodeURIComponent(hold)}`);
     const screened = await screenListing(listingId, user.id);
     if (screened.unavailable) redirect(`/admin/listings/${listingId}?error=${encodeURIComponent(OFAC_DOWN_MESSAGE)}`);
     if (await ofacHold({ listingId, userIds: [listing.sellerId] })) {
@@ -217,6 +222,8 @@ export async function adminUpdateListing(formData: FormData) {
     const moved =
       data.streetAddress !== note.streetAddress || data.city !== note.city || data.state !== note.state || data.zip !== note.zip || data.estimatedValue !== Number(note.estimatedValue);
     await prisma.note.update({ where: { id: note.id }, data: { ...data, ...(moved ? STALE_ESTIMATE : {}) } });
+    // A desk correction can carry the document's value, which answers the open question about it.
+    await settleByEdit(user.id, note.id);
     // A new borrower name has never been screened, and awards and closings only check rows already on file.
     if (data.borrowerName && data.borrowerName !== note.borrowerName.trim()) screenInBackground(() => screenListing(listingId, user.id));
   }
@@ -233,7 +240,10 @@ export async function adminUpdateListing(formData: FormData) {
       const payment = String(formData.get(`status_${note.id}`) || "");
       if (payment === "PERFORMING" || payment === "NON_PERFORMING" || payment === "SUB_PERFORMING") data.paymentStatus = payment;
       const revalued = data.estimatedValue !== undefined && data.estimatedValue !== Number(note.estimatedValue);
-      if (Object.keys(data).length) await prisma.note.update({ where: { id: note.id }, data: { ...data, ...(revalued ? STALE_ESTIMATE : {}) } });
+      if (Object.keys(data).length) {
+        await prisma.note.update({ where: { id: note.id }, data: { ...data, ...(revalued ? STALE_ESTIMATE : {}) } });
+        await settleByEdit(user.id, note.id);
+      }
     }
   }
 

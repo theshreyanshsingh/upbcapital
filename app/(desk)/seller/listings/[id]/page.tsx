@@ -8,10 +8,13 @@ import { updateOwnListingMeta } from "@/actions/listings";
 import { AuctionForm } from "@/components/auction-form";
 import { ComplianceNote } from "@/components/compliance-note";
 import { Countdown } from "@/components/countdown";
+import { DiscrepancyAnswers } from "@/components/discrepancy-answers";
+import { ServicerReportPanel } from "@/components/loan-file-desk";
 import { Notice } from "@/components/notice";
 import { StatusPill } from "@/components/status-pill";
 import { SubmitButton } from "@/components/submit-button";
 import { listingActivity, sellerReport } from "@/lib/activity";
+import { answerable } from "@/lib/discrepancies";
 import { requireRole } from "@/lib/auth";
 import { hideCompetingBids } from "@/lib/auction";
 import { docLabel } from "@/lib/labels";
@@ -41,7 +44,10 @@ export default async function SellerListingPage({
   });
   if (!listing || (listing.sellerId !== user.id && user.role !== "ADMIN")) notFound();
   const settings = await getSettings();
-  const openClosings = await prisma.closing.count({ where: { listingId: listing.id, status: "OPEN" } });
+  const [openClosings, differences] = await Promise.all([
+    prisma.closing.count({ where: { listingId: listing.id, status: "OPEN" } }),
+    prisma.fieldDiscrepancy.findMany({ where: { listingId: listing.id }, orderBy: { createdAt: "desc" } }),
+  ]);
   const deskBidBlock = deskBidNotAcceptable(listing);
   const ask = listing.notes.reduce((sum, note) => sum + num(note.askingPrice), 0);
   const commission = listing.sellerCommissionCents != null ? listing.sellerCommissionCents / 100 : (ask * settings.sellerCommissionBps) / 10000;
@@ -65,6 +71,13 @@ export default async function SellerListingPage({
         <h1 className="mt-4 font-semibold tracking-tight text-[28px] text-foreground">{listing.title}</h1>
         <p className="mt-4 max-w-2xl text-sm leading-relaxed text-muted-foreground">{listing.summary}</p>
         <ComplianceNote states={listing.notes.map((note) => note.state)} sellerFinanced={listing.sellerFinanced} sellerRole={listing.seller.role} />
+        <DiscrepancyAnswers
+          rows={differences}
+          loanLabels={Object.fromEntries(listing.notes.map((note) => [note.id, `${note.streetAddress || "No street"}, ${note.city}, ${note.state}`]))}
+          canAnswer={listing.sellerId === user.id}
+          listingStatus={listing.status}
+        />
+        {answerable(listing.status) && <ServicerReportPanel listingId={listing.id} from="seller" />}
         {editable && listing.kind === "SINGLE" && (
           <Link href={`/seller/listings/${listing.id}/edit`} className="mt-6 inline-flex h-11 items-center border border-link/40 px-5 text-[13px] font-medium text-link rounded-lg">Edit and resubmit</Link>
         )}
@@ -166,7 +179,15 @@ export default async function SellerListingPage({
         {listing.bidDeadline && listing.bidMode !== "NONE" && (
           <div className="mt-4"><Countdown deadline={listing.bidDeadline.toISOString()} mode={listing.bidMode} /></div>
         )}
-        <AuctionForm listingId={listing.id} bidMode={listing.bidMode} deadline={listing.bidDeadline} />
+        {/* A listing in a sale event takes the event's rounds, so its bid terms can't be set here. */}
+        {listing.saleEventId ? (
+          <p className="mt-4 text-sm text-muted-foreground">
+            This listing is in a dated sale event, so the event sets its bid rounds and deadlines.{" "}
+            <Link href="/events" className="text-link">See the event dates</Link>.
+          </p>
+        ) : (
+          <AuctionForm listingId={listing.id} bidMode={listing.bidMode} deadline={listing.bidDeadline} />
+        )}
         {listing.kind === "POOL" && (
           <form action={bulkReprice} className="mt-4 space-y-3 border border-border p-4 rounded-xl">
             <p className="eyebrow">Bulk price</p>

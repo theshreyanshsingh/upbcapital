@@ -198,6 +198,16 @@ enum CollateralKind {
   BPO
 }
 
+// A difference between what the seller's tape says and what the desk read in a document. It stays open until the
+// seller fixes the tape, explains it, or the desk accepts the document's value.
+enum DiscrepancyStatus {
+  OPEN
+  FIXED
+  EXPLAINED
+  ACCEPTED
+  WAIVED
+}
+
 enum CollateralStatus {
   PRESENT
   MISSING
@@ -212,6 +222,10 @@ enum RiskKind {
   LIENS
   PRE_FORECLOSURE
   OCCUPANCY
+  // The title snapshot: who holds the property on record against the borrower, and any recent deed transfer,
+  // which is where deed fraud shows.
+  VESTING
+  DEED_TRANSFER
 }
 
 enum RiskResult {
@@ -291,6 +305,10 @@ model User {
   notifyEmail                  Boolean            @default(true)
   notifyInApp                  Boolean            @default(true)
   digest                       DigestFrequency    @default(WEEKLY)
+  // The monthly note-market dispatch. Missing means not opted in.
+  marketDispatch               Boolean?
+  // Push notices to devices the user has installed the app on. Missing means off.
+  pushEnabled                  Boolean?
   // Listings the desk sends by hand. Missing counts as on, so older accounts keep receiving them.
   dealAlerts                   Boolean?
   lastDigestAt                 DateTime?
@@ -303,6 +321,7 @@ model User {
   reviews                      ReviewComment[]
   savedSearches                SavedSearch[]
   buyerProfile                 BuyerProfile?
+  sellerProfile                SellerProfile?
   offerMessages                OfferMessage[]
   notifications                Notification[]
   listingViews                 ListingView[]
@@ -350,6 +369,17 @@ model PlatformSettings {
   depositDays          Int?
   // Days after an award in which the buyer may walk away for a diligence finding. Missing or 0 means none.
   diligenceDays        Int?
+  // The 10-year Treasury yield the desk last entered, for spread-based standing bids, and the day it was read.
+  tenYearRate          Float?
+  tenYearAsOf          DateTime?
+  // The yield the book's indicative price on every listing is solved for. Missing means the default in lib/standing-bids.
+  indicativeTargetYield Float?
+  // The month of the last market dispatch sent, as YYYY-MM, so a month goes out once.
+  lastDispatchMonth    String?
+  // Weekdays closings settle on, as "TUE,THU", so the desk batches wires. Missing means any business day.
+  settlementDays       String?
+  // Strikes for failing to close before a buyer's bidding pauses for desk review. Missing means 2.
+  strikeLimit          Int?
   // Two-step sign-in for every account that can see borrower data. Missing means on.
   requireTwoStep       Boolean?
   updatedAt            DateTime @updatedAt
@@ -428,6 +458,15 @@ model Listing {
   reservePrice         Float?
   sellerFinanced       Boolean       @default(false)
   withdrawnAt          DateTime?
+  // When the desk was told about this tape's standing bids. Set once, by whichever scoring run claims it.
+  standingBidsNotifiedAt DateTime?
+  // A price the seller has committed to sell at, to the first verified buyer who confirms it. Missing means none.
+  buyNowPrice          Float?
+  buyNowSetAt          DateTime?
+  // The words the seller agreed to when setting it, kept as the record of their commitment.
+  buyNowConsent        String?
+  // The dated sale event this listing trades in, if any. The event sets its rounds.
+  saleEventId          String?
   notes                Note[]
   documents            Document[]
   inquiries            Inquiry[]
@@ -500,12 +539,34 @@ model Note {
   loanPurpose        String?
   hoaLien            Boolean?
   taxDelinquent      Boolean?
+  // Tape v2.1. An adjustable rate's index, margin and next reset.
+  armIndex           String?
+  armMargin          Float?
+  armNextReset       DateTime?
+  // The borrower's credit score as the servicer last pulled it, the model (FICO, VantageScore) and the date.
+  creditScore        Int?
+  creditScoreType    String?
+  creditScoreDate    DateTime?
+  // The MERS MIN or eNote ID, and the platform the loan was originated on.
+  mersMin            String?
+  eNoteId            String?
+  originatingPlatform String?
+  // Obligations that travel with the loan from an earlier sale, such as agency NPL buyer covenants.
+  inheritedCovenants String?
+  // Loss mitigation as REQUESTED, OPTIONS_OFFERED or DECIDED, with the outcome in lossMitigation.
+  lossMitStage       String?
+  // For seller-financed paper: the originator's licence, or why none was needed.
+  originatorLicense  String?
+  // When a servicer's report last filled the servicing fields, and which servicer.
+  servicerSourcedAt  DateTime?
+  servicerSource     String?
   // Fields the desk checked against a document: { field: { at, by, source } }. Anything absent is seller-stated.
   verifiedFields     Json?
   inquiries          Inquiry[]
   filings            CourtFiling[]
   collateral         CollateralItem[]
   riskChecks         RiskCheck[]
+  discrepancies      FieldDiscrepancy[]
   createdAt          DateTime          @default(now())
 
   @@index([listingId])
@@ -553,6 +614,8 @@ model Inquiry {
   // The buyer's good-until date. Past it, the bid can't be awarded and is marked expired.
   expiresAt            DateTime?
   withdrawnAt          DateTime?
+  // Placed at the seller's buy-it-now price, which the seller agreed to in advance.
+  buyNow               Boolean?
 
   @@index([listingId])
   @@index([buyerId])
@@ -573,10 +636,115 @@ model CollateralItem {
   documentId  String?
   recordedAt  DateTime?
   recording   String           @default("")
+  // The date written on an allonge or assignment, and when the desk confirmed an allonge is fixed to the note.
+  // Courts have refused standing on undated allonges whose attachment can't be shown.
+  datedOn     DateTime?
+  attachedAt  DateTime?
+  // For an endorsement: BLANK, SPECIAL or NONE, and whether the loan number on it matches the note. A photo of the
+  // original as received is a document of this listing.
+  endorsement     String?
+  loanNumberMatch Boolean?
+  photoDocumentId String?
   updatedById String?
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @updatedAt
 
+  @@index([noteId])
+}
+
+// A dated, multi-seller sale on a fixed cadence: indications by one date, best and final by a later one.
+enum SaleEventStatus {
+  PLANNED
+  INDICATIONS
+  BEST_AND_FINAL
+  CLOSED
+  CANCELED
+}
+
+// A device that accepts push notices: a browser's Web Push subscription.
+model PushSubscription {
+  id         String   @id @default(cuid()) @map("_id")
+  userId     String
+  endpoint   String   @unique
+  p256dh     String
+  auth       String
+  userAgent  String   @default("")
+  createdAt  DateTime @default(now())
+  lastUsedAt DateTime?
+
+  @@index([userId])
+}
+
+// A buyer who won and didn't close. Enough of them pauses the buyer's bidding until the desk reviews it.
+model BuyerStrike {
+  id          String    @id @default(cuid()) @map("_id")
+  userId      String
+  closingId   String
+  reason      String    @default("")
+  createdById String?
+  createdAt   DateTime  @default(now())
+  clearedAt   DateTime?
+  clearedById String?
+  clearNote   String    @default("")
+
+  @@index([userId])
+}
+
+model SaleEvent {
+  id            String          @id @default(cuid()) @map("_id")
+  name          String
+  summary       String          @default("")
+  // Indications are due by this date; invited bidders then have until bestFinalAt for best and final.
+  indicationsAt DateTime
+  bestFinalAt   DateTime
+  status        SaleEventStatus @default(PLANNED)
+  createdById   String?
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  @@index([status])
+}
+
+// A published agency or HUD loan-sale result, entered by the desk. The GSEs publish cover bids (the
+// second-highest bid), not clearing prices, and the label says so.
+model AgencySale {
+  id             String   @id @default(cuid()) @map("_id")
+  program        String
+  name           String
+  bidDate        DateTime?
+  settleBy       DateTime?
+  loans          Int?
+  upb            Float?
+  coverPctUpb    Float?
+  coverPctBpo    Float?
+  bpoLtv         Float?
+  winner         String   @default("")
+  sourceUrl      String   @default("")
+  createdById    String?
+  createdAt      DateTime @default(now())
+
+  @@index([bidDate])
+}
+
+model FieldDiscrepancy {
+  id            String            @id @default(cuid()) @map("_id")
+  noteId        String
+  note          Note              @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  listingId     String
+  field         String
+  tapeValue     String            @default("")
+  documentValue String            @default("")
+  // The document the desk read, such as "Pay history".
+  source        String            @default("")
+  status        DiscrepancyStatus @default(OPEN)
+  sellerNote    String            @default("")
+  raisedById    String?
+  resolvedById  String?
+  resolvedAt    DateTime?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  @@index([listingId])
   @@index([noteId])
 }
 
@@ -627,6 +795,30 @@ model NdaAcknowledgment {
   @@unique([userId, listingId])
 }
 
+// The seller's side of know-your-customer: who they are and that they may sell the note. Seller impersonation is the
+// fastest-growing title fraud, so a listing goes live only once the desk has approved this file.
+model SellerProfile {
+  userId           String             @id @map("_id")
+  user             User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entityType       InvestorEntity     @default(INDIVIDUAL)
+  entityName       String             @default("")
+  signerName       String             @default("")
+  signerTitle      String             @default("")
+  idDocKey         String             @default("")
+  idDocName        String             @default("")
+  idDocMime        String             @default("")
+  // Proof the signer may sell: an operating agreement, a resolution, a trust certificate, or for an individual
+  // the original note's endorsement to them.
+  authorityDocKey  String             @default("")
+  authorityDocName String             @default("")
+  authorityDocMime String             @default("")
+  status           VerificationStatus @default(NOT_STARTED)
+  reviewerNote     String             @default("")
+  submittedAt      DateTime?
+  reviewedAt       DateTime?
+  updatedAt        DateTime           @updatedAt
+}
+
 model BuyerProfile {
   userId            String             @id @map("_id")
   user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -644,6 +836,11 @@ model BuyerProfile {
   proofVerifiedAt   DateTime?
   status            VerificationStatus @default(NOT_STARTED)
   reviewerNote      String             @default("")
+  // Asked at onboarding for the federal limit on large single-family investors and state licensing prompts. The
+  // buyer's own statement; the desk doesn't verify it.
+  homesControlled   Int?
+  reoStrategy       String?
+  eligibilityAt     DateTime?
   vendor            String             @default("")
   vendorRef         String             @default("")
   submittedAt       DateTime?
@@ -699,6 +896,8 @@ model Closing {
   depositDueAt          DateTime?
   // The end of the buyer's diligence window, when one applies. Until then the buyer may walk away for a finding.
   diligenceEndsAt       DateTime?
+  // Whose failure ended a canceled closing: BUYER, SELLER or NEITHER. A buyer's failure records a strike.
+  cancelFault           String?
   depositReceivedCents  Int?
   depositReceivedAt     DateTime?
   depositReference      String?
@@ -904,6 +1103,16 @@ model BuyBox {
   priceMax      Float?
   maxPriceToUpb Float?
   targetYield   Float?
+  // A standing price rule: every new tape that fits this box gets an indicative bid at once, which the desk
+  // reviews and the buyer confirms before it is a bid. Basis UPB prices at bidPercent of UPB; basis YIELD solves
+  // for the price that returns targetYield.
+  standingBids  Boolean?
+  bidBasis      String?
+  bidPercent    Float?
+  // The most this buyer pays for one loan, whatever the rule says.
+  bidCap        Float?
+  // For basis SPREAD: the target yield is the 10-year Treasury plus this many percentage points.
+  bidSpread     Float?
   active        Boolean        @default(true)
   createdAt     DateTime       @default(now())
   matches       ListingMatch[]
@@ -920,6 +1129,16 @@ model ListingMatch {
   userId    String
   score     Int
   reasons   String   @default("")
+  // The box's standing price for this listing, when it has a rule. Indicative only: nothing binds until the
+  // buyer confirms it as a bid.
+  indicativePrice Float?
+  indicativeAt    DateTime?
+  // The desk sent the indicative to the buyer to confirm, and when the buyer turned it into a bid or passed.
+  invitedAt       DateTime?
+  answeredAt      DateTime?
+  inquiryId       String?
+  // The 10-year rate's date that a spread-based price used, so a stale figure reads as stale.
+  rateAsOf        DateTime?
   createdAt DateTime @default(now())
 
   @@unique([listingId, buyBoxId])
@@ -1105,6 +1324,13 @@ model CashReceipt {
   amount         Float
   paidOn         DateTime
   memo           String        @default("")
+  // The split a tax export needs. Missing means the holder logged a total only.
+  principal      Float?
+  interest       Float?
+  fees           Float?
+  escrow         Float?
+  // MANUAL when the holder logged it, or the servicer's name when it came from a servicer report.
+  source         String?
   createdAt      DateTime      @default(now())
 }
 

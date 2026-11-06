@@ -1,16 +1,18 @@
 import type { ClosingStepKey } from "@prisma/client";
 import { audit } from "@/lib/audit";
-import { CLOSING_STEPS, canCompleteStep, closingTotals } from "@/lib/closing";
-import { closingSchedule, depositCents, depositTerms, targetDays } from "@/lib/closing-clock";
+import { CLOSING_STEPS, canCompleteStep, closingTotals, stepLabel } from "@/lib/closing";
+import { STEP_OWNER, closingSchedule, depositCents, depositTerms, effectiveDue, settlementWeekdays, stepClock, targetDays } from "@/lib/closing-clock";
 import { deskFeeBps } from "@/lib/desk-fees";
 import { notify, notifyDesk } from "@/lib/email";
 import { getEscrowProvider } from "@/lib/escrow";
+import { money, prettyDate } from "@/lib/format";
 import { postRevenueOnce } from "@/lib/ledger";
 import { ensureBuyerHolding } from "@/lib/portfolio";
 import { unset } from "@/lib/db-filters";
 import { prisma } from "@/lib/prisma";
 import { variance } from "@/lib/settlement";
 import { getSettings } from "@/lib/settings";
+import { countWord, recordStrike, type CancelFault } from "@/lib/strikes";
 import { postBrokerFees } from "@/lib/broker-pay";
 import { ensureClosingThread } from "@/lib/threads";
 
@@ -82,7 +84,8 @@ export async function openClosing(input: {
     netToSellerCents: fees.netToSellerCents,
     wireInstructions: settings.wireInstructions,
   });
-  const schedule = closingSchedule(new Date(), targetDays(settings.closingTargetDays));
+  // Payment and the close fall on the desk's next settlement day, so wires go out in batches.
+  const schedule = closingSchedule(new Date(), targetDays(settings.closingTargetDays), settlementWeekdays(settings.settlementDays));
   // A buyer's deposit is set at award. The desk buying for its own book owes none.
   const deposit = depositTerms(settings);
   const depositDue = !input.deskBidId && deposit.bps > 0 ? new Date(Date.now() + deposit.days * 24 * 60 * 60 * 1000) : null;
@@ -229,21 +232,27 @@ export async function finalizeClosing(closingId: string) {
 // A listing an admin never approved goes back to review rather than live.
 // A buyer's walk-away in diligence passes `withinDiligence`, so the cancel only lands while the window is still open,
 // and marks the bid withdrawn rather than declined.
-export async function cancelOpenClosing(closingId: string, reason: string, options: { withinDiligence?: Date } = {}) {
+// The desk names whose failure ended it. A buyer's failure records a strike against the winning bidder. A walk-away
+// in diligence is the buyer's right under the terms, so it is nobody's fault and never a strike. The desk buying
+// for its own book has no buyer to strike.
+export async function cancelOpenClosing(closingId: string, reason: string, options: { withinDiligence?: Date; fault?: CancelFault; actorId?: string | null } = {}) {
   const closing = await prisma.closing.findUnique({ where: { id: closingId }, include: { listing: true } });
   if (!closing || closing.status !== "OPEN") return null;
+  const fault = options.withinDiligence ? "NEITHER" : options.fault === "BUYER" && closing.deskBidId ? undefined : options.fault;
   // Only the write that moves it off OPEN cancels, so a close that landed first stays closed.
   const claimed = await prisma.closing.updateMany({
     where: { id: closingId, status: "OPEN", ...(options.withinDiligence ? { diligenceEndsAt: { gt: options.withinDiligence } } : {}) },
-    data: { status: "CANCELED", canceledAt: new Date(), cancelReason: reason },
+    data: { status: "CANCELED", canceledAt: new Date(), cancelReason: reason, ...(fault ? { cancelFault: fault } : {}) },
   });
   if (claimed.count !== 1) return null;
   if (closing.noteId) await prisma.note.update({ where: { id: closing.noteId }, data: { tradeStatus: "AVAILABLE" } });
   if (closing.inquiryId) {
-    await prisma.inquiry.update({
+    const bid = await prisma.inquiry.update({
       where: { id: closing.inquiryId },
       data: options.withinDiligence ? { status: "WITHDRAWN", withdrawnAt: options.withinDiligence } : { status: "DECLINED" },
+      select: { buyerId: true },
     });
+    if (fault === "BUYER") await recordStrike({ userId: bid.buyerId, closingId, reason, createdById: options.actorId ?? null });
   }
   if (closing.deskBidId) await prisma.deskBid.update({ where: { id: closing.deskBidId }, data: { status: "WITHDRAWN" } });
   const others = await prisma.closing.count({ where: { listingId: closing.listingId, status: "OPEN", id: { not: closingId } } });
@@ -313,4 +322,262 @@ export async function completeDepositFromWire(closingId: string) {
 
 export function isClosingStepKey(value: string): value is ClosingStepKey {
   return CLOSING_STEPS.some((step) => step.key === value);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The deal timeline: one log of the closing for every party, built from the closing's own records and the audit
+// events written against it. Each side sees what the closing page already shows it and no more: the buyer's wires
+// go to the buyer and the desk, the seller's proceeds to the seller and the desk, and a broker watching the deal
+// sees the steps and dates but no file names, figures or messages.
+
+export type TimelineSide = "desk" | "buyer" | "seller" | "observer";
+export type TimelineOwner = "buyer" | "seller" | "desk" | "both";
+export type TimelineEntry = { id: string; at: Date; title: string; detail: string; owner: TimelineOwner; who: string };
+export type TimelineStep = { key: string; label: string; owner: TimelineOwner; due: Date | null; next: boolean; late: boolean };
+
+type TimelinePerson = { name: string; companyName?: string | null; role: string };
+
+export type TimelineInput = {
+  closing: {
+    status: string;
+    openedAt: Date;
+    closedAt: Date | null;
+    canceledAt: Date | null;
+    cancelReason: string | null;
+    cancelFault: string | null;
+    targetCloseAt: Date | null;
+    salePrice: number;
+    depositCents: number | null;
+    depositDueAt: Date | null;
+    fundsReceivedCents: number | null;
+    fundsReceivedAt: Date | null;
+    depositReceivedCents: number | null;
+    depositReceivedAt: Date | null;
+    proceedsSentCents: number | null;
+    proceedsSentAt: Date | null;
+  };
+  steps: { key: string; status: string; completedAt: Date | null; dueAt: Date | null; note: string; files: { id: string; originalName: string; createdAt: Date; uploadedById: string | null }[] }[];
+  audits: { id: string; action: string; actorId: string | null; detail: string; createdAt: Date }[];
+  posts: { id: string; authorId: string; body: string; createdAt: Date }[];
+  people: Record<string, TimelinePerson>;
+  sellerId: string;
+  // The lead buyer and every group seat.
+  buyerIds: string[];
+  days: number;
+  now?: Date;
+};
+
+export const TIMELINE_ACTIONS = ["CLOSING", "CLOSING_CANCELED", "CLOSING_DATES", "CLOSING_OVERRIDE", "WIRE_EDIT", "FUNDS_RECEIVED", "DEPOSIT_RECEIVED", "PROCEEDS_SENT", "SHARE_FUNDED", "DILIGENCE_WALK_AWAY"];
+
+export function ownerWord(owner: TimelineOwner) {
+  return owner === "both" ? "Buyer and seller" : owner === "desk" ? "Desk" : owner === "buyer" ? "Buyer" : "Seller";
+}
+
+function isoDay(iso: string) {
+  return prettyDate(new Date(`${iso}T12:00:00Z`));
+}
+
+// "Buyer funds received: none to $1,025.00 on 2026-11-06 · REF" reads as "$1,025.00 on Nov 6, 2026 · reference REF".
+function wireDetail(detail: string, desk: boolean) {
+  const match = /: (none|\$[\d,.]+) to (\$[\d,.]+) on (\d{4}-\d{2}-\d{2})(?: · (.*))?$/.exec(detail);
+  if (!match) return detail;
+  const [, before, after, day, reference] = match;
+  return `${after} on ${isoDay(day)}${reference ? ` · reference ${reference}` : ""}${desk && before !== "none" ? ` · was ${before}` : ""}`;
+}
+
+function wireFallback(cents: number, at: Date) {
+  return `${money(cents / 100, 2)} on ${prettyDate(at)}`;
+}
+
+// Step keys and ISO dates in a desk log line, as people read them.
+function readable(detail: string) {
+  return detail
+    .replace(/\b[A-Z][A-Z_]{3,}\b/g, (key) => (isClosingStepKey(key) ? stepLabel(key) : key))
+    .replace(/\d{4}-\d{2}-\d{2}/g, (iso) => isoDay(iso));
+}
+
+function faultLine(fault: string | null, side: TimelineSide) {
+  if (side === "desk") {
+    if (fault === "BUYER") return "Recorded as the buyer's failure to close, with a strike on their file.";
+    if (fault === "SELLER") return "Recorded as the seller's failure to deliver.";
+    if (fault === "NEITHER") return "Recorded as neither side's failure.";
+    return "";
+  }
+  // Each side hears only a finding against itself. The other side's record isn't theirs to read.
+  if (side === "buyer" && fault === "BUYER") return "The desk recorded this as the buyer's failure to close. It counts as a strike on the buyer file.";
+  if (side === "seller" && fault === "SELLER") return "The desk recorded this as the seller's failure to deliver.";
+  return "";
+}
+
+function clip(text: string, length: number) {
+  const clean = text.replace(/\s+/g, " ").trim();
+  return clean.length > length ? `${clean.slice(0, length - 1)}…` : clean;
+}
+
+export function dealTimeline(input: TimelineInput, side: TimelineSide): { entries: TimelineEntry[]; upcoming: TimelineStep[] } {
+  const { closing } = input;
+  const now = input.now ?? new Date();
+  const party = side !== "observer";
+  const desk = side === "desk";
+  const buyerSide = desk || side === "buyer";
+  const sellerSide = desk || side === "seller";
+  const ownerOf = (userId: string | null): TimelineOwner => (userId === input.sellerId ? "seller" : userId && input.buyerIds.includes(userId) ? "buyer" : "desk");
+  // The desk's own people show by name to the desk and as the desk to everyone else.
+  const whoOf = (userId: string | null) => {
+    if (!userId) return "The desk";
+    const person = input.people[userId];
+    if (!person) return "A former account";
+    if (person.role === "ADMIN") return desk ? `${person.name}, desk` : "The desk";
+    return person.companyName || person.name;
+  };
+  const entries: TimelineEntry[] = [];
+  const latest = (action: string, match?: (detail: string) => boolean) =>
+    [...input.audits].reverse().find((event) => event.action === action && (!match || match(event.detail)));
+
+  const opened = [`The checklist opened with ${countWord(input.steps.length)} steps.`];
+  if (party) opened.unshift(`Awarded at ${money(closing.salePrice)}.`);
+  if (buyerSide && closing.depositCents != null && closing.depositDueAt) opened.push(`A deposit of ${money(closing.depositCents / 100)} is due ${prettyDate(closing.depositDueAt)}.`);
+  entries.push({ id: "opened", at: closing.openedAt, title: "Closing opened", detail: opened.join(" "), owner: "desk", who: "The desk" });
+
+  for (const step of input.steps) {
+    const at = step.status === "COMPLETE" ? (step.completedAt ?? (step.key === "CLOSED" ? closing.closedAt : null)) : null;
+    if (at) {
+      const marked = latest("CLOSING", (detail) => detail === step.key);
+      entries.push({
+        id: `step:${step.key}`,
+        at,
+        title: step.key === "CLOSED" ? "Deal closed" : `${stepLabel(step.key)} complete`,
+        detail: step.note,
+        owner: STEP_OWNER[step.key] ?? "desk",
+        // The deposit step also completes on its own from the recorded wire, which is the desk's entry.
+        who: marked ? whoOf(marked.actorId) : "The desk",
+      });
+    }
+    for (const file of step.files) {
+      entries.push({
+        id: `file:${file.id}`,
+        at: file.createdAt,
+        title: `File added to ${stepLabel(step.key).toLowerCase()}`,
+        detail: party ? file.originalName : "",
+        owner: ownerOf(file.uploadedById),
+        who: whoOf(file.uploadedById),
+      });
+    }
+  }
+
+  const seen = new Set<string>();
+  for (const event of input.audits) {
+    seen.add(event.action);
+    const base = { id: `audit:${event.id}`, at: event.createdAt, who: whoOf(event.actorId) };
+    if (event.action === "FUNDS_RECEIVED" && buyerSide) entries.push({ ...base, title: "Buyer funds recorded", detail: wireDetail(event.detail, desk), owner: "buyer" });
+    if (event.action === "DEPOSIT_RECEIVED" && buyerSide) entries.push({ ...base, title: "Buyer deposit recorded", detail: wireDetail(event.detail, desk), owner: "buyer" });
+    if (event.action === "PROCEEDS_SENT" && sellerSide) entries.push({ ...base, title: "Seller proceeds sent", detail: wireDetail(event.detail, desk), owner: "desk" });
+    if (event.action === "SHARE_FUNDED" && buyerSide) entries.push({ ...base, title: "Group share funded", detail: event.detail, owner: "buyer" });
+    if (event.action === "CLOSING_DATES") entries.push({ ...base, title: "Dates changed", detail: readable(event.detail), owner: "desk" });
+    if (event.action === "WIRE_EDIT" && party) {
+      entries.push({ ...base, title: "Wire instructions changed", detail: desk ? event.detail : "Confirm them by phone on a number you already trust before sending money.", owner: "desk" });
+    }
+    if (event.action === "CLOSING_OVERRIDE" && desk) entries.push({ ...base, title: "Step marked without the wire on record", detail: readable(event.detail), owner: "desk" });
+    if (event.action === "DILIGENCE_WALK_AWAY") entries.push({ ...base, title: "The buyer walked away in diligence", detail: event.detail, owner: "buyer" });
+  }
+  // Wires recorded before the desk logged them still belong on the record.
+  if (buyerSide && closing.depositReceivedAt && closing.depositReceivedCents != null && !seen.has("DEPOSIT_RECEIVED")) {
+    entries.push({ id: "wire:deposit", at: closing.depositReceivedAt, title: "Buyer deposit recorded", detail: wireFallback(closing.depositReceivedCents, closing.depositReceivedAt), owner: "buyer", who: "The desk" });
+  }
+  if (buyerSide && closing.fundsReceivedAt && closing.fundsReceivedCents != null && !seen.has("FUNDS_RECEIVED")) {
+    entries.push({ id: "wire:funds", at: closing.fundsReceivedAt, title: "Buyer funds recorded", detail: wireFallback(closing.fundsReceivedCents, closing.fundsReceivedAt), owner: "buyer", who: "The desk" });
+  }
+  if (sellerSide && closing.proceedsSentAt && closing.proceedsSentCents != null && !seen.has("PROCEEDS_SENT")) {
+    entries.push({ id: "wire:proceeds", at: closing.proceedsSentAt, title: "Seller proceeds sent", detail: wireFallback(closing.proceedsSentCents, closing.proceedsSentAt), owner: "desk", who: "The desk" });
+  }
+  // A walk-away is the cancel, so it isn't logged twice.
+  if (closing.status === "CANCELED" && closing.canceledAt && !seen.has("DILIGENCE_WALK_AWAY")) {
+    const canceled = latest("CLOSING_CANCELED");
+    const detail = [closing.cancelReason ?? "", faultLine(closing.cancelFault, side)].filter(Boolean).join(" ");
+    entries.push({ id: "canceled", at: closing.canceledAt, title: "Closing canceled", detail, owner: "desk", who: canceled ? whoOf(canceled.actorId) : "The desk" });
+  }
+  if (party) {
+    for (const post of input.posts) {
+      entries.push({ id: `post:${post.id}`, at: post.createdAt, title: "Message", detail: clip(post.body, 280), owner: ownerOf(post.authorId), who: whoOf(post.authorId) });
+    }
+  }
+  entries.sort((a, b) => a.at.getTime() - b.at.getTime() || a.id.localeCompare(b.id));
+
+  const upcoming: TimelineStep[] = [];
+  if (closing.status === "OPEN") {
+    const open = input.steps
+      .filter((step) => step.status !== "COMPLETE")
+      .map((step) => ({ step, due: effectiveDue(step, closing, input.days) }))
+      .sort((a, b) => (a.due?.getTime() ?? Infinity) - (b.due?.getTime() ?? Infinity));
+    open.forEach(({ step, due }, index) => {
+      upcoming.push({ key: step.key, label: stepLabel(step.key), owner: STEP_OWNER[step.key] ?? "desk", due, next: index === 0, late: stepClock(step.status, due, now) === "overdue" });
+    });
+  }
+  return { entries, upcoming };
+}
+
+// The timeline for one viewer's side, from the database.
+export async function loadDealTimeline(closingId: string, side: TimelineSide, now = new Date()) {
+  const closing = await prisma.closing.findUnique({
+    where: { id: closingId },
+    include: { steps: { include: { files: true } }, funders: { select: { userId: true } }, listing: { select: { sellerId: true } } },
+  });
+  if (!closing) return null;
+  const [inquiry, audits, thread, settings] = await Promise.all([
+    closing.inquiryId ? prisma.inquiry.findUnique({ where: { id: closing.inquiryId }, select: { buyerId: true } }) : Promise.resolve(null),
+    prisma.auditEvent.findMany({ where: { entityType: "closing", entityId: closingId, action: { in: TIMELINE_ACTIONS } }, orderBy: { createdAt: "asc" }, take: 500 }),
+    side === "observer"
+      ? Promise.resolve(null)
+      : prisma.deskThread.findUnique({ where: { closingId }, select: { posts: { select: { id: true, authorId: true, body: true, createdAt: true }, orderBy: { createdAt: "asc" }, take: 300 } } }),
+    getSettings(),
+  ]);
+  const posts = thread?.posts ?? [];
+  const buyerIds = [inquiry?.buyerId, ...closing.funders.map((funder) => funder.userId)].filter((id): id is string => Boolean(id));
+  const ids = new Set<string>([closing.listing.sellerId, ...buyerIds]);
+  for (const event of audits) if (event.actorId) ids.add(event.actorId);
+  for (const post of posts) ids.add(post.authorId);
+  for (const step of closing.steps) for (const file of step.files) if (file.uploadedById) ids.add(file.uploadedById);
+  const users = await prisma.user.findMany({ where: { id: { in: [...ids] } }, select: { id: true, name: true, companyName: true, role: true } });
+  return dealTimeline(
+    {
+      closing: { ...closing, salePrice: Number(closing.salePrice), cancelFault: closing.cancelFault ?? null },
+      steps: closing.steps,
+      audits,
+      posts,
+      people: Object.fromEntries(users.map((user) => [user.id, user])),
+      sellerId: closing.listing.sellerId,
+      buyerIds,
+      days: targetDays(settings.closingTargetDays),
+      now,
+    },
+    side,
+  );
+}
+
+// "Nov 6, 2026, 2:15 PM UTC". Closing dates are UTC across the desk, so the log is too.
+export function timelineStamp(date: Date) {
+  return `${new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", timeZone: "UTC" }).format(date)} UTC`;
+}
+
+// The timeline as plain strings, for the page's client component and the CSV.
+export function timelineView(timeline: { entries: TimelineEntry[]; upcoming: TimelineStep[] }) {
+  return {
+    entries: timeline.entries.map((entry) => ({
+      id: entry.id,
+      when: timelineStamp(entry.at),
+      whenIso: entry.at.toISOString(),
+      title: entry.title,
+      detail: entry.detail,
+      owner: ownerWord(entry.owner),
+      who: entry.who,
+    })),
+    upcoming: timeline.upcoming.map((step) => ({
+      key: step.key,
+      label: step.label,
+      owner: ownerWord(step.owner),
+      due: step.due ? prettyDate(step.due) : null,
+      next: step.next,
+      late: step.late,
+    })),
+  };
 }

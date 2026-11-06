@@ -1,14 +1,17 @@
 import { forceSignOut, resetTwoFactor, setAccountStatus, setMembership } from "@/actions/admin";
+import { clearBuyerStrike } from "@/actions/strikes";
 import { ConfirmSubmit } from "@/components/confirm-submit";
 import { SubmitButton } from "@/components/submit-button";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { requireRole } from "@/lib/auth";
-import { q } from "@/lib/format";
+import { prettyDate, q } from "@/lib/format";
 import { roleLabel } from "@/lib/labels";
 import { ofacBlocks } from "@/lib/ofac";
 import { prisma } from "@/lib/prisma";
 import { literal } from "@/lib/db-filters";
+import { getSettings } from "@/lib/settings";
+import { strikeLimitOf, strikesFor, type StrikeRow } from "@/lib/strikes";
 
 export const metadata = { title: "Accounts" };
 
@@ -29,6 +32,8 @@ export default async function UsersPage({
     prisma.ofacCheck.findMany({ where: { result: "REVIEW" }, select: { userId: true, result: true, status: true } }),
   ]);
   const held = new Set(reviews.filter(ofacBlocks).map((row) => row.userId));
+  const [strikes, settings] = await Promise.all([strikesFor(users.filter((user) => user.role === "BUYER").map((user) => user.id)), getSettings()]);
+  const limit = strikeLimitOf(settings.strikeLimit);
   return (
     <div>
       <PageIntro eyebrow="Accounts" title="Who is allowed in." lede="Buyers and institutions wait here until you approve them. Pro can be comped without a charge. Comping a paying buyer or setting them free cancels their Stripe subscription." />
@@ -38,7 +43,7 @@ export default async function UsersPage({
         <button type="submit" className="h-11 shrink-0 rounded-lg border border-border px-4 text-[13px] font-medium">Filter</button>
       </form>
       {filter && <p className="mt-2 text-sm text-muted-foreground">{users.length} account{users.length === 1 ? "" : "s"} match “{filter}”. <a href="/admin/users" className="text-link">Show all</a></p>}
-      <div className="mt-6 overflow-x-auto border border-border rounded-xl">
+      <div className="mt-6 relative overflow-x-auto border border-border rounded-xl">
         <table className="min-w-full text-left text-sm">
           <thead className="text-xs font-medium text-muted-foreground">
             <tr>
@@ -53,6 +58,7 @@ export default async function UsersPage({
                   <p className="text-xs text-muted-foreground">{user.email}</p>
                   {user.companyName && <p className="text-xs text-muted-foreground">{user.companyName}</p>}
                   {held.has(user.id) && <p className="mt-1 text-xs text-bad">OFAC review open</p>}
+                  <Strikes rows={strikes.get(user.id) ?? []} limit={limit} />
                 </td>
                 <td className="px-4 py-4">{roleLabel(user.role)}</td>
                 <td className="px-4 py-4">{user.accountStatus.toLowerCase()}{user.totpEnabled ? " · 2FA on" : ""}</td>
@@ -114,5 +120,51 @@ export default async function UsersPage({
         </table>
       </div>
     </div>
+  );
+}
+
+// A buyer's closings that didn't complete, folded under their name. Clearing one takes a note for the audit log.
+function Strikes({ rows, limit }: { rows: StrikeRow[]; limit: number }) {
+  if (!rows.length) return null;
+  const active = rows.filter((row) => !row.clearedAt).length;
+  return (
+    <details className="mt-1 max-w-sm">
+      <summary className={`cursor-pointer text-xs font-medium tabular-nums ${active >= limit ? "text-bad" : "text-foreground"}`}>
+        {active} of {limit} strikes active{active >= limit ? " · bidding paused" : ""}
+      </summary>
+      <ul className="mt-2 space-y-3">
+        {rows.map((row) => (
+          <li key={row.id} className="text-xs">
+            <p className="text-foreground">
+              <a className="text-link" href={`/closings/${row.closingId}`}>{row.listingTitle}</a> · {prettyDate(row.createdAt)}
+            </p>
+            <p className="text-muted-foreground">{row.reason}</p>
+            {row.clearedAt ? (
+              <p className="text-muted-foreground">Cleared {prettyDate(row.clearedAt)}. {row.clearNote}</p>
+            ) : (
+              <form action={clearBuyerStrike} className="mt-1 space-y-1">
+                <input type="hidden" name="strikeId" value={row.id} />
+                <input type="hidden" name="back" value="/admin/users" />
+                <label className="block">
+                  <span className="text-muted-foreground">Why the desk is clearing it</span>
+                  <input name="note" required minLength={10} className="desk-input mt-1" />
+                </label>
+                <ConfirmSubmit
+                  title={`Clear the strike for ${row.listingTitle}?`}
+                  consequence="It stops counting toward the buyer's limit. If that takes them under the limit, their bidding resumes at once. Your note goes in the audit log."
+                  typed={[["Note", "note", "text"]]}
+                  confirmLabel="Clear the strike"
+                  pendingLabel="Clearing…"
+                  variant="outline"
+                  className="h-8 text-[13px] font-medium"
+                >
+                  Clear strike
+                </ConfirmSubmit>
+              </form>
+            )}
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }

@@ -37,21 +37,21 @@ export function OnboardingTour({ role }: { role: string }) {
     setIndex(null);
   }
   return (
-    <div className="fixed inset-x-3 bottom-3 z-40 rounded-[14px] border border-border bg-popover p-4 shadow-[var(--shadow)] sm:inset-x-auto sm:right-6 sm:bottom-6 sm:w-96">
+    <div className="fixed inset-x-3 bottom-[calc(var(--dock,0px)+0.75rem)] z-40 rounded-[14px] border border-border bg-popover p-4 shadow-[var(--shadow)] sm:inset-x-auto sm:right-6 sm:bottom-[calc(var(--dock,0px)+1.5rem)] sm:w-96">
       <p className="eyebrow">First look · {index + 1} of {steps.length}</p>
       <h2 className="mt-1 text-base font-semibold tracking-tight text-foreground">{step.title}</h2>
       <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{step.body}</p>
       <div className="mt-3 flex gap-2">
         {index < steps.length - 1 ? (
-          <button type="button" className="h-8 rounded-[9px] bg-primary px-3 text-[13px] font-semibold text-primary-foreground" onClick={() => setIndex(index + 1)}>
+          <button type="button" className="h-8 rounded-[9px] bg-primary px-3 text-[13px] font-semibold text-primary-foreground pointer-coarse:h-10 pointer-coarse:px-4" onClick={() => setIndex(index + 1)}>
             Next
           </button>
         ) : (
-          <button type="button" className="h-8 rounded-[9px] bg-primary px-3 text-[13px] font-semibold text-primary-foreground" onClick={finish}>
+          <button type="button" className="h-8 rounded-[9px] bg-primary px-3 text-[13px] font-semibold text-primary-foreground pointer-coarse:h-10 pointer-coarse:px-4" onClick={finish}>
             Done
           </button>
         )}
-        <button type="button" className="h-8 rounded-[9px] px-3 text-[13px] font-medium text-muted-foreground hover:bg-hover" onClick={finish}>
+        <button type="button" className="h-8 rounded-[9px] px-3 text-[13px] font-medium text-muted-foreground hover:bg-hover pointer-coarse:h-10 pointer-coarse:px-4" onClick={finish}>
           Skip
         </button>
       </div>

@@ -3,117 +3,75 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import {
-  BadgeCheck,
-  Banknote,
-  Bell,
-  BellRing,
-  BookOpen,
-  Bot,
-  Briefcase,
-  Calculator,
-  ChartColumn,
-  ChevronsUpDown,
-  ClipboardList,
-  Code,
-  Contact,
-  CreditCard,
-  FilePen,
-  FilePlus,
-  FileStack,
-  FolderOpen,
-  Gavel,
-  Handshake,
-  Inbox,
-  Landmark,
-  LayoutDashboard,
-  Library,
-  Lock,
-  LogOut,
-  Megaphone,
-  Menu,
-  Newspaper,
-  Percent,
-  ScrollText,
-  Search,
-  Star,
-  Target,
-  Upload,
-  UserRound,
-  Users,
-  Wallet,
-  type LucideIcon,
-} from "lucide-react";
+import { BellRing, ChevronsUpDown, Lock, LogOut, Search, type LucideIcon } from "lucide-react";
 import { logout } from "@/actions/auth";
 import { OnboardingTour } from "@/components/tour";
 import { Logo } from "@/components/logo";
+import { DeskSearch, MobileDock } from "@/components/mobile-dock";
 import { ThemeToggle } from "@/components/theme-toggle";
-import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
+import { isMacLike, openCommandPalette } from "@/components/command-palette";
+import { active, initials, navFor, type NavItem, type ShellUser } from "@/components/desk-nav";
 import { homeFor, roleLabel } from "@/lib/labels";
 import { cn } from "@/lib/utils";
 
-export type ShellUser = {
-  name: string;
-  email: string;
-  role: string;
-  tier: string;
-  unread: number;
-};
-
-type NavItem = { href: string; label: string; icon: LucideIcon; section?: string; count?: number };
-
-function active(path: string, href: string) {
-  if (href === "/seller" || href === "/admin" || href === "/marketplace" || href === "/buyer/subscription" || href === "/broker") {
-    return path === href;
-  }
-  return path === href || path.startsWith(`${href}/`);
-}
-
-function initials(name: string) {
-  return name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase()).join("") || "?";
-}
+export type { ShellUser };
 
 export function AppShell({ user, children }: { user: ShellUser; children: React.ReactNode }) {
   const items = navFor(user);
   return (
     <div className="min-h-screen">
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-72 flex-col border-r border-sidebar-border bg-sidebar px-3 pt-3.5 pb-3 md:flex">
-        <div className="px-2 pt-1 pb-3">
+      <aside className="fixed inset-y-0 left-0 z-30 hidden w-72 flex-col border-r border-sidebar-border bg-sidebar px-3 pt-3 pb-3 md:flex">
+        <div className="flex h-11 items-center px-2 pb-1">
           <Logo href={homeFor(user.role)} />
         </div>
+        <PaletteButton />
         {user.role === "ADMIN" && <DeskSearch />}
         <SideNav items={items} />
         <Account user={user} />
       </aside>
       <div className="md:pl-72">
-        <div className="sticky top-0 z-30 flex items-center justify-between border-b border-border bg-card px-4 py-3 md:hidden">
-          <Logo href={homeFor(user.role)} />
-          <Sheet>
-            <SheetTrigger className="inline-flex size-9 items-center justify-center rounded-lg border border-border bg-card" aria-label="Open navigation">
-              <Menu className="size-4" />
-            </SheetTrigger>
-            <SheetContent side="left" className="flex flex-col bg-sidebar px-3 pt-10 pb-3">
-              {user.role === "ADMIN" && <DeskSearch />}
-              <SideNav items={items} />
-              <Account user={user} />
-            </SheetContent>
-          </Sheet>
-        </div>
-        <main id="desk" className="min-w-0 px-4 pt-5 pb-8 md:px-[22px] md:pt-[18px] md:pb-7">{children}</main>
+        {/* On a phone: the mark and search up top, and the tab bar below within reach of a thumb. */}
+        <header className="sticky top-0 z-30 border-b border-border/70 bg-background/88 pt-[env(safe-area-inset-top)] backdrop-blur-xl supports-backdrop-filter:bg-background/72 md:hidden">
+          <div className="flex h-13 items-center justify-between gap-3 pr-[max(0.75rem,env(safe-area-inset-right))] pl-[max(1rem,env(safe-area-inset-left))]">
+            <Logo href={homeFor(user.role)} />
+            <button
+              type="button"
+              onClick={openCommandPalette}
+              aria-label="Search or jump to a page"
+              className="inline-flex size-10 items-center justify-center rounded-full text-foreground transition-[background-color,scale] duration-(--dur-1) hover:bg-hover active:scale-95 active:bg-hover"
+            >
+              <Search className="size-5" />
+            </button>
+          </div>
+        </header>
+        <main
+          id="desk"
+          className="min-w-0 pt-5 pr-[max(1rem,env(safe-area-inset-right))] pb-[calc(var(--dock,0px)+2.5rem)] pl-[max(1rem,env(safe-area-inset-left))] md:px-8 md:pt-7 md:pb-12"
+        >
+          {children}
+        </main>
+        <MobileDock user={user} items={items} />
         <OnboardingTour role={user.role} />
       </div>
     </div>
   );
 }
 
-function DeskSearch() {
+// Opens the command palette. The shortcut hint reads ⌘K on a Mac and Ctrl K elsewhere, set after mount so the
+// server render and the first client render agree.
+function PaletteButton() {
+  const [mac, setMac] = useState(false);
+  useEffect(() => setMac(isMacLike()), []);
   return (
-    <form action="/admin/search" role="search" className="mb-2 px-0.5">
-      <label className="flex h-8 items-center gap-2 rounded-lg border border-input bg-card px-2.5 text-[13px] focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/40">
-        <Search className="size-3.5 shrink-0 text-muted-foreground" />
-        <input name="q" type="search" placeholder="Search the desk" aria-label="Search the desk" className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-faint" />
-      </label>
-    </form>
+    <button
+      type="button"
+      onClick={openCommandPalette}
+      className="field-shell mb-2 flex h-8 w-full items-center gap-2 rounded-lg border border-input bg-field px-2.5 text-left text-sm text-muted-foreground transition-colors hover:border-ring"
+    >
+      <Search className="size-3.5 shrink-0" />
+      <span className="min-w-0 flex-1 truncate">Search or jump to…</span>
+      <kbd className="rounded border border-border px-1 text-[11px] text-muted-foreground">{mac ? "⌘K" : "Ctrl K"}</kbd>
+    </button>
   );
 }
 
@@ -127,10 +85,10 @@ function SideNav({ items }: { items: NavItem[] }) {
     else sections.push({ label, items: [item] });
   }
   return (
-    <nav className="mt-1 min-h-0 flex-1 overflow-y-auto overscroll-contain">
+    <nav className="-mx-1 mt-1 min-h-0 flex-1 overflow-y-auto overscroll-contain px-1 pb-2">
       {sections.map((section) => (
-        <div key={section.label || "main"} className={section.label ? "mt-4" : ""}>
-          {section.label && <p className="px-2.5 pt-1 pb-1.5 text-xs text-faint">{section.label}</p>}
+        <div key={section.label || "main"} className={section.label ? "mt-5" : ""}>
+          {section.label && <p className="px-2.5 pb-1.5 text-[0.6875rem] leading-4 font-semibold tracking-[0.08em] text-faint uppercase">{section.label}</p>}
           {section.items.map((item) => {
             const on = active(path, item.href);
             const Icon = item.icon;
@@ -138,14 +96,18 @@ function SideNav({ items }: { items: NavItem[] }) {
               <Link
                 key={item.href}
                 href={item.href}
+                aria-current={on ? "page" : undefined}
                 className={cn(
-                  "mb-0.5 flex min-h-8 items-center gap-2 rounded-lg px-2.5 text-[13px] transition-colors",
-                  on ? "bg-active font-semibold text-foreground" : "text-nav hover:bg-hover",
+                  "group relative mb-px flex min-h-8 items-center gap-2.5 rounded-lg px-2.5 text-sm transition-colors",
+                  on
+                    ? "bg-card font-medium text-foreground shadow-card ring-1 ring-sidebar-border"
+                    : "text-nav hover:bg-hover hover:text-foreground",
                 )}
               >
-                <Icon className="size-4 shrink-0 text-muted-foreground" />
+                {on && <span aria-hidden className="absolute inset-y-2 -left-1 w-[3px] rounded-full bg-link" />}
+                <Icon className={cn("size-4 shrink-0 transition-colors", on ? "text-link" : "text-faint group-hover:text-muted-foreground")} />
                 <span className="min-w-0 flex-1 truncate">{item.label}</span>
-                {item.count ? <span className="min-w-[18px] rounded-full bg-active px-1.5 py-px text-center text-[11px]">{item.count}</span> : null}
+                {item.count ? <span className="figure min-w-5 rounded-full bg-link/10 px-1.5 text-center text-[11px] leading-[18px] font-semibold text-link">{item.count}</span> : null}
               </Link>
             );
           })}
@@ -170,19 +132,20 @@ function Account({ user }: { user: ShellUser }) {
   return (
     <div ref={dock} className="relative shrink-0 pt-2">
       {open && (
-        <div className="absolute right-0 bottom-[58px] left-0 rounded-[14px] border border-border bg-popover p-1.5 shadow-[var(--shadow)]">
-          <div className="flex items-center gap-2 p-2">
-            <span className="grid size-9 shrink-0 place-items-center rounded-full bg-muted text-[11px] font-bold text-foreground">{initials(user.name)}</span>
+        <div className="absolute right-0 bottom-[58px] left-0 animate-in rounded-xl border border-border bg-popover p-1.5 shadow-float duration-(--dur-2) ease-(--ease-enter) fade-in-0 slide-in-from-bottom-1">
+          <div className="flex items-center gap-2.5 p-2">
+            <span className="grid size-9 shrink-0 place-items-center rounded-full bg-muted text-[11px] font-semibold text-foreground ring-1 ring-border">{initials(user.name)}</span>
             <span className="min-w-0">
-              <strong className="block truncate text-[13px]">{user.name}</strong>
+              <strong className="block truncate text-sm font-semibold">{user.name}</strong>
               <em className="block truncate text-xs not-italic text-muted-foreground">{roleLabel(user.role)}{plan}</em>
             </span>
           </div>
+          <div aria-hidden className="mx-1 my-1 h-px bg-border" />
           <ThemeToggle />
           <MenuLink href="/account/notifications" icon={BellRing} label="Notice settings" onPick={() => setOpen(false)} />
           <MenuLink href="/account/security" icon={Lock} label="Security" onPick={() => setOpen(false)} />
           <form action={logout}>
-            <button type="submit" className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-[13px] hover:bg-hover">
+            <button type="submit" className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left text-sm transition-colors hover:bg-hover">
               <LogOut className="size-[15px] text-muted-foreground" /> Sign out
             </button>
           </form>
@@ -192,11 +155,11 @@ function Account({ user }: { user: ShellUser }) {
         type="button"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
-        className="flex w-full items-center gap-2 rounded-[10px] p-2 text-left hover:bg-hover"
+        className="flex w-full items-center gap-2.5 rounded-lg p-2 text-left transition-colors hover:bg-hover aria-expanded:bg-hover"
       >
-        <span className="grid size-7 shrink-0 place-items-center rounded-full bg-muted text-[10px] font-bold text-foreground">{initials(user.name)}</span>
+        <span className="grid size-7 shrink-0 place-items-center rounded-full bg-card text-[10px] font-semibold text-foreground ring-1 ring-border">{initials(user.name)}</span>
         <span className="min-w-0 flex-1">
-          <strong className="block truncate text-[13px]">{user.name}</strong>
+          <strong className="block truncate text-[13px] font-semibold">{user.name}</strong>
           <em className="block truncate text-xs not-italic text-muted-foreground">{user.email}</em>
         </span>
         <ChevronsUpDown className="size-4 shrink-0 text-muted-foreground" />
@@ -207,79 +170,8 @@ function Account({ user }: { user: ShellUser }) {
 
 function MenuLink({ href, icon: Icon, label, onPick }: { href: string; icon: LucideIcon; label: string; onPick: () => void }) {
   return (
-    <Link href={href} onClick={onPick} className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-[13px] hover:bg-hover">
+    <Link href={href} onClick={onPick} className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-sm transition-colors hover:bg-hover">
       <Icon className="size-[15px] text-muted-foreground" /> {label}
     </Link>
   );
-}
-
-function navFor(user: ShellUser): NavItem[] {
-  const notices: NavItem = { href: "/notifications", label: "Notifications", icon: Bell, count: user.unread };
-  if (user.role === "ADMIN") {
-    return [
-      { href: "/admin", label: "Revenue", icon: LayoutDashboard },
-      notices,
-      { href: "/inbox", label: "Inbox", icon: Inbox },
-      { href: "/marketplace", label: "The book", icon: BookOpen },
-      { href: "/admin/queue", label: "Review queue", icon: ClipboardList, section: "Desk" },
-      { href: "/admin/offers", label: "Offers", icon: Handshake, section: "Desk" },
-      { href: "/closings", label: "Closings", icon: FolderOpen, section: "Desk" },
-      { href: "/admin/book", label: "Desk book", icon: Library, section: "Desk" },
-      { href: "/admin/verification", label: "Buyer files", icon: BadgeCheck, section: "People" },
-      { href: "/admin/users", label: "Accounts", icon: Users, section: "People" },
-      { href: "/admin/brokers", label: "Brokers", icon: Briefcase, section: "People" },
-      { href: "/admin/contacts", label: "Contacts", icon: Contact, section: "People" },
-      { href: "/admin/leads", label: "Leads", icon: Megaphone, section: "People" },
-      { href: "/admin/payouts", label: "Payouts", icon: Banknote, section: "Money" },
-      { href: "/admin/capital", label: "Capital", icon: Landmark, section: "Money" },
-      { href: "/admin/settings", label: "Fee schedule", icon: Percent, section: "Money" },
-      { href: "/admin/costs", label: "Unit costs", icon: Calculator, section: "Money" },
-      { href: "/admin/compliance", label: "Compliance", icon: Gavel, section: "Records" },
-      { href: "/admin/filings", label: "Filings", icon: FileStack, section: "Records" },
-      { href: "/admin/templates", label: "Forms", icon: FilePen, section: "Records" },
-      { href: "/admin/audit", label: "Audit log", icon: ScrollText, section: "Records" },
-      { href: "/admin/blog", label: "Journal", icon: Newspaper, section: "Records" },
-      { href: "/admin/analytics", label: "Analytics", icon: ChartColumn, section: "Tools" },
-      { href: "/admin/assistant", label: "Assistant", icon: Bot, section: "Tools" },
-      { href: "/seller/api", label: "Seller API", icon: Code, section: "Tools" },
-    ];
-  }
-  if (user.role === "BROKER") {
-    return [
-      { href: "/broker", label: "Desk", icon: LayoutDashboard },
-      notices,
-      { href: "/broker/deals/new", label: "File a deal", icon: FilePlus },
-      { href: "/broker/profile", label: "Profile", icon: UserRound },
-      { href: "/closings", label: "Closings", icon: FolderOpen },
-      { href: "/inbox", label: "Inbox", icon: Inbox },
-    ];
-  }
-  if (user.role === "BUYER") {
-    return [
-      { href: "/marketplace", label: "The book", icon: BookOpen },
-      notices,
-      { href: "/inbox", label: "Inbox", icon: Inbox },
-      { href: "/buyer/favorites", label: "Favorites", icon: Star, section: "Deals" },
-      { href: "/buyer/offers", label: "Inquiries", icon: Handshake, section: "Deals" },
-      { href: "/buyer/groups", label: "Groups", icon: Users, section: "Deals" },
-      { href: "/closings", label: "Closings", icon: FolderOpen, section: "Deals" },
-      { href: "/buyer/portfolio", label: "Portfolio", icon: Wallet, section: "Deals" },
-      { href: "/buyer/buy-box", label: "Buy box", icon: Target, section: "Account" },
-      { href: "/buyer/alerts", label: "Alerts", icon: Search, section: "Account" },
-      { href: "/buyer/verification", label: "Verification", icon: BadgeCheck, section: "Account" },
-      { href: "/buyer/subscription", label: "Membership", icon: CreditCard, section: "Account" },
-    ];
-  }
-  const items: NavItem[] = [
-    { href: "/seller", label: "Desk", icon: LayoutDashboard },
-    notices,
-    { href: "/seller/notes/new", label: "List a note", icon: FilePlus },
-    { href: "/inbox", label: "Inbox", icon: Inbox },
-    { href: "/closings", label: "Closings", icon: FolderOpen },
-  ];
-  if (user.role === "INSTITUTIONAL_SELLER") {
-    items.push({ href: "/seller/pools/new", label: "Upload a tape", icon: Upload });
-    items.push({ href: "/seller/api", label: "Seller API", icon: Code });
-  }
-  return items;
 }

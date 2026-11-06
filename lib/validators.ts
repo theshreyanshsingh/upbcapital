@@ -2,7 +2,18 @@ import { z } from "zod";
 import type { Note } from "@prisma/client";
 import { isoDate } from "@/lib/format";
 import { FORECLOSURES, LIEN_POSITIONS, OCCUPANCIES, PAYMENT_STATUSES, PROPERTY_TYPES, US_STATES } from "@/lib/labels";
-import { BANKRUPTCY_CHAPTERS, LOAN_PURPOSES, VALUE_TYPES, parsePayString, type ServicingKey } from "@/lib/tape-fields";
+import {
+  BANKRUPTCY_CHAPTERS,
+  CREDIT_SCORE_MAX,
+  CREDIT_SCORE_MIN,
+  CREDIT_SCORE_TYPES,
+  LOAN_PURPOSES,
+  LOSS_MIT_STAGES,
+  VALUE_TYPES,
+  parseMersMin,
+  parsePayString,
+  type ServicingKey,
+} from "@/lib/tape-fields";
 
 const values = <T extends readonly { value: string }[]>(items: T) => items.map((item) => item.value) as [T[number]["value"], ...T[number]["value"][]];
 
@@ -42,6 +53,10 @@ const yesNo = z
 
 const optionalEnum = <T extends readonly [string, ...string[]]>(options: T, message: string) =>
   z.preprocess(blank, z.enum(options, { error: message }).optional()).transform((value) => value ?? null);
+
+const optionalNumber = (check: z.ZodCoercedNumber) => z.preprocess(blank, check.optional()).transform((value) => value ?? null);
+
+const scoreMessage = `Credit scores run from ${CREDIT_SCORE_MIN} to ${CREDIT_SCORE_MAX}.`;
 
 export const noteSchema = z.object({
   streetAddress: z.string().trim().min(3, "Enter the street address."),
@@ -94,6 +109,31 @@ export const noteSchema = z.object({
   loanPurpose: optionalEnum(values(LOAN_PURPOSES), "Choose the loan purpose."),
   hoaLien: yesNo,
   taxDelinquent: yesNo,
+  // Tape v2.1.
+  armIndex: optionalText(60, "Keep the ARM index under 60 characters."),
+  armMargin: optionalNumber(
+    z.coerce.number({ error: "Enter the margin as a percent, such as 2.75." }).min(0, "Enter the margin as a percent, such as 2.75.").max(20, "Enter the margin as a percent, such as 2.75."),
+  ),
+  armNextReset: optionalDate,
+  creditScore: optionalNumber(z.coerce.number({ error: scoreMessage }).int(scoreMessage).min(CREDIT_SCORE_MIN, scoreMessage).max(CREDIT_SCORE_MAX, scoreMessage)),
+  creditScoreType: optionalEnum(values(CREDIT_SCORE_TYPES), "Choose the score model."),
+  creditScoreDate: pastDate("The score date can't be in the future."),
+  mersMin: z
+    .preprocess(blank, z.string().optional())
+    .transform((value, context) => {
+      if (!value) return null;
+      const min = parseMersMin(value);
+      if (!min) {
+        context.addIssue({ code: "custom", message: "A MERS MIN is 18 digits." });
+        return z.NEVER;
+      }
+      return min;
+    }),
+  eNoteId: optionalText(60, "Keep the eNote ID under 60 characters."),
+  originatingPlatform: optionalText(120, "Keep the originating platform under 120 characters."),
+  lossMitStage: optionalEnum(values(LOSS_MIT_STAGES), "Choose the loss mitigation stage."),
+  inheritedCovenants: optionalText(600, "Keep the covenants under 600 characters."),
+  originatorLicense: optionalText(200, "Keep the originator's license under 200 characters."),
 });
 
 export function firstZodError(error: z.ZodError) {
@@ -127,5 +167,17 @@ export function servicingDraft(note: Pick<Note, ServicingKey>): Record<Servicing
     loanPurpose: note.loanPurpose ?? "",
     hoaLien: flag(note.hoaLien),
     taxDelinquent: flag(note.taxDelinquent),
+    armIndex: note.armIndex ?? "",
+    armMargin: note.armMargin == null ? "" : String(note.armMargin),
+    armNextReset: isoDate(note.armNextReset) ?? "",
+    creditScore: note.creditScore == null ? "" : String(note.creditScore),
+    creditScoreType: note.creditScoreType ?? "",
+    creditScoreDate: isoDate(note.creditScoreDate) ?? "",
+    mersMin: note.mersMin ?? "",
+    eNoteId: note.eNoteId ?? "",
+    originatingPlatform: note.originatingPlatform ?? "",
+    lossMitStage: note.lossMitStage ?? "",
+    inheritedCovenants: note.inheritedCovenants ?? "",
+    originatorLicense: note.originatorLicense ?? "",
   };
 }

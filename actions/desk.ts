@@ -3,9 +3,10 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { isPrivateDocument } from "@/lib/acl";
-import { deadlinePassed } from "@/lib/auction";
+import { deadlinePassed, eventSetsTerms } from "@/lib/auction";
 import { audit } from "@/lib/audit";
 import { requireUser } from "@/lib/auth";
+import { unset } from "@/lib/db-filters";
 import { notifyDesk } from "@/lib/email";
 import { sendAudience, sendListing } from "@/lib/outreach";
 import { prisma } from "@/lib/prisma";
@@ -34,6 +35,11 @@ export async function setAuction(formData: FormData) {
   if (!["SUBMITTED", "UNDER_REVIEW", "CHANGES_REQUESTED", "APPROVED"].includes(listing.status)) {
     redirect(`${terms}?error=${encodeURIComponent("Bid terms are fixed once a listing is in contract, sold, or declined.")}`);
   }
+  // An open sale event sets this listing's rounds from its two dates, so its terms change only through the event.
+  const saleEvent = listing.saleEventId ? await prisma.saleEvent.findUnique({ where: { id: listing.saleEventId }, select: { name: true, status: true } }) : null;
+  if (saleEvent && eventSetsTerms(saleEvent.status)) {
+    redirect(`${terms}?error=${encodeURIComponent(`This listing is in the sale event ${saleEvent.name}, which sets its bid terms. The desk can take it out of the event first.`)}`);
+  }
   // Once bids are in, the round's rules hold until it ends. Changing the style or pulling the deadline in would
   // unseal sealed amounts, or cut bidders short. The deadline can still move later.
   const running = listing.bidMode !== "NONE" && !deadlinePassed(listing.bidDeadline);
@@ -44,8 +50,10 @@ export async function setAuction(formData: FormData) {
       redirect(`${terms}?error=${encodeURIComponent("Bids are in. The deadline can move later, not earlier.")}`);
     }
   }
-  await prisma.listing.update({
-    where: { id: listingId },
+  // Written only while the listing is still outside the event it was read with, so a listing the desk enters in a
+  // sale event at the same moment keeps the event's terms.
+  const saved = await prisma.listing.updateMany({
+    where: { id: listingId, ...(listing.saleEventId ? { saleEventId: listing.saleEventId } : unset("saleEventId")) },
     data: {
       bidMode,
       bidDeadline: bidMode === "NONE" ? null : deadline,
@@ -54,6 +62,7 @@ export async function setAuction(formData: FormData) {
       ...((listing.bidDeadline?.getTime() ?? null) !== (bidMode === "NONE" ? null : deadline?.getTime() ?? null) ? { bidReminderAt: null } : {}),
     },
   });
+  if (saved.count !== 1) redirect(`${terms}?error=${encodeURIComponent("The listing changed a moment ago. Check its terms and try again.")}`);
   await audit(user.id, "AUCTION", "listing", listingId, `${bidMode} ${deadline ? deadline.toISOString() : "open"}`);
   let announced = "";
   if (user.role === "ADMIN" && formData.get("announce") === "on" && bidMode !== "NONE") {

@@ -49,13 +49,19 @@ export default async function QueuePage({
     <div>
       <PageIntro eyebrow="Review" title="The queue." lede="Nothing reaches buyers until the desk releases it." />
       <Notice notice={q(params, "notice")} error={q(params, "error")} />
-      <div className="mt-6 flex flex-wrap gap-2">
+      {/* One row of columns; on a phone it swipes sideways rather than wrapping. */}
+      <nav aria-label="Queue columns" className="relative mt-6 flex gap-2 max-md:-mx-4 max-md:no-scrollbar max-md:overflow-x-auto max-md:px-4 md:flex-wrap">
         {TABS.map((item) => (
-          <Link key={item.id} href={`/admin/queue?tab=${item.id}`} className={`border px-3 py-2 text-[13px] font-medium ${item.id === tab.id ? "border-link text-link" : "border-border text-muted-foreground"}`}>
+          <Link
+            key={item.id}
+            href={`/admin/queue?tab=${item.id}`}
+            aria-current={item.id === tab.id ? "page" : undefined}
+            className={`inline-flex min-h-9 shrink-0 items-center rounded-full border px-3.5 text-[13px] font-medium whitespace-nowrap pointer-coarse:min-h-10 ${item.id === tab.id ? "border-link/50 bg-link/10 text-link" : "border-border bg-card text-muted-foreground hover:text-foreground"}`}
+          >
             {item.label}
           </Link>
         ))}
-      </div>
+      </nav>
       <ul className="mt-6 divide-y divide-border border border-border rounded-xl">
         {listings.length === 0 && <li className="px-5 py-8 text-sm text-muted-foreground">Nothing in this column.</li>}
         {listings.map((listing) => (

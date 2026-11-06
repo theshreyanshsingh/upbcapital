@@ -46,19 +46,38 @@ export function GroupPanel({
         <form action={openGroup} className="mt-4 grid gap-3">
           <p className="text-sm text-muted-foreground">Open a group on this note. Set the price, the smallest seat, and a deadline. Other verified buyers take the rest.</p>
           <input type="hidden" name="listingId" value={listingId} />
-          <input name="targetAmount" defaultValue={asking == null ? undefined : Math.round(asking)} className="desk-input" aria-label="Group target price" placeholder="Target price" />
-          <input name="minPosition" className="desk-input" aria-label="Minimum position" placeholder="Minimum seat" />
-          <input name="deadline" type="datetime-local" className="desk-input" aria-label="Group deadline" required />
-          <select name="structure" className="desk-input" aria-label="Position type">
-            <option value="PRO_RATA">Pro rata ownership</option>
-            <option value="SENIOR_JUNIOR">Senior and junior slices</option>
-          </select>
-          <input name="seniorYield" className="desk-input" aria-label="Senior yield" placeholder="Senior yield %, if sliced" />
+          {/* The ask is a figure, so the target starts filled in only for someone who can see it. */}
+          <label className="block text-xs text-muted-foreground">
+            Group target price
+            <input name="targetAmount" inputMode="decimal" defaultValue={asking == null ? undefined : Math.round(asking)} className="desk-input mt-1 tabular-nums" />
+          </label>
+          <label className="block text-xs text-muted-foreground">
+            Smallest seat
+            <input name="minPosition" inputMode="decimal" className="desk-input mt-1 tabular-nums" />
+          </label>
+          <label className="block text-xs text-muted-foreground">
+            Group deadline
+            <input name="deadline" type="datetime-local" className="desk-input mt-1" required />
+          </label>
+          <label className="block text-xs text-muted-foreground">
+            Position type
+            <select name="structure" className="desk-input mt-1">
+              <option value="PRO_RATA">Pro rata ownership</option>
+              <option value="SENIOR_JUNIOR">Senior and junior slices</option>
+            </select>
+          </label>
+          <label className="block text-xs text-muted-foreground">
+            Senior yield %, if sliced
+            <input name="seniorYield" inputMode="decimal" className="desk-input mt-1 tabular-nums" />
+          </label>
           <label className="flex items-center gap-3 text-sm text-foreground">
             <input type="checkbox" name="allowPartial" value="on" />
             Seller may accept a partial fill
           </label>
-          <input name="amount" className="desk-input" aria-label="Your opening seat" placeholder="Your seat, optional" />
+          <label className="block text-xs text-muted-foreground">
+            Your opening seat (optional)
+            <input name="amount" inputMode="decimal" className="desk-input mt-1 tabular-nums" />
+          </label>
           <SubmitButton className="h-11 text-[13px] font-medium">Start the group</SubmitButton>
         </form>
       )}

@@ -1,15 +1,19 @@
 import { saveSettings } from "@/actions/admin";
+import { saveMarketRates } from "@/actions/market-rates";
+import { saveSettlementSettings } from "@/actions/settlement-settings";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { SubmitButton } from "@/components/submit-button";
 import { requireRole } from "@/lib/auth";
 import { simulatedCheckout, stripeConfigured } from "@/lib/billing";
-import { q } from "@/lib/format";
+import { isoDate, q } from "@/lib/format";
+import { DEFAULT_INDICATIVE_YIELD, indicativeTarget, marketRate, RATE_STALE_DAYS, rateStamp } from "@/lib/indicative";
 import { bpsToPercent } from "@/lib/money";
 import { getSettings } from "@/lib/settings";
-import { depositTerms, targetDays } from "@/lib/closing-clock";
+import { SETTLEMENT_WEEKDAYS, depositTerms, settlementLabel, settlementWeekdays, targetDays } from "@/lib/closing-clock";
 import { diligenceDays } from "@/lib/closing-service";
 import { launchReadiness } from "@/lib/readiness";
+import { strikeLimitOf } from "@/lib/strikes";
 
 export const metadata = { title: "Fee schedule" };
 
@@ -22,6 +26,9 @@ export default async function SettingsPage({
   const params = await searchParams;
   const settings = await getSettings();
   const readiness = await launchReadiness(settings);
+  const rate = marketRate(settings);
+  const stamp = rate ? rateStamp(rate.asOf) : null;
+  const target = indicativeTarget(settings.indicativeTargetYield);
   return (
     <div className="max-w-2xl">
       <PageIntro
@@ -148,6 +155,68 @@ export default async function SettingsPage({
         </label>
         {settings.stripePriceId && <p className="text-xs text-muted-foreground">Current Stripe price {settings.stripePriceId}</p>}
         <SubmitButton className="h-11 text-[13px] font-medium">Save schedule</SubmitButton>
+      </form>
+      <form id="market-rates" action={saveMarketRates} className="mt-8 scroll-mt-6 space-y-5 glass p-6" aria-labelledby="market-rates-heading">
+        <div>
+          <p id="market-rates-heading" className="eyebrow">Market rates</p>
+          <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+            Spread rules on buy boxes price for the 10-year Treasury yield plus the buyer&apos;s spread. Saving a new rate reprices every open spread match. Past {RATE_STALE_DAYS} days, every spread-based figure shows its rate date in the warn colour.
+          </p>
+          <p className="mt-2 text-sm tabular-nums">
+            {rate && stamp ? (
+              <span className={stamp.stale ? "text-warn" : "text-foreground"}>
+                On file: {rate.rate}%, {stamp.text}{stamp.stale ? ", over a week old" : ""}.
+              </span>
+            ) : (
+              <span className="text-warn">No rate on file, so spread rules price nothing yet.</span>
+            )}
+          </p>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <label className="block">
+            <span className="text-[13px] text-muted-foreground">10-year Treasury yield (%)</span>
+            <input name="tenYearRate" inputMode="decimal" required defaultValue={rate?.rate ?? ""} placeholder="4.95" className="desk-input mt-2 tabular-nums" />
+            <span className="mt-1 block text-xs text-muted-foreground">The constant-maturity yield from the Federal Reserve&apos;s H.15 release or Treasury&apos;s daily par curve.</span>
+          </label>
+          <label className="block">
+            <span className="text-[13px] text-muted-foreground">Date the rate was read</span>
+            <input name="tenYearAsOf" type="date" required defaultValue={isoDate(rate?.asOf ?? null) ?? ""} className="desk-input mt-2 tabular-nums" />
+          </label>
+        </div>
+        <label className="block">
+          <span className="text-[13px] text-muted-foreground">Yield for the book&apos;s indicative price (%)</span>
+          <input name="indicativeTargetYield" inputMode="decimal" defaultValue={settings.indicativeTargetYield ?? ""} placeholder={`${DEFAULT_INDICATIVE_YIELD}, the default`} className="desk-input mt-2 tabular-nums" />
+          <span className="mt-1 block text-xs text-muted-foreground">
+            The desk model prices every listing&apos;s indicative range for this IRR, one point either side. Now {target.label}. Blank keeps the default.
+          </span>
+        </label>
+        <SubmitButton className="h-11 text-[13px] font-medium" pendingLabel="Repricing…">Save rates</SubmitButton>
+      </form>
+      <form id="settlement" action={saveSettlementSettings} className="mt-8 scroll-mt-6 space-y-5 glass p-6" aria-labelledby="settlement-heading">
+        <div>
+          <p id="settlement-heading" className="eyebrow">Settlement and winner discipline</p>
+          <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+            New closings take their payment and close dates on the next settlement day, so the desk sends wires in batches. Open closings keep their dates. Leave every day unticked to settle on any business day.
+          </p>
+          <p className="mt-2 text-sm text-foreground">Now: {settlementLabel(settings.settlementDays)}.</p>
+        </div>
+        <fieldset>
+          <legend className="text-[13px] text-muted-foreground">Settlement days</legend>
+          <div className="mt-2 flex flex-wrap gap-4">
+            {SETTLEMENT_WEEKDAYS.map((weekday) => (
+              <label key={weekday.key} className="flex items-center gap-2 text-sm text-foreground">
+                <input type="checkbox" name="settlementDays" value={weekday.key} defaultChecked={Boolean(settings.settlementDays) && settlementWeekdays(settings.settlementDays).includes(weekday.day)} />
+                {weekday.label}
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        <label className="block">
+          <span className="text-[13px] text-muted-foreground">Strikes before a buyer&apos;s bidding pauses</span>
+          <input name="strikeLimit" inputMode="numeric" required defaultValue={strikeLimitOf(settings.strikeLimit)} className="desk-input mt-2 tabular-nums" />
+          <span className="mt-1 block text-xs text-muted-foreground">A strike is recorded when the desk cancels a closing as the buyer&apos;s failure to close. At this many, new bids are refused until the desk clears one on the buyer file.</span>
+        </label>
+        <SubmitButton className="h-11 text-[13px] font-medium" pendingLabel="Saving…">Save settlement</SubmitButton>
       </form>
     </div>
   );

@@ -60,7 +60,7 @@ export default async function CapitalPage({
               </ul>
               <form action={addCommitment} className="mt-4 grid gap-3 sm:grid-cols-[160px_minmax(0,1fr)_auto]">
                 <input type="hidden" name="investorId" value={investor.id} />
-                <input name="amount" className="desk-input" aria-label={`Commitment for ${investor.name}`} placeholder="Commitment" />
+                <input name="amount" inputMode="decimal" className="desk-input" aria-label={`Commitment for ${investor.name}`} placeholder="Commitment" />
                 <input name="note" className="desk-input" aria-label="Commitment note" placeholder="Note" />
                 <SubmitButton variant="outline" className="h-11 text-[13px] font-medium">Add commitment</SubmitButton>
               </form>
@@ -90,7 +90,7 @@ export default async function CapitalPage({
               <option value="">Note</option>
               {holdings.map((holding) => <option key={holding.id} value={holding.id}>{holding.title}</option>)}
             </select>
-            <input name="amount" className="desk-input" aria-label="Allocation amount" placeholder="Amount" required />
+            <input name="amount" inputMode="decimal" className="desk-input" aria-label="Allocation amount" placeholder="Amount" required />
             <SubmitButton className="h-11 text-[13px] font-medium">Allocate</SubmitButton>
           </div>
         </form>

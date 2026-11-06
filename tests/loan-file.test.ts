@@ -279,3 +279,78 @@ test("the desk's collateral, chain, risk and field writes keep order and refuse 
 test.after(async () => {
   await prisma.$disconnect();
 });
+
+test("an undated or unconfirmed allonge is flagged, and a mortgage held apart from the note is too", async () => {
+  const { chainOfTitle, chainDetail } = await import("../lib/loan-file");
+  const at = new Date("2026-10-01T00:00:00Z");
+  const row = (id: string, kind: string, sequence: number, from: string, to: string, extra: Record<string, unknown> = {}) => ({
+    id, kind, status: "PRESENT", sequence, detail: chainDetail(from, to), ...extra,
+  });
+  const loose = chainOfTitle([
+    row("a1", "ALLONGE", 1, "First Bank", "Coastal Capital"),
+    row("m1", "ASSIGNMENT", 1, "First Bank", "Harbor Trust"),
+  ], "Coastal Capital");
+  assert.deepEqual(loose.endorsements.cautions, [
+    "The endorsement at step 1 is undated.",
+    "The desk hasn't confirmed the endorsement at step 1 is fixed to the note.",
+  ]);
+  assert.equal(loose.cautions.length, 1);
+  assert.match(loose.cautions[0], /different party than the note/);
+  // Party names never appear in a caution, so closed viewers can read them.
+  assert.ok(![...loose.cautions, ...loose.endorsements.cautions].some((text) => /Coastal|Harbor|First Bank/.test(text)));
+
+  const clean = chainOfTitle([
+    row("a1", "ALLONGE", 1, "First Bank", "Coastal Capital", { datedOn: at, attachedAt: at }),
+    row("m1", "ASSIGNMENT", 1, "First Bank", "Coastal Capital, LLC"),
+  ], "Coastal Capital");
+  assert.deepEqual(clean.endorsements.cautions, []);
+  assert.deepEqual(clean.cautions, []);
+});
+
+test("a tape corrected to the document's value reads as desk-verified", () => {
+  const at = "2026-10-02T15:00:00.000Z";
+  const note = (upb: number) => ({ upb, verifiedFields: { upb: { at, by: "u1", source: "Pay history", value: "98000", document: "97500" } } });
+  assert.equal(fieldState(note(98000), "upb").state, "disputed");
+  const corrected = fieldState(note(97500), "upb");
+  assert.ok(corrected.state === "verified" && corrected.source === "Pay history" && corrected.at.toISOString() === at);
+  // Any other value is the seller's again.
+  assert.equal(fieldState(note(96000), "upb").state, "seller-stated");
+});
+
+test("an allonge records its endorsement, loan number match and intake photo, and other lines don't", async () => {
+  const tag = `${Date.now()}-${crypto.randomUUID().slice(0, 6)}`;
+  const seller = await prisma.user.create({ data: { email: `lf2-seller-${tag}@example.org`, name: `Seller ${tag}`, role: "INDIVIDUAL_SELLER", accountStatus: "APPROVED", passwordHash: "x" } });
+  const loan = {
+    streetAddress: "2 Second St", city: "Reno", state: "NV", zip: "89501", propertyType: "SFR", occupancy: "OWNER_OCCUPIED",
+    lienPosition: "FIRST", upb: 100000, interestRate: 7, monthlyPi: 700, paymentStatus: "PERFORMING", monthsDelinquent: 0,
+    askingPrice: 80000, estimatedValue: 150000,
+  } as const;
+  const listing = await prisma.listing.create({ data: { kind: "SINGLE", sellerId: seller.id, status: "UNDER_REVIEW", title: `Allonge ${tag}`, notes: { create: [loan] } }, include: { notes: true } });
+  const other = await prisma.listing.create({ data: { kind: "SINGLE", sellerId: seller.id, status: "UNDER_REVIEW", title: `Allonge other ${tag}`, notes: { create: [loan] } }, include: { notes: true } });
+  const noteId = listing.notes[0].id;
+  try {
+    const photo = await prisma.document.create({ data: { listingId: listing.id, noteId, type: "ALLONGE", originalName: "allonge.jpg", storedName: `lf2-${tag}.jpg`, mime: "image/jpeg", size: 1 } });
+    const stranger = await prisma.document.create({ data: { listingId: other.id, type: "ALLONGE", originalName: "x.jpg", storedName: `lf2-x-${tag}.jpg`, mime: "image/jpeg", size: 1 } });
+    const saved = await saveCollateralItem(seller.id, {
+      noteId, kind: "ALLONGE", status: "PRESENT", detail: chainDetail("First Bank", ""), endorsement: "BLANK", loanNumberMatch: false,
+      photoDocumentId: photo.id, datedOn: "2019-03-01", attachedAt: "2019-03-04",
+    });
+    assert.ok(saved.ok);
+    assert.deepEqual([saved.value.endorsement, saved.value.loanNumberMatch, saved.value.photoDocumentId], ["BLANK", false, photo.id]);
+    assert.deepEqual(await saveCollateralItem(seller.id, { noteId, kind: "ALLONGE", status: "PRESENT", endorsement: "STAMPED" }), { ok: false, error: "Pick how the allonge is endorsed." });
+    assert.deepEqual(await saveCollateralItem(seller.id, { noteId, kind: "ALLONGE", status: "PRESENT", photoDocumentId: stranger.id }), { ok: false, error: "That file isn't on this loan." });
+    // An endorsement belongs to an allonge only, so a note line drops it.
+    const face = await saveCollateralItem(seller.id, { noteId, kind: "ORIGINAL_NOTE", status: "PRESENT", endorsement: "SPECIAL", loanNumberMatch: true, photoDocumentId: photo.id });
+    assert.ok(face.ok && face.value.endorsement === null && face.value.loanNumberMatch === null && face.value.photoDocumentId === photo.id);
+    const chain = chainOfTitle(await prisma.collateralItem.findMany({ where: { noteId } }), `Seller ${tag}`, { listedAt: listing.submittedAt });
+    assert.equal(chain.endorsements.endsInBlank, true);
+    assert.deepEqual(chain.endorsements.cautions, ["The loan number on the endorsement at step 1 doesn't match the note."]);
+  } finally {
+    const noteIds = [...listing.notes, ...other.notes].map((note) => note.id);
+    await prisma.auditEvent.deleteMany({ where: { entityId: { in: noteIds } } });
+    await prisma.collateralItem.deleteMany({ where: { noteId: { in: noteIds } } });
+    await prisma.document.deleteMany({ where: { listingId: { in: [listing.id, other.id] } } });
+    await prisma.listing.deleteMany({ where: { id: { in: [listing.id, other.id] } } });
+    await prisma.user.deleteMany({ where: { id: seller.id } });
+  }
+});

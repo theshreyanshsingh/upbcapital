@@ -6,6 +6,7 @@ import { screenInBackground, screenListing } from "@/lib/screening";
 import { putBytes } from "@/lib/storage";
 import { parseTapeBuffer, normalizeTapeRows } from "@/lib/tape";
 import { suggestMapping } from "@/lib/tape-fields";
+import { reviewTape } from "@/lib/tape-quality";
 
 // The same limits as a tape uploaded in the app, so the API isn't a way around them.
 const MAX_TAPE_BYTES = 10 * 1024 * 1024;
@@ -46,5 +47,13 @@ export async function ingestTape(input: { sellerId: string; title: unknown; summ
   await flagDuplicates(listing.id, input.sellerId);
   screenInBackground(() => screenListing(listing.id, input.sellerId));
   await rescoreListing(listing.id, false);
-  return { listingId: listing.id, loans: loans.length };
+  // An API caller has no preview, so it hears which optional values were left off and what looks stale, such as
+  // a past ARM reset or a MERS MIN that isn't 18 digits.
+  const warnings = reviewTape(matrix.rows, mapping).filter((flag) => flag.level === "warn");
+  return {
+    listingId: listing.id,
+    loans: loans.length,
+    warnings: warnings.length,
+    flags: warnings.slice(0, 20).map((flag) => ({ row: flag.row, field: flag.field, message: flag.message })),
+  };
 }

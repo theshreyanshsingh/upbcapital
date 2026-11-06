@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import type { DocType } from "@prisma/client";
 import { requireUser } from "@/lib/auth";
+import { settleByEdit } from "@/lib/discrepancies";
 import { flagDuplicates } from "@/lib/duplicates";
 import { notifyDesk } from "@/lib/email";
 import { typedNumber } from "@/lib/money";
@@ -103,6 +104,18 @@ function servicingData(input: NoteInput, clearBlanks: boolean) {
     loanPurpose: input.loanPurpose,
     hoaLien: input.hoaLien,
     taxDelinquent: input.taxDelinquent,
+    armIndex: input.armIndex,
+    armMargin: input.armMargin,
+    armNextReset: input.armNextReset,
+    creditScore: input.creditScore,
+    creditScoreType: input.creditScoreType,
+    creditScoreDate: input.creditScoreDate,
+    mersMin: input.mersMin,
+    eNoteId: input.eNoteId,
+    originatingPlatform: input.originatingPlatform,
+    lossMitStage: input.lossMitStage,
+    inheritedCovenants: input.inheritedCovenants,
+    originatorLicense: input.originatorLicense,
   };
   return Object.fromEntries(Object.entries(fields).filter(([, value]) => clearBlanks || value != null)) as Partial<typeof fields>;
 }
@@ -212,6 +225,8 @@ export async function updateOwnNote(listingId: string, formData: FormData) {
     where: { id: note.id },
     data: moved ? { ...data, latitude: null, longitude: null, avmValue: null, avmProvider: "", avmAsOf: null } : data,
   });
+  // An edit that brings a field to the document's value answers the desk's question on it.
+  await settleByEdit(user.id, note.id);
   await prisma.listing.update({
     where: { id: listing.id },
     data: {

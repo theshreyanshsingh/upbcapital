@@ -1,6 +1,7 @@
 import { cn } from "@/lib/utils";
 import { labelOf } from "@/lib/labels";
 
+// The word carries the meaning; the tint and the dot only echo it, so nothing rests on colour alone.
 const tones: Record<string, string> = {
   APPROVED: "bg-good/10 text-good",
   SOLD: "bg-muted text-muted-foreground",
@@ -14,7 +15,8 @@ const tones: Record<string, string> = {
 
 export function StatusPill({ status }: { status: string }) {
   return (
-    <span className={cn("inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold", tones[status] ?? tones.SUBMITTED)}>
+    <span className={cn("figure inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs leading-4 font-medium whitespace-nowrap", tones[status] ?? tones.SUBMITTED)}>
+      <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-current" />
       {labelOf("status", status)}
     </span>
   );

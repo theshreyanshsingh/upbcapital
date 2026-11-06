@@ -90,13 +90,13 @@ const COPY: Record<string, string> = {
 
 export function Notice({ notice, error }: { notice?: string; error?: string }) {
   if (error) {
-    return <p role="alert" className="border border-bad/40 bg-bad/10 px-4 py-3 text-sm text-bad rounded-xl">{safeNoticeText(error) ?? "That didn't go through. Try again, or write to the desk."}</p>;
+    return <p role="alert" className="rounded-xl border border-bad/30 bg-bad/10 px-4 py-3 text-sm leading-relaxed text-bad">{safeNoticeText(error) ?? "That didn't go through. Try again, or write to the desk."}</p>;
   }
   if (!notice) return null;
   const text = COPY[notice] ?? safeNoticeText(notice);
   if (!text) return null;
   return (
-    <p role="status" className="border border-link/30 bg-link/10 px-4 py-3 text-sm text-foreground rounded-xl">
+    <p role="status" className="rounded-xl border border-link/25 bg-link/5 px-4 py-3 text-sm leading-relaxed text-foreground">
       {text}
     </p>
   );

@@ -3,6 +3,8 @@ import { stepLabel } from "@/lib/closing";
 import { STEP_OWNER, effectiveDue, stepClock, stepNeedsReminder, targetDays } from "@/lib/closing-clock";
 import { retentionCutoff } from "@/lib/compliance";
 import { digestBody, digestSince } from "@/lib/digest";
+import { sendMarketDispatch } from "@/lib/dispatch";
+import { advanceSaleEvents } from "@/lib/sale-events";
 import { notify, notifyDesk } from "@/lib/email";
 import { notifyClosedAuctions } from "@/lib/listing-intel";
 import { prisma } from "@/lib/prisma";
@@ -62,6 +64,10 @@ export async function runJobs(now = new Date()) {
     ["Closed auctions", () => notifyClosedAuctions().then(() => "closed auctions checked")],
     ["Retention", () => cleanRetention(now)],
     ["Abandoned tapes", () => purgeTapeDrafts(now).then((count) => `abandoned tapes ${count}`)],
+    // The first run of each month sends the market dispatch; later runs find the month claimed.
+    ["Market dispatch", () => sendMarketDispatch(now)],
+    // Rounds change on their dates. The event pages also advance an event when they load, between runs.
+    ["Sale events", () => advanceSaleEvents(now)],
   ]);
 }
 

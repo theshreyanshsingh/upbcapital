@@ -2,20 +2,24 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import { adminUpdateListing, reviewListing } from "@/actions/admin";
 import { placeDeskBid } from "@/actions/desk-book";
+import { addEventListing, removeEventListing } from "@/actions/sale-events";
 import { sendToBuyers } from "@/actions/outreach";
 import { AuctionForm } from "@/components/auction-form";
 import { ComplianceNote } from "@/components/compliance-note";
 import { DeskNotes } from "@/components/desk-notes";
+import { DiscrepancyDesk } from "@/components/discrepancy-desk";
 import { LoanFileDesk } from "@/components/loan-file-desk";
+import { StandingBidSheet } from "@/components/standing-bid-sheet";
 import { ConfirmSubmit } from "@/components/confirm-submit";
 import { Notice } from "@/components/notice";
 import { StatusPill } from "@/components/status-pill";
 import { SubmitButton } from "@/components/submit-button";
 import { isPrivateDocument } from "@/lib/acl";
 import { listingActivity } from "@/lib/activity";
-import { deadlinePassed } from "@/lib/auction";
+import { deadlinePassed, eventSetsTerms } from "@/lib/auction";
 import { requireRole } from "@/lib/auth";
 import { bidSheet, type BidRow } from "@/lib/bid-sheet";
+import { gateMessage } from "@/lib/discrepancies";
 import { money, num, pct, prettyDate, q } from "@/lib/format";
 import { labelOf } from "@/lib/labels";
 import { completeness, completenessLine, groupByNote, verifiedMap } from "@/lib/loan-file";
@@ -24,6 +28,8 @@ import { buyerPrice } from "@/lib/offers";
 import { DUPLICATE_REASONS, duplicatesFor } from "@/lib/duplicates";
 import { prisma } from "@/lib/prisma";
 import { getSettings } from "@/lib/settings";
+import { joinBlock, leaveBlock, roundText, when } from "@/lib/sale-events";
+import { sheetShows, standingSheet } from "@/lib/standing-bids";
 import { deskDecisionAllowed } from "@/lib/listing-status";
 
 export const metadata = { title: "Review listing" };
@@ -55,10 +61,13 @@ export default async function AdminListingPage({
   const note = listing.notes[0];
   const ask = listing.notes.reduce((sum, item) => sum + num(item.askingPrice), 0);
   const settings = await getSettings();
-  const [activity, audience, bids] = await Promise.all([
+  // Standing bids show while the tape is in review or live, so the desk sees demand before it approves.
+  const standingOpen = sheetShows(listing.status);
+  const [activity, audience, bids, standing] = await Promise.all([
     listingActivity(listing.id, listing.sellerId),
     sendAudience(listing.id),
     bidSheet(listing.id, settings.buyerPremiumBps),
+    standingOpen ? standingSheet(listing) : Promise.resolve([]),
   ]);
   const now = Date.now();
   const sentRecently = (at: Date | null) => Boolean(at && now - at.getTime() < RESEND_AFTER.LISTING);
@@ -72,10 +81,13 @@ export default async function AdminListingPage({
   // Loans that look like ones on another open listing. A relist is legitimate, so this informs and never blocks.
   const duplicates = await duplicatesFor(listing.id);
   const noteIds = listing.notes.map((item) => item.id);
-  const [allCollateral, allRisks] = await Promise.all([
+  const [allCollateral, allRisks, differences] = await Promise.all([
     prisma.collateralItem.findMany({ where: { noteId: { in: noteIds } }, orderBy: [{ sequence: "asc" }, { createdAt: "asc" }] }),
     prisma.riskCheck.findMany({ where: { noteId: { in: noteIds } }, orderBy: { checkedAt: "desc" } }),
+    prisma.fieldDiscrepancy.findMany({ where: { listingId: listing.id }, orderBy: { createdAt: "desc" } }),
   ]);
+  // Approval waits on every open tape difference. The action refuses on the same count.
+  const approvalGate = gateMessage(differences.filter((row) => row.status === "OPEN").length);
   const holder = listing.clientSellerName || listing.seller.companyName || listing.seller.name || null;
   const collateralByNote = groupByNote(allCollateral);
   const risksByNote = groupByNote(allRisks);
@@ -85,11 +97,19 @@ export default async function AdminListingPage({
     ...fileCollateral.map((item) => item.updatedById),
     ...fileRisks.map((check) => check.checkedById),
     ...Object.values(verifiedMap(fileNote?.verifiedFields)).map((entry) => entry.by),
+    ...differences.flatMap((row) => [row.raisedById, row.resolvedById]),
   ].filter((value): value is string => Boolean(value));
   const deskPeople = deskIds.length
     ? Object.fromEntries((await prisma.user.findMany({ where: { id: { in: [...new Set(deskIds)] } }, select: { id: true, name: true } })).map((person) => [person.id, person.name]))
     : {};
   const filePosition = fileNote ? listing.notes.findIndex((item) => item.id === fileNote.id) : -1;
+  // The sale event this listing trades in, if any, and the events it could still join.
+  const [saleEvent, joinable] = await Promise.all([
+    listing.saleEventId ? prisma.saleEvent.findUnique({ where: { id: listing.saleEventId } }) : null,
+    prisma.saleEvent.findMany({ where: { status: { in: ["PLANNED", "INDICATIONS"] }, indicationsAt: { gt: new Date(now) } }, orderBy: { indicationsAt: "asc" } }),
+  ]);
+  const liveBids = listing.inquiries.filter((inquiry) => inquiry.type === "OFFER" && ["OPEN", "REVIEWED", "ACCEPTED"].includes(inquiry.status)).length;
+  const inEvent = saleEvent && eventSetsTerms(saleEvent.status) ? saleEvent : null;
   const fileHref = (index: number) => (index >= 0 && index < listing.notes.length ? `${listingHref}?loan=${listing.notes[index].id}#loan-file` : null);
 
   return (
@@ -210,7 +230,7 @@ export default async function AdminListingPage({
         <form action={placeDeskBid} className="mt-6 grid gap-3 border border-border p-5 sm:grid-cols-2 rounded-xl">
           <p className="eyebrow sm:col-span-2">Desk bid</p>
           <input type="hidden" name="listingId" value={listing.id} />
-          <label className="block"><span className="text-[13px] text-muted-foreground">Amount</span><input name="amount" className="desk-input mt-2" aria-label="Desk bid amount" required /></label>
+          <label className="block"><span className="text-[13px] text-muted-foreground">Amount</span><input name="amount" inputMode="decimal" className="desk-input mt-2" aria-label="Desk bid amount" required /></label>
           <label className="block"><span className="text-[13px] text-muted-foreground">Note</span><input name="message" className="desk-input mt-2" aria-label="Desk bid note" /></label>
           <div className="sm:col-span-2"><SubmitButton className="h-11 text-[13px] font-medium">Bid for the desk</SubmitButton></div>
           {listing.deskBids.length > 0 && <p className="text-sm text-muted-foreground sm:col-span-2">{listing.deskBids.length} desk bid{listing.deskBids.length === 1 ? "" : "s"} on file. Latest {money(Number(listing.deskBids[0].amount))} · {listing.deskBids[0].status.toLowerCase()}.</p>}
@@ -228,16 +248,16 @@ export default async function AdminListingPage({
               <label><span className="text-[13px] text-muted-foreground">State</span><input name="state" defaultValue={note.state} className="desk-input mt-2" /></label>
               <label><span className="text-[13px] text-muted-foreground">ZIP</span><input name="zip" defaultValue={note.zip} className="desk-input mt-2" /></label>
               <label><span className="text-[13px] text-muted-foreground">Borrower</span><input name="borrowerName" defaultValue={note.borrowerName} className="desk-input mt-2" /></label>
-              <label><span className="text-[13px] text-muted-foreground">UPB</span><input name="upb" defaultValue={num(note.upb)} className="desk-input mt-2" /></label>
-              <label><span className="text-[13px] text-muted-foreground">Asking price</span><input name="askingPrice" defaultValue={num(note.askingPrice)} className="desk-input mt-2" /></label>
-              <label><span className="text-[13px] text-muted-foreground">Value</span><input name="estimatedValue" defaultValue={num(note.estimatedValue)} className="desk-input mt-2" /></label>
+              <label><span className="text-[13px] text-muted-foreground">UPB</span><input name="upb" inputMode="decimal" defaultValue={num(note.upb)} className="desk-input mt-2" /></label>
+              <label><span className="text-[13px] text-muted-foreground">Asking price</span><input name="askingPrice" inputMode="decimal" defaultValue={num(note.askingPrice)} className="desk-input mt-2" /></label>
+              <label><span className="text-[13px] text-muted-foreground">Value</span><input name="estimatedValue" inputMode="decimal" defaultValue={num(note.estimatedValue)} className="desk-input mt-2" /></label>
               <label><span className="text-[13px] text-muted-foreground">Rate</span><input name="interestRate" defaultValue={num(note.interestRate)} className="desk-input mt-2" /></label>
               <label><span className="text-[13px] text-muted-foreground">Monthly P&I</span><input name="monthlyPi" defaultValue={num(note.monthlyPi)} className="desk-input mt-2" /></label>
               <label><span className="text-[13px] text-muted-foreground">Months delinquent</span><input name="monthsDelinquent" defaultValue={note.monthsDelinquent} className="desk-input mt-2" /></label>
             </div>
           )}
           {listing.kind === "POOL" && (
-            <div className="overflow-x-auto">
+            <div className="relative overflow-x-auto">
               <table className="min-w-full text-left text-xs">
                 <thead className="text-xs font-medium text-muted-foreground">
                   <tr>{["Loan", "UPB", "Ask", "Value", "Status"].map((heading) => <th key={heading} className="px-2 py-2 font-normal">{heading}</th>)}</tr>
@@ -280,6 +300,14 @@ export default async function AdminListingPage({
           </section>
         )}
 
+        <DiscrepancyDesk
+          rows={differences}
+          loans={listing.notes.map((item) => ({ id: item.id, label: `${item.city}, ${item.state} · ${item.streetAddress || "No street"}`, record: item }))}
+          people={deskPeople}
+          listingId={listing.id}
+          listingStatus={listing.status}
+        />
+
         {fileNote && (
           <LoanFileDesk
             note={fileNote}
@@ -288,6 +316,8 @@ export default async function AdminListingPage({
             documents={listing.documents.filter((document) => document.noteId === fileNote.id || !isPrivateDocument(document, listing))}
             holder={holder}
             people={deskPeople}
+            discrepancies={differences.filter((row) => row.noteId === fileNote.id)}
+            listedAt={listing.submittedAt}
             heading={`${fileNote.streetAddress || "No street"} · ${fileNote.city}, ${fileNote.state}${fileNote.borrowerName ? ` · ${fileNote.borrowerName}` : ""} · ${labelOf("lien", fileNote.lienPosition)} lien`}
             picker={listing.kind === "POOL" ? {
               action: listingHref,
@@ -302,13 +332,15 @@ export default async function AdminListingPage({
           />
         )}
 
+        {standingOpen && <StandingBidSheet listingId={listing.id} status={listing.status} rows={standing} />}
+
         <section id="bids" className="mt-8 scroll-mt-6">
           <p className="eyebrow">Bid sheet</p>
           <p className="mt-1 text-sm text-muted-foreground">Highest price first. All-in includes the {pct(settings.buyerPremiumBps / 100, 2)} premium and is checked against the funds the desk verified.</p>
           {bids.length === 0 ? (
             <p className="mt-3 text-sm text-muted-foreground">No live bids.</p>
           ) : (
-            <div className="mt-3 overflow-x-auto border border-border rounded-xl">
+            <div className="mt-3 relative overflow-x-auto border border-border rounded-xl">
               <table className="min-w-full text-left text-sm">
                 <thead className="text-xs font-medium text-muted-foreground">
                   <tr>{["#", "Buyer", "Bid", "All-in", "Of ask", "Of UPB", "Funds", "Record", "Read"].map((heading) => <th key={heading} className="px-3 py-2 font-normal">{heading}</th>)}</tr>
@@ -391,7 +423,11 @@ export default async function AdminListingPage({
           <div className="grid gap-2">
             {/* Only the decisions that apply from this status; the action checks the same rule. */}
             {deskDecisionAllowed("UNDER_REVIEW", listing.status) && <Decision action="UNDER_REVIEW" label="Mark under review" />}
-            {deskDecisionAllowed("APPROVE", listing.status) && <Decision action="APPROVE" label="Approve · make live" />}
+            {deskDecisionAllowed("APPROVE", listing.status) && (approvalGate ? (
+              <p role="status" className="rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-foreground">
+                Approval is on hold. {approvalGate} <a href="#differences" className="font-medium text-link">See the differences</a>
+              </p>
+            ) : <Decision action="APPROVE" label="Approve · make live" />)}
             {deskDecisionAllowed("REQUEST_CHANGES", listing.status) && <Decision action="REQUEST_CHANGES" label="Request changes" />}
             {deskDecisionAllowed("REJECT", listing.status) && <Decision action="REJECT" label="Reject" />}
             {deskDecisionAllowed("MARK_PENDING", listing.status) && !biddingOpen && <Decision action="MARK_PENDING" label="Mark in contract" />}
@@ -408,10 +444,98 @@ export default async function AdminListingPage({
           ))}
         </ul>
         {note && <p className="text-xs text-muted-foreground">{labelOf("payment", note.paymentStatus)} · {labelOf("lien", note.lienPosition)}</p>}
-        <AuctionForm listingId={listing.id} bidMode={listing.bidMode} deadline={listing.bidDeadline} canAnnounce={listing.status === "APPROVED"} />
+        {inEvent ? (
+          <EventPanel listingId={listing.id} event={inEvent} leave={leaveBlock({ eventStatus: inEvent.status, liveBids })} />
+        ) : (
+          <>
+            <AuctionForm listingId={listing.id} bidMode={listing.bidMode} deadline={listing.bidDeadline} canAnnounce={listing.status === "APPROVED"} />
+            {listing.status === "APPROVED" && (
+              <EventJoin
+                listingId={listing.id}
+                events={joinable}
+                block={joinable[0] ? joinBlock({ event: joinable[0], listing, currentEventStatus: null, liveBids, consent: "recorded", now: new Date(now) }) : null}
+              />
+            )}
+          </>
+        )}
         <DeskNotes subjectType="listing" subjectId={listing.id} back={listingHref} viewerId={user.id} />
       </aside>
     </div>
+  );
+}
+
+type EventRow = { id: string; name: string; status: string; indicationsAt: Date; bestFinalAt: Date };
+
+// An open sale event sets this listing's terms, so its panel stands where the bid terms form would.
+function EventPanel({ listingId, event, leave }: { listingId: string; event: EventRow; leave: string | null }) {
+  return (
+    <section aria-labelledby="sale-event-heading" className="mt-6 space-y-3 border border-border p-4 rounded-xl">
+      <p id="sale-event-heading" className="eyebrow">Sale event</p>
+      <p className="text-sm text-foreground">
+        In <Link href={`/admin/events/${event.id}`} className="font-medium text-link">{event.name}</Link>, which sets its bid terms.
+      </p>
+      <p className="text-sm text-muted-foreground tabular-nums">Indications due {when(event.indicationsAt)}. Best and final due {when(event.bestFinalAt)}.</p>
+      <p className="text-sm text-foreground">{roundText(event)}</p>
+      {leave ? (
+        <p className="text-xs text-muted-foreground">{leave}</p>
+      ) : (
+        <form action={removeEventListing}>
+          <input type="hidden" name="eventId" value={event.id} />
+          <input type="hidden" name="listingId" value={listingId} />
+          <input type="hidden" name="back" value="listing" />
+          <ConfirmSubmit
+            title="Take this listing out of the event?"
+            consequence="It goes back to open offers with no deadline, and its seller is told."
+            confirmLabel="Take it out"
+            pendingLabel="Saving…"
+            variant="outline"
+            className="h-10 w-full text-[13px] font-medium"
+          >
+            Take out of the event
+          </ConfirmSubmit>
+        </form>
+      )}
+    </section>
+  );
+}
+
+// Entering a live listing in an event, on the seller's recorded agreement.
+function EventJoin({ listingId, events, block }: { listingId: string; events: EventRow[]; block: string | null }) {
+  if (events.length === 0) return null;
+  return (
+    <form action={addEventListing} className="mt-6 space-y-3 border border-border p-4 rounded-xl">
+      <p className="eyebrow">Sale event</p>
+      {block ? (
+        <p className="text-sm text-muted-foreground">{block}</p>
+      ) : (
+        <>
+          <input type="hidden" name="listingId" value={listingId} />
+          <input type="hidden" name="back" value="listing" />
+          <label className="block">
+            <span className="text-[13px] text-muted-foreground">Event</span>
+            <select name="eventId" required className="desk-input mt-2">
+              {events.map((event) => (
+                <option key={event.id} value={event.id}>{event.name} · indications {when(event.indicationsAt)}</option>
+              ))}
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-[13px] text-muted-foreground">How the seller agreed</span>
+            <input name="consent" required minLength={3} maxLength={300} className="desk-input mt-2" placeholder="The seller’s email and its date" />
+          </label>
+          <ConfirmSubmit
+            title="Enter this listing in the event?"
+            consequence="Its bid terms become the event's: sealed indications until the indications date, then one best-and-final bid each until the second date. Awards wait for that date. The seller is emailed with the agreement you recorded."
+            typed={[["Seller's agreement", "consent", "text"]]}
+            confirmLabel="Enter the listing"
+            pendingLabel="Adding…"
+            className="h-10 w-full text-[13px] font-medium"
+          >
+            Add to the event
+          </ConfirmSubmit>
+        </>
+      )}
+    </form>
   );
 }
 

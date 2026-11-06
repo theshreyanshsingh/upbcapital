@@ -1,12 +1,15 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import { createPoolListing } from "@/actions/listings";
+import { checkTapeMarket } from "@/actions/market-rates";
+import { PriceAgainstTime } from "@/components/indicative-price";
 import { Field } from "@/components/page-intro";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { money } from "@/lib/format";
+import type { PriceLadder } from "@/lib/indicative";
 import { bpsToPercent, typedNumber } from "@/lib/money";
 import { TAPE_FIELDS, type TapeFieldKey } from "@/lib/tape-fields";
 
@@ -16,7 +19,10 @@ type TapeField = (typeof TAPE_FIELDS)[number];
 type Mapping = Partial<Record<TapeFieldKey, string>>;
 
 const CORE_FIELDS = TAPE_FIELDS.filter((field) => field.group === "core");
-const SERVICING_FIELDS = TAPE_FIELDS.filter((field) => field.group === "servicing");
+const RECORD_FIELDS = TAPE_FIELDS.filter((field) => field.group === "servicing");
+const TERMS_FIELDS = TAPE_FIELDS.filter((field) => field.group === "terms");
+// Both optional groups count as the servicing record on the confirm step.
+const SERVICING_FIELDS = [...RECORD_FIELDS, ...TERMS_FIELDS];
 
 type Preview = {
   token: string;
@@ -48,7 +54,24 @@ export function TapeWizard({
   const [flags, setFlags] = useState<TapeFlag[]>([]);
   const [counts, setCounts] = useState<FlagCounts | null>(null);
   const [pending, start] = useTransition();
+  const [market, setMarket] = useState<{ ladder: PriceLadder | null; error: string | null; loading: boolean }>({ ladder: null, error: null, loading: false });
+  // Only the latest check lands, so a slow answer for an older mapping never overwrites a newer one.
+  const checkId = useRef(0);
   const servicingMapped = SERVICING_FIELDS.filter((field) => mapping[field.key]).length;
+
+  function checkMarket() {
+    if (!preview) return;
+    const id = ++checkId.current;
+    setMarket({ ladder: null, error: null, loading: true });
+    checkTapeMarket({ token: preview.token, mapping, priceMode, pricePercent, poolTotal })
+      .then((result) => {
+        if (id !== checkId.current) return;
+        setMarket(result.error === null ? { ladder: result.ladder, error: null, loading: false } : { ladder: null, error: result.error, loading: false });
+      })
+      .catch(() => {
+        if (id === checkId.current) setMarket({ ladder: null, error: "The market check is unavailable right now. You can still submit.", loading: false });
+      });
+  }
 
   async function onFile(file: File | undefined) {
     if (!file) return;
@@ -192,12 +215,25 @@ export function TapeWizard({
               </p>
             </div>
             <div className="grid gap-3 md:grid-cols-2">
-              {SERVICING_FIELDS.map((field) => (
+              {RECORD_FIELDS.map((field) => (
                 <MapField key={field.key} field={field} required={false} preview={preview} mapping={mapping} setMapping={setMapping} />
               ))}
             </div>
           </section>
-          <div className="overflow-x-auto border border-border rounded-xl">
+          <section className="space-y-3 border-t border-border pt-6">
+            <div>
+              <p className="eyebrow">Rate, credit and registry</p>
+              <p className="mt-2 max-w-xl text-sm text-muted-foreground">
+                Optional. An adjustable rate needs its index and margin. Give a credit score with its model and date. MERS MIN and eNote ID stay private, like the street address.
+              </p>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              {TERMS_FIELDS.map((field) => (
+                <MapField key={field.key} field={field} required={false} preview={preview} mapping={mapping} setMapping={setMapping} />
+              ))}
+            </div>
+          </section>
+          <div className="relative overflow-x-auto border border-border rounded-xl">
             <table className="min-w-full text-left text-xs">
               <thead className="text-xs font-medium text-muted-foreground">
                 <tr>
@@ -219,7 +255,16 @@ export function TapeWizard({
           </div>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <Button type="button" variant="outline" onClick={recheck}>Recheck rows</Button>
-            <Button type="button" className="h-11 px-5 text-[13px] font-medium" onClick={() => setStep(3)}>Review pool</Button>
+            <Button
+              type="button"
+              className="h-11 px-5 text-[13px] font-medium"
+              onClick={() => {
+                setStep(3);
+                checkMarket();
+              }}
+            >
+              Review pool
+            </Button>
           </div>
           <TapeFlags flags={flags} counts={counts} />
         </div>
@@ -234,6 +279,9 @@ export function TapeWizard({
             {servicingMapped === 0 ? "No servicing columns mapped." : `${servicingMapped} of ${SERVICING_FIELDS.length} servicing columns mapped.`}
           </p>
           <p className="mt-2 text-sm text-muted-foreground">Commission of {bpsToPercent(commissionBps).toFixed(2)}% is deducted from the accepted sale price, not from UPB.</p>
+          <div className="mt-6">
+            <PriceAgainstTime ladder={market.ladder} loading={market.loading} error={market.error} />
+          </div>
           <div className="mt-8 flex justify-between">
             <Button type="button" variant="ghost" onClick={() => setStep(2)}>Back</Button>
             <Button type="button" className="h-11 px-5 text-[13px] font-medium" disabled={pending} onClick={submit}>

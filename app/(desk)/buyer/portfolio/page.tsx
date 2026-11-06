@@ -73,6 +73,10 @@ export default async function PortfolioPage({
                     {holding.underwrittenYield != null ? ` · underwritten ${Number(holding.underwrittenYield).toFixed(1)}%` : ""}
                     {stats.variance != null ? ` · ${stats.variance >= 0 ? "ahead" : "behind"} ${money(Math.abs(stats.variance))}` : ""}
                   </p>
+                  {/* The loan record, collateral, chain and payments as one PDF, for a note-on-note lender. */}
+                  <a href={`/api/holdings/${holding.id}/lender-pack`} className="mt-2 inline-block text-[13px] font-medium text-link">
+                    Download the lender pack<span className="sr-only"> for {holding.title}</span>
+                  </a>
                 </div>
                 <form action={setBuyerHoldingStatus} className="flex items-center gap-2">
                   <input type="hidden" name="id" value={holding.id} />
@@ -86,7 +90,7 @@ export default async function PortfolioPage({
               </div>
               <form action={logBuyerPayment} className="mt-4 grid gap-3 sm:grid-cols-4">
                 <input type="hidden" name="holdingId" value={holding.id} />
-                <input name="amount" className="desk-input" aria-label={`Payment for ${holding.title}`} placeholder="Amount" />
+                <input name="amount" inputMode="decimal" className="desk-input" aria-label={`Payment for ${holding.title}`} placeholder="Amount" />
                 <input name="paidOn" type="date" className="desk-input" aria-label="Payment date" />
                 <input name="memo" className="desk-input" aria-label="Payment memo" placeholder="Memo" />
                 <SubmitButton className="h-11 text-[13px] font-medium">Log payment</SubmitButton>
@@ -94,7 +98,7 @@ export default async function PortfolioPage({
               <div className="mt-4 grid gap-4 border-t border-border pt-4 lg:grid-cols-2">
                 <form action={relistBuyerNote} className="flex flex-wrap items-center gap-2">
                   <input type="hidden" name="holdingId" value={holding.id} />
-                  <input name="askingPrice" className="desk-input" aria-label={`Relist price for ${holding.title}`} placeholder="Ask" />
+                  <input name="askingPrice" inputMode="decimal" className="desk-input" aria-label={`Relist price for ${holding.title}`} placeholder="Ask" />
                   <SubmitButton variant="outline" className="h-11 text-[13px] font-medium">Relist</SubmitButton>
                 </form>
                 <form action={quoteSlice} className="flex flex-wrap items-center gap-2">
@@ -103,7 +107,7 @@ export default async function PortfolioPage({
                   <input name="percent" className="desk-input w-24" aria-label={`Percent of ${holding.title}`} placeholder="%" />
                   <input name="monthly" className="desk-input w-28" aria-label={`Monthly payment for ${holding.title}`} placeholder="Monthly" />
                   <input name="paymentCount" className="desk-input w-28" aria-label="Payments to sell" placeholder="Payments" />
-                  <input name="price" className="desk-input" aria-label={`Slice price for ${holding.title}`} placeholder="Slice price" />
+                  <input name="price" inputMode="decimal" className="desk-input" aria-label={`Slice price for ${holding.title}`} placeholder="Slice price" />
                   <SubmitButton variant="outline" className="h-11 text-[13px] font-medium">Model split</SubmitButton>
                 </form>
               </div>
@@ -140,8 +144,8 @@ export default async function PortfolioPage({
       <form action={addOwnedNote} className="glass mt-12 grid gap-3 p-5 sm:grid-cols-2">
         <p className="eyebrow sm:col-span-2">Add a note you already hold</p>
         <label className="block sm:col-span-2"><span className="text-[13px] text-muted-foreground">Title</span><input name="title" className="desk-input mt-2" aria-label="Holding title" required /></label>
-        <label className="block"><span className="text-[13px] text-muted-foreground">Cost</span><input name="amount" className="desk-input mt-2" aria-label="Cost" required /></label>
-        <label className="block"><span className="text-[13px] text-muted-foreground">UPB</span><input name="upb" className="desk-input mt-2" aria-label="UPB" required /></label>
+        <label className="block"><span className="text-[13px] text-muted-foreground">Cost</span><input name="amount" inputMode="decimal" className="desk-input mt-2" aria-label="Cost" required /></label>
+        <label className="block"><span className="text-[13px] text-muted-foreground">UPB</span><input name="upb" inputMode="decimal" className="desk-input mt-2" aria-label="UPB" required /></label>
         <label className="block"><span className="text-[13px] text-muted-foreground">Underwritten yield %</span><input name="underwrittenYield" className="desk-input mt-2" aria-label="Underwritten yield" /></label>
         <label className="block"><span className="text-[13px] text-muted-foreground">Acquired</span><input name="acquiredAt" type="date" className="desk-input mt-2" aria-label="Acquired date" required /></label>
         <div className="sm:col-span-2">

@@ -1,9 +1,11 @@
 import Link from "next/link";
+import { MarketView } from "@/components/market-view";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { StatusPill } from "@/components/status-pill";
 import { requireRole } from "@/lib/auth";
-import { suggestedPrice } from "@/lib/comps";
+import { compsFor, loadClosedTrades, marketView, suggestedPrice } from "@/lib/comps";
+import { isReleaseBuild } from "@/lib/deploy";
 import { money, num, q } from "@/lib/format";
 import { bpsToPercent } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
@@ -30,10 +32,13 @@ export default async function SellerHome({
     .reduce((sum, note) => sum + num(note.askingPrice), 0);
   const commission = (liveAsk * settings.sellerCommissionBps) / 10000;
   const soldNet = listings.filter((listing) => listing.netToSellerCents != null).reduce((sum, listing) => sum + (listing.netToSellerCents ?? 0), 0);
-  const peers = await prisma.note.findMany({
-    where: { listing: { status: { in: ["APPROVED", "PENDING"] }, kind: "SINGLE" } },
-    select: { state: true, paymentStatus: true, upb: true, askingPrice: true, listingId: true },
-  });
+  const [peers, trades] = await Promise.all([
+    prisma.note.findMany({
+      where: { listing: { status: { in: ["APPROVED", "PENDING"] }, kind: "SINGLE" } },
+      select: { state: true, paymentStatus: true, upb: true, askingPrice: true, listingId: true },
+    }),
+    loadClosedTrades(),
+  ]);
   const book = peers.map((note) => ({
     state: note.state,
     paymentStatus: note.paymentStatus,
@@ -57,7 +62,7 @@ export default async function SellerHome({
           {user.companyName || "This institution"} is waiting on the desk. Tape upload opens after approval.
         </p>
       )}
-      <div className="mt-8 grid gap-4 md:grid-cols-3">
+      <div className="mt-8 grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-3">
         <Figure k="Live asking price" v={money(liveAsk)} />
         <Figure k="Estimated commission" v={money(commission)} />
         <Figure k="Net on closed trades" v={money(soldNet / 100)} />
@@ -86,6 +91,9 @@ export default async function SellerHome({
           const suggestion = subject
             ? suggestedPrice(subject, book.filter((row) => row.listingId !== listing.id))
             : null;
+          const closed = listing.kind === "SINGLE" && listing.notes[0]
+            ? compsFor({ state: listing.notes[0].state, lienPosition: listing.notes[0].lienPosition, paymentStatus: listing.notes[0].paymentStatus }, trades)
+            : null;
           const offerCount = listing.inquiries.filter((inquiry) => inquiry.type === "OFFER").length;
           return (
             <Link key={listing.id} href={`/seller/listings/${listing.id}`} className="flex flex-wrap items-center justify-between gap-3 px-5 py-5 hover:bg-muted/60">
@@ -95,7 +103,12 @@ export default async function SellerHome({
                   {listing.kind === "POOL" ? `${listing.notes.length} loans` : listing.notes[0]?.city} · {listing.viewCount} views · {listing.inquiries.length} inquiries · {offerCount} offers · ask {money(ask)}
                 </p>
                 {suggestion && (
-                  <p className="mt-1 text-sm text-link">Suggested {money(suggestion.price)} from {suggestion.sample} comps at {suggestion.priceToUpb.toFixed(0)}% of UPB.</p>
+                  <p className="mt-1 text-sm text-link tabular-nums">Suggested {money(suggestion.price)} from {suggestion.sample} live asks at {suggestion.priceToUpb.toFixed(0)}% of UPB.</p>
+                )}
+                {closed && (
+                  <p className="mt-1 text-sm text-muted-foreground tabular-nums">
+                    Closed trades like this: median {closed.median}% of UPB across {closed.count} ({closed.label}).
+                  </p>
                 )}
               </div>
               <StatusPill status={listing.status} />
@@ -103,15 +116,18 @@ export default async function SellerHome({
           );
         })}
       </div>
+      <div className="mt-10">
+        <MarketView view={marketView(trades)} audience="seller" demo={!isReleaseBuild(process.env)} />
+      </div>
     </div>
   );
 }
 
 function Figure({ k, v }: { k: string; v: string }) {
   return (
-    <div className="glass p-5">
+    <div className="glass p-4 sm:p-5">
       <p className="eyebrow">{k}</p>
-      <p className="mt-3 font-semibold tracking-tight text-3xl text-foreground">{v}</p>
+      <p className="mt-2 font-semibold tracking-tight text-xl break-words text-foreground sm:mt-3 sm:text-3xl">{v}</p>
     </div>
   );
 }

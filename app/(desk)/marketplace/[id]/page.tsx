@@ -1,38 +1,66 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { CapitalStack, Donut, HorizontalBars, LockedStat, RatioRing } from "@/components/charts";
+import { acknowledgeRoadNotice } from "@/actions/buyer";
+import { AccessLadder } from "@/components/access-ladder";
+import { BidBar } from "@/components/bid-bar";
+import { CapitalStack, Donut, HorizontalBars } from "@/components/charts";
+import { CollateralPanel } from "@/components/collateral-panel";
 import { ComplianceNote } from "@/components/compliance-note";
-import { Countdown } from "@/components/countdown";
+import { CompsPanel } from "@/components/comps-panel";
+import { IndicativePrice } from "@/components/indicative-price";
+import { DataRoomList } from "@/components/data-room-list";
 import { DealAnalyzer } from "@/components/deal-analyzer";
-import { LoanBid } from "@/components/loan-bid";
-import { NdaDialog } from "@/components/nda-dialog";
-import { Notice } from "@/components/notice";
 import { GroupPanel } from "@/components/group-panel";
-import { FieldBadge, LoanFacts, LoanFileView } from "@/components/loan-file-view";
+import { ListingEconomics } from "@/components/listing-economics";
+import { ListingTabs } from "@/components/listing-tabs";
+import { bidModeLabel, ListingTimeline } from "@/components/listing-timeline";
+import { LoanFacts, LoanFileView } from "@/components/loan-file-view";
+import { Notice } from "@/components/notice";
 import { OfferPanel } from "@/components/offer-panel";
+import { PoolTape } from "@/components/pool-tape";
 import { StatusPill } from "@/components/status-pill";
 import { StrataPanel } from "@/components/strata-panel";
-import { UsMap } from "@/components/us-map";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { SubmitButton } from "@/components/submit-button";
+import { TabsContent } from "@/components/ui/tabs";
 import { canReadDocument, dataRoomOpenTo, isPrivateDocument, loanFileAccess, loanOpenTo } from "@/lib/acl";
 import { dealAccess } from "@/lib/data-room";
 import { requireUser } from "@/lib/auth";
 import { canOpenListing, openableListingIds } from "@/lib/access";
+import { buyNowOffer } from "@/lib/buy-now";
+import {
+  acknowledgementMissing,
+  confirmNotices,
+  eligibilityFor,
+  MARYLAND_HEADING,
+  MARYLAND_PROMPT,
+  ROAD_HEADING,
+  ROAD_NOTICE,
+  ROAD_RENT,
+  ROAD_UNANSWERED,
+  roadAcknowledgement,
+  type Eligibility,
+} from "@/lib/eligibility";
+import { bidStanding, roadAcknowledgedAt } from "@/lib/inquiry";
+import { compsFor, loadClosedTrades } from "@/lib/comps";
+import { loadIndicative } from "@/lib/indicative";
 import { enrichListing, notifyIfAuctionClosed, rememberView } from "@/lib/listing-intel";
 import { stratify } from "@/lib/strata";
-import { money, num, prettyDate, q } from "@/lib/format";
-import { docLabel, labelOf } from "@/lib/labels";
+import { num, prettyDate, q } from "@/lib/format";
+import { labelOf } from "@/lib/labels";
 import { completeness, fieldState, groupByNote } from "@/lib/loan-file";
 import { depositTerms } from "@/lib/closing-clock";
 import { diligenceDays } from "@/lib/closing-service";
-import { noteMetrics, poolMetrics } from "@/lib/metrics";
-import { bpsToPercent } from "@/lib/money";
+import { allInYield, noteMetrics, poolMetrics } from "@/lib/metrics";
 import { prisma } from "@/lib/prisma";
+import { eventSetsTerms } from "@/lib/auction";
+import { currentSaleEvent, roundText, when } from "@/lib/sale-events";
 import { getSettings, isPro } from "@/lib/settings";
 import { canSubmitOffer } from "@/lib/verification";
 import { mapPoint, showableAvm } from "@/lib/enrichment";
 
 export const metadata = { title: "Listing" };
+
+const TABS = ["overview", "file", "room", "analysis", "activity"] as const;
 
 export default async function ListingPage({
   params,
@@ -84,20 +112,55 @@ export default async function ListingPage({
     );
   }
 
-  // Desk opens are not buyer interest, and a refused open isn't a view, so neither reaches the seller's counts.
-  if (listing.sellerId !== user.id && user.role !== "ADMIN") await rememberView(listing.id, user.id);
-  // Valuations run only for someone who can open the listing, so a held listing's streets never go to a vendor.
-  if (await enrichListing(listing.id)) listing.notes = await prisma.note.findMany({ where: { listingId: listing.id } });
-  await notifyIfAuctionClosed(listing.id);
+  // The sale event this listing trades in. A round whose date passed moves first, so the line below and the bid
+  // form agree on which round is open.
+  const saleEvent = listing.saleEventId ? await currentSaleEvent(listing.saleEventId).catch(() => null) : null;
+  if (saleEvent?.moved) {
+    const terms = await prisma.listing.findUnique({ where: { id: listing.id }, select: { bidMode: true, bidDeadline: true } });
+    if (terms) Object.assign(listing, terms);
+  }
+  // A closed event still names the listing while its terms are the event's, so the dates stay on the page.
+  const event = saleEvent?.event && (eventSetsTerms(saleEvent.event.status) || (saleEvent.event.status === "CLOSED" && listing.bidDeadline?.getTime() === saleEvent.event.bestFinalAt.getTime()))
+    ? saleEvent.event
+    : null;
+
+  // Everything below runs only for someone the access check let in, side by side so the first view comes sooner.
+  const [, enriched] = await Promise.all([
+    // Desk opens are not buyer interest, and a refused open isn't a view, so neither reaches the seller's counts.
+    listing.sellerId !== user.id && user.role !== "ADMIN" ? rememberView(listing.id, user.id) : null,
+    // Valuations run only for someone who can open the listing, so a held listing's streets never go to a vendor.
+    enrichListing(listing.id),
+    notifyIfAuctionClosed(listing.id),
+  ]);
+  if (enriched) listing.notes = await prisma.note.findMany({ where: { listingId: listing.id } });
 
   const pro = user.role === "ADMIN" || isPro(user);
-  const profile = user.role === "BUYER" ? await prisma.buyerProfile.findUnique({ where: { userId: user.id } }) : null;
+  const noteIds = listing.notes.map((note) => note.id);
+  const [profile, deal, liveGroup, collateralRows, riskRows, mine, trades, indicative] = await Promise.all([
+    user.role === "BUYER" ? prisma.buyerProfile.findUnique({ where: { userId: user.id } }) : null,
+    user.role === "BUYER" ? dealAccess(listing.id, user.id) : { whole: false, loans: new Set<string>() },
+    prisma.groupBuy.findFirst({
+      where: { listingId: listing.id, status: { in: ["GATHERING", "OFFERED", "COUNTERED", "CLOSING"] } },
+      include: { positions: { include: { user: true }, orderBy: { seat: "asc" } } },
+    }),
+    // The verified loan file, one loan at a time. A pool's table carries each loan's summary and links to it.
+    prisma.collateralItem.findMany({ where: { noteId: { in: noteIds } }, orderBy: [{ sequence: "asc" }, { createdAt: "asc" }] }),
+    prisma.riskCheck.findMany({ where: { noteId: { in: noteIds } }, orderBy: { checkedAt: "desc" } }),
+    // A buyer's own bids and requests here. Nobody else's show.
+    user.role === "BUYER"
+      ? prisma.inquiry.findMany({ where: { listingId: listing.id, buyerId: user.id }, orderBy: { createdAt: "desc" }, take: 20 })
+      : Promise.resolve(null),
+    // Closed-trade prices are veiled on the free desk like every other price. A failed read shows no panel,
+    // rather than an empty one that would read as "no trades".
+    pro ? loadClosedTrades().catch(() => null) : Promise.resolve(null),
+    // The indicative range is a price, so it is veiled like the ask. A failed read shows nothing rather than a guess.
+    pro ? loadIndicative(listing.id).catch(() => null) : Promise.resolve(null),
+  ]);
   const verified = canSubmitOffer({
     role: user.role,
     accountStatus: user.accountStatus,
     verificationStatus: profile?.status ?? null,
   }).ok;
-  const deal = user.role === "BUYER" ? await dealAccess(listing.id, user.id) : { whole: false, loans: new Set<string>() };
   const closingParty = deal.whole || deal.loans.size > 0;
   const unlocked = user.role === "ADMIN" || dataRoomOpenTo({ listingStatus: listing.status, signedNda: listing.ndas.length > 0, closingParty });
   // A buyer who signed but didn't win sees the room as closed, not an NDA prompt they can no longer use.
@@ -142,10 +205,6 @@ export default async function ListingPage({
   const economics = listing.kind === "POOL" ? pool : noteMetrics(notes[0]);
   const asking = listing.kind === "POOL" ? pool.totalAsk : notes[0].askingPrice;
   const avms = forSale.map((note) => note.avm).filter((value): value is number => value != null);
-  const liveGroup = await prisma.groupBuy.findFirst({
-    where: { listingId: listing.id, status: { in: ["GATHERING", "OFFERED", "COUNTERED", "CLOSING"] } },
-    include: { positions: { include: { user: true }, orderBy: { seat: "asc" } } },
-  });
   const premium = (asking * settings.buyerPremiumBps) / 10000;
   // What a winning bidder owes, for the bid confirmation. A 0% deposit says nothing.
   const terms = depositTerms(settings);
@@ -154,12 +213,6 @@ export default async function ListingPage({
   const lead = notes[0];
   const stateCounts = countBy(notes.map((note) => note.state));
   const performingSlice = sliceForAnalyzer(forSale);
-  // The verified loan file, one loan at a time. A pool's table carries each loan's summary and links here.
-  const noteIds = listing.notes.map((note) => note.id);
-  const [collateralRows, riskRows] = await Promise.all([
-    prisma.collateralItem.findMany({ where: { noteId: { in: noteIds } }, orderBy: [{ sequence: "asc" }, { createdAt: "asc" }] }),
-    prisma.riskCheck.findMany({ where: { noteId: { in: noteIds } }, orderBy: { checkedAt: "desc" } }),
-  ]);
   const collateralByNote = groupByNote(collateralRows);
   const risksByNote = groupByNote(riskRows);
   const holder = listing.clientSellerName || listing.seller.companyName || listing.seller.name || null;
@@ -178,7 +231,8 @@ export default async function ListingPage({
     closingParty,
     loan: loanFileAccess({ note: fileNote, listingId: listing.id, listingStatus: listing.status, signedNda: listing.ndas.length > 0, wholeParty: deal.whole, loanIds: deal.loans }),
   });
-  const fileHref = (index: number) => (index >= 0 && index < listing.notes.length ? `/marketplace/${listing.id}?loan=${listing.notes[index].id}#loan-file` : null);
+  const loanFileHref = (noteId: string) => `/marketplace/${listing.id}?loan=${noteId}&tab=file#loan-file`;
+  const fileHref = (index: number) => (index >= 0 && index < listing.notes.length ? loanFileHref(listing.notes[index].id) : null);
   const rawById = new Map(listing.notes.map((note) => [note.id, note]));
   const fileSummary = (noteId: string) => {
     const raw = rawById.get(noteId);
@@ -194,337 +248,437 @@ export default async function ListingPage({
     rate: note.interestRate,
     monthsDelinquent: note.monthsDelinquent,
   })));
+  const compSubject = commonLoan(forSale);
+  const comps = trades ? compsFor(compSubject, trades) : null;
+  const canOffer = listing.status === "APPROVED" && wholeOpen && user.role === "BUYER";
+  // The eligibility screen informs and is logged. Its one ask is the 350-home acknowledgement before a bid.
+  const eligibility = eligibilityFor(forSale, profile);
+  const acknowledgedAt = user.role === "BUYER" && eligibility.acknowledge ? await roadAcknowledgedAt(user.id, listing.id) : null;
+  const acknowledgeFirst = user.role === "BUYER" && acknowledgementMissing(eligibility, acknowledgedAt, profile?.eligibilityAt);
+  const notices = confirmNotices(eligibility);
+  // The buyer's verified-funds credential and headroom, and any strike pause, for the bid forms.
+  const standing = user.role === "BUYER" ? await bidStanding(user.id) : null;
+  // A loan bid restates only that loan's notices: a pool can hold one non-performing house among performing paper.
+  const loanNotices = (noteId: string) => {
+    const loan = forSale.find((item) => item.id === noteId);
+    return loan ? confirmNotices(eligibilityFor([loan], profile)) : [];
+  };
+  // Buy it now is the seller's price, so it is veiled on the free desk like the ask: a free buyer learns only that one is set.
+  const takeable = buyNowOffer(listing, wholeOpen);
+  const buyNow = canOffer && verified && takeable.price != null ? { price: pro ? takeable.price : null, pool: listing.kind === "POOL" } : undefined;
+  const deadline = listing.status === "APPROVED" && listing.bidMode !== "NONE" && listing.bidDeadline ? { at: listing.bidDeadline.toISOString(), mode: listing.bidMode } : null;
+  const asked = q(query, "tab");
+  const fallback = TABS.includes(asked as (typeof TABS)[number]) ? asked : q(query, "loan") ? "file" : "overview";
+  const named = (noteId: string | null) => {
+    const note = noteId ? notes.find((item) => item.id === noteId) : null;
+    if (!note) return null;
+    return note.open ? note.streetAddress : `the loan in ${note.city}, ${note.state}`;
+  };
 
   return (
-    <div className="grid grid-cols-[minmax(0,1fr)] gap-10 lg:grid-cols-[minmax(0,1fr)_320px]">
-      <div>
-        <Notice notice={q(query, "notice")} error={q(query, "error")} />
-        <div className="mt-4 flex flex-wrap items-center gap-3">
-          <p className="eyebrow">{lead?.state} · {listing.kind === "POOL" ? "Pool" : labelOf("lien", lead.lienPosition)}</p>
+    // Room under the page for a buyer's bid bar, wherever the bar shows.
+    <div className={user.role === "BUYER" ? "pb-20 [@media(min-width:64rem)_and_(min-height:50rem)]:pb-0" : undefined}>
+      <Notice notice={q(query, "notice")} error={q(query, "error")} />
+      <header className="mt-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <p className="eyebrow">{lead?.state} · {listing.kind === "POOL" ? `Pool of ${notes.length}` : `${labelOf("lien", lead.lienPosition)} lien`} · {bidModeLabel(listing.bidMode)}</p>
           <StatusPill status={listing.status} />
         </div>
-        <h1 className="mt-4 font-semibold tracking-tight text-[28px] leading-none text-foreground">{listing.title}</h1>
-        <p className="mt-4 max-w-2xl text-sm leading-relaxed text-muted-foreground">{listing.summary || "No narrative from the seller."}</p>
+        <h1 className="mt-3 font-semibold tracking-tight text-[28px] leading-tight text-foreground">{listing.title}</h1>
+        <p className="mt-3 max-w-3xl text-sm leading-relaxed text-muted-foreground">{listing.summary || "No narrative from the seller."}</p>
+        {event && (
+          <p className="mt-3 max-w-3xl border border-link/30 bg-link/5 px-3 py-2 text-sm leading-relaxed text-foreground rounded-lg tabular-nums">
+            In the sale event <Link href={`/events#${event.id}`} className="font-medium text-link">{event.name}</Link>. Indications due {when(event.indicationsAt)}. Best and final due {when(event.bestFinalAt)}. {roundText(event)}
+          </p>
+        )}
         {listing.broker && (
-          <p className="mt-3 text-sm text-foreground">
+          <p className="mt-2 text-sm text-foreground">
             {listing.brokerRole === "AFFILIATE" ? "Referring affiliate" : "Seller's broker"} {listing.broker.name}
             {listing.broker.companyName ? ` · ${listing.broker.companyName}` : ""}
           </p>
         )}
-        <ComplianceNote states={notes.map((note) => note.state)} sellerFinanced={listing.sellerFinanced} sellerRole={listing.seller.role} />
-        {!pro && (
-          <p className="mt-6 border border-link/30 bg-link/5 px-4 py-3 text-sm text-foreground rounded-xl">
-            You are on the free desk. Ratios, balances, and the data room open with Pro.
-          </p>
-        )}
-        {pro ? (
-          <div className="mt-8 grid gap-4 md:grid-cols-2">
-            <RatioRing label="Price / UPB" value={"priceToUpb" in economics ? economics.priceToUpb : null} caption="Asking price as a percent of unpaid principal." />
-            <RatioRing label="Price / value" value={"priceToValue" in economics ? economics.priceToValue : null} caption="Asking price as a percent of estimated property value." />
-            <RatioRing label="LTV" value={economics.ltv} caption="Unpaid principal divided by estimated value." />
-            <RatioRing label="Est. yield" value={economics.currentYield} caption={economics.currentYield == null ? "Shown on performing paper only." : "Annual payments divided by asking price."} />
-          </div>
-        ) : (
-          <div className="mt-8 grid gap-4 md:grid-cols-2">
-            <LockedStat label="Price / UPB" />
-            <LockedStat label="Price / value" />
-            <LockedStat label="LTV" />
-            <LockedStat label="Estimated yield" />
-          </div>
-        )}
+      </header>
 
-        <section className="mt-10 glass p-6">
-          <p className="eyebrow">Collateral</p>
-          {listing.kind === "SINGLE" ? (
-            <>
-              <p className="mt-3 font-semibold tracking-tight text-3xl text-foreground">{lead.open ? lead.streetAddress : "Street withheld"}</p>
-              <p className="mt-2 flex flex-wrap items-center gap-2 text-muted-foreground">
-                {lead.city}, {lead.state}{lead.open && lead.zip ? ` ${lead.zip}` : ""}
-                <FieldBadge field="streetAddress" state={fieldState(rawLead, "streetAddress")} showValue={lead.open} />
-              </p>
-              <p className="mt-4 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-                Borrower: {lead.open ? lead.borrowerName || "Not provided" : "Withheld until confidentiality"}
-                <FieldBadge field="borrowerName" state={fieldState(rawLead, "borrowerName")} showValue={lead.open} />
-              </p>
-              {!unlocked && !roomClosed && user.role === "BUYER" && <div className="mt-5"><NdaDialog listingId={listing.id} listingTitle={listing.title} /></div>}
-              {unlocked && listing.ndas[0]?.signerName && (
-                <p className="mt-4 text-sm text-muted-foreground">Signed by {listing.ndas[0].signerName} on {prettyDate(listing.ndas[0].acknowledgedAt)}.</p>
-              )}
-            </>
-          ) : (
-            <p className="mt-3 text-sm text-muted-foreground">{wholeOpen ? `${notes.length} loans.` : `${forSale.length} of ${notes.length} loans still for sale.`} {unlocked ? "Addresses are open." : "Street addresses open after confidentiality."}</p>
-          )}
-          {listing.kind === "SINGLE" && !unlocked && user.role === "ADMIN" ? null : null}
-          {listing.kind === "POOL" && !unlocked && !roomClosed && user.role === "BUYER" && <div className="mt-5"><NdaDialog listingId={listing.id} listingTitle={listing.title} /></div>}
-          {pro && avms.length > 0 && (
-            <p className="mt-4 text-sm text-muted-foreground">
-              Value estimate {money(avms.reduce((sum, value) => sum + value, 0))}
-              {listing.kind === "POOL" ? ` · ${avms.length} of ${forSale.length} loans` : ""} · {listing.notes[0]?.avmProvider || "mock"}
-            </p>
-          )}
-          <div className="mt-5">
-            <UsMap
-              label={`Map for ${listing.title}`}
-              pins={notes.filter((note) => note.latitude != null && note.longitude != null).map((note) => ({
-                id: note.id,
-                title: `${note.city}, ${note.state}`,
-                latitude: note.latitude as number,
-                longitude: note.longitude as number,
-              }))}
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-8 lg:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="min-w-0">
+          <ListingEconomics
+            pool={listing.kind === "POOL"}
+            listedAt={listing.approvedAt}
+            deadline={deadline}
+            economics={pro ? {
+              asking,
+              premium,
+              premiumBps: settings.buyerPremiumBps,
+              upb: listing.kind === "POOL" ? pool.totalUpb : lead.upb,
+              priceToUpb: economics.priceToUpb,
+              priceToValue: economics.priceToValue,
+              ltv: economics.ltv,
+              currentYield: economics.currentYield,
+              allInYield: allInYield(economics.currentYield, settings.buyerPremiumBps),
+              loansPriced: forSale.length,
+              performing: forSale.filter((note) => note.paymentStatus === "PERFORMING").length,
+              salePrice: listing.salePrice == null ? null : num(listing.salePrice),
+            } : null}
+          />
+          <IndicativePrice indicative={indicative} pro={pro} ask={asking} />
+          {user.role === "BUYER" && (
+            <AccessLadder
+              listingId={listing.id}
+              listingTitle={listing.title}
+              pro={pro}
+              verified={verified}
+              verificationStatus={profile?.status ?? null}
+              unlocked={unlocked}
+              roomClosed={roomClosed}
+              canSign={!unlocked && !roomClosed && user.role === "BUYER"}
+              closingParty={closingParty}
+              ndaSigned={unlocked && listing.ndas[0] ? prettyDate(listing.ndas[0].acknowledgedAt) : null}
             />
-          </div>
-        </section>
+          )}
+          {/* Buyer eligibility is for buyers and the desk. A seller opening their own listing has nothing to answer. */}
+          {(user.role === "BUYER" || user.role === "ADMIN") && (eligibility.road || eligibility.maryland) && (
+            <EligibilityPanel
+              listingId={listing.id}
+              eligibility={eligibility}
+              buyer={user.role === "BUYER"}
+              acknowledgedAt={acknowledgedAt}
+              acknowledgeFirst={acknowledgeFirst}
+            />
+          )}
 
-        {pro && (
-          <section className="mt-8 glass p-6">
-            <p className="eyebrow">Capital stack</p>
-            <div className="mt-5">
-              <CapitalStack
-                value={listing.kind === "POOL" ? pool.totalValue : lead.estimatedValue}
-                upb={listing.kind === "POOL" ? pool.totalUpb : lead.upb}
-                price={asking}
-              />
-            </div>
-          </section>
-        )}
-
-        {listing.kind === "POOL" && pro && (
-          <StrataPanel
-            count={poolStrata.count}
-            totalUpb={poolStrata.totalUpb}
-            wac={poolStrata.wac}
-            waltv={poolStrata.waltv}
-            weightedDelinquency={poolStrata.weightedDelinquency}
-            exportBase={`/api/listings/${listing.id}/export`}
-            groups={[
-              { title: "State", rows: poolStrata.byState },
-              { title: "Lien", rows: poolStrata.byLien },
-              { title: "Status", rows: poolStrata.byStatus },
-              { title: "UPB", rows: poolStrata.byUpb },
-              { title: "LTV", rows: poolStrata.byLtv },
-              { title: "Coupon", rows: poolStrata.byCoupon },
+          <ListingTabs
+            fallback={fallback}
+            tabs={[
+              { value: "overview", label: "Overview" },
+              { value: "file", label: "Loan file" },
+              { value: "room", label: "Data room", count: dataRoom.length },
+              { value: "analysis", label: "Analysis" },
+              { value: "activity", label: "Activity" },
             ]}
-          />
-        )}
-
-        {pro ? (
-          <DealAnalyzer
-            listingId={listing.id}
-            title={performingSlice.performing ? "Performing case" : "Resolution cases"}
-            performing={performingSlice.performing}
-            upb={performingSlice.upb}
-            annualRate={performingSlice.rate}
-            monthlyPi={performingSlice.monthlyPi}
-            termMonths={performingSlice.term}
-            value={performingSlice.value}
-            monthsDelinquent={performingSlice.monthsDelinquent}
-            state={lead.state}
-            defaultBid={performingSlice.ask || asking}
-          />
-        ) : (
-          <section className="mt-8 glass p-6">
-            <p className="eyebrow">Deal analyzer</p>
-            <p className="mt-3 text-sm text-muted-foreground">Yield, IRR, cash-on-cash, payback, and non-performing resolutions open with Pro.</p>
-          </section>
-        )}
-
-        {listing.kind === "POOL" && pro && (
-          <section className="mt-8 grid gap-4 md:grid-cols-2">
-            <div className="glass p-6">
-              <p className="eyebrow">Performance mix</p>
-              <div className="mt-4">
-                <Donut slices={[
-                  { label: "Performing", value: pool.performingUpb, color: "var(--chart-1)" },
-                  { label: "Sub-performing", value: pool.subUpb, color: "var(--warn)" },
-                  { label: "Non-performing", value: pool.nplUpb, color: "var(--bad)" },
-                ]} />
+          >
+            <TabsContent value="overview" keepMounted>
+              <CollateralPanel
+                title={listing.title}
+                single={listing.kind === "SINGLE" ? {
+                  open: lead.open,
+                  streetAddress: lead.streetAddress,
+                  city: lead.city,
+                  state: lead.state,
+                  zip: lead.zip,
+                  borrowerName: lead.borrowerName,
+                  streetState: fieldState(rawLead, "streetAddress"),
+                  borrowerState: fieldState(rawLead, "borrowerName"),
+                } : null}
+                pool={listing.kind === "POOL" ? { total: notes.length, forSale: forSale.length, unlocked } : null}
+                signed={listing.kind === "SINGLE" && unlocked && listing.ndas[0]?.signerName ? `Signed by ${listing.ndas[0].signerName} on ${prettyDate(listing.ndas[0].acknowledgedAt)}.` : null}
+                estimate={pro && avms.length > 0 ? {
+                  total: avms.reduce((sum, value) => sum + value, 0),
+                  count: avms.length,
+                  of: forSale.length,
+                  provider: listing.notes[0]?.avmProvider || "mock",
+                } : null}
+                pins={notes.filter((note) => note.latitude != null && note.longitude != null).map((note) => ({
+                  id: note.id,
+                  title: `${note.city}, ${note.state}`,
+                  latitude: note.latitude as number,
+                  longitude: note.longitude as number,
+                }))}
+              />
+              {listing.kind === "SINGLE" ? (
+                <>
+                  <LoanFacts note={rawLead} open={lead.open} pro={pro} withAddress={false} />
+                  {lead.memo && <p className="mt-4 text-sm leading-relaxed text-muted-foreground">{lead.memo}</p>}
+                </>
+              ) : (
+                <PoolTape
+                  listingId={listing.id}
+                  loans={notes}
+                  pro={pro}
+                  fileHref={loanFileHref}
+                  fileSummary={fileSummary}
+                  bidding={user.role === "BUYER" ? {
+                    deposit,
+                    diligenceDays: diligence,
+                    premiumBps: settings.buyerPremiumBps,
+                    verified,
+                    listingOpen: listing.status === "APPROVED",
+                    noticesFor: loanNotices,
+                    standing,
+                  } : null}
+                />
+              )}
+              <div className="mt-8 max-w-xl">
+                <GroupPanel
+                  listingId={listing.id}
+                  asking={pro || user.role === "ADMIN" ? asking : null}
+                  canStart={listing.status === "APPROVED" && wholeOpen && (user.role === "ADMIN" || (user.role === "BUYER" && verified && unlocked))}
+                  viewer={{ id: user.id, role: user.role }}
+                  group={liveGroup ? {
+                    id: liveGroup.id,
+                    status: liveGroup.status,
+                    targetAmount: Number(liveGroup.targetAmount),
+                    deadline: liveGroup.deadline,
+                    positions: liveGroup.positions.map((seat) => ({
+                      id: seat.id,
+                      userId: seat.userId,
+                      seat: seat.seat,
+                      amount: Number(seat.amount),
+                      percent: Number(seat.percent),
+                      slice: seat.slice,
+                      status: seat.status,
+                      name: seat.user.name,
+                    })),
+                  } : null}
+                />
               </div>
-            </div>
-            <div className="glass p-6">
-              <p className="eyebrow">By state</p>
-              <div className="mt-4">
-                <HorizontalBars rows={stateCounts} />
-              </div>
-            </div>
-          </section>
-        )}
+              <ComplianceNote states={notes.map((note) => note.state)} sellerFinanced={listing.sellerFinanced} sellerRole={listing.seller.role} />
+            </TabsContent>
 
-        {listing.kind === "SINGLE" ? (
-          <>
-            <LoanFacts note={rawLead} open={lead.open} pro={pro} withAddress={false} />
-            {lead.memo && <p className="mt-4 text-sm leading-relaxed text-muted-foreground">{lead.memo}</p>}
-          </>
-        ) : (
-          <div className="mt-8">
-            <Tabs defaultValue="tape">
-              <TabsList variant="line">
-                <TabsTrigger value="tape">Loan tape</TabsTrigger>
-                <TabsTrigger value="story">Seller notes</TabsTrigger>
-              </TabsList>
-              <TabsContent value="tape" className="mt-4 overflow-x-auto">
-                <table className="min-w-full text-left text-sm">
-                  <thead className="text-xs font-medium text-muted-foreground">
-                    <tr>
-                      {["Collateral", "Lien", "Status", "UPB", "Ask", "Value", "Trade", "File"].concat(user.role === "BUYER" ? ["Bid"] : []).map((heading) => <th key={heading} className="px-3 py-2 font-normal">{heading}</th>)}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {notes.map((note) => (
-                      <tr key={note.id} className="border-t border-border">
-                        <td className="px-3 py-3 text-foreground">{note.open ? note.streetAddress : "Withheld"}<span className="block text-xs text-muted-foreground">{note.city}, {note.state}</span></td>
-                        <td className="px-3 py-3">{labelOf("lien", note.lienPosition)}</td>
-                        <td className="px-3 py-3">{labelOf("payment", note.paymentStatus)}</td>
-                        <td className="px-3 py-3">{pro ? money(note.upb) : "—"}</td>
-                        <td className="px-3 py-3">{pro ? money(note.askingPrice) : "—"}</td>
-                        <td className="px-3 py-3">{pro ? money(note.estimatedValue) : "—"}</td>
-                        <td className="px-3 py-3 text-[13px] font-medium text-muted-foreground">{note.tradeStatus.replaceAll("_", " ").toLowerCase()}</td>
-                        <td className="px-3 py-3"><FileCell href={`/marketplace/${listing.id}?loan=${note.id}#loan-file`} file={fileSummary(note.id)} /></td>
-                        {user.role === "BUYER" && (
-                          <td className="px-3 py-3">
-                            <LoanBid
-                              listingId={listing.id}
-                              noteId={note.id}
-                              loanName={note.open ? note.streetAddress : `the loan in ${note.city}, ${note.state}`}
-                              deposit={deposit}
-                              diligenceDays={diligence}
-                              premiumBps={settings.buyerPremiumBps}
-                              verified={verified}
-                              closed={listing.status !== "APPROVED" || note.tradeStatus !== "AVAILABLE"}
-                            />
-                          </td>
-                        )}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </TabsContent>
-              <TabsContent value="story" className="mt-4 text-sm leading-relaxed text-muted-foreground">{listing.summary}</TabsContent>
-            </Tabs>
-          </div>
-        )}
+            <TabsContent value="file">
+              <LoanFileView
+                note={fileNote}
+                collateral={collateralByNote.get(fileNote.id) ?? []}
+                risks={risksByNote.get(fileNote.id) ?? []}
+                documents={listing.documents.filter((document) => document.noteId === fileNote.id)}
+                open={fileOpen}
+                docsOpen={fileDocsOpen}
+                docGate={roomClosed || (fileNote.tradeStatus !== "AVAILABLE" && !fileOpen) ? "Closed" : pro ? "NDA required" : "Pro"}
+                holder={holder}
+                pro={pro}
+                facts={listing.kind === "POOL"}
+                heading={listing.kind === "POOL"
+                  ? `${fileOpen ? `${fileNote.streetAddress}, ` : ""}${fileNote.city}, ${fileNote.state} · ${labelOf("lien", fileNote.lienPosition)} lien`
+                  : `${labelOf("lien", fileNote.lienPosition)} lien in ${fileNote.city}, ${fileNote.state}`}
+                nav={listing.kind === "POOL" ? { previous: fileHref(filePosition - 1), next: fileHref(filePosition + 1), position: `Loan ${filePosition + 1} of ${listing.notes.length}` } : undefined}
+              />
+            </TabsContent>
 
-        <LoanFileView
-          note={fileNote}
-          collateral={collateralByNote.get(fileNote.id) ?? []}
-          risks={risksByNote.get(fileNote.id) ?? []}
-          documents={listing.documents.filter((document) => document.noteId === fileNote.id)}
-          open={fileOpen}
-          docsOpen={fileDocsOpen}
-          docGate={roomClosed || (fileNote.tradeStatus !== "AVAILABLE" && !fileOpen) ? "Closed" : pro ? "NDA required" : "Pro"}
-          holder={holder}
-          pro={pro}
-          facts={listing.kind === "POOL"}
-          heading={listing.kind === "POOL"
-            ? `${fileOpen ? `${fileNote.streetAddress}, ` : ""}${fileNote.city}, ${fileNote.state} · ${labelOf("lien", fileNote.lienPosition)} lien`
-            : `${labelOf("lien", fileNote.lienPosition)} lien in ${fileNote.city}, ${fileNote.state}`}
-          nav={listing.kind === "POOL" ? { previous: fileHref(filePosition - 1), next: fileHref(filePosition + 1), position: `Loan ${filePosition + 1} of ${listing.notes.length}` } : undefined}
-        />
+            <TabsContent value="room">
+              <DataRoomList
+                documents={dataRoom}
+                roomClosed={roomClosed}
+                canOpen={(document) => ((pro || closingParty) && unlocked) || document.id === ownNdaId}
+                gate={roomClosed ? "Closed" : pro ? "NDA required" : "Pro"}
+              />
+            </TabsContent>
 
-        <section className="mt-10">
-          <p className="eyebrow">Data room</p>
-          <ul className="mt-4 divide-y divide-border border border-border rounded-xl">
-            {roomClosed && <li className="px-4 py-4 text-sm text-muted-foreground">The data room closed when this listing went to contract. Only the buyer on the deal can open these files now.</li>}
-            {dataRoom.length === 0 && <li className="px-4 py-4 text-sm text-muted-foreground">No documents uploaded.</li>}
-            {dataRoom.map((document) => (
-              <li key={document.id} className="flex items-center justify-between gap-3 px-4 py-4">
-                {/* File names often carry a borrower or a street, so they show only to someone who can open the file. */}
-                {((pro || closingParty) && unlocked) || document.id === ownNdaId ? (
-                  <div>
-                    <p className="text-sm text-foreground">{document.originalName}</p>
-                    <p className="text-[13px] font-medium text-muted-foreground">{docLabel(document.type)}</p>
+            <TabsContent value="analysis" keepMounted>
+              {pro && (
+                <section aria-labelledby="stack-heading" className="mt-8 glass p-6">
+                  <h2 id="stack-heading" className="eyebrow">Capital stack</h2>
+                  <div className="mt-5">
+                    <CapitalStack
+                      value={listing.kind === "POOL" ? pool.totalValue : lead.estimatedValue}
+                      upb={listing.kind === "POOL" ? pool.totalUpb : lead.upb}
+                      price={asking}
+                    />
                   </div>
-                ) : (
-                  <p className="text-sm text-foreground">{docLabel(document.type)}</p>
-                )}
-                {((pro || closingParty) && unlocked) || document.id === ownNdaId ? (
-                  <a className="text-[13px] font-medium text-link" href={`/api/documents/${document.id}`}>Download</a>
-                ) : (
-                  <span className="text-[13px] font-medium text-muted-foreground">{roomClosed ? "Closed" : pro ? "NDA required" : "Pro"}</span>
-                )}
-              </li>
-            ))}
-          </ul>
-        </section>
-      </div>
-      <aside className="space-y-4 lg:sticky lg:top-8 lg:self-start">
-        <div className="glass p-6">
-          <p className="eyebrow">Buyer economics</p>
-          {pro ? (
-            <>
-              <p className="mt-3 font-semibold tracking-tight text-[28px] text-foreground">{money(asking)}</p>
-              <p className="text-[13px] font-medium text-muted-foreground">Asking price</p>
-              {listing.bidMode !== "NONE" && listing.bidDeadline && (
-                <div className="mt-4">
-                  <Countdown deadline={listing.bidDeadline.toISOString()} mode={listing.bidMode} />
+                </section>
+              )}
+              {listing.kind === "POOL" && pro && (
+                <StrataPanel
+                  count={poolStrata.count}
+                  totalUpb={poolStrata.totalUpb}
+                  wac={poolStrata.wac}
+                  waltv={poolStrata.waltv}
+                  weightedDelinquency={poolStrata.weightedDelinquency}
+                  exportBase={`/api/listings/${listing.id}/export`}
+                  groups={[
+                    { title: "State", rows: poolStrata.byState },
+                    { title: "Lien", rows: poolStrata.byLien },
+                    { title: "Status", rows: poolStrata.byStatus },
+                    { title: "UPB", rows: poolStrata.byUpb },
+                    { title: "LTV", rows: poolStrata.byLtv },
+                    { title: "Coupon", rows: poolStrata.byCoupon },
+                  ]}
+                />
+              )}
+              {pro ? (
+                <DealAnalyzer
+                  listingId={listing.id}
+                  title={performingSlice.performing ? "Performing case" : "Resolution cases"}
+                  performing={performingSlice.performing}
+                  upb={performingSlice.upb}
+                  annualRate={performingSlice.rate}
+                  monthlyPi={performingSlice.monthlyPi}
+                  termMonths={performingSlice.term}
+                  value={performingSlice.value}
+                  monthsDelinquent={performingSlice.monthsDelinquent}
+                  state={lead.state}
+                  defaultBid={performingSlice.ask || asking}
+                  // The same premium the header nets out, and the loan's own occupancy and lien for the scenario
+                  // weights. A pool's slice mixes loans, so it keeps the model's defaults.
+                  premiumBps={settings.buyerPremiumBps}
+                  occupancy={listing.kind === "POOL" ? null : lead.occupancy}
+                  lienPosition={listing.kind === "POOL" ? null : lead.lienPosition}
+                  // A single loan's foreclosure clock and live value estimate. A pool's slice has neither.
+                  foreclosureFiledAt={listing.kind === "POOL" ? null : listing.notes[0]?.foreclosureFiledAt?.toISOString() ?? null}
+                  valueEstimate={listing.kind !== "POOL" && lead.avm != null
+                    ? { value: lead.avm, provider: listing.notes[0]?.avmProvider ?? null, asOf: listing.notes[0]?.avmAsOf?.toISOString() ?? null }
+                    : null}
+                />
+              ) : (
+                <section className="mt-8 glass p-6">
+                  <h2 className="eyebrow">Deal analyzer</h2>
+                  <p className="mt-3 text-sm text-muted-foreground">Yield, IRR, cash-on-cash, payback, non-performing resolutions and closed-trade comps open with Pro.</p>
+                </section>
+              )}
+              {listing.kind === "POOL" && pro && (
+                <section className="mt-8 grid gap-4 md:grid-cols-2">
+                  <div className="glass p-6">
+                    <h2 className="eyebrow">Performance mix</h2>
+                    <div className="mt-4">
+                      <Donut slices={[
+                        { label: "Performing", value: pool.performingUpb, color: "var(--chart-1)" },
+                        { label: "Sub-performing", value: pool.subUpb, color: "var(--warn)" },
+                        { label: "Non-performing", value: pool.nplUpb, color: "var(--bad)" },
+                      ]} />
+                    </div>
+                  </div>
+                  <div className="glass p-6">
+                    <h2 className="eyebrow">By state</h2>
+                    <div className="mt-4">
+                      <HorizontalBars rows={stateCounts} />
+                    </div>
+                  </div>
+                </section>
+              )}
+              {pro && trades && (
+                <div className="mt-8">
+                  {listing.kind === "POOL" && (
+                    <p className="mb-2 text-xs leading-relaxed text-muted-foreground">
+                      A pool takes the comps of its most common loan: {labelOf("lien", compSubject.lienPosition).toLowerCase()} lien, {labelOf("payment", compSubject.paymentStatus).toLowerCase()}, {compSubject.state}.
+                    </p>
+                  )}
+                  <CompsPanel
+                    comps={comps}
+                    state={compSubject.state}
+                    ask={asking}
+                    upb={listing.kind === "POOL" ? pool.totalUpb : lead.upb}
+                    asOf={new Date()}
+                  />
                 </div>
               )}
-              <dl className="mt-5 space-y-2 text-sm">
-                <Line k={`Premium ${bpsToPercent(settings.buyerPremiumBps).toFixed(2)}%`} v={money(premium)} />
-                <Line k="All-in if accepted here" v={money(asking + premium)} />
-                {listing.salePrice && <Line k="Settled price" v={money(num(listing.salePrice))} />}
-              </dl>
-            </>
-          ) : (
-            <p className="mt-4 text-sm text-muted-foreground">The ask, the premium, and the all-in price are visible on Pro.</p>
-          )}
+            </TabsContent>
+
+            <TabsContent value="activity">
+              <ListingTimeline
+                events={[
+                  { at: listing.approvedAt, label: "Listed on the book" },
+                  ...(event
+                    ? [
+                        { at: event.indicationsAt, label: event.indicationsAt.getTime() < Date.now() ? "Indications closed" : "Indications due", detail: event.name },
+                        { at: event.bestFinalAt, label: event.bestFinalAt.getTime() < Date.now() ? "Best and final closed" : "Best and final due", detail: "One bid each" },
+                      ]
+                    : [{ at: listing.bidDeadline && listing.bidMode !== "NONE" ? listing.bidDeadline : null, label: listing.bidDeadline && listing.bidDeadline.getTime() < Date.now() ? "Bids closed" : "Bids close", detail: bidModeLabel(listing.bidMode) }]),
+                  { at: user.role === "BUYER" && listing.ndas[0] ? listing.ndas[0].acknowledgedAt : null, label: "You signed the NDA" },
+                  { at: listing.soldAt, label: "Sold" },
+                  { at: listing.withdrawnAt, label: "Withdrawn by the seller" },
+                ]}
+                mine={mine ? mine.map((inquiry) => ({
+                  id: inquiry.id,
+                  type: inquiry.type,
+                  status: inquiry.status,
+                  amount: inquiry.amount == null ? null : num(inquiry.amount),
+                  createdAt: inquiry.createdAt,
+                  expiresAt: inquiry.expiresAt,
+                  noteName: named(inquiry.noteId),
+                })) : null}
+                ownerHref={user.role === "ADMIN" ? `/admin/listings/${listing.id}` : listing.sellerId === user.id ? `/seller/listings/${listing.id}` : null}
+              />
+            </TabsContent>
+          </ListingTabs>
         </div>
-        <GroupPanel
-          listingId={listing.id}
-          asking={pro || user.role === "ADMIN" ? asking : null}
-          canStart={listing.status === "APPROVED" && wholeOpen && (user.role === "ADMIN" || (user.role === "BUYER" && verified && unlocked))}
-          viewer={{ id: user.id, role: user.role }}
-          group={liveGroup ? {
-            id: liveGroup.id,
-            status: liveGroup.status,
-            targetAmount: Number(liveGroup.targetAmount),
-            deadline: liveGroup.deadline,
-            positions: liveGroup.positions.map((seat) => ({
-              id: seat.id,
-              userId: seat.userId,
-              seat: seat.seat,
-              amount: Number(seat.amount),
-              percent: Number(seat.percent),
-              slice: seat.slice,
-              status: seat.status,
-              name: seat.user.name,
-            })),
-          } : null}
-        />
-        <OfferPanel
-          listingId={listing.id}
-          premiumBps={settings.buyerPremiumBps}
-          deposit={deposit}
-          diligenceDays={diligence}
-          canOffer={listing.status === "APPROVED" && wholeOpen && user.role === "BUYER"}
-          pro={pro}
+
+        {/* Offer first. The rail stays in view only where it fits; elsewhere it sits in the flow and the bid bar reaches it. */}
+        <aside
+          id="offer"
+          aria-label="Bid"
+          className="scroll-mt-6 space-y-4 lg:mt-6 lg:self-start [@media(min-width:64rem)_and_(min-height:50rem)]:sticky [@media(min-width:64rem)_and_(min-height:50rem)]:top-6 [@media(min-width:64rem)_and_(min-height:50rem)]:max-h-[calc(100dvh-3rem)] [@media(min-width:64rem)_and_(min-height:50rem)]:overflow-y-auto"
+        >
+          <OfferPanel
+            listingId={listing.id}
+            premiumBps={settings.buyerPremiumBps}
+            deposit={deposit}
+            diligenceDays={diligence}
+            canOffer={canOffer}
+            pro={pro}
+            verified={verified}
+            buyNow={buyNow}
+            notices={notices}
+            acknowledgeFirst={acknowledgeFirst}
+            standing={standing}
+            heading={listing.kind === "POOL" ? "Bid the whole pool" : undefined}
+            closedText={listing.status === "APPROVED" && !wholeOpen ? "Some loans in this pool have traded, so it can't be bid whole. Bid the loans still for sale in the table." : undefined}
+          />
+          <p className="text-xs leading-relaxed text-muted-foreground">Listed by {listing.seller.companyName || listing.seller.name}. An accepted bid opens a closing checklist with the premium and commission on the all-in total.</p>
+        </aside>
+      </div>
+      {user.role === "BUYER" && (
+        <BidBar
+          asking={pro ? asking : null}
+          priceToUpb={pro ? economics.priceToUpb : null}
+          canOffer={canOffer}
           verified={verified}
-          heading={listing.kind === "POOL" ? "Bid the whole pool" : undefined}
-          closedText={listing.status === "APPROVED" && !wholeOpen ? "Some loans in this pool have traded, so it can't be bid whole. Bid the loans still for sale in the table." : undefined}
+          buyNow={buyNow?.price ?? null}
+          acknowledgeFirst={acknowledgeFirst}
         />
-        <p className="text-xs leading-relaxed text-muted-foreground">Listed by {listing.seller.companyName || listing.seller.name}. An accepted bid opens a closing checklist with the premium and commission on the all-in total.</p>
-      </aside>
+      )}
     </div>
   );
 }
 
-// A loan's file in a few words for the pool table, linking to the full file below it.
-function FileCell({ href, file }: { href: string; file: ReturnType<typeof completeness> | null }) {
-  if (!file) return null;
-  const open = file.defects.length + file.chainBreaks;
+// The federal notice and the Maryland prompt, with the 350-home acknowledgement for a buyer who needs to give it.
+// Nothing here stops a bid on its own; the acknowledgement is asked once per listing and logged.
+function EligibilityPanel({
+  listingId,
+  eligibility,
+  buyer,
+  acknowledgedAt,
+  acknowledgeFirst,
+}: {
+  listingId: string;
+  eligibility: Eligibility;
+  buyer: boolean;
+  acknowledgedAt: Date | null;
+  acknowledgeFirst: boolean;
+}) {
+  const [stated, acknowledgement] = roadAcknowledgement(eligibility.homes ?? 0);
   return (
-    <Link href={href} className="text-[13px] font-medium text-link tabular-nums">
-      {file.reviewed ? `${file.collateral.present} of ${file.collateral.required} on file` : "Not reviewed"}
-      {open > 0 && <span className="block text-xs text-bad">{open} open defect{open === 1 ? "" : "s"}</span>}
-    </Link>
-  );
-}
-
-function Line({ k, v }: { k: string; v: string }) {
-  return (
-    <div className="flex justify-between gap-4 border-b border-border py-2">
-      <dt className="text-muted-foreground">{k}</dt>
-      <dd className="text-foreground">{v}</dd>
-    </div>
+    <section id="eligibility" aria-labelledby="eligibility-heading" className="mt-6 scroll-mt-6 border border-border p-5 rounded-xl">
+      <h2 id="eligibility-heading" className="eyebrow">Buyer eligibility</h2>
+      {eligibility.road && (
+        <div className="mt-3 space-y-2 text-sm leading-relaxed text-muted-foreground">
+          <p className="text-[13px] font-semibold text-foreground">{ROAD_HEADING}</p>
+          <p>{ROAD_NOTICE.join(" ")}</p>
+          {buyer && eligibility.holdToRent && <p className="text-foreground">{ROAD_RENT}</p>}
+          {buyer && eligibility.unanswered && (
+            <p>
+              {ROAD_UNANSWERED} <Link href="/buyer/verification#eligibility" className="text-link">Answer in your buyer file</Link>.
+            </p>
+          )}
+          {buyer && eligibility.acknowledge && (acknowledgeFirst ? (
+            <form action={acknowledgeRoadNotice} className="space-y-3 border-t border-border pt-3">
+              <input type="hidden" name="listingId" value={listingId} />
+              <p>{stated}</p>
+              <label className="flex items-start gap-3 text-foreground">
+                <input type="checkbox" name="acknowledged" value="yes" required className="mt-1" />
+                <span>{acknowledgement}</span>
+              </label>
+              <SubmitButton className="h-10 text-[13px] font-medium" pendingLabel="Saving…">Acknowledge and continue</SubmitButton>
+            </form>
+          ) : (
+            <p className="text-foreground">You acknowledged this notice on {prettyDate(acknowledgedAt)}.</p>
+          ))}
+        </div>
+      )}
+      {eligibility.maryland && (
+        <div className="mt-4 space-y-2 text-sm leading-relaxed text-muted-foreground">
+          <p className="text-[13px] font-semibold text-foreground">{MARYLAND_HEADING}</p>
+          <p>{MARYLAND_PROMPT.join(" ")}</p>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -549,6 +703,19 @@ function sliceForAnalyzer(notes: { upb: number; askingPrice: number; interestRat
     monthsDelinquent: upb > 0 ? rows.reduce((sum, note) => sum + note.monthsDelinquent * note.upb, 0) / upb : 0,
     term,
   };
+}
+
+// The state, lien and performance most of the loans for sale share, for the comps a listing reads.
+function commonLoan(notes: { state: string; lienPosition: string; paymentStatus: string }[]) {
+  const counts = new Map<string, { state: string; lienPosition: string; paymentStatus: string; count: number }>();
+  for (const note of notes) {
+    const key = `${note.state}|${note.lienPosition}|${note.paymentStatus}`;
+    const row = counts.get(key) ?? { state: note.state, lienPosition: note.lienPosition, paymentStatus: note.paymentStatus, count: 0 };
+    row.count += 1;
+    counts.set(key, row);
+  }
+  const top = [...counts.values()].sort((a, b) => b.count - a.count)[0];
+  return { state: top?.state ?? "", lienPosition: top?.lienPosition ?? "", paymentStatus: top?.paymentStatus ?? "" };
 }
 
 function countBy(values: string[]) {

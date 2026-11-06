@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { isReleaseBuild } from "@/lib/deploy";
 import { deliverable, deskRecipients, resolveMailTransport, type MailTransport } from "@/lib/mail-config";
+import { pushNotice } from "@/lib/push";
 
 async function deliver(transport: MailTransport, toEmail: string, subject: string, body: string) {
   const from = process.env.EMAIL_FROM || "UPB Capital <desk@localhost>";
@@ -33,7 +34,7 @@ async function deliver(transport: MailTransport, toEmail: string, subject: strin
 }
 
 // For mail that carries a secret, such as a reset link or a sign-in code: it ignores notice settings, keeps no in-app
-// copy, and a failure never logs the body. A release build keeps the body out of the log transport too.
+// copy, never pushes, and a failure never logs the body. A release build keeps the body out of the log transport too.
 export async function sendSecret(toEmail: string, subject: string, body: string) {
   const transport = deliverable(toEmail) ? resolveMailTransport() : "log";
   if (transport === "log") {
@@ -60,11 +61,17 @@ export async function sendAlert(toEmail: string, subject: string, body: string) 
 async function deliverNotice(toEmail: string, subject: string, body: string, alwaysEmail: boolean) {
   const user = await prisma.user.findUnique({
     where: { email: toEmail },
-    select: { id: true, notifyEmail: true, notifyInApp: true },
+    select: { id: true, notifyEmail: true, notifyInApp: true, pushEnabled: true },
   });
   const sendEmail = alwaysEmail || !user || user.notifyEmail;
   const keepInApp = !user || user.notifyInApp;
-  if (!sendEmail && !keepInApp) return;
+  // Push is its own opt-in, per device. It runs after the in-app copy so the badge counts this notice, and its
+  // payload is only the event name, a generic line and the in-app link (see lib/push.ts).
+  const push = user?.pushEnabled ? () => pushNotice(user.id, subject, body) : null;
+  if (!sendEmail && !keepInApp) {
+    if (push) await push();
+    return;
+  }
   const transport = deliverable(toEmail) ? resolveMailTransport() : "log";
   let delivery: string = sendEmail ? transport : "skipped";
   if (sendEmail && transport === "log") {
@@ -78,10 +85,12 @@ async function deliverNotice(toEmail: string, subject: string, body: string, alw
       console.info(`[upb-mail] to=${toEmail} subject=${subject}\n${body}`);
     }
   }
-  if (!keepInApp) return;
-  await prisma.notification.create({
-    data: { toEmail, userId: user?.id, subject, body, delivery },
-  });
+  if (keepInApp) {
+    await prisma.notification.create({
+      data: { toEmail, userId: user?.id, subject, body, delivery },
+    });
+  }
+  if (push) await push();
 }
 
 export async function notifyDesk(subject: string, body: string) {

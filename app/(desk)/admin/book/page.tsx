@@ -122,7 +122,7 @@ export default async function DeskBookPage({
               </div>
               <form action={logDeskPayment} className="mt-4 grid gap-3 sm:grid-cols-4">
                 <input type="hidden" name="holdingId" value={holding.id} />
-                <input name="amount" className="desk-input" aria-label={`Payment for ${holding.title}`} placeholder="Amount" />
+                <input name="amount" inputMode="decimal" className="desk-input" aria-label={`Payment for ${holding.title}`} placeholder="Amount" />
                 <input name="paidOn" type="date" className="desk-input" aria-label="Payment date" />
                 <input name="memo" className="desk-input" aria-label="Payment memo" placeholder="Memo" />
                 <SubmitButton className="h-11 text-[13px] font-medium">Log payment</SubmitButton>

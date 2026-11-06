@@ -1,13 +1,16 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import { createNoteListing, updateOwnNote } from "@/actions/listings";
+import { checkNoteMarket } from "@/actions/market-rates";
+import { PriceAgainstTime } from "@/components/indicative-price";
 import { Field } from "@/components/page-intro";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { money } from "@/lib/format";
+import type { PriceLadder } from "@/lib/indicative";
 import {
   DOC_TYPES,
   FORECLOSURES,
@@ -18,7 +21,19 @@ import {
   US_STATES,
 } from "@/lib/labels";
 import { bpsToPercent } from "@/lib/money";
-import { BANKRUPTCY_CHAPTERS, LOAN_PURPOSES, SERVICING_KEYS, VALUE_TYPES, parsePayString, type ServicingKey } from "@/lib/tape-fields";
+import {
+  BANKRUPTCY_CHAPTERS,
+  CREDIT_SCORE_MAX,
+  CREDIT_SCORE_MIN,
+  CREDIT_SCORE_TYPES,
+  LOAN_PURPOSES,
+  LOSS_MIT_STAGES,
+  SERVICING_KEYS,
+  VALUE_TYPES,
+  parseMersMin,
+  parsePayString,
+  type ServicingKey,
+} from "@/lib/tape-fields";
 
 type Draft = {
   streetAddress: string;
@@ -100,6 +115,9 @@ export function NoteWizard({
   const [files, setFiles] = useState<Record<string, File[]>>({});
   const [error, setError] = useState("");
   const [pending, start] = useTransition();
+  const [market, setMarket] = useState<{ ladder: PriceLadder | null; error: string | null; loading: boolean }>({ ladder: null, error: null, loading: false });
+  // Only the latest check lands, so an answer for an older ask never overwrites a newer one.
+  const checkId = useRef(0);
   // An edit page that doesn't pass the stored servicing record shows it blank, so blanks mustn't clear it on save.
   const servicingLoaded = mode === "create" || SERVICING_KEYS.some((key) => initial?.[key] !== undefined);
 
@@ -130,15 +148,54 @@ export function NoteWizard({
       if (future(draft.bankruptcyFiledAt)) return "The bankruptcy filing date can't be in the future.";
       if (future(draft.foreclosureFiledAt)) return "The foreclosure filing date can't be in the future.";
       if (future(draft.valueAsOf)) return "The value date can't be in the future.";
+      if (draft.armMargin.trim() && !(Number(draft.armMargin) >= 0 && Number(draft.armMargin) <= 20)) return "Enter the margin as a percent, such as 2.75.";
+      const score = draft.creditScore.trim();
+      if (score && !(Number.isInteger(Number(score)) && Number(score) >= CREDIT_SCORE_MIN && Number(score) <= CREDIT_SCORE_MAX)) {
+        return `Credit scores run from ${CREDIT_SCORE_MIN} to ${CREDIT_SCORE_MAX}.`;
+      }
+      if (future(draft.creditScoreDate)) return "The score date can't be in the future.";
+      if (draft.mersMin.trim() && !parseMersMin(draft.mersMin)) return "A MERS MIN is 18 digits.";
     }
     if (name === "Price" && Number(draft.askingPrice) <= 0) return "Enter an asking price.";
     return "";
   }
 
+  // The ask against standing demand and comps, run as the seller reaches the review.
+  function checkMarket() {
+    const id = ++checkId.current;
+    setMarket({ ladder: null, error: null, loading: true });
+    checkNoteMarket({
+      state: draft.state,
+      lienPosition: draft.lienPosition,
+      paymentStatus: draft.paymentStatus,
+      occupancy: draft.occupancy,
+      upb: draft.upb,
+      interestRate: draft.interestRate,
+      monthlyPi: draft.monthlyPi,
+      estimatedValue: draft.estimatedValue,
+      askingPrice: draft.askingPrice,
+      maturityDate: draft.maturityDate,
+      monthsDelinquent: draft.monthsDelinquent,
+      foreclosureFiledAt: draft.foreclosureFiledAt,
+      valueType: draft.valueType,
+      valueAsOf: draft.valueAsOf,
+    })
+      .then((result) => {
+        if (id !== checkId.current) return;
+        setMarket(result.error === null ? { ladder: result.ladder, error: null, loading: false } : { ladder: null, error: result.error, loading: false });
+      })
+      .catch(() => {
+        if (id === checkId.current) setMarket({ ladder: null, error: "The market check is unavailable right now. You can still submit.", loading: false });
+      });
+  }
+
   function next() {
     const message = validate(step);
     setError(message);
-    if (!message) setStep((current) => Math.min(current + 1, steps.length - 1));
+    if (message) return;
+    const upcoming = Math.min(step + 1, steps.length - 1);
+    setStep(upcoming);
+    if (steps[upcoming] === "Review") checkMarket();
   }
 
   function submit() {
@@ -171,8 +228,20 @@ export function NoteWizard({
   const payStored = draft.payString.trim() ? parsePayString(draft.payString) : null;
 
   return (
-    <div className="grid gap-8 lg:grid-cols-[200px_minmax(0,1fr)]">
-      <ol className="flex gap-4 overflow-x-auto lg:block lg:space-y-4">
+    <div className="grid gap-5 sm:gap-8 lg:grid-cols-[200px_minmax(0,1fr)]">
+      {/* Below a wide screen the steps are one line, which step of how many, and a bar that fills as they go. */}
+      <div className="lg:hidden" aria-live="polite">
+        <div className="flex items-baseline justify-between gap-3">
+          <p className="text-[13px] font-medium text-link tabular-nums">Step {step + 1} of {steps.length}</p>
+          <p className="truncate text-sm font-semibold text-foreground">{steps[step]}</p>
+        </div>
+        <div aria-hidden className="mt-2 flex gap-1">
+          {steps.map((label, index) => (
+            <span key={label} className={`step-bar h-1 flex-1 rounded-full ${index <= step ? "bg-link" : "bg-muted"}`} />
+          ))}
+        </div>
+      </div>
+      <ol className="relative hidden lg:block lg:space-y-4">
         {steps.map((label, index) => (
           <li key={label}>
             <button type="button" onClick={() => index < step && setStep(index)} className={index === step ? "text-link" : "text-muted-foreground"}>
@@ -182,7 +251,7 @@ export function NoteWizard({
           </li>
         ))}
       </ol>
-      <div className="glass p-6 md:p-10">
+      <div className="glass p-5 md:p-10">
         {step === 0 && (
           <div className="grid gap-5 md:grid-cols-2">
             <div className="md:col-span-2">
@@ -197,7 +266,7 @@ export function NoteWizard({
               <EnumSelect value={draft.state} onChange={(value) => set("state", value)} options={US_STATES.map((state) => ({ value: state, label: state }))} />
             </Field>
             <Field label="ZIP">
-              <Input className="h-11 bg-card" value={draft.zip} onChange={(event) => set("zip", event.target.value)} />
+              <Input className="h-11 bg-card" inputMode="numeric" maxLength={10} value={draft.zip} onChange={(event) => set("zip", event.target.value)} />
             </Field>
             <Field label="Property type">
               <EnumSelect value={draft.propertyType} onChange={(value) => set("propertyType", value)} options={PROPERTY_TYPES} />
@@ -273,6 +342,9 @@ export function NoteWizard({
             <Field label="Loss mitigation" hint="Any forbearance, repayment plan or trial modification, in a few words.">
               <Input className="h-11 bg-card" value={draft.lossMitigation} onChange={(event) => set("lossMitigation", event.target.value)} />
             </Field>
+            <Field label="Loss mitigation stage" hint="Where the borrower's request stands: received, options offered, or decided.">
+              <OptionalSelect value={draft.lossMitStage} options={LOSS_MIT_STAGES} unsure="None or not sure" onChange={(value) => set("lossMitStage", value)} />
+            </Field>
             <Field label="Has the loan been modified?">
               <OptionalSelect
                 value={draft.modified}
@@ -320,6 +392,51 @@ export function NoteWizard({
             <Field label="Property taxes past due?">
               <OptionalSelect value={draft.taxDelinquent} options={YES_NO} onChange={(value) => set("taxDelinquent", value)} />
             </Field>
+            {draft.loanPurpose === "SELLER_FINANCED" && (
+              <div className="md:col-span-2">
+                <OriginatorLicense value={draft.originatorLicense} onChange={(value) => set("originatorLicense", value)} />
+              </div>
+            )}
+
+            <p className="eyebrow pt-4 md:col-span-2">Rate, credit and registry</p>
+            <Field label="ARM index" hint="For an adjustable rate only: what it resets from, such as 30-day average SOFR. Leave blank for a fixed rate.">
+              <Input className="h-11 bg-card" value={draft.armIndex} onChange={(event) => set("armIndex", event.target.value)} />
+            </Field>
+            <Field label="ARM margin (%)" hint="Added to the index at each reset.">
+              <Input className="h-11 bg-card tabular-nums" inputMode="decimal" value={draft.armMargin} onChange={(event) => set("armMargin", event.target.value)} />
+            </Field>
+            <Field label="Next rate reset" hint="The date the rate next changes.">
+              <Input className="h-11 bg-card" type="date" value={draft.armNextReset} onChange={(event) => set("armNextReset", event.target.value)} />
+            </Field>
+            <div className="hidden md:block" />
+            <Field label="Credit score" hint={`The borrower's latest score, ${CREDIT_SCORE_MIN} to ${CREDIT_SCORE_MAX}.`}>
+              <Input className="h-11 bg-card tabular-nums" inputMode="numeric" value={draft.creditScore} onChange={(event) => set("creditScore", event.target.value)} />
+            </Field>
+            <Field label="Score model" hint="FICO and VantageScore read differently.">
+              <OptionalSelect value={draft.creditScoreType} options={CREDIT_SCORE_TYPES} onChange={(value) => set("creditScoreType", value)} />
+            </Field>
+            <Field label="Score date" hint="When the score was pulled.">
+              <Input className="h-11 bg-card" type="date" value={draft.creditScoreDate} onChange={(event) => set("creditScoreDate", event.target.value)} />
+            </Field>
+            <div className="hidden md:block" />
+            <Field label="MERS MIN" hint="The 18-digit number on the mortgage, if it's registered with MERS. Kept private, like the street address.">
+              <Input className="h-11 bg-card tabular-nums" autoComplete="off" inputMode="numeric" value={draft.mersMin} onChange={(event) => set("mersMin", event.target.value)} />
+            </Field>
+            <Field label="eNote ID" hint="Only for a note signed electronically. Kept private, like the street address.">
+              <Input className="h-11 bg-card" autoComplete="off" value={draft.eNoteId} onChange={(event) => set("eNoteId", event.target.value)} />
+            </Field>
+            <Field label="Originating platform" hint="The lender or system that made the loan.">
+              <Input className="h-11 bg-card" value={draft.originatingPlatform} onChange={(event) => set("originatingPlatform", event.target.value)} />
+            </Field>
+            <div className="hidden md:block" />
+            <div className="md:col-span-2">
+              <Field
+                label="Inherited sale covenants"
+                hint="Promises that came with the loan from an earlier sale, such as an agency loan sale's loss mitigation terms. Leave it blank if there are none. Buyers read this as your statement, not a legal opinion."
+              >
+                <Textarea className="min-h-20 bg-card" maxLength={600} value={draft.inheritedCovenants} onChange={(event) => set("inheritedCovenants", event.target.value)} />
+              </Field>
+            </div>
           </div>
         )}
         {step === 4 && (
@@ -379,6 +496,7 @@ export function NoteWizard({
               <Row k="Pay history" v={payStored || "—"} />
             </dl>
             <FeeCard ask={ask} upb={upb} value={value} premium={premium} commission={commission} premiumBps={premiumBps} commissionBps={commissionBps} />
+            <PriceAgainstTime ladder={market.ladder} loading={market.loading} error={market.error} />
             <label className="flex items-start gap-3 text-sm text-foreground">
               <input
                 type="checkbox"
@@ -388,10 +506,14 @@ export function NoteWizard({
               />
               <span>This note was originated as seller financing. The listing will carry the Dodd-Frank and SAFE Act reminders.</span>
             </label>
+            {draft.sellerFinanced === "true" && (
+              <OriginatorLicense value={draft.originatorLicense} onChange={(value) => set("originatorLicense", value)} />
+            )}
           </div>
         )}
         {error && <p role="alert" className="mt-6 text-sm text-bad">{error}</p>}
-        <div className="mt-8 flex items-center justify-between gap-3">
+        {/* On a phone Back and Continue stay pinned above the tab bar while the step scrolls. */}
+        <div className="mt-8 flex items-center justify-between gap-3 max-md:sticky max-md:bottom-[var(--dock,0px)] max-md:z-10 max-md:-mx-5 max-md:-mb-5 max-md:rounded-b-[inherit] max-md:border-t max-md:border-border max-md:bg-card/95 max-md:px-5 max-md:py-3 max-md:backdrop-blur-xl">
           <Button type="button" variant="ghost" className="h-11 px-4 text-[13px] font-medium" onClick={() => setStep((current) => Math.max(current - 1, 0))} disabled={step === 0}>
             Back
           </Button>
@@ -447,6 +569,18 @@ function FeeCard({
         <Row k={`Buyer all-in +${bpsToPercent(premiumBps).toFixed(2)}%`} v={ask ? money(ask + premium) : "—"} />
       </dl>
     </aside>
+  );
+}
+
+// Asked only for seller financing, where buyers check whether a licensed loan originator took the application.
+function OriginatorLicense({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  return (
+    <Field
+      label="Originator license"
+      hint="Seller-financed notes are easier to sell when a licensed loan originator handled the borrower. Enter their name and NMLS ID, or say in a few words why none was used. Kept private, like the street address."
+    >
+      <Input className="h-11 bg-card" maxLength={200} value={value} onChange={(event) => onChange(event.target.value)} />
+    </Field>
   );
 }
 

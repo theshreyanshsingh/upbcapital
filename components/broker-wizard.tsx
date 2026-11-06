@@ -77,7 +77,7 @@ export function BrokerWizard({ licensed }: { licensed: boolean }) {
               <ChoiceCard selected={fields.brokerRole === "AFFILIATE"} title="Referring affiliate" lede="You introduced the seller. You are not the broker of record." onSelect={() => set("brokerRole", "AFFILIATE")} />
             </div>
             {error && <p className="text-sm text-bad">{error}</p>}
-            <div className="sticky bottom-0 -mx-4 mt-8 flex gap-2 border-t border-border bg-card/92 px-4 py-4 backdrop-blur md:static md:mx-0 md:border-0 md:bg-transparent md:px-0">
+            <div className="sticky bottom-[var(--dock,0px)] -mx-4 mt-8 flex gap-2 border-t border-border bg-card/92 px-4 py-4 backdrop-blur md:static md:mx-0 md:border-0 md:bg-transparent md:px-0">
               <button type="button" className="min-h-12 flex-1 bg-primary px-5 text-[13px] font-medium text-primary-foreground rounded-lg" onClick={() => {
                 if (fields.clientSellerName.trim().length < 2 || fields.clientRelationship.trim().length < 2) {
                   setError("Name the seller and the relationship.");
@@ -164,7 +164,7 @@ export function BrokerWizard({ licensed }: { licensed: boolean }) {
               </div>
             )}
             {error && <p className="text-sm text-bad">{error}</p>}
-            <div className="sticky bottom-0 -mx-4 mt-8 flex gap-2 border-t border-border bg-card/92 px-4 py-4 backdrop-blur md:static md:mx-0 md:border-0 md:bg-transparent md:px-0">
+            <div className="sticky bottom-[var(--dock,0px)] -mx-4 mt-8 flex gap-2 border-t border-border bg-card/92 px-4 py-4 backdrop-blur md:static md:mx-0 md:border-0 md:bg-transparent md:px-0">
               {back}
               <button type="button" className="min-h-12 flex-1 bg-primary px-5 text-[13px] font-medium text-primary-foreground rounded-lg" onClick={() => { setError(""); setStep(2); }}>Continue</button>
             </div>
@@ -180,7 +180,7 @@ export function BrokerWizard({ licensed }: { licensed: boolean }) {
             {authorization && <p className="text-sm text-foreground">{authorization.name}</p>}
             <p className="text-sm leading-relaxed text-muted-foreground">Without this letter the file cannot be sent. A fee is not owed until the trade closes, and it is withheld if you are also the buyer or the seller.</p>
             {error && <p className="text-sm text-bad">{error}</p>}
-            <div className="sticky bottom-0 -mx-4 mt-8 flex gap-2 border-t border-border bg-card/92 px-4 py-4 backdrop-blur md:static md:mx-0 md:border-0 md:bg-transparent md:px-0">
+            <div className="sticky bottom-[var(--dock,0px)] -mx-4 mt-8 flex gap-2 border-t border-border bg-card/92 px-4 py-4 backdrop-blur md:static md:mx-0 md:border-0 md:bg-transparent md:px-0">
               {back}
               <button type="button" className="min-h-12 flex-1 bg-primary px-5 text-[13px] font-medium text-primary-foreground rounded-lg" onClick={() => {
                 if (!authorization) {
@@ -205,7 +205,7 @@ export function BrokerWizard({ licensed }: { licensed: boolean }) {
             <Row k="Letter" v={authorization?.name || "Missing"} />
           </div>
           {error && <p className="mt-4 text-sm text-bad">{error}</p>}
-          <div className="sticky bottom-0 -mx-4 mt-8 flex gap-2 border-t border-border bg-card/92 px-4 py-4 backdrop-blur md:static md:mx-0 md:border-0 md:bg-transparent md:px-0">
+          <div className="sticky bottom-[var(--dock,0px)] -mx-4 mt-8 flex gap-2 border-t border-border bg-card/92 px-4 py-4 backdrop-blur md:static md:mx-0 md:border-0 md:bg-transparent md:px-0">
             {back}
             <button type="button" disabled={pending} onClick={send} className="min-h-12 flex-1 bg-primary px-5 text-[13px] font-medium text-primary-foreground disabled:opacity-60 rounded-lg">
               {pending ? "Sending…" : "File with the desk"}
