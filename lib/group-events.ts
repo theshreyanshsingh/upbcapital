@@ -2,6 +2,7 @@ import { notify } from "@/lib/email";
 import { scaleToTarget, splitPremium } from "@/lib/group-buy";
 import { prisma } from "@/lib/prisma";
 import { seatMembers } from "@/lib/threads";
+import { vestingNames } from "@/lib/vesting";
 
 // What happens to a group when the desk counters, awards or declines its offer. These run from the desk's own
 // actions, so they live here rather than in actions/group, where every export is a public endpoint.
@@ -35,8 +36,10 @@ export async function onGroupAccepted(inquiryId: string, closingId: string, prem
   if (!group) return;
   const live = group.positions.filter((seat) => seat.status === "PLEDGED" || seat.status === "FUNDED");
   const splits = splitPremium(premiumCents, live.map((seat) => ({ userId: seat.userId, amount: Number(seat.amount) })));
+  const names = await vestingNames(live.map((seat) => seat.userId));
   for (const seat of live) {
     const split = splits.find((row) => row.userId === seat.userId);
+    const entityName = names.get(seat.userId) ?? null;
     await prisma.closingFunder.upsert({
       where: { closingId_userId: { closingId, userId: seat.userId } },
       create: {
@@ -46,8 +49,9 @@ export async function onGroupAccepted(inquiryId: string, closingId: string, prem
         premiumCents: split?.premiumCents ?? 0,
         percent: seat.percent,
         slice: seat.slice,
+        entityName,
       },
-      update: { amount: seat.amount, premiumCents: split?.premiumCents ?? 0, percent: seat.percent, slice: seat.slice },
+      update: { amount: seat.amount, premiumCents: split?.premiumCents ?? 0, percent: seat.percent, slice: seat.slice, entityName },
     });
     await prisma.groupPosition.update({ where: { id: seat.id }, data: { status: "FUNDED" } });
   }

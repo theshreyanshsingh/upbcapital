@@ -6,7 +6,7 @@ import { isPrivateDocument } from "@/lib/acl";
 import { audit } from "@/lib/audit";
 import { requireRole, requireUser } from "@/lib/auth";
 import { closingLoans } from "@/lib/closing";
-import { modelParticipation } from "@/lib/participation";
+import { modelParticipation, partialShare, participationsOpen, PARTICIPATIONS_PAUSED } from "@/lib/participation";
 import { rescoreListing } from "@/lib/matching";
 import { prisma } from "@/lib/prisma";
 import { screenAndRecord } from "@/lib/screening";
@@ -267,6 +267,9 @@ export async function relistBuyerNote(formData: FormData) {
   const holding = await prisma.buyerHolding.findUnique({ where: { id: holdingId }, include: { payments: true } });
   if (!holding || holding.userId !== user.id) redirect("/buyer/portfolio?error=That note is not on your book.");
   if (!(price > 0)) redirect("/buyer/portfolio?error=Enter an asking price.");
+  if (partialShare(holding.sharePercent == null ? null : Number(holding.sharePercent)) && !participationsOpen()) {
+    redirect(`/buyer/portfolio?error=${encodeURIComponent(PARTICIPATIONS_PAUSED)}`);
+  }
   if (await openRelist(holdingId)) redirect(`/buyer/portfolio?error=${encodeURIComponent("This holding is already listed.")}`);
   const source = holding.listingId
     ? await prisma.listing.findUnique({ where: { id: holding.listingId }, include: { notes: true, documents: true } })
@@ -375,6 +378,7 @@ export async function quoteSlice(formData: FormData) {
 export async function listSlice(formData: FormData) {
   const user = await requireRole(["ADMIN"]);
   const id = String(formData.get("id") || "");
+  if (!participationsOpen()) redirect(`/admin/book?error=${encodeURIComponent(PARTICIPATIONS_PAUSED)}`);
   const slice = await prisma.participation.findUnique({
     where: { id },
     include: { deskHolding: { include: { listing: { include: { notes: true, documents: true } } } } },

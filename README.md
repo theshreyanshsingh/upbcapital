@@ -194,6 +194,8 @@ Buyers get a referral code on the membership page. The first time someone who us
 
 `UPB_RELEASE=1` marks a release. On top of the build checks, a release closes the simulated checkout when Stripe isn't set. It also ends Pro at its period end, after a three-day grace for a late renewal webhook; a desk comp has no end date. And it hides stand-in property values from buyers. Without the flag the desk runs as a demo, and its seeded Pro seats keep working. The fee schedule page lists every service as live, stand-in, or off, along with release mode, two-step enforcement, and the demo accounts left.
 
+`UPB_PARTICIPATIONS=1` opens fractional sales. Without it, the desk can still model a participation split, but it can't list a slice, and a buyer can't relist a partial position. It stays off until counsel rules on the securities question.
+
 ## Sign-in, limits, and sessions
 
 Two-step sign-in is required, by default, for every approved buyer, seller, and broker as well as for admins, because they can see borrower data. Pages send an account that hasn't enrolled to Security, and API routes answer 401 until it does. The fee schedule can turn this off. Demo seats on undeliverable addresses are exempt. Security shows a QR code for an authenticator, eight one-time recovery codes, and an optional email code. Sign-in stops at `/login/verify` when two-factor is on. Recovery codes and email codes are accepted on that screen. Codes are limited to five tries per fifteen minutes per account, at sign-in and when turning two-factor off.
@@ -242,7 +244,7 @@ Tape upload checks the mapped rows even with no model: missing fields, coupons o
 
 `/admin/book/[id]` is the loss file for a note the desk owns: borrower outreach, a reinstatement, forbearance, or modification, foreclosure milestones with attorney and court dates, and task deadlines. Those deadlines also show on the book when they are due within a week. REO hand-off writes a property record with a rehab budget and a resale or rental exit.
 
-Relist, on the desk file or a buyer holding, copies the loan facts, the stored documents, and the payment history onto a new listing. A desk relist goes live. A buyer relist waits in review. A participation sells a percent of the note or a count of future payments. The analyzer splits the cash flows, and the desk can list that slice.
+Relist, on the desk file or a buyer holding, copies the loan facts, the stored documents, and the payment history onto a new listing. A desk relist goes live. A buyer relist waits in review. A participation sells a percent of the note or a count of future payments. The analyzer splits the cash flows. The desk can list that slice once `UPB_PARTICIPATIONS=1` is set.
 
 `/admin/capital` tracks investors, commitments, and allocations against desk purchases. Receipts are attributed in proportion to the allocation. `/api/admin/capital/statement` downloads the CSV.
 

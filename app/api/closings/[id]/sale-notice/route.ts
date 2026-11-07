@@ -2,6 +2,7 @@ import { getApiUser } from "@/lib/auth";
 import { loansInScope, type PaymentPolicy, transferDate } from "@/lib/borrower-notices";
 import { prisma } from "@/lib/prisma";
 import { buildSaleNoticePdf } from "@/lib/sale-notice";
+import { namesOnTitle } from "@/lib/vesting";
 
 export const runtime = "nodejs";
 
@@ -22,11 +23,13 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   const notes = closing.noteId ? closing.listing.notes.filter((note) => note.id === closing.noteId) : closing.listing.notes;
   const loans = loansInScope(notes, closing.loanPurpose);
   if (!loans.length) return new Response("No loan on this closing looks in scope for the sale notice.", { status: 409 });
+  // The notice names the owner of record, the vetted entity that takes title.
+  const names = await namesOnTitle(closing, inquiry?.buyerId ?? null, closing.funders);
   const owner = closing.deskBidId
     ? "UPB Capital"
     : closing.funders.length > 1
-      ? `${closing.funders.map((funder) => funder.user.companyName || funder.user.name).join(" and ")}, jointly`
-      : inquiry?.buyer.companyName || inquiry?.buyer.name || "[new owner]";
+      ? `${closing.funders.map((funder) => names.funder(funder) || funder.user.name).join(" and ")}, jointly`
+      : names.buyer || "[new owner]";
   const boarding = closing.boarding;
   const pdf = await buildSaleNoticePdf({
     owner,

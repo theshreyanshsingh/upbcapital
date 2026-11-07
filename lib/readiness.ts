@@ -4,6 +4,7 @@ import { aiMode } from "@/lib/desk-ai";
 import { isReleaseBuild } from "@/lib/deploy";
 import { deliverable, resolveMailTransport } from "@/lib/mail-config";
 import { ofacMode } from "@/lib/ofac";
+import { participationsOpen } from "@/lib/participation";
 import { prisma } from "@/lib/prisma";
 import { limitStore } from "@/lib/rate-limit";
 import { storageMode } from "@/lib/storage";
@@ -28,6 +29,9 @@ export async function launchReadiness(settings: { stripePriceId?: string | null;
     release
       ? { label: "Release mode", state: "live", detail: "UPB_RELEASE is set. Builds refuse stand-ins for the database, sign-in, cron, storage, and the sanctions list." }
       : { label: "Release mode", state: "standin", detail: "Demo mode. Set UPB_RELEASE=1 for launch: it closes the simulated checkout, ends Pro at its period end, and hides stand-in property values." },
+    participationsOpen(env)
+      ? { label: "Participations", state: "live", detail: "UPB_PARTICIPATIONS is set, so desk slices and partial positions can be listed." }
+      : { label: "Participations", state: "off", detail: "Slices and partial positions can't be listed until counsel rules. Set UPB_PARTICIPATIONS=1 once it does." },
     mail === "log"
       ? { label: "Email", state: "standin", detail: "Mail goes to the server log. Set RESEND_API_KEY or SMTP, and EMAIL_FROM on a verified domain." }
       : { label: "Email", state: "live", detail: `Delivered through ${mail}.` },

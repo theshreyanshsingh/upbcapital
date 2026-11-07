@@ -4,11 +4,22 @@ import { showsOriginationReminder, retentionCutoff } from "@/lib/compliance";
 import { deskFeeBps } from "@/lib/desk-fees";
 import { digestBody, digestSince } from "@/lib/digest";
 import { screenOfac } from "@/lib/ofac";
-import { modelParticipation } from "@/lib/participation";
+import { modelParticipation, partialShare, participationsOpen } from "@/lib/participation";
 
 test("desk fees can be waived, and the desk never pays itself a premium", () => {
   assert.deepEqual(deskFeeBps(false, 300), { premiumBps: 0, commissionBps: 0 });
   assert.deepEqual(deskFeeBps(true, 300), { premiumBps: 0, commissionBps: 300 });
+});
+
+test("fractional sales stay shut until the switch is set, and only a partial position counts as one", () => {
+  assert.equal(participationsOpen({}), false);
+  assert.equal(participationsOpen({ UPB_PARTICIPATIONS: "true" }), false);
+  assert.equal(participationsOpen({ UPB_PARTICIPATIONS: "1" }), true);
+  assert.equal(partialShare(null), false);
+  assert.equal(partialShare(100), false);
+  assert.equal(partialShare(99.95), false);
+  assert.equal(partialShare(40), true);
+  assert.equal(partialShare(0), false);
 });
 
 test("a participation splits percent and payment streams", () => {

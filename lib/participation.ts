@@ -1,5 +1,20 @@
 import { annualize, monthlyIrr, performingCase, projectFlows } from "@/lib/underwriting";
 
+// Selling a slice of a note, or a partial position in one, waits on counsel's ruling on the open securities
+// question. Until UPB_PARTICIPATIONS=1 is set, the model still splits the cash flows, but nothing fractional
+// reaches the book.
+export function participationsOpen(env: Record<string, string | undefined> = process.env) {
+  return env.UPB_PARTICIPATIONS === "1";
+}
+
+export const PARTICIPATIONS_PAUSED = "Selling slices and partial positions is paused until counsel rules on it. You can still model a split.";
+
+// A holding of less than the whole note. A holding with no share recorded is the whole note.
+export function partialShare(sharePercent: number | null | undefined) {
+  if (sharePercent == null) return false;
+  return sharePercent > 0 && sharePercent < 99.9;
+}
+
 export type SplitInput = {
   basis: number;
   upb: number;

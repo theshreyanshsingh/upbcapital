@@ -80,6 +80,28 @@ export function moneyGate(
   return null;
 }
 
+// The steps that put the note in the buyer's hands. The seller is paid only once they are done.
+const DELIVERY_STEPS = [
+  { key: "COLLATERAL_TRANSFER", label: "The collateral file transfer" },
+  { key: "ASSIGNMENT", label: "the assignment and allonge" },
+] as const;
+
+// The seller's proceeds go out only after the buyer's money and the collateral are in: buyer funds recorded in
+// full, every group share funded, and the collateral and assignment steps marked done. Returns what is missing,
+// or null. A desk purchase has no buyer wire to wait for, but its collateral still has to arrive.
+export function proceedsGate(
+  closing: { deskBidId?: string | null; buyerTotalCents: number; fundsReceivedCents: number | null; depositCents?: number | null; depositReceivedCents?: number | null },
+  funders: { status: string }[],
+  steps: { key: string; status: string }[],
+) {
+  const funds = moneyGate("PAYMENT_RECEIVED", closing, funders);
+  if (funds) return funds;
+  const open = DELIVERY_STEPS.filter((step) => steps.find((row) => row.key === step.key)?.status !== "COMPLETE");
+  if (!open.length) return null;
+  const named = open.map((step) => step.label).join(" and ");
+  return `${named.charAt(0).toUpperCase()}${named.slice(1)} ${open.length === 1 ? "isn't" : "aren't"} marked complete.`;
+}
+
 export function varianceNote(check: Variance) {
   if (check.state === "match") return "matches";
   if (check.state === "short") return `short ${dollars(-check.diffCents)}`;

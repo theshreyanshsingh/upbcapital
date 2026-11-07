@@ -7,6 +7,7 @@ import { SubmitButton } from "@/components/submit-button";
 import { requireRole } from "@/lib/auth";
 import { money, q } from "@/lib/format";
 import { bookReturn } from "@/lib/holdings";
+import { partialShare, participationsOpen, PARTICIPATIONS_PAUSED } from "@/lib/participation";
 import { ensureBuyerHolding } from "@/lib/portfolio";
 import { prisma } from "@/lib/prisma";
 
@@ -96,11 +97,15 @@ export default async function PortfolioPage({
                 <SubmitButton className="h-11 text-[13px] font-medium">Log payment</SubmitButton>
               </form>
               <div className="mt-4 grid gap-4 border-t border-border pt-4 lg:grid-cols-2">
-                <form action={relistBuyerNote} className="flex flex-wrap items-center gap-2">
-                  <input type="hidden" name="holdingId" value={holding.id} />
-                  <input name="askingPrice" inputMode="decimal" className="desk-input" aria-label={`Relist price for ${holding.title}`} placeholder="Ask" />
-                  <SubmitButton variant="outline" className="h-11 text-[13px] font-medium">Relist</SubmitButton>
-                </form>
+                {partialShare(holding.sharePercent == null ? null : Number(holding.sharePercent)) && !participationsOpen() ? (
+                  <p className="text-sm text-muted-foreground">{PARTICIPATIONS_PAUSED}</p>
+                ) : (
+                  <form action={relistBuyerNote} className="flex flex-wrap items-center gap-2">
+                    <input type="hidden" name="holdingId" value={holding.id} />
+                    <input name="askingPrice" inputMode="decimal" className="desk-input" aria-label={`Relist price for ${holding.title}`} placeholder="Ask" />
+                    <SubmitButton variant="outline" className="h-11 text-[13px] font-medium">Relist</SubmitButton>
+                  </form>
+                )}
                 <form action={quoteSlice} className="flex flex-wrap items-center gap-2">
                   <input type="hidden" name="holdingId" value={holding.id} />
                   <input type="hidden" name="side" value="buyer" />

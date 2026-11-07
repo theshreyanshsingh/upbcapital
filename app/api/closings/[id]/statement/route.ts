@@ -2,6 +2,7 @@ import { canReadClosingFile } from "@/lib/acl";
 import { getApiUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { buildStatementPdf, statementLines, statementSide } from "@/lib/settlement";
+import { namesOnTitle } from "@/lib/vesting";
 
 export const runtime = "nodejs";
 
@@ -21,7 +22,8 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   const share = mine ? { amount: Number(mine.amount), premiumCents: mine.premiumCents, status: mine.status, fundedAt: mine.fundedAt } : null;
   const brokerCents = closing.brokerFees.reduce((sum, fee) => sum + fee.amountCents, 0);
   const seller = closing.listing.seller.companyName || closing.listing.seller.name;
-  const buyer = closing.deskBidId ? "UPB Capital desk" : funderIds.length > 1 ? "A buying group" : inquiry?.buyer.companyName || inquiry?.buyer.name || "Buyer";
+  const names = await namesOnTitle(closing, inquiry?.buyerId ?? null, closing.funders);
+  const buyer = closing.deskBidId ? "UPB Capital desk" : funderIds.length > 1 ? "A buying group" : names.buyer || "Buyer";
   const record = { ...closing, salePrice: Number(closing.salePrice) };
   const pdf = await buildStatementPdf({
     title: closing.listing.title,

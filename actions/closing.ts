@@ -10,7 +10,7 @@ import { canCompleteStep } from "@/lib/closing";
 import { buyerSideEmails, cancelOpenClosing, completeDepositFromWire, finalizeClosing, isClosingStepKey, walkAwayFromClosing } from "@/lib/closing-service";
 import { prisma } from "@/lib/prisma";
 import { OFAC_HOLD_MESSAGE, ofacHold } from "@/lib/screening";
-import { moneyGate } from "@/lib/settlement";
+import { moneyGate, proceedsGate } from "@/lib/settlement";
 import { emitWebhook } from "@/lib/webhooks";
 import { extensionOf, mimeFor, putBytes, safeBasename } from "@/lib/storage";
 import { faultLabel, isCancelFault, strikeStanding } from "@/lib/strikes";
@@ -232,6 +232,13 @@ export async function recordSettlement(formData: FormData) {
   const reference = String(formData.get("reference") || "").trim().slice(0, 120);
   if (!Number.isFinite(amount) || amount <= 0 || amount > 1_000_000_000) redirect(`/closings/${closingId}?error=${encodeURIComponent("Enter the wire amount in dollars.")}`);
   if (!at) redirect(`/closings/${closingId}?error=${encodeURIComponent("Enter the date the wire landed or went out.")}`);
+  // The seller is paid after the buyer's money and the note are in. The desk can go ahead without them only by
+  // saying why, and that is audited, like a money step.
+  const override = String(formData.get("override") || "").trim().slice(0, 300);
+  const gate = side === "proceeds" ? proceedsGate(closing, closing.funders, closing.steps) : null;
+  if (gate && override.length < 3) {
+    redirect(`/closings/${closingId}?error=${encodeURIComponent(`${gate} Record those before paying the seller, or give a reason to go ahead without them.`)}`);
+  }
   const cents = Math.round(amount * 100);
   const before = side === "funds" ? closing.fundsReceivedCents : side === "deposit" ? closing.depositReceivedCents : closing.proceedsSentCents;
   await prisma.closing.update({
@@ -242,6 +249,7 @@ export async function recordSettlement(formData: FormData) {
         ? { depositReceivedCents: cents, depositReceivedAt: at, depositReference: reference }
         : { proceedsSentCents: cents, proceedsSentAt: at, proceedsReference: reference },
   });
+  if (gate) await audit(user.id, "CLOSING_OVERRIDE", "closing", closingId, `PROCEEDS: ${gate} Reason: ${override}`);
   const label = side === "funds" ? "Buyer funds received" : side === "deposit" ? "Buyer deposit received" : "Seller proceeds sent";
   const dollars = `$${amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   await audit(user.id, side === "funds" ? "FUNDS_RECEIVED" : side === "deposit" ? "DEPOSIT_RECEIVED" : "PROCEEDS_SENT", "closing", closingId, `${label}: ${before == null ? "none" : `$${(before / 100).toFixed(2)}`} to ${dollars} on ${at.toISOString().slice(0, 10)}${reference ? ` · ${reference}` : ""}`);

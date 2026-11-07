@@ -7,6 +7,7 @@ import { Notice } from "@/components/notice";
 import { SubmitButton } from "@/components/submit-button";
 import { requireRole } from "@/lib/auth";
 import { money, prettyDate, q } from "@/lib/format";
+import { participationsOpen, PARTICIPATIONS_PAUSED } from "@/lib/participation";
 import { prisma } from "@/lib/prisma";
 
 export const metadata = { title: "Loss file" };
@@ -43,6 +44,7 @@ export default async function LossFilePage({
     },
   });
   if (!holding) notFound();
+  const slicesOpen = participationsOpen();
   const file = holding.lossCase;
   const borrower = holding.listing.notes[0]?.borrowerName || "Borrower";
   return (
@@ -237,6 +239,7 @@ export default async function LossFilePage({
         <div className="border border-border p-5 rounded-xl">
           <p className="eyebrow">Participation</p>
           <p className="mt-2 text-sm text-muted-foreground">Sell a percent of the note, or the next few payments. The model splits the cash flows before anything is listed.</p>
+          {!slicesOpen && <p className="mt-2 text-sm text-muted-foreground">{PARTICIPATIONS_PAUSED} Set UPB_PARTICIPATIONS=1 once counsel signs off.</p>}
           <form action={quoteSlice} className="mt-4 grid gap-3 sm:grid-cols-2">
             <input type="hidden" name="holdingId" value={holding.id} />
             <input type="hidden" name="side" value="desk" />
@@ -251,7 +254,7 @@ export default async function LossFilePage({
                 <span className="text-foreground">
                   {slice.paymentCount ? `${slice.paymentCount} payments` : `${Number(slice.percent)}%`} · {money(Number(slice.price))} · {slice.status.toLowerCase()}
                 </span>
-                {slice.status === "DRAFT" && (
+                {slice.status === "DRAFT" && slicesOpen && (
                   <form action={listSlice}>
                     <input type="hidden" name="id" value={slice.id} />
                     <SubmitButton variant="outline" className="h-9 text-[13px] font-medium">List it</SubmitButton>

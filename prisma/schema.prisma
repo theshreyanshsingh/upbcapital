@@ -879,6 +879,9 @@ model Closing {
   provider              String        @default("manual")
   providerRef           String        @default("")
   wireInstructions      String        @default("")
+  // The name the buyer takes title in: the investing entity on the buyer file the desk vetted, fixed at award so
+  // the papers don't change if the buyer refiles mid-closing. Null for a desk purchase.
+  buyerEntity           String?
   openedAt              DateTime      @default(now())
   closedAt              DateTime?
   canceledAt            DateTime?
@@ -1311,6 +1314,8 @@ model ClosingFunder {
   slice        PositionSlice @default(PARI)
   status       FunderStatus  @default(PENDING)
   fundedAt     DateTime?
+  // The seat holder's vetted investing entity, fixed when the group's bid is accepted. See Closing.buyerEntity.
+  entityName   String?
 
   @@unique([closingId, userId])
 }

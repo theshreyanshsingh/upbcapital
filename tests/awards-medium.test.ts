@@ -5,6 +5,9 @@ import { assessBrokerFees, flatFeeKey, type AssessInput } from "../lib/broker-fe
 import { finalizeClosing, openClosing } from "../lib/closing-service";
 import { prisma } from "../lib/prisma";
 import { OFAC_HOLD_MESSAGE } from "../lib/screening";
+import { getSettings } from "../lib/settings";
+import { strikeLimitOf } from "../lib/strikes";
+import { namesOnTitle } from "../lib/vesting";
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -208,6 +211,67 @@ test("a group award checks every live seat holder's account and OFAC status, not
     await prisma.groupPosition.update({ where: { id: seat.id }, data: { status: "DROPPED" } });
     await prisma.groupPosition.updateMany({ where: { groupId: group.id, seat: 1 }, data: { amount: 80000, percent: 100 } });
     assert.equal((await awardOffer(offer.id, pool.desk.id)).error, null);
+  } finally {
+    await cleanPool(pool);
+  }
+});
+
+test("a strike pause stops an award to the lead or any live seat, and clearing the strikes lets it through", async () => {
+  const pool = await makePool(crypto.randomUUID().slice(0, 8));
+  const userIds = pool.users.map((user) => user.id);
+  try {
+    const listingId = pool.listing.id;
+    const limit = strikeLimitOf((await getSettings()).strikeLimit);
+    const pause = (userId: string) =>
+      prisma.buyerStrike.createMany({ data: Array.from({ length: limit }, (_, index) => ({ userId, closingId: `none-${index}`, reason: "Earlier miss." })) });
+    const clear = (userId: string) => prisma.buyerStrike.updateMany({ where: { userId }, data: { clearedAt: new Date(), clearNote: "Cleared for the test." } });
+    // The bid went in before the pause, so only the award can stop it.
+    const offer = await prisma.inquiry.create({ data: { listingId, buyerId: pool.buyer.id, type: "OFFER", status: "OPEN", amount: 80000 } });
+    const group = await prisma.groupBuy.create({ data: { listingId, openedById: pool.buyer.id, minPosition: 10000, deadline: new Date(Date.now() + DAY), targetAmount: 80000, inquiryId: offer.id, status: "OFFERED" } });
+    await prisma.groupPosition.create({ data: { groupId: group.id, userId: pool.buyer.id, seat: 1, amount: 40000, percent: 50, status: "PLEDGED" } });
+    await prisma.groupPosition.create({ data: { groupId: group.id, userId: pool.second.id, seat: 2, amount: 40000, percent: 50, status: "PLEDGED" } });
+
+    await pause(pool.buyer.id);
+    assert.match((await awardOffer(offer.id, pool.desk.id)).error ?? "", /^This buyer's bidding is paused/);
+    await clear(pool.buyer.id);
+    await pause(pool.second.id);
+    assert.match((await awardOffer(offer.id, pool.desk.id)).error ?? "", /^A group seat holder's bidding is paused/);
+    assert.equal((await prisma.inquiry.findUniqueOrThrow({ where: { id: offer.id } })).status, "OPEN");
+    await clear(pool.second.id);
+    assert.equal((await awardOffer(offer.id, pool.desk.id)).error, null);
+  } finally {
+    await prisma.buyerStrike.deleteMany({ where: { userId: { in: userIds } } });
+    await cleanPool(pool);
+  }
+});
+
+test("the closing papers name each buyer's vetted entity, fixed at award", async () => {
+  const pool = await makePool(crypto.randomUUID().slice(0, 8));
+  try {
+    const listingId = pool.listing.id;
+    await prisma.buyerProfile.create({ data: { userId: pool.buyer.id, status: "APPROVED", entityType: "LLC", entityName: `Harbor Notes ${pool.listing.id} LLC` } });
+    await prisma.buyerProfile.create({ data: { userId: pool.second.id, status: "APPROVED", entityType: "TRUST", entityName: `Second Family Trust ${pool.listing.id}` } });
+    const offer = await prisma.inquiry.create({ data: { listingId, buyerId: pool.buyer.id, type: "OFFER", status: "OPEN", amount: 80000 } });
+    const group = await prisma.groupBuy.create({ data: { listingId, openedById: pool.buyer.id, minPosition: 10000, deadline: new Date(Date.now() + DAY), targetAmount: 80000, inquiryId: offer.id, status: "OFFERED" } });
+    await prisma.groupPosition.create({ data: { groupId: group.id, userId: pool.buyer.id, seat: 1, amount: 40000, percent: 50, status: "PLEDGED" } });
+    await prisma.groupPosition.create({ data: { groupId: group.id, userId: pool.second.id, seat: 2, amount: 40000, percent: 50, status: "PLEDGED" } });
+    const award = await awardOffer(offer.id, pool.desk.id);
+    assert.equal(award.error, null);
+    const closing = await prisma.closing.findUniqueOrThrow({ where: { id: award.closingId! }, include: { funders: true } });
+    assert.equal(closing.buyerEntity, `Harbor Notes ${pool.listing.id} LLC`);
+    assert.deepEqual(closing.funders.map((funder) => funder.entityName).sort(), [`Harbor Notes ${pool.listing.id} LLC`, `Second Family Trust ${pool.listing.id}`]);
+
+    // A buyer who refiles mid-closing doesn't change who takes title.
+    await prisma.buyerProfile.update({ where: { userId: pool.buyer.id }, data: { entityName: "Someone Else LLC" } });
+    const fixed = await namesOnTitle(closing, pool.buyer.id, closing.funders);
+    assert.equal(fixed.buyer, `Harbor Notes ${pool.listing.id} LLC`);
+    assert.equal(fixed.buyer === pool.buyer.name, false);
+    // A closing opened before names were kept reads the buyer file as it stands, then the account name.
+    const older = await namesOnTitle({ buyerEntity: null }, pool.buyer.id, [{ userId: pool.second.id, entityName: null }]);
+    assert.equal(older.buyer, "Someone Else LLC");
+    assert.equal(older.funder({ userId: pool.second.id, entityName: null }), `Second Family Trust ${pool.listing.id}`);
+    const noFile = await namesOnTitle({ buyerEntity: null }, pool.desk.id, []);
+    assert.equal(noFile.buyer, pool.desk.name);
   } finally {
     await cleanPool(pool);
   }

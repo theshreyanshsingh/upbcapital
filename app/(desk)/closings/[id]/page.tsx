@@ -20,7 +20,7 @@ import { diligenceOpen, loadDealTimeline, timelineView } from "@/lib/closing-ser
 import { brokerRoleLabel } from "@/lib/broker-fees";
 import { isoDate, money, prettyDate, q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
-import { balanceDueCents, buyerFundsCheck, economicsRows, moneyGate, statementSide, variance, varianceNote, type Variance } from "@/lib/settlement";
+import { balanceDueCents, buyerFundsCheck, economicsRows, moneyGate, proceedsGate, statementSide, variance, varianceNote, type Variance } from "@/lib/settlement";
 import { getSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 import { faultLabel, strikeLimitOf } from "@/lib/strikes";
@@ -403,7 +403,7 @@ export default async function ClosingPage({
                   <SettlementForm closingId={closing.id} side="deposit" title="Record buyer deposit" amount={closing.depositReceivedCents ?? closing.depositCents} at={closing.depositReceivedAt} reference={closing.depositReference} />
                 )}
                 <SettlementForm closingId={closing.id} side="funds" title="Record buyer funds" amount={closing.fundsReceivedCents ?? balanceDue} at={closing.fundsReceivedAt} reference={closing.fundsReference} />
-                <SettlementForm closingId={closing.id} side="proceeds" title="Record seller proceeds" amount={closing.proceedsSentCents ?? closing.netToSellerCents} at={closing.proceedsSentAt} reference={closing.proceedsReference} />
+                <SettlementForm closingId={closing.id} side="proceeds" title="Record seller proceeds" amount={closing.proceedsSentCents ?? closing.netToSellerCents} at={closing.proceedsSentAt} reference={closing.proceedsReference} gate={proceedsGate(closing, closing.funders, closing.steps)} />
               </div>
             )}
           </div>
@@ -581,7 +581,8 @@ function StepGate({ gate, label }: { gate: string | null; label: string }) {
   );
 }
 
-function SettlementForm({ closingId, side, title, amount, at, reference }: { closingId: string; side: "funds" | "proceeds" | "deposit"; title: string; amount: number; at: Date | null; reference: string | null }) {
+// The seller's proceeds wait on the buyer's money and the note. Paying early takes a typed reason, which is audited.
+function SettlementForm({ closingId, side, title, amount, at, reference, gate = null }: { closingId: string; side: "funds" | "proceeds" | "deposit"; title: string; amount: number; at: Date | null; reference: string | null; gate?: string | null }) {
   return (
     <form action={recordSettlement} className="space-y-2">
       <input type="hidden" name="closingId" value={closingId} />
@@ -592,6 +593,12 @@ function SettlementForm({ closingId, side, title, amount, at, reference }: { clo
         <input name="at" type="date" defaultValue={isoDate(at) ?? ""} aria-label={`${title} date`} className="desk-input" required />
       </div>
       <input name="reference" defaultValue={reference ?? ""} placeholder="Wire reference" aria-label={`${title} reference`} className="desk-input" />
+      {gate && (
+        <div className="space-y-2">
+          <p className="text-xs text-bad">{gate} Record those before paying the seller, or say why the desk is going ahead without them.</p>
+          <input name="override" placeholder="Reason to pay the seller now" aria-label="Reason to record seller proceeds before the buyer's funds and the collateral" className="desk-input" minLength={3} />
+        </div>
+      )}
       <SubmitButton variant="outline" className="h-9 text-[13px] font-medium" pendingLabel="Saving…">Save</SubmitButton>
     </form>
   );

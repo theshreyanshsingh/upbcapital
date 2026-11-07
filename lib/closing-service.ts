@@ -15,6 +15,7 @@ import { getSettings } from "@/lib/settings";
 import { countWord, recordStrike, type CancelFault } from "@/lib/strikes";
 import { postBrokerFees } from "@/lib/broker-pay";
 import { ensureClosingThread } from "@/lib/threads";
+import { vestingNames } from "@/lib/vesting";
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -91,6 +92,8 @@ export async function openClosing(input: {
   const depositDue = !input.deskBidId && deposit.bps > 0 ? new Date(Date.now() + deposit.days * 24 * 60 * 60 * 1000) : null;
   if (depositDue) schedule.due.BUYER_DEPOSIT = depositDue;
   const diligenceEndsAt = diligenceEnd(settings.diligenceDays, Boolean(input.deskBidId));
+  const bid = input.inquiryId ? await prisma.inquiry.findUnique({ where: { id: input.inquiryId }, select: { buyerId: true } }) : null;
+  const buyerEntity = bid ? ((await vestingNames([bid.buyerId])).get(bid.buyerId) ?? null) : null;
   const created = await prisma.closing.create({
     data: {
       listingId: input.listingId,
@@ -105,6 +108,7 @@ export async function openClosing(input: {
       provider: preview.provider,
       providerRef: preview.providerRef,
       wireInstructions: preview.instructions,
+      ...(buyerEntity ? { buyerEntity } : {}),
       targetCloseAt: schedule.targetCloseAt,
       ...(depositDue ? { depositCents: depositCents(input.salePrice, deposit.bps), depositDueAt: depositDue } : {}),
       ...(diligenceEndsAt ? { diligenceEndsAt } : {}),

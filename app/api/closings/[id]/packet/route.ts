@@ -6,6 +6,7 @@ import { money } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 import { isTemplateKey, loadTemplate } from "@/lib/templates";
 import { sendForSignature } from "@/lib/vendors";
+import { namesOnTitle } from "@/lib/vesting";
 
 export const runtime = "nodejs";
 
@@ -37,9 +38,11 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
   const pool = loans.length > 1;
   const template = await loadTemplate(kind as TemplateKey);
   const price = money(Number(closing.salePrice));
+  // The papers name who takes title, the vetted entity, not the person who holds the login.
+  const names = await namesOnTitle(closing, inquiry?.buyerId ?? null, funders);
   const shared = {
     seller: closing.listing.seller.companyName || closing.listing.seller.name,
-    buyer: funders.length > 1 ? "The buying group" : inquiry?.buyer.name || (closing.deskBidId ? "UPB Capital desk" : "Buyer"),
+    buyer: funders.length > 1 ? "The buying group" : names.buyer || (closing.deskBidId ? "UPB Capital desk" : "Buyer"),
     title: closing.listing.title,
     price,
     premium: money(closing.buyerPremiumCents / 100),
@@ -73,7 +76,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     ? `\n\nLoan schedule\n${loans.map((note, index) => `${index + 1}. ${note.streetAddress}, ${note.city}, ${note.state} ${note.zip}. Borrower ${note.borrowerName || "not named"}. Unpaid principal ${money(Number(note.upb))}.`).join("\n")}`
     : "";
   const schedule = funders.length
-    ? `\n\nCo-ownership schedule\n${funders.map((funder) => `${funder.user.name}: ${Number(funder.percent).toFixed(2)}% of the price ($${Number(funder.amount).toLocaleString("en-US")}), premium $${(funder.premiumCents / 100).toLocaleString("en-US")}.`).join("\n")}\nThe buyers take title together, each for the percentage above.`
+    ? `\n\nCo-ownership schedule\n${funders.map((funder) => `${names.funder(funder) || funder.user.name}: ${Number(funder.percent).toFixed(2)}% of the price ($${Number(funder.amount).toLocaleString("en-US")}), premium $${(funder.premiumCents / 100).toLocaleString("en-US")}.`).join("\n")}\nThe buyers take title together, each for the percentage above.`
     : "";
   // The agreement is one document with a loan schedule. An assignment and an allonge travel with each loan.
   const perLoan = pool && kind !== "PSA";

@@ -10,6 +10,7 @@ import { listingWithdrawBlock } from "@/lib/listing-status";
 import { bidExpired, buyerPrice, withdrawBlock, type OfferMoney } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
 import { OFAC_HOLD_MESSAGE, ofacHold } from "@/lib/screening";
+import { strikeStanding } from "@/lib/strikes";
 
 const LIVE = ["OPEN", "REVIEWED"] as const;
 
@@ -158,6 +159,11 @@ export async function checkAward(inquiryId: string) {
   if (seats.some((seat) => seat.user.accountStatus !== "APPROVED")) return { error: "A group seat holder's account is not approved." } as const;
   const parties = [offer.buyerId, offer.listing.sellerId, ...seats.map((seat) => seat.userId)];
   if (await ofacHold({ listingId: offer.listingId, userIds: parties })) return { error: OFAC_HOLD_MESSAGE } as const;
+  // A strike pause stops awards as well as new bids, so a bid placed before the pause can't win during it. The
+  // error reaches the desk only: a seller whose approval stops here sees a pending notice.
+  const standings = await Promise.all([offer.buyerId, ...seats.map((seat) => seat.userId)].map((userId) => strikeStanding(userId)));
+  if (standings[0].paused) return { error: "This buyer's bidding is paused for closings that didn't complete. Clear a strike on their buyer file before awarding." } as const;
+  if (standings.some((standing) => standing.paused)) return { error: "A group seat holder's bidding is paused for closings that didn't complete. Clear a strike on their buyer file before awarding." } as const;
   if (offer.listing.bidMode !== "NONE" && !deadlinePassed(offer.listing.bidDeadline)) return { error: "Award this after the bid deadline." } as const;
   const conflict = await tradeConflict(offer.listingId, offer.noteId);
   if (conflict) return { error: conflict } as const;

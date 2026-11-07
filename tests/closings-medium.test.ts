@@ -4,7 +4,7 @@ import { buyerSideEmails, cancelOpenClosing, completeDepositFromWire, finalizeCl
 import { deskFeeBps } from "../lib/desk-fees";
 import { getEscrowProvider } from "../lib/escrow";
 import { prisma } from "../lib/prisma";
-import { balanceDueCents, buyerFundsCheck, economicsRows, moneyGate, statementLines, statementSide } from "../lib/settlement";
+import { balanceDueCents, buyerFundsCheck, economicsRows, moneyGate, proceedsGate, statementLines, statementSide } from "../lib/settlement";
 import { getSettings } from "../lib/settings";
 
 const at = (iso: string) => new Date(`${iso}T12:00:00Z`);
@@ -83,6 +83,20 @@ test("money steps wait for the recorded wire, and a group waits for every share"
   assert.equal(moneyGate("BUYER_DEPOSIT", { ...base, depositCents: null }, []), null);
   assert.equal(moneyGate("ASSIGNMENT", base, []), null);
   assert.equal(moneyGate("CLOSED", { ...base, deskBidId: "bid" }, []), null);
+});
+
+test("the seller's proceeds wait for the buyer's money and the note, and a desk purchase still waits for the note", () => {
+  const steps = (...done: string[]) => ["COLLATERAL_TRANSFER", "ASSIGNMENT"].map((key) => ({ key, status: done.includes(key) ? "COMPLETE" : "PENDING" }));
+  const paid = { ...base, fundsReceivedCents: 10250000 };
+  assert.equal(proceedsGate(base, [], steps("COLLATERAL_TRANSFER", "ASSIGNMENT")), "Buyer funds aren't recorded.");
+  assert.match(proceedsGate({ ...base, fundsReceivedCents: 9250000 }, [], steps("COLLATERAL_TRANSFER", "ASSIGNMENT")) ?? "", /short \$10,000\.00/);
+  assert.equal(proceedsGate(paid, [{ status: "PENDING" }], steps("COLLATERAL_TRANSFER", "ASSIGNMENT")), "1 of 1 group share isn't marked funded.");
+  assert.equal(proceedsGate(paid, [], steps()), "The collateral file transfer and the assignment and allonge aren't marked complete.");
+  assert.equal(proceedsGate(paid, [], steps("COLLATERAL_TRANSFER")), "The assignment and allonge isn't marked complete.");
+  assert.equal(proceedsGate(paid, [], steps("ASSIGNMENT")), "The collateral file transfer isn't marked complete.");
+  assert.equal(proceedsGate(paid, [], steps("COLLATERAL_TRANSFER", "ASSIGNMENT")), null);
+  assert.equal(proceedsGate({ ...base, deskBidId: "bid" }, [], steps()), "The collateral file transfer and the assignment and allonge aren't marked complete.");
+  assert.equal(proceedsGate({ ...base, deskBidId: "bid" }, [], steps("COLLATERAL_TRANSFER", "ASSIGNMENT")), null);
 });
 
 async function makeDeal(tag: string) {
