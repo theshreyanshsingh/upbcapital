@@ -23,6 +23,59 @@ export const ACCREDITATION_TEXT =
   "I certify that I am an accredited investor, or that I am signing for an entity that is an accredited investor, as that term is used in Rule 501 of Regulation D. I understand this desk does not verify that certification with a third party in this version.";
 
 // ---------------------------------------------------------------------------------------------------------------
+// The tax ID's last four digits. The desk matches them against the closing papers and never holds the whole number.
+
+export const TAX_ID_NOTE = "Only the last four digits. UPB never asks for the whole number and never stores it.";
+
+export function readTaxIdLast4(raw: unknown, optional = false) {
+  const value = String(raw ?? "").replace(/\s+/g, "");
+  if (!value && optional) return { error: null, value: null } as const;
+  if (!/^\d{4}$/.test(value)) return { error: "Enter only the last four digits of the tax ID." } as const;
+  return { error: null, value } as const;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Yearly re-certification. An approved file is current until its recertifyBy date. Past it the buyer confirms the
+// file is unchanged, or updates it, and the desk approves it again before the buyer bids. A file approved before
+// re-certification began has no date and stays current.
+
+export const DEFAULT_RECERTIFY_MONTHS = 12;
+export const RECERT_NOTICE_DAYS = 30;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+export function recertifyMonthsOf(value: number | null | undefined) {
+  return value != null && Number.isInteger(value) && value >= 1 && value <= 36 ? value : DEFAULT_RECERTIFY_MONTHS;
+}
+
+// The same day `months` later, or the month's last day when it is shorter.
+export function recertifyByFrom(from: Date, months: number) {
+  const date = new Date(from);
+  const day = date.getUTCDate();
+  date.setUTCDate(1);
+  date.setUTCMonth(date.getUTCMonth() + months);
+  const last = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
+  date.setUTCDate(Math.min(day, last));
+  return date;
+}
+
+type RecertFile = { status: string; recertifyBy?: Date | null };
+
+export function recertLapsed(file: RecertFile | null | undefined, now = new Date()) {
+  return file?.status === "APPROVED" && Boolean(file.recertifyBy) && file.recertifyBy!.getTime() < now.getTime();
+}
+
+// Open to re-certify: lapsed, or inside the notice window before the date.
+export function recertOpen(file: RecertFile | null | undefined, now = new Date()) {
+  return file?.status === "APPROVED" && Boolean(file.recertifyBy) && file.recertifyBy!.getTime() - now.getTime() <= RECERT_NOTICE_DAYS * DAY_MS;
+}
+
+// Why a new price is refused while the file is lapsed, or null.
+export function recertBlock(file: RecertFile | null | undefined, now = new Date()) {
+  if (!recertLapsed(file, now)) return null;
+  return `Your buyer file was due for re-certification on ${credentialDate(file!.recertifyBy!, now)}. Confirm or update it at /buyer/verification before you bid again.`;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // The buyer's credential: the funds the desk verified and the day that proof runs out. Once a buyer has one, their
 // open bids together may not run past it, as Ten-X and Auction.com cap a qualified bidder.
 

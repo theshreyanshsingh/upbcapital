@@ -1,6 +1,7 @@
 import { canReadClosingFile } from "@/lib/acl";
 import { getApiUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { sellerOnTitle } from "@/lib/seller-identity";
 import { buildStatementPdf, statementLines, statementScope, statementSide } from "@/lib/settlement";
 import { CUSTODIAN_FUNDS, fundingParty, namesOnTitle } from "@/lib/vesting";
 
@@ -24,8 +25,11 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   const mine = side === "buyer" ? closing.funders.find((funder) => funder.userId === user.id) : undefined;
   const share = mine ? { amount: Number(mine.amount), premiumCents: mine.premiumCents, status: mine.status, fundedAt: mine.fundedAt } : null;
   const brokerCents = closing.brokerFees.reduce((sum, fee) => sum + fee.amountCents, 0);
-  const seller = closing.listing.seller.companyName || closing.listing.seller.name;
-  const [names, funding] = await Promise.all([namesOnTitle(closing, inquiry?.buyerId ?? null, closing.funders), fundingParty(closing)]);
+  const [names, funding, seller] = await Promise.all([
+    namesOnTitle(closing, inquiry?.buyerId ?? null, closing.funders),
+    fundingParty(closing),
+    sellerOnTitle(closing.listing.seller),
+  ]);
   const buyer = closing.deskBidId ? "UPB Capital desk" : funderIds.length > 1 ? "A buying group" : names.buyer || "Buyer";
   const record = { ...closing, salePrice: Number(closing.salePrice) };
   // The loans the closing covers now, and any the desk took out before settlement.

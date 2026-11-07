@@ -26,7 +26,18 @@ export function closingAccess(input: {
 // with the seller, the desk, and the signer. A loan's own file (an O&E, a risk search) opens only by that loan's
 // rule, through loanFileAccess, so anything that copies or lists the room leaves it out.
 export function isPrivateDocument(document: { type: string; storedName: string; noteId?: string | null }, listing: { authorizationKey: string }) {
-  return document.type === "NDA" || Boolean(document.noteId) || (listing.authorizationKey !== "" && document.storedName === listing.authorizationKey);
+  return (
+    isDeskOnlyDocument(document) ||
+    document.type === "NDA" ||
+    Boolean(document.noteId) ||
+    (listing.authorizationKey !== "" && document.storedName === listing.authorizationKey)
+  );
+}
+
+// A broker's mandate from the note holder is for the desk alone: the broker who filed it and the desk read it, and no
+// buyer route, room, copy or export ever does, whatever the room or a loan's file would open.
+export function isDeskOnlyDocument(document: { type: string }) {
+  return document.type === "MANDATE";
 }
 
 // A loan's own file opens with that loan's street and borrower, and to a buyer only when they are Pro or are
@@ -90,7 +101,10 @@ export function canReadDocument(input: {
   closingParty: boolean;
   // Set for a loan's own file, from loanFileAccess. The listing's room doesn't open it.
   loan?: { open: boolean; party: boolean } | null;
+  // From isDeskOnlyDocument. Only the filer and the desk, before any other rule.
+  deskOnly?: boolean;
 }) {
+  if (input.deskOnly) return input.owner || input.admin;
   if (input.owner || input.admin || input.ownNda) return true;
   if (input.loan) return input.loan.open && (input.proBuyer || input.loan.party);
   if (input.privateFile) return false;

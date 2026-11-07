@@ -46,7 +46,7 @@ import {
 const DAY = 24 * 60 * 60 * 1000;
 // Desk notices stay in the log, screening uses the built-in list, and nothing reaches Treasury, whatever the local
 // .env carries.
-for (const key of ["RESEND_API_KEY", "SMTP_HOST", "DESK_EMAIL", "OFAC_SDN_URL", "OFAC_API_URL", "OFAC_API_KEY", "TREASURY_FEED_URL"]) process.env[key] = "";
+for (const key of ["RESEND_API_KEY", "SMTP_HOST", "DESK_EMAIL", "OFAC_SDN_URL", "OFAC_API_URL", "OFAC_API_KEY", "TREASURY_FEED_URL", "BLOB_READ_WRITE_TOKEN", "BLOB_STORE_ID", "S3_BUCKET", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "DROPBOX_SIGN_API_KEY", "DOCUSIGN_ACCESS_TOKEN", "DOCUSIGN_ACCOUNT_ID"]) process.env[key] = "";
 // Any fetch a test didn't stub fails loudly instead of reaching the network.
 globalThis.fetch = (async (input: unknown) => {
   throw new Error(`A test tried to reach the network: ${String(input)}`);

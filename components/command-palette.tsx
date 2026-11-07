@@ -12,6 +12,10 @@ import {
   History,
   Keyboard,
   Megaphone,
+  MessageCircleQuestionMark,
+  MessageSquare,
+  MessagesSquare,
+  Paperclip,
   Search,
   Users,
   Wallet,
@@ -49,6 +53,10 @@ const ICONS: Record<CommandGroup, LucideIcon> = {
   Accounts: Users,
   Borrowers: FileText,
   Leads: Megaphone,
+  Messages: MessageSquare,
+  Questions: MessageCircleQuestionMark,
+  Threads: MessagesSquare,
+  Files: Paperclip,
 };
 
 const RECENT_MAX = 6;

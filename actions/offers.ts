@@ -14,6 +14,7 @@ import { fundsLimitBlock } from "@/lib/inquiry";
 import { loanPricesFromForm } from "@/lib/loan-prices";
 import { bidExpired, canCounter, counterFrom, openCounter } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
+import { recertBlock } from "@/lib/verification";
 import { emitWebhook } from "@/lib/webhooks";
 
 function money(amount: number) {
@@ -67,6 +68,11 @@ export async function postOfferMessage(formData: FormData) {
     if (inquiry.listing.bidMode === "BEST_AND_FINAL") {
       redirect(`${back.split("?")[0]}?error=${encodeURIComponent("Best and final allows one bid. You can accept a desk counter, but not change your price.")}`);
     }
+  }
+  // A buyer whose file is past its yearly re-certification names no new price. Accepting a counter still goes through.
+  if (buyer && amount != null && !accepting) {
+    const lapsed = recertBlock(await prisma.buyerProfile.findUnique({ where: { userId: user.id }, select: { status: true, recertifyBy: true } }));
+    if (lapsed) redirect(`/buyer/verification?error=${encodeURIComponent(lapsed)}`);
   }
   // A new price, or a higher counter accepted, holds the buyer to more, so it fits inside their verified funds too.
   if (buyer && amount != null) {

@@ -3,7 +3,8 @@ import test from "node:test";
 import { PDFDocument } from "pdf-lib";
 import { sealedFromSeller } from "../lib/auction";
 import { askSeller, awardOffer, checkAward, sellerPickBid } from "../lib/awards";
-import { addBuyerEntity, bidEntities, chosenEntity, readEntity, reviewBuyerEntity, screenEntity } from "../lib/buyer-entities";
+import { addBeneficialOwner } from "../lib/beneficial-owners";
+import { addBuyerEntity, bidEntities, chosenEntity, readEntity, reviewBuyerEntity, screenEntity, submitBuyerEntity } from "../lib/buyer-entities";
 import { literal } from "../lib/db-filters";
 import { checkOffer, writeInquiry } from "../lib/inquiry";
 import { entityLabel } from "../lib/labels";
@@ -17,7 +18,7 @@ import { bidVesting, entityVestingName, fundingParty, namesOnTitle } from "../li
 const DAY = 24 * 60 * 60 * 1000;
 const HOUR = 60 * 60 * 1000;
 // Notices stay in the log and screens use the local list, whatever keys the local .env carries.
-for (const key of ["RESEND_API_KEY", "SMTP_HOST", "DESK_EMAIL", "OFAC_API_URL", "OFAC_API_KEY", "OFAC_SDN_URL"]) process.env[key] = "";
+for (const key of ["RESEND_API_KEY", "SMTP_HOST", "DESK_EMAIL", "OFAC_API_URL", "OFAC_API_KEY", "OFAC_SDN_URL", "BLOB_READ_WRITE_TOKEN", "BLOB_STORE_ID", "S3_BUCKET", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "DROPBOX_SIGN_API_KEY", "DOCUSIGN_ACCESS_TOKEN", "DOCUSIGN_ACCOUNT_ID"]) process.env[key] = "";
 
 test.after(async () => {
   await prisma.$disconnect();
@@ -30,9 +31,9 @@ test("an extra buying entity needs a kind, a name and where it is formed, and an
   assert.match(readEntity({ name: "Harbor LLC", entityType: "BANK", jurisdiction: "DE" }).error ?? "", /kind of entity/);
   assert.match(readEntity({ name: " ", entityType: "LLC", jurisdiction: "DE" }).error ?? "", /Name the buying entity/);
   assert.match(readEntity({ name: "Harbor LLC", entityType: "LLC", jurisdiction: "" }).error ?? "", /where the entity is formed/);
-  const llc = readEntity({ name: "  Harbor   Note LLC ", entityType: "LLC", jurisdiction: "Delaware", iraCustodian: "ignored" });
+  const llc = readEntity({ name: "  Harbor   Note LLC ", entityType: "LLC", jurisdiction: "Delaware", iraCustodian: "ignored", taxIdLast4: "4321" });
   assert.equal(llc.error, null);
-  assert.deepEqual(llc.error === null && llc.data, { name: "Harbor Note LLC", entityType: "LLC", jurisdiction: "Delaware", iraCustodian: null, iraAccountTitle: null });
+  assert.deepEqual(llc.error === null && llc.data, { name: "Harbor Note LLC", entityType: "LLC", jurisdiction: "Delaware", iraCustodian: null, iraAccountTitle: null, taxIdLast4: "4321" });
   // An IRA needs no jurisdiction, but it needs the custodian and a title that vests for the owner's benefit.
   assert.match(readEntity({ ...IRA, iraCustodian: "" }).error ?? "", /custodian/);
   assert.match(readEntity({ ...IRA, iraAccountTitle: "" }).error ?? "", /account title/);
@@ -224,6 +225,7 @@ async function cleanWorld(world: World) {
   await prisma.saleEvent.deleteMany({ where: { id: { in: world.eventIds } } });
   await prisma.notification.deleteMany({ where: { OR: [{ toEmail: { in: world.users.map((user) => user.email) } }, { subject: { contains: literal(world.tag) } }, { body: { contains: literal(world.tag) } }] } });
   await prisma.rateWindow.deleteMany({ where: { key: { in: userIds.map((id) => `question:${id}`) } } });
+  await prisma.beneficialOwner.deleteMany({ where: { userId: { in: userIds } } });
   await prisma.buyerEntity.deleteMany({ where: { userId: { in: userIds } } });
   await prisma.buyerProfile.deleteMany({ where: { userId: { in: userIds } } });
   await prisma.user.deleteMany({ where: { id: { in: userIds } } });
@@ -241,10 +243,17 @@ async function bid(buyer: World["buyers"][number], listingId: string, amount: nu
   return { error: null, id: inquiry.id };
 }
 
+// An entity that lists owners goes to the desk with its EIN's last four and a control person, as the verification page
+// sends it.
 async function addEntity(buyer: World["buyers"][number], input: Parameters<typeof addBuyerEntity>[1]) {
-  const result = await addBuyerEntity(buyer, input);
+  const result = await addBuyerEntity(buyer, { taxIdLast4: "4321", ...input });
   if (result.error !== null) assert.fail(result.error);
-  return result.entity;
+  if (result.entity.status !== "NOT_STARTED") return result.entity;
+  const owner = await addBeneficialOwner(buyer, { buyerEntityId: result.entity.id, name: `Owner ${result.entity.id}`, title: "Managing member", ownershipPct: "100", controlPerson: "yes" });
+  if (owner.error !== null) assert.fail(owner.error);
+  const sent = await submitBuyerEntity(buyer, result.entity.id);
+  if (sent.error !== null) assert.fail(sent.error);
+  return sent.entity;
 }
 
 test("a buyer adds entities once the main file is approved, and the desk approves or declines each with a note", async () => {
@@ -257,8 +266,8 @@ test("a buyer adds entities once the main file is approved, and the desk approve
 
     const llc = await addEntity(buyer, { name: `Harbor ${world.tag} LLC`, entityType: "LLC", jurisdiction: "Delaware" });
     assert.equal(llc.status, "SUBMITTED");
-    assert.match((await addBuyerEntity(buyer, { name: `harbor ${world.tag} llc`, entityType: "LLC", jurisdiction: "Texas" })).error ?? "", /already on your file/);
-    assert.match((await addBuyerEntity(buyer, { name: `Main Fund 0 ${world.tag}`, entityType: "LLC", jurisdiction: "Texas" })).error ?? "", /already on your file/);
+    assert.match((await addBuyerEntity(buyer, { name: `harbor ${world.tag} llc`, entityType: "LLC", jurisdiction: "Texas", taxIdLast4: "4321" })).error ?? "", /already on your file/);
+    assert.match((await addBuyerEntity(buyer, { name: `Main Fund 0 ${world.tag}`, entityType: "LLC", jurisdiction: "Texas", taxIdLast4: "4321" })).error ?? "", /already on your file/);
     assert.match((await addBuyerEntity(buyer, { ...IRA, name: `Doe ${world.tag} IRA`, iraAccountTitle: "" })).error ?? "", /account title/);
     const ira = await addEntity(buyer, { ...IRA, name: `Doe ${world.tag} IRA` });
     assert.equal(ira.iraCustodian, "Equity Trust Company");

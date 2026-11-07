@@ -26,7 +26,7 @@ import { isTemplateKey } from "../lib/templates";
 
 const DAY = 24 * 60 * 60 * 1000;
 // Desk notices stay in the log, and screening uses the built-in list, whatever keys the local .env carries.
-for (const key of ["RESEND_API_KEY", "SMTP_HOST", "DESK_EMAIL", "OFAC_SDN_URL", "OFAC_API_URL", "OFAC_API_KEY"]) process.env[key] = "";
+for (const key of ["RESEND_API_KEY", "SMTP_HOST", "DESK_EMAIL", "OFAC_SDN_URL", "OFAC_API_URL", "OFAC_API_KEY", "BLOB_READ_WRITE_TOKEN", "BLOB_STORE_ID", "S3_BUCKET", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "DROPBOX_SIGN_API_KEY", "DOCUSIGN_ACCESS_TOKEN", "DOCUSIGN_ACCOUNT_ID"]) process.env[key] = "";
 
 test.after(async () => {
   await prisma.$disconnect();

@@ -63,7 +63,7 @@ export default async function ThreadPage({
           return (
             <li key={post.id} id={index === thread.posts.length - 1 ? "latest" : undefined} className={`flex scroll-mt-20 flex-col ${own ? "items-end" : "items-start"}`}>
               <p className="px-1 text-xs font-medium text-muted-foreground">{own ? "You" : shown(thread.listingId, post.author)} · {prettyDate(post.createdAt)}</p>
-              <div className={`mt-1 max-w-[88%] rounded-2xl px-3.5 py-2.5 sm:max-w-[80%] ${own ? "rounded-br-md bg-link/10 ring-1 ring-link/25" : "rounded-bl-md bg-card ring-1 ring-border"}`}>
+              <div id={`post-${post.id}`} className={`mt-1 max-w-[88%] scroll-mt-20 rounded-2xl px-3.5 py-2.5 sm:max-w-[80%] ${own ? "rounded-br-md bg-link/10 ring-1 ring-link/25" : "rounded-bl-md bg-card ring-1 ring-border"}`}>
                 <p className="text-[15px] leading-6 whitespace-pre-wrap text-foreground sm:text-sm">{post.body}</p>
                 {post.files.map((file) => (
                   <a key={file.id} href={`/api/threads/files/${file.id}`} className="mt-1.5 block text-sm font-medium text-link">{file.originalName}</a>

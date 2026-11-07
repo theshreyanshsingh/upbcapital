@@ -7,6 +7,7 @@ import { ofacMode } from "@/lib/ofac";
 import { participationsOpen } from "@/lib/participation";
 import { prisma } from "@/lib/prisma";
 import { limitStore } from "@/lib/rate-limit";
+import { brokerListingsWithoutMandate, sellerIdentityRequired } from "@/lib/seller-identity";
 import { storageMode } from "@/lib/storage";
 import { kycMode, signatureMode } from "@/lib/vendors";
 
@@ -15,10 +16,11 @@ export type ReadinessItem = { label: string; state: ReadinessState; detail: stri
 
 // What runs for real and what runs on a stand-in, read from the environment the server is running with.
 // Stand-ins are fine for the demo desk; each one is a decision to make before real users arrive.
-export async function launchReadiness(settings: { stripePriceId?: string | null; requireTwoStep?: boolean | null }, env: Record<string, string | undefined> = process.env) {
+export async function launchReadiness(settings: { stripePriceId?: string | null; requireTwoStep?: boolean | null; requireSellerIdentity?: boolean | null }, env: Record<string, string | undefined> = process.env) {
   const release = isReleaseBuild(env);
   const users = await prisma.user.findMany({ select: { email: true } });
   const demo = users.filter((user) => !deliverable(user.email)).length;
+  const unmandated = await brokerListingsWithoutMandate();
   const mail = resolveMailTransport(env);
   const storage = storageMode(env);
   const ofac = ofacMode(env);
@@ -68,6 +70,12 @@ export async function launchReadiness(settings: { stripePriceId?: string | null;
     settings.requireTwoStep !== false
       ? { label: "Two-step sign-in", state: "live", detail: "Required for every approved account that can see borrower data." }
       : { label: "Two-step sign-in", state: "off", detail: "Only admins must enroll. Turn it on below before real users." },
+    sellerIdentityRequired(settings, env)
+      ? { label: "Seller identity", state: "live", detail: "A seller's identity and signing authority are approved before the desk approves their listing." }
+      : { label: "Seller identity", state: release ? "off" : "standin", detail: "Listings can be approved before the desk has checked who is selling. Turn the gate on below before real sellers." },
+    unmandated > 0
+      ? { label: "Broker mandates", state: "off", detail: `${unmandated} broker-filed listing${unmandated === 1 ? " is" : "s are"} in review with no mandate from the note holder. With the seller identity gate on, the desk can't approve ${unmandated === 1 ? "it" : "them"} until the broker adds one.` }
+      : { label: "Broker mandates", state: "live", detail: "Every broker-filed listing in review has the note holder's mandate on file." },
     demo > 0
       ? { label: "Demo accounts", state: "standin", detail: `${demo} account${demo === 1 ? "" : "s"} on undeliverable addresses, including the public demo seats. Remove them before real users.` }
       : { label: "Demo accounts", state: "live", detail: "None left." },

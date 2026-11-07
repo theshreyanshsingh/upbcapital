@@ -2,6 +2,7 @@ import type { ClosingStepKey } from "@prisma/client";
 import { audit } from "@/lib/audit";
 import { CLOSING_STEPS, canCompleteStep, closingCovers, closingIsWhole, closingLoans, stepLabel } from "@/lib/closing";
 import { STEP_OWNER, closingSchedule, depositCents, depositTerms, effectiveDue, settlementWeekdays, stepClock, targetDays } from "@/lib/closing-clock";
+import { DEPOSIT_TIMELINE_ACTIONS, depositTimelineEntry } from "@/lib/deposits";
 import { feesFor } from "@/lib/fee-schedule";
 import { notify, notifyDesk } from "@/lib/email";
 import { getEscrowProvider } from "@/lib/escrow";
@@ -260,6 +261,9 @@ export async function finalizeClosing(closingId: string) {
   ].filter((event) => event.amountCents > 0);
   if (revenue.length) await postRevenueOnce(revenue);
   await postBrokerFees(closing.id);
+  // The deposit goes toward the price, and the backup bids behind this sale are released. A repeat call finds both done.
+  await import("@/lib/deposits").then((deposits) => deposits.recordDepositOutcome(closing.id));
+  await import("@/lib/backup-bids").then((backups) => backups.releaseBackups(closing.id));
   return prisma.closing.findUnique({ where: { id: closingId } });
 }
 
@@ -300,6 +304,14 @@ export async function cancelOpenClosing(closingId: string, reason: string, optio
       ...(closing.listing.acceptedInquiryId === closing.inquiryId ? { acceptedInquiryId: null } : {}),
     },
   });
+  // What the deposit is owed, and the backup bids the desk can award now that the winner is out.
+  await import("@/lib/deposits").then((deposits) => deposits.recordDepositOutcome(closingId));
+  await import("@/lib/backup-bids").then((backups) => backups.announceBackups(closingId));
+  // Papers still out for signature are void with it, and their vendor envelopes withdrawn. A failure leaves the cancel
+  // standing; the signature clock voids anything left on a finished closing.
+  await import("@/lib/signatures")
+    .then((signatures) => signatures.voidOpenRequests(closingId, "Closing canceled"))
+    .catch((error) => console.error(`[upb-signatures] requests on canceled closing ${closingId} weren't voided:`, error));
   return closing;
 }
 
@@ -361,6 +373,28 @@ export function isClosingStepKey(value: string): value is ClosingStepKey {
   return CLOSING_STEPS.some((step) => step.key === value);
 }
 
+// A step the file completes on its own record rather than the desk's form: the purchase agreement once every party
+// has signed it (lib/signatures.ts). The same conditional write, CLOSING audit and party notice as
+// completeClosingStep in actions/closing.ts, so the timeline and the parties read it the same way, and an OFAC hold
+// stops it as it stops the form. Closing the file stays with the desk. Returns why it didn't complete, or null.
+export async function completeStepOnRecord(closingId: string, key: Exclude<ClosingStepKey, "CLOSED">, input: { actorId: string | null; note: string; message: string }) {
+  const closing = await prisma.closing.findUnique({ where: { id: closingId }, include: { listing: { include: { seller: true } }, funders: { select: { userId: true } } } });
+  if (!closing || closing.status !== "OPEN") return "This closing is already finished.";
+  const inquiry = closing.inquiryId ? await prisma.inquiry.findUnique({ where: { id: closing.inquiryId }, select: { buyerId: true } }) : null;
+  const { OFAC_HOLD_MESSAGE, ofacHold } = await import("@/lib/screening");
+  if (await ofacHold({ listingId: closing.listingId, userIds: [inquiry?.buyerId, closing.listing.sellerId, ...closing.funders.map((row) => row.userId)] })) return OFAC_HOLD_MESSAGE;
+  const marked = await prisma.closingStep.updateMany({
+    where: { closingId, key, status: "PENDING" },
+    data: { status: "COMPLETE", note: input.note.slice(0, 500), completedAt: new Date() },
+  });
+  if (marked.count !== 1) return "That step is already marked complete.";
+  await audit(input.actorId, "CLOSING", "closing", closingId, key);
+  for (const email of new Set([...(await buyerSideEmails(closingId)), closing.listing.seller.email])) {
+    await notify(email, `Closing · ${closing.listing.title}`, input.message);
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // The deal timeline: one log of the closing for every party, built from the closing's own records and the audit
 // events written against it. Each side sees what the closing page already shows it and no more: the buyer's wires
@@ -406,7 +440,7 @@ export type TimelineInput = {
   now?: Date;
 };
 
-export const TIMELINE_ACTIONS = ["CLOSING", "CLOSING_CANCELED", "CLOSING_DATES", "CLOSING_OVERRIDE", "WIRE_EDIT", "FUNDS_RECEIVED", "DEPOSIT_RECEIVED", "PROCEEDS_SENT", "SHARE_FUNDED", "DILIGENCE_WALK_AWAY"];
+export const TIMELINE_ACTIONS = ["CLOSING", "CLOSING_CANCELED", "CLOSING_DATES", "CLOSING_OVERRIDE", "WIRE_EDIT", "FUNDS_RECEIVED", "DEPOSIT_RECEIVED", "PROCEEDS_SENT", "SHARE_FUNDED", "DILIGENCE_WALK_AWAY", ...DEPOSIT_TIMELINE_ACTIONS];
 
 export function ownerWord(owner: TimelineOwner) {
   return owner === "both" ? "Buyer and seller" : owner === "desk" ? "Desk" : owner === "buyer" ? "Buyer" : "Seller";
@@ -518,6 +552,9 @@ export function dealTimeline(input: TimelineInput, side: TimelineSide): { entrie
     }
     if (event.action === "CLOSING_OVERRIDE" && desk) entries.push({ ...base, title: "Step marked without the wire on record", detail: readable(event.detail), owner: "desk" });
     if (event.action === "DILIGENCE_WALK_AWAY") entries.push({ ...base, title: "The buyer walked away in diligence", detail: event.detail, owner: "buyer" });
+    // What became of the deposit and its four-eyes decision, for the buyer side like the deposit wire.
+    const deposit = buyerSide ? depositTimelineEntry(event, desk) : null;
+    if (deposit) entries.push({ ...base, ...deposit });
   }
   for (const kickout of input.kickouts ?? []) {
     // A broker watching the deal sees that the closing changed, not the figures.

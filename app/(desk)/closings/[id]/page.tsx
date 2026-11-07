@@ -1,13 +1,17 @@
 import { notFound, redirect } from "next/navigation";
 import { Check } from "lucide-react";
 import { markShareFunded } from "@/actions/group";
-import { saveBoarding } from "@/actions/boarding";
+import { BoardingForm } from "@/components/boarding-form";
 import { cancelClosing, completeClosingStep, recordSettlement, saveWireInstructions, setClosingDates, uploadClosingFile, walkAway } from "@/actions/closing";
 import { BorrowerNotices } from "@/components/borrower-notices";
+import { ClosingMasters } from "@/components/closing-masters";
+import { BackupPanel } from "@/components/backup-panel";
+import { DepositPanel } from "@/components/deposit-panel";
 import { DealTimeline } from "@/components/deal-timeline";
 import { KickoutForm } from "@/components/kickout-form";
 import { ComplianceNote } from "@/components/compliance-note";
 import { DeskNotes } from "@/components/desk-notes";
+import { SignaturePanel } from "@/components/signature-panel";
 import { ConfirmRows, ConfirmSubmit } from "@/components/confirm-submit";
 import { Notice } from "@/components/notice";
 import { SubmitButton } from "@/components/submit-button";
@@ -23,6 +27,7 @@ import { isoDate, money, prettyDate, q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 import { balanceDueCents, buyerFundsCheck, economicsRows, moneyGate, proceedsGate, statementSide, variance, varianceNote, type Variance } from "@/lib/settlement";
 import { getSettings } from "@/lib/settings";
+import { boardingChoices } from "@/lib/servicers";
 import { cn } from "@/lib/utils";
 import { dealOwners, deskCan, deskContact } from "@/lib/staff";
 import { pendingWireChanges } from "@/lib/wire-changes";
@@ -108,6 +113,8 @@ export default async function ClosingPage({
     // A buyer through a self-directed IRA: its custodian signs and wires, so both sides know who the money is from.
     fundingParty(closing),
   ]);
+  // The servicer directory for the boarding form, each servicer with the loan states it doesn't list.
+  const servicerChoices = party ? await boardingChoices(closingLoans(closing, closing.listing.notes).map((note) => note.state), closing.boarding?.servicerId) : [];
   return (
     <div className="grid grid-cols-[minmax(0,1fr)] gap-10 lg:grid-cols-[minmax(0,1fr)_320px]">
       <div>
@@ -313,14 +320,18 @@ export default async function ClosingPage({
         {party && (
           <section className="mt-10 glass p-6">
             <p className="eyebrow">Closing documents</p>
-            <p className="mt-2 text-sm text-muted-foreground">Purchase agreement, assignment, and allonge, filled from this deal. The fields stay editable in the PDF.</p>
+            <p className="mt-2 text-sm text-muted-foreground">Filled from this deal. The lost note affidavit is for a loan whose original note is missing. The fields stay editable in the PDF.</p>
             <div className="mt-4 flex flex-wrap gap-4 text-[13px] font-medium">
               <a className="text-link" href={`/api/closings/${closing.id}/packet?kind=PSA`}>Purchase agreement</a>
               <a className="text-link" href={`/api/closings/${closing.id}/packet?kind=ASSIGNMENT`}>Assignment</a>
               <a className="text-link" href={`/api/closings/${closing.id}/packet?kind=ALLONGE`}>Allonge</a>
+              <a className="text-link" href={`/api/closings/${closing.id}/packet?kind=LOST_NOTE_AFFIDAVIT`}>Lost note affidavit</a>
+              {closing.depositCents != null && <a className="text-link" href={`/api/closings/${closing.id}/packet?kind=DEPOSIT_AGREEMENT`}>Deposit agreement</a>}
             </div>
+            <ClosingMasters closingId={closing.id} viewerId={user.id} />
           </section>
         )}
+        {party && <SignaturePanel closingId={closing.id} open={closing.status === "OPEN"} viewer={user} />}
         {party && (
           <BorrowerNotices
             closing={closing}
@@ -339,42 +350,21 @@ export default async function ClosingPage({
         {party && (!isAdmin || runs) && (closing.status === "COMPLETE" || user.role === "ADMIN") && (
           <section className="mt-6 glass p-6">
             <p className="eyebrow">Servicer boarding</p>
-            <form action={saveBoarding} className="mt-4 grid gap-3 sm:grid-cols-2">
-              <input type="hidden" name="closingId" value={closing.id} />
-              <label className="block sm:col-span-2">
-                <span className="text-[13px] text-muted-foreground">Servicer</span>
-                <input name="servicerName" defaultValue={closing.boarding?.servicerName || ""} className="desk-input mt-2" required />
-              </label>
-              <label className="block">
-                <span className="text-[13px] text-muted-foreground">Contact email</span>
-                <input name="contactEmail" type="email" defaultValue={closing.boarding?.contactEmail || ""} className="desk-input mt-2" />
-              </label>
-              <label className="block">
-                <span className="text-[13px] text-muted-foreground">Loan number</span>
-                <input name="loanNumber" defaultValue={closing.boarding?.loanNumber || ""} className="desk-input mt-2" />
-              </label>
-              <label className="block">
-                <span className="text-[13px] text-muted-foreground">Servicing transfer date</span>
-                <input name="boardedAt" type="date" defaultValue={closing.boarding?.boardedAt ? closing.boarding.boardedAt.toISOString().slice(0, 10) : ""} className="desk-input mt-2" aria-label="Servicing transfer date" />
-                <span className="mt-1 block text-xs text-muted-foreground">The day the new servicer starts taking payments.</span>
-              </label>
-              <label className="block">
-                <span className="text-[13px] text-muted-foreground">Old servicer&apos;s letter sent</span>
-                <input name="goodbyeSentAt" type="date" defaultValue={closing.boarding?.goodbyeSentAt ? closing.boarding.goodbyeSentAt.toISOString().slice(0, 10) : ""} className="desk-input mt-2" aria-label="Old servicer's letter sent" />
-              </label>
-              <label className="block">
-                <span className="text-[13px] text-muted-foreground">New servicer&apos;s letter sent</span>
-                <input name="helloSentAt" type="date" defaultValue={closing.boarding?.helloSentAt ? closing.boarding.helloSentAt.toISOString().slice(0, 10) : ""} className="desk-input mt-2" aria-label="New servicer's letter sent" />
-              </label>
-              <label className="block sm:col-span-2">
-                <span className="text-[13px] text-muted-foreground">Notes</span>
-                <textarea name="notes" defaultValue={closing.boarding?.notes || ""} className="desk-input mt-2 min-h-24" aria-label="Boarding notes" />
-              </label>
-              <div className="flex flex-wrap items-center gap-4 sm:col-span-2">
-                <SubmitButton className="h-11 text-[13px] font-medium">Save boarding</SubmitButton>
-                <a className="text-[13px] font-medium text-link" href={`/api/closings/${closing.id}/boarding`}>Download package</a>
-              </div>
-            </form>
+            {/* Pick from the desk's servicer directory, or type one. components/boarding-form.tsx. */}
+            <BoardingForm
+              closingId={closing.id}
+              choices={servicerChoices}
+              saved={{
+                servicerId: closing.boarding?.servicerId ?? null,
+                servicerName: closing.boarding?.servicerName || "",
+                contactEmail: closing.boarding?.contactEmail || "",
+                loanNumber: closing.boarding?.loanNumber || "",
+                boardedAt: closing.boarding?.boardedAt ? closing.boarding.boardedAt.toISOString().slice(0, 10) : "",
+                goodbyeSentAt: closing.boarding?.goodbyeSentAt ? closing.boarding.goodbyeSentAt.toISOString().slice(0, 10) : "",
+                helloSentAt: closing.boarding?.helloSentAt ? closing.boarding.helloSentAt.toISOString().slice(0, 10) : "",
+                notes: closing.boarding?.notes || "",
+              }}
+            />
           </section>
         )}
       </div>
@@ -452,6 +442,9 @@ export default async function ClosingPage({
             )}
           </div>
         )}
+        {/* The deposit's outcome and its four-eyes decision, and the backup bids behind the winner. */}
+        {(isAdmin || (party && isBuyer)) && <DepositPanel closing={closing} viewer={user} />}
+        {isAdmin && <BackupPanel closing={closing} viewer={user} />}
         {runs && closing.status === "OPEN" && (
           <form action={setClosingDates} className="glass space-y-3 p-6">
             <input type="hidden" name="closingId" value={closing.id} />

@@ -155,6 +155,7 @@ function Account({ user }: { user: ShellUser }) {
           <ThemeToggle />
           <MenuLink href="/account/notifications" icon={BellRing} label="Notice settings" onPick={() => setOpen(false)} />
           <MenuLink href="/account/security" icon={Lock} label="Security" onPick={() => setOpen(false)} />
+          {user.role !== "ADMIN" && user.role !== "BROKER" && <MenuLink href="/account/agreements" icon={ScrollText} label="Agreements" onPick={() => setOpen(false)} />}
           <form action={logout}>
             <button type="submit" className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left text-sm transition-colors hover:bg-hover">
               <LogOut className="size-[15px] text-muted-foreground" /> Sign out

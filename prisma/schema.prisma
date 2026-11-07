@@ -115,6 +115,8 @@ enum DocType {
   RISK_SEARCH
   // A property photo the seller adds, shown on the listing to whoever may see the street address.
   PHOTO
+  // A broker's signed mandate or listing agreement from the note holder, one per broker-filed listing.
+  MANDATE
 }
 
 enum NdaMethod {
@@ -366,6 +368,8 @@ model User {
   questionsAsked               ListingQuestion[] @relation("QuestionAsker")
   deletionRequests             DeletionRequest[]
   buyerEntities                BuyerEntity[]
+  beneficialOwners             BeneficialOwner[]
+  agreements                   AgreementAcceptance[]
 }
 
 model PlatformSettings {
@@ -417,6 +421,16 @@ model PlatformSettings {
   feeSchedule          Json?
   // Where tenYearRate came from: MANUAL, or TREASURY when the job read it from Treasury's daily par yield curve.
   tenYearSource        String?
+  // Whether a seller's identity and signing authority must be approved before the desk approves their listing.
+  // Missing means on when UPB_RELEASE=1 and off in the demo. lib/seller-identity.ts reads it.
+  requireSellerIdentity Boolean?
+  // Hours from an award for every party to sign the purchase agreement. Missing means the default in lib/signatures.ts.
+  psaSignHours         Int?
+  // Days past the target close before an open closing is failed, or sent to the desk when money has moved.
+  // Missing means the default in lib/backstop.ts.
+  stallDays            Int?
+  // Months a buyer's approved file stays current before the buyer must re-certify. Missing means 12.
+  recertifyMonths      Int?
   updatedAt            DateTime @updatedAt
 }
 
@@ -684,6 +698,12 @@ model Inquiry {
   sellerRequestedAt    DateTime?
   // The loans of a pool the seller was asked to approve, for a part-pool sale. Empty means the whole bid.
   sellerAskedNoteIds   String[]      @default([])
+  // A losing bidder asked to stand behind the winner, and their answer. A backup bid stays live until backupUntil,
+  // and the desk can award it in one step if the winner's closing fails. lib/backup-bids.ts.
+  backupAskedAt        DateTime?
+  backupAt             DateTime?
+  backupDeclinedAt     DateTime?
+  backupUntil          DateTime?
 
   @@index([listingId])
   @@index([buyerId])
@@ -987,6 +1007,8 @@ model BuyerEntity {
   // For an IRA: the custodian, and the account title the paper vests in, such as "Custodian FBO Name IRA #1234".
   iraCustodian    String?
   iraAccountTitle String?
+  // The last four digits of the entity's EIN. UPB never stores the whole number.
+  taxIdLast4      String?
   status          VerificationStatus @default(SUBMITTED)
   reviewerNote    String             @default("")
   reviewedById    String?
@@ -1064,6 +1086,12 @@ model SellerProfile {
   authorityDocMime String             @default("")
   status           VerificationStatus @default(NOT_STARTED)
   reviewerNote     String             @default("")
+  // The last four digits of the seller's EIN or SSN. UPB never stores the whole number.
+  taxIdLast4       String?
+  // An identity vendor's case, when one is configured. lib/vendors.ts startKyc.
+  vendor           String             @default("")
+  vendorRef        String             @default("")
+  reviewedById     String?
   submittedAt      DateTime?
   reviewedAt       DateTime?
   updatedAt        DateTime           @updatedAt
@@ -1091,6 +1119,12 @@ model BuyerProfile {
   homesControlled   Int?
   reoStrategy       String?
   eligibilityAt     DateTime?
+  // The last four digits of the buyer's EIN or SSN. UPB never stores the whole number.
+  taxIdLast4        String?
+  // An approved file is current until this date, set at approval. Past it the buyer re-certifies before bidding
+  // again. Missing means the file was approved before re-certification began, and stays current.
+  recertifyBy       DateTime?
+  recertRemindedAt  DateTime?
   vendor            String             @default("")
   vendorRef         String             @default("")
   submittedAt       DateTime?
@@ -1168,7 +1202,23 @@ model Closing {
   recordingNote         String?
   ownerNoticeSentAt     DateTime?
   ownerNoticeRemindedAt DateTime?
+  // What became of the deposit: HELD, APPLIED, REFUND_DUE, REFUNDED or FORFEITED. Missing means none recorded
+  // beyond the fields above. A refund or forfeit is proposed by one desk member and approved by another.
+  // lib/deposits.ts.
+  depositStatus         String?
+  depositProposal       String?
+  depositProposedById   String?
+  depositProposedAt     DateTime?
+  depositResolvedById   String?
+  depositResolvedAt     DateTime?
+  depositNote           String?
+  depositRefundReference String?
+  // The stalled-deal backstop's notices, so each goes once. lib/backstop.ts.
+  stallWarnedAt         DateTime?
+  stallFinalAt          DateTime?
+  stallEscalatedAt      DateTime?
   steps                 ClosingStep[]
+  signatures            SignatureRequest[]
   boarding              ServicerBoarding?
   funders               ClosingFunder[]
   brokerFees            BrokerFee[]
@@ -1211,6 +1261,8 @@ model ServicerBoarding {
   closingId    String    @unique
   closing      Closing   @relation(fields: [closingId], references: [id], onDelete: Cascade)
   servicerName String
+  // The servicer on the desk's directory, when the buyer picked one from it.
+  servicerId   String?
   contactEmail String    @default("")
   loanNumber   String    @default("")
   boardedAt    DateTime?
@@ -2067,4 +2119,91 @@ model AuditEvent {
 
   @@index([entityId])
   @@index([createdAt])
+}
+
+// A document sent for signature on a closing, and where each signer stands. In-app signing records the typed name,
+// the time and the request it came from; a vendor envelope reports back through /api/esign/webhook. lib/signatures.ts.
+model SignatureRequest {
+  id           String    @id @default(cuid()) @map("_id")
+  closingId    String
+  closing      Closing   @relation(fields: [closingId], references: [id], onDelete: Cascade)
+  // The form, as a template key from lib/templates.ts: PSA, ASSIGNMENT, ALLONGE and the rest.
+  kind         String
+  // in_app, dropbox-sign or docusign.
+  provider     String    @default("in_app")
+  providerRef  String    @default("")
+  // SENT, PARTIAL, SIGNED, DECLINED, VOIDED or EXPIRED.
+  status       String    @default("SENT")
+  // [{ role: "BUYER" | "SELLER" | "FUNDER" | "DESK", userId?, name, email, signedAt?, signedName?, ip?, declinedAt? }]
+  signers      Json
+  // SHA-256 of the PDF as sent, so a signed copy can be matched to what each party saw.
+  documentHash String    @default("")
+  dueAt        DateTime?
+  sentAt       DateTime  @default(now())
+  completedAt  DateTime?
+  remindedAt   DateTime?
+  voidedAt     DateTime?
+  voidReason   String?
+  createdById  String?
+
+  @@index([closingId])
+  @@index([status, dueAt])
+}
+
+// A person who owns 25% or more of a buying entity, or controls it, as FinCEN's customer due diligence rule asks.
+// Each is screened against the sanctions list. lib/beneficial-owners.ts.
+model BeneficialOwner {
+  id            String    @id @default(cuid()) @map("_id")
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // The entity owned: one of the buyer's BuyerEntity rows, or the buyer's main file when null.
+  buyerEntityId String?
+  name          String
+  title         String    @default("")
+  ownershipPct  Float?
+  controlPerson Boolean   @default(false)
+  country       String    @default("US")
+  // CLEAR, REVIEW or MATCH from the last sanctions screen, and when it ran.
+  screenResult  String?
+  screenedAt    DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@index([userId])
+}
+
+// A standing agreement a member signs once: the master purchase agreement for buyers, the master sale agreement for
+// sellers. Each sale's papers incorporate it by reference. A new version needs a new acceptance. lib/agreements.ts.
+model AgreementAcceptance {
+  id          String   @id @default(cuid()) @map("_id")
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // MASTER_PURCHASE or MASTER_SALE.
+  kind        String
+  version     String
+  signerName  String
+  signerTitle String   @default("")
+  entityName  String   @default("")
+  ip          String   @default("")
+  userAgent   String   @default("")
+  acceptedAt  DateTime @default(now())
+
+  @@index([userId, kind])
+}
+
+// A loan servicer on the desk's directory: who can board a purchased loan, in which states, and whether UPB reads
+// their exports. The desk enters every field. lib/servicers.ts.
+model Servicer {
+  id           String   @id @default(cuid()) @map("_id")
+  name         String   @unique
+  website      String   @default("")
+  contactEmail String   @default("")
+  states       String[] @default([])
+  // A format key from lib/servicer-import.ts when UPB reads this servicer's export.
+  importFormat String?
+  boardingFee  String   @default("")
+  monthlyFee   String   @default("")
+  notes        String   @default("")
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 }

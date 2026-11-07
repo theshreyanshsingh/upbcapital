@@ -13,6 +13,10 @@ import { getSettings } from "../lib/settings";
 import { statementLines, statementScope } from "../lib/settlement";
 import { strikeLimitOf } from "../lib/strikes";
 
+// An award sends the purchase agreement for signature, so its PDF stays on disk and signing stays in the app,
+// whatever storage or signing keys the local .env carries.
+for (const key of ["BLOB_READ_WRITE_TOKEN", "BLOB_STORE_ID", "S3_BUCKET", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "DROPBOX_SIGN_API_KEY", "DOCUSIGN_ACCESS_TOKEN", "DOCUSIGN_ACCOUNT_ID"]) process.env[key] = "";
+
 const DAY = 24 * 60 * 60 * 1000;
 
 test.after(async () => {

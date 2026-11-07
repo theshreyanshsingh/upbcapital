@@ -1,19 +1,25 @@
 import type { ListingStatus, Role } from "@prisma/client";
 import { navFor } from "@/components/desk-nav";
 import { canOpenListing, openableListingIds, type Viewer } from "@/lib/access";
+import { dataRoomOpenTo, ndaOpensRoom } from "@/lib/acl";
+import { deskWalled, sealedFromSeller } from "@/lib/auction";
+import { dealAccess } from "@/lib/data-room";
 import { deskPowers, type DeskCapability } from "@/lib/desk-roles";
 import { literal } from "@/lib/db-filters";
 import { deskSearch, searchTerm } from "@/lib/desk-search";
 import { filtersFromSaved, filtersQuery } from "@/lib/filters";
 import { moneyCompact, num } from "@/lib/format";
-import { roleLabel } from "@/lib/labels";
+import { docLabel, roleLabel } from "@/lib/labels";
 import { loansForSale } from "@/lib/metrics";
 import { prisma } from "@/lib/prisma";
+import { documentGate } from "@/lib/room-access";
 import { getSettings, isPro } from "@/lib/settings";
+import { threadWalls } from "@/lib/threads";
 
 // The ⌘K palette's data. Pages and actions are built here from the role and passed to the client. Search results
 // come from searchCommands, scoped to what this viewer may open: a buyer finds only the public listings the book
-// would open for them, a seller or broker only their own paper, and the desk everything.
+// would open for them, a seller or broker only their own paper, and the desk everything. Messages, bidder Q&A,
+// inbox posts and data-room files follow the rules of the pages they link to, further down.
 
 export type CommandGroup =
   | "Recent"
@@ -27,7 +33,11 @@ export type CommandGroup =
   | "Saved views"
   | "Accounts"
   | "Borrowers"
-  | "Leads";
+  | "Leads"
+  | "Messages"
+  | "Questions"
+  | "Threads"
+  | "Files";
 
 export type CommandItem = {
   id: string;
@@ -45,7 +55,8 @@ export type CommandItem = {
 
 export type ShortcutBinding = { keys: string[]; label: string; href: string };
 
-export type PaletteViewer = Viewer;
+// A desk account's role decides which bid messages and threads it reads behind the sealed-bid wall.
+export type PaletteViewer = Viewer & { deskRole?: string | null };
 
 const PUBLIC: ListingStatus[] = ["APPROVED", "PENDING", "SOLD"];
 const LIMIT = 8;
@@ -63,6 +74,7 @@ const DESK_KEYWORDS: Record<string, string> = {
   "/admin/market": "hud fannie freddie",
   "/market": "report monthly",
   "/closings": "settlement checklist",
+  "/admin/servicers": "servicer directory boarding",
   "/admin/book": "holdings inventory",
   "/admin/verification": "verification kyc proof of funds",
   "/admin/users": "users people",
@@ -321,20 +333,21 @@ async function buyerResults(viewer: PaletteViewer, term: string, settings: Setti
       : Promise.resolve([]),
   ]);
   const openable = openableListingIds(book, settings.earlyAccessHours, settings.freeBrowseLimit);
+  const opens: Opens = (listing) =>
+    canOpenListing({
+      viewer,
+      status: listing.status,
+      approvedAt: listing.approvedAt,
+      earlyAccessHours: settings.earlyAccessHours,
+      openableIds: openable,
+      listingId: listing.id,
+      sellerId: listing.sellerId,
+      brokerId: listing.brokerId,
+      launchAt: listing.launchAt,
+    }).ok;
+  const records = await recordResults(viewer, term, { opens, inquiryIds: mineIds });
   const listings = found
-    .filter((listing) =>
-      canOpenListing({
-        viewer,
-        status: listing.status,
-        approvedAt: listing.approvedAt,
-        earlyAccessHours: settings.earlyAccessHours,
-        openableIds: openable,
-        listingId: listing.id,
-        sellerId: listing.sellerId,
-        brokerId: listing.brokerId,
-        launchAt: listing.launchAt,
-      }).ok,
-    )
+    .filter((listing) => opens(listing))
     .slice(0, LIMIT)
     .map<CommandItem>((listing) => ({
       id: `listing:${listing.id}`,
@@ -353,6 +366,7 @@ async function buyerResults(viewer: PaletteViewer, term: string, settings: Setti
       const query = filtersQuery(filtersFromSaved(search.filters)).toString();
       return { id: `view:${search.id}`, group: "Saved views", label: search.name, hint: "Saved view", href: `/marketplace${query ? `?${query}` : ""}` };
     }),
+    ...records,
   ];
 }
 
@@ -361,7 +375,7 @@ async function buyerResults(viewer: PaletteViewer, term: string, settings: Setti
 async function sellerResults(viewer: PaletteViewer, term: string): Promise<CommandItem[]> {
   const text = { contains: literal(term), mode: "insensitive" as const };
   const byId = idTerm(term);
-  const [listings, closings] = await Promise.all([
+  const [listings, closings, records] = await Promise.all([
     prisma.listing.findMany({
       where: {
         sellerId: viewer.id,
@@ -381,10 +395,12 @@ async function sellerResults(viewer: PaletteViewer, term: string): Promise<Comma
       orderBy: { openedAt: "desc" },
       take: LIMIT,
     }),
+    recordResults(viewer, term),
   ]);
   return [
     ...listings.map<CommandItem>((listing) => ({ id: `listing:${listing.id}`, group: "Your listings", label: listing.title, hint: `${listing.kind === "POOL" ? "Pool" : "Single note"} · ${words(listing.status)}`, href: `/seller/listings/${listing.id}` })),
     ...closings.map<CommandItem>((closing) => ({ id: `closing:${closing.id}`, group: "Closings", label: closing.listing.title, hint: `Closing · ${words(closing.status)}`, href: `/closings/${closing.id}` })),
+    ...records,
   ];
 }
 
@@ -397,7 +413,7 @@ async function brokerResults(viewer: PaletteViewer, term: string): Promise<Comma
   const referred = approved
     ? (await prisma.inquiry.findMany({ where: { buyer: { referredById: viewer.id } }, select: { id: true } })).map((row) => row.id)
     : [];
-  const [listings, closings] = await Promise.all([
+  const [listings, closings, records] = await Promise.all([
     prisma.listing.findMany({
       where: {
         brokerId: viewer.id,
@@ -428,24 +444,260 @@ async function brokerResults(viewer: PaletteViewer, term: string): Promise<Comma
       orderBy: { openedAt: "desc" },
       take: LIMIT,
     }),
+    recordResults(viewer, term),
   ]);
   return [
     ...listings.map<CommandItem>((listing) => ({ id: `listing:${listing.id}`, group: "Your listings", label: listing.title, hint: `${listing.kind === "POOL" ? "Pool" : "Single note"} · ${words(listing.status)}`, href: `/broker/deals/${listing.id}` })),
     ...closings.map<CommandItem>((closing) => ({ id: `closing:${closing.id}`, group: "Closings", label: closing.listing.title, hint: `Closing · ${words(closing.status)}`, href: `/closings/${closing.id}` })),
+    ...records,
   ];
 }
 
-// The desk: lib/desk-search.ts, the same lookup and links as /admin/search, borrowers included.
-async function deskResults(term: string): Promise<CommandItem[]> {
-  const found = await deskSearch(term);
-  if (!found) return [];
+// The desk: lib/desk-search.ts, the same lookup and links as /admin/search, borrowers included, then the records
+// below behind the desk's sealed-bid wall.
+async function deskResults(viewer: PaletteViewer, term: string): Promise<CommandItem[]> {
+  const [found, records] = await Promise.all([deskSearch(term), recordResults(viewer, term)]);
+  if (!found) return records;
   return [
     ...found.listings.map<CommandItem>((listing) => ({ id: `listing:${listing.id}`, group: "Listings", label: listing.title, hint: `${listing.kind === "POOL" ? "Pool" : "Single note"} · ${words(listing.status)}`, href: `/admin/listings/${listing.id}` })),
     ...found.closings.map<CommandItem>((closing) => ({ id: `closing:${closing.id}`, group: "Closings", label: closing.listing.title, hint: `Closing · ${words(closing.status)}`, href: `/closings/${closing.id}` })),
     ...found.users.map<CommandItem>((user) => ({ id: `user:${user.id}`, group: "Accounts", label: user.name, hint: `${user.email} · ${roleLabel(user.role)}`, href: `/admin/users?q=${encodeURIComponent(user.email)}`, private: true })),
     ...found.borrowerNotes.map<CommandItem>((note, index) => ({ id: `borrower:${note.listingId}:${index}`, group: "Borrowers", label: note.borrowerName || "Unnamed borrower", hint: `${note.city}, ${note.state} · ${note.listing.title}`, href: `/admin/listings/${note.listingId}`, private: true })),
     ...found.leads.map<CommandItem>((lead) => ({ id: `lead:${lead.id}`, group: "Leads", label: lead.name, hint: `${lead.email} · ${words(lead.status)}`, href: "/admin/leads", private: true })),
+    ...records,
   ];
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Records inside a deal: bid messages, bidder Q&A, inbox posts and data-room files. Each kind follows the page its
+// result opens, so a result never shows what that page wouldn't: another buyer's message, a sealed bid to a desk role
+// behind the wall, a published answer to someone outside the room, or a file the download route would refuse. Their
+// text can carry a figure or a name, so none is kept in the browser's recent items.
+
+type Text = { contains: string; mode: "insensitive" };
+type ListingGate = { id: string; status: ListingStatus; approvedAt: Date | null; sellerId: string; brokerId: string | null; launchAt: Date | null };
+// Whether the book opens a listing's page to this buyer, from buyerResults.
+type Opens = (listing: ListingGate) => boolean;
+type RecordScope = { opens?: Opens; inquiryIds?: string[] };
+
+const GATE_SELECT = { id: true, title: true, status: true, approvedAt: true, sellerId: true, brokerId: true, launchAt: true } as const;
+// More rows than are shown, since the rules below drop some.
+const CANDIDATES = 30;
+
+const MESSAGE_KIND: Record<string, string> = { OFFER: "Bid", COUNTER: "Counter", NOTE: "Message" };
+const QUESTION_STATUS: Record<string, string> = { OPEN: "Waiting for an answer", ANSWERED: "Answered", DECLINED: "Closed without a published answer" };
+
+// The text around the first match, on one line, for a hint.
+export function excerpt(text: string, term: string, width = 90) {
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (flat.length <= width) return flat;
+  const at = Math.max(0, flat.toLowerCase().indexOf(term.toLowerCase()));
+  const start = Math.max(0, Math.min(at - Math.floor((width - term.length) / 2), flat.length - width));
+  return `${start > 0 ? "…" : ""}${flat.slice(start, start + width).trim()}${start + width < flat.length ? "…" : ""}`;
+}
+
+// The listing's own side: the desk, the filing broker, or the seller of record, a buyer's resale included. The
+// seller's desk is for seller accounts, so a broker works only the deals filed under their name.
+function manages(viewer: PaletteViewer, listing: { sellerId: string; brokerId: string | null }) {
+  if (viewer.role === "ADMIN") return true;
+  if (viewer.role === "BROKER") return listing.brokerId === viewer.id;
+  return listing.sellerId === viewer.id;
+}
+
+// Where that side works the listing.
+function ownerHref(viewer: PaletteViewer, listingId: string) {
+  if (viewer.role === "ADMIN") return `/admin/listings/${listingId}`;
+  if (viewer.role === "BROKER") return `/broker/deals/${listingId}`;
+  if (viewer.role === "BUYER") return `/buyer/resales/${listingId}`;
+  return `/seller/listings/${listingId}`;
+}
+
+// The listings whose room is open to this buyer, by the listing page's rule: an NDA the seller let through on a live
+// listing, or a closing on it, which keeps it open once it is in contract or sold.
+async function openRooms(viewer: PaletteViewer, listings: ListingGate[]) {
+  const byId = new Map(listings.map((listing) => [listing.id, listing]));
+  const open = new Set<string>();
+  if (!byId.size) return open;
+  const ndas = await prisma.ndaAcknowledgment.findMany({ where: { userId: viewer.id, listingId: { in: [...byId.keys()] } }, select: { listingId: true, accessStatus: true } });
+  const ndaOf = new Map(ndas.map((nda) => [nda.listingId, nda]));
+  for (const listing of byId.values()) {
+    const signedNda = ndaOpensRoom(ndaOf.get(listing.id));
+    if (dataRoomOpenTo({ listingStatus: listing.status, signedNda, closingParty: false })) {
+      open.add(listing.id);
+      continue;
+    }
+    const deal = await dealAccess(listing.id, viewer.id);
+    if (dataRoomOpenTo({ listingStatus: listing.status, signedNda, closingParty: deal.whole || deal.loans.size > 0 })) open.add(listing.id);
+  }
+  return open;
+}
+
+// Bid messages. A buyer finds the thread on their own bids only. The desk finds what its offers page shows, which
+// hides a sealed or best-and-final thread from a role behind the wall (lib/auction.ts deskWalled). Sellers read bids
+// on their listing pages, under the rules there, so they aren't searched here.
+async function messageResults(viewer: PaletteViewer, text: Text, term: string): Promise<CommandItem[]> {
+  if (viewer.role !== "BUYER" && viewer.role !== "ADMIN") return [];
+  const desk = viewer.role === "ADMIN";
+  const rows = await prisma.offerMessage.findMany({
+    where: { body: text, ...(desk ? {} : { inquiry: { buyerId: viewer.id } }) },
+    select: {
+      id: true,
+      kind: true,
+      body: true,
+      inquiryId: true,
+      inquiry: { select: { type: true, buyerId: true, listing: { select: { title: true, bidMode: true, bidDeadline: true, status: true } } } },
+    },
+    orderBy: { createdAt: "desc" },
+    take: desk ? CANDIDATES : LIMIT,
+  });
+  return rows
+    .filter((row) => (desk ? !(row.inquiry.type === "OFFER" && deskWalled(row.inquiry.listing, viewer)) : row.inquiry.buyerId === viewer.id))
+    .slice(0, LIMIT)
+    .map((row) => ({
+      id: `message:${row.id}`,
+      group: "Messages",
+      label: row.inquiry.listing.title,
+      hint: `${MESSAGE_KIND[row.kind] ?? "Message"} · ${excerpt(row.body, term)}`,
+      href: desk ? `/admin/offers#offer-${row.inquiryId}` : `/buyer/offers#inquiry-${row.inquiryId}`,
+      private: true,
+    }));
+}
+
+// Bidder Q&A. The desk and a listing's own side find every question on it. A bidder finds their own questions on a
+// listing the book opens to them, and published answers only while its room is open to them, as on the listing page.
+// Who asked is never in a result.
+async function questionResults(viewer: PaletteViewer, text: Text, term: string, scope: RecordScope): Promise<CommandItem[]> {
+  const match = { OR: [{ question: text }, { answer: text }] };
+  const select = { id: true, question: true, status: true, askerId: true, listing: { select: GATE_SELECT } } as const;
+  const owner = viewer.role === "ADMIN" ? {} : viewer.role === "BROKER" ? { listing: { brokerId: viewer.id } } : { listing: { sellerId: viewer.id } };
+  const bidder = viewer.role === "BUYER" && scope.opens ? scope.opens : null;
+  const [owned, asked] = await Promise.all([
+    prisma.listingQuestion.findMany({ where: { ...match, ...owner }, select, orderBy: { createdAt: "desc" }, take: LIMIT }),
+    bidder
+      ? prisma.listingQuestion.findMany({
+          where: { AND: [match, { OR: [{ askerId: viewer.id }, { status: "ANSWERED" }] }], listing: { status: { in: PUBLIC }, sellerId: { not: viewer.id } } },
+          select,
+          orderBy: { createdAt: "desc" },
+          take: CANDIDATES,
+        })
+      : Promise.resolve([]),
+  ]);
+  const openable = bidder ? asked.filter((row) => bidder(row.listing)) : [];
+  const rooms = await openRooms(viewer, openable.filter((row) => row.status === "ANSWERED").map((row) => row.listing));
+  const seen = openable.filter((row) => (row.status === "ANSWERED" ? rooms.has(row.listing.id) : row.askerId === viewer.id));
+  const item = (row: (typeof owned)[number], href: string, mine: boolean): CommandItem => ({
+    id: `question:${row.id}`,
+    group: "Questions",
+    label: excerpt(row.question, term, 80),
+    hint: `${mine && row.status !== "ANSWERED" ? "Your question · " : ""}${QUESTION_STATUS[row.status] ?? words(row.status)} · ${row.listing.title}`,
+    href,
+    private: true,
+  });
+  return [
+    ...owned.filter((row) => manages(viewer, row.listing)).map((row) => item(row, `${ownerHref(viewer, row.listing.id)}#questions`, false)),
+    ...seen.slice(0, LIMIT).map((row) => item(row, `/marketplace/${row.listing.id}?tab=room#questions`, row.askerId === viewer.id)),
+  ];
+}
+
+// A seller leaves a bid's thread while a sealed round is open on their listing (lib/threads.ts ensureInquiryThread),
+// so a seat left over from before the round finds nothing in it.
+async function sealedFromSellerThreads(viewer: PaletteViewer, threads: { id: string; inquiryId: string | null }[]) {
+  const inquiryIds = threads.map((thread) => thread.inquiryId).filter((id): id is string => Boolean(id));
+  if (!inquiryIds.length) return new Set<string>();
+  const offers = await prisma.inquiry.findMany({
+    where: { id: { in: inquiryIds }, type: "OFFER" },
+    select: { id: true, buyerId: true, listing: { select: { sellerId: true, bidMode: true, bidDeadline: true } } },
+  });
+  const hidden = new Set(offers.filter((offer) => offer.listing.sellerId === viewer.id && offer.buyerId !== viewer.id && sealedFromSeller(offer.listing)).map((offer) => offer.id));
+  return new Set(threads.filter((thread) => thread.inquiryId && hidden.has(thread.inquiryId)).map((thread) => thread.id));
+}
+
+// Inbox posts in threads the viewer sits in. A desk role behind the wall doesn't read a sealed bid's thread
+// (lib/threads.ts threadWalls), so its posts don't show either.
+async function threadResults(viewer: PaletteViewer, text: Text, term: string): Promise<CommandItem[]> {
+  const posts = await prisma.threadPost.findMany({
+    where: { body: text, thread: { members: { some: { userId: viewer.id } } } },
+    select: { id: true, body: true, thread: { select: { id: true, subject: true, inquiryId: true } } },
+    orderBy: { createdAt: "desc" },
+    take: CANDIDATES,
+  });
+  if (!posts.length) return [];
+  const threads = [...new Map(posts.map((post) => [post.thread.id, post.thread])).values()];
+  const [walls, sealed] = await Promise.all([threadWalls(viewer, threads), viewer.role === "ADMIN" ? Promise.resolve(new Set<string>()) : sealedFromSellerThreads(viewer, threads)]);
+  return posts
+    .filter((post) => !walls.has(post.thread.id) && !sealed.has(post.thread.id))
+    .slice(0, LIMIT)
+    .map((post) => ({
+      id: `post:${post.id}`,
+      group: "Threads",
+      label: post.thread.subject,
+      hint: excerpt(post.body, term),
+      href: `/inbox/${post.thread.id}#post-${post.id}`,
+      private: true,
+    }));
+}
+
+// The listings whose files a viewer could hold: the desk's are all of them, an owner's their own, and a buyer's those
+// they signed an NDA on, are closing on, or resell.
+async function fileScope(viewer: PaletteViewer, scope: RecordScope) {
+  if (viewer.role === "ADMIN") return {};
+  if (viewer.role === "BROKER") return { listing: { brokerId: viewer.id } };
+  if (viewer.role !== "BUYER") return { listing: { sellerId: viewer.id } };
+  const [ndas, closings, own] = await Promise.all([
+    prisma.ndaAcknowledgment.findMany({ where: { userId: viewer.id }, select: { listingId: true } }),
+    prisma.closing.findMany({
+      where: { status: { in: ["OPEN", "COMPLETE"] }, OR: [{ inquiryId: { in: scope.inquiryIds ?? [] } }, { funders: { some: { userId: viewer.id } } }] },
+      select: { listingId: true },
+    }),
+    prisma.listing.findMany({ where: { sellerId: viewer.id }, select: { id: true } }),
+  ]);
+  const ids = [...new Set([...ndas.map((row) => row.listingId), ...closings.map((row) => row.listingId), ...own.map((row) => row.id)])];
+  return ids.length ? { listingId: { in: ids } } : null;
+}
+
+// Data-room file names. Each goes through documentGate, the download route's own rule, since a name can carry a
+// borrower or a street. A bidder's result opens the room, or the loan's file for a loan's own document.
+async function fileResults(viewer: PaletteViewer, text: Text, scope: RecordScope): Promise<CommandItem[]> {
+  const where = await fileScope(viewer, scope);
+  if (!where) return [];
+  const rows = await prisma.document.findMany({
+    where: { originalName: text, type: { not: "PHOTO" }, ...where },
+    select: { id: true, type: true, originalName: true, noteId: true, listing: { select: GATE_SELECT } },
+    orderBy: { createdAt: "desc" },
+    take: CANDIDATES,
+  });
+  const items: CommandItem[] = [];
+  for (const row of rows) {
+    if (items.length >= LIMIT) break;
+    const owner = manages(viewer, row.listing);
+    if (!owner && !scope.opens?.(row.listing)) continue;
+    if (!(await documentGate(viewer, row.id)).allowed) continue;
+    const anchor = viewer.role === "ADMIN" || viewer.role === "INDIVIDUAL_SELLER" || viewer.role === "INSTITUTIONAL_SELLER" ? "#documents" : "";
+    items.push({
+      id: `file:${row.id}`,
+      group: "Files",
+      label: row.originalName,
+      hint: `${docLabel(row.type)} · ${row.listing.title}`,
+      href: owner
+        ? `${ownerHref(viewer, row.listing.id)}${anchor}`
+        : row.noteId
+          ? `/marketplace/${row.listing.id}?loan=${row.noteId}&tab=file#loan-file`
+          : `/marketplace/${row.listing.id}?tab=room#room-heading`,
+      private: true,
+    });
+  }
+  return items;
+}
+
+async function recordResults(viewer: PaletteViewer, term: string, scope: RecordScope = {}): Promise<CommandItem[]> {
+  const text: Text = { contains: literal(term), mode: "insensitive" };
+  const [messages, questions, threads, files] = await Promise.all([
+    messageResults(viewer, text, term),
+    questionResults(viewer, text, term, scope),
+    threadResults(viewer, text, term),
+    fileResults(viewer, text, scope),
+  ]);
+  return [...messages, ...questions, ...threads, ...files];
 }
 
 // The search behind /api/command. Settings can be passed in so a test can fix the holds.
@@ -453,7 +705,7 @@ export async function searchCommands(viewer: PaletteViewer, raw: string, options
   const term = searchTerm(typeof raw === "string" ? raw : "");
   if (term.length < 2) return [];
   if (viewer.accountStatus === "REJECTED" || viewer.accountStatus === "SUSPENDED") return [];
-  if (viewer.role === "ADMIN") return deskResults(term);
+  if (viewer.role === "ADMIN") return deskResults(viewer, term);
   if (viewer.role === "BUYER") {
     const settings = options.settings ?? (await getSettings());
     return buyerResults(viewer, term, { earlyAccessHours: settings.earlyAccessHours, freeBrowseLimit: settings.freeBrowseLimit });

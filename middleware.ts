@@ -20,7 +20,9 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith("/seller") &&
     role !== "INDIVIDUAL_SELLER" &&
     role !== "INSTITUTIONAL_SELLER" &&
-    role !== "ADMIN"
+    role !== "ADMIN" &&
+    // A broker is the seller of record on what they file, so they keep the same seller file.
+    !(role === "BROKER" && pathname === "/seller/verification")
   ) {
     return NextResponse.redirect(new URL("/", request.url));
   }

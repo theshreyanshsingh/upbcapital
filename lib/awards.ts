@@ -27,8 +27,9 @@ type DeclineWhy = { subject: string; bidder: string; group: string; reason: stri
 
 // The award that closed the round. An offer award passes its price, so each losing bidder can hear where they
 // stood. A buy-it-now win passes buyNow, and nobody hears more, since its price is on the listing.
-// A part-pool award passes the loans it took in noteIds.
-type Winner = { id: string | null; listingId: string; noteId: string | null; noteIds?: string[]; price?: number | null; buyNow?: boolean };
+// A part-pool award passes the loans it took in noteIds. An offer award passes the bids asked to stand as backup in
+// keep, which stay live (lib/backup-bids.ts) but still count in the round the others hear about.
+type Winner = { id: string | null; listingId: string; noteId: string | null; noteIds?: string[]; price?: number | null; buyNow?: boolean; keep?: string[] };
 
 const ORDINALS = ["th", "st", "nd", "rd"];
 
@@ -70,7 +71,7 @@ export async function declineLosingBids(winner: Winner, title: string, why?: Dec
     const prices = standingLoanPrices(offer.loanPrices, buyerPrice(offer.amount, pricedMessages(offer.messages), offer.buyerId));
     return Boolean(prices && Object.keys(prices).some((noteId) => free.has(noteId) && !sold?.includes(noteId)));
   };
-  const losers = sold ? open.filter((offer) => (offer.noteId ? sold.includes(offer.noteId) : !canStillWin(offer))) : open;
+  const losers = (sold ? open.filter((offer) => (offer.noteId ? sold.includes(offer.noteId) : !canStillWin(offer))) : open).filter((offer) => !winner.keep?.includes(offer.id));
   const { emitWebhook } = await import("@/lib/webhooks");
   const listing = await prisma.listing.findUnique({ where: { id: winner.listingId }, select: { sellerId: true, reservePrice: true } });
   const sellerId = listing?.sellerId;
@@ -365,8 +366,9 @@ export async function askSeller(offer: Offer, price: number, part?: { noteIds: s
 }
 
 // The award: the loan or listing goes into contract, the closing opens, and the other bids close. It refuses
-// without the seller's agreement, whatever path called it.
-export async function awardOffer(inquiryId: string, actorId: string) {
+// without the seller's agreement, whatever path called it. The desk's and the seller's awards pass backups, so the
+// next two bids on the same loans are asked to stand as backup rather than closing (lib/backup-bids.ts).
+export async function awardOffer(inquiryId: string, actorId: string, options: { backups?: boolean } = {}) {
   const check = await checkAward(inquiryId);
   if (check.error !== null) return check;
   const { offer, price } = check;
@@ -435,7 +437,13 @@ export async function awardOffer(inquiryId: string, actorId: string) {
       ? `${offer.buyer.name} confirmed your buy-it-now price of ${dollars(price)}, so the sale went ahead as you agreed. Closing checklist: ${link}`
       : `${offer.buyer.name}'s offer was accepted. Closing checklist: ${link}`,
   );
-  const declined = await declineLosingBids({ id: offer.id, listingId: offer.listingId, noteId: offer.noteId, price, buyNow }, offer.listing.title);
+  // The next best bids on the same loans are asked to stand as backup, and stay live while they answer.
+  const keep = options.backups
+    ? await import("@/lib/backup-bids").then((backups) =>
+        backups.askBackups({ id: offer.id, listingId: offer.listingId, noteId: offer.noteId, buyerId: offer.buyerId, price, buyNow, title: offer.listing.title, closingId: closing.id }),
+      )
+    : [];
+  const declined = await declineLosingBids({ id: offer.id, listingId: offer.listingId, noteId: offer.noteId, price, buyNow, keep }, offer.listing.title);
   // The seller reads every review comment, so the bidder stays out of it. The audit log keeps the name.
   await prisma.reviewComment.create({
     data: { listingId: offer.listingId, authorId: actorId, action: "COMMENT", comment: "An offer was accepted. The closing checklist is open." },
@@ -445,8 +453,10 @@ export async function awardOffer(inquiryId: string, actorId: string) {
     "AWARD",
     "inquiry",
     offer.id,
-    `${offer.listing.title} · ${offer.buyer.name} · ${AGREED_AS[check.agreed]}${declined ? ` · ${declined} other bid${declined === 1 ? "" : "s"} declined` : ""}`,
+    `${offer.listing.title} · ${offer.buyer.name} · ${AGREED_AS[check.agreed]}${declined ? ` · ${declined} other bid${declined === 1 ? "" : "s"} declined` : ""}${keep.length ? ` · ${keep.length} kept live as backup` : ""}`,
   );
+  // The purchase agreement goes out now, so every party's hours to sign run from the award. It never fails the award.
+  await import("@/lib/signatures").then((signatures) => signatures.sendOnAward(closing.id)).catch((error) => console.error("[upb-signatures] send at award failed:", error));
   return { error: null, closingId: closing.id, declined, price } as const;
 }
 
@@ -516,6 +526,7 @@ export async function awardPartial(inquiryId: string, noteIds: string[], actorId
     offer.id,
     `${offer.listing.title} · ${offer.buyer.name} · ${part} at ${dollars(price)} · ${AGREED_AS[check.agreed]}${declined ? ` · ${declined} other bid${declined === 1 ? "" : "s"} declined` : ""}`,
   );
+  await import("@/lib/signatures").then((signatures) => signatures.sendOnAward(closing.id)).catch((error) => console.error("[upb-signatures] send at award failed:", error));
   return { error: null, closingId: closing.id, declined, price, noteIds: loans } as const;
 }
 

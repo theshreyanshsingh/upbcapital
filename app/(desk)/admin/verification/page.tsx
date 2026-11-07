@@ -2,9 +2,13 @@ import { clearBuyerStrike } from "@/actions/strikes";
 import { reviewVerification } from "@/actions/verification";
 import { reviewEntity } from "@/actions/buyer-entities";
 import { ConfirmSubmit } from "@/components/confirm-submit";
+import { FileOwners } from "@/components/file-owners";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
+import { SellerFilesLink } from "@/components/seller-identity";
 import { requireRole } from "@/lib/auth";
+import { fileKey, ownersByFile, type OwnerView } from "@/lib/beneficial-owners";
+import { deskEntityStatus } from "@/lib/buyer-entities";
 import { ROAD_THRESHOLD, reoStrategyLabel } from "@/lib/eligibility";
 import { isoDate, money, prettyDate, q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
@@ -30,6 +34,8 @@ export default async function AdminVerificationPage({
     prisma.buyerEntity.findMany({ where: { userId: { in: profiles.map((profile) => profile.userId) } }, orderBy: { createdAt: "asc" } }),
   ]);
   const limit = strikeLimitOf(settings.strikeLimit);
+  // Owners of each main file and entity, with their screens as they stand.
+  const owners = await ownersByFile(profiles.map((profile) => profile.userId));
   const entitiesOf = (userId: string) => entityRows.filter((entity) => entity.userId === userId);
   const waitingEntities = entityRows.filter((entity) => entity.status === "SUBMITTED").length;
   return (
@@ -37,6 +43,7 @@ export default async function AdminVerificationPage({
       <PageIntro eyebrow="Buyer files" title="Accreditation and proof of funds." lede="An approved account can browse. An approved file can offer." />
       <Notice notice={q(params, "notice")} error={q(params, "error")} />
       {!vets && <p className="mt-4 text-sm text-muted-foreground">Your desk role reads these files. Decisions are for compliance.</p>}
+      {vets && <SellerFilesLink />}
       {waitingEntities > 0 && (
         <p className="mt-4 text-sm text-foreground">{waitingEntities} buying entit{waitingEntities === 1 ? "y is" : "ies are"} waiting for review under the buyers below.</p>
       )}
@@ -70,8 +77,9 @@ export default async function AdminVerificationPage({
             {profile.homesControlled != null && profile.homesControlled >= ROAD_THRESHOLD && (
               <p className="mt-1 text-[13px] font-medium text-foreground">At or over {ROAD_THRESHOLD} homes. They acknowledge the ROAD Act notice before bidding on non-performing one- and two-unit loans.</p>
             )}
+            <FileOwners owners={owners.get(fileKey(profile.userId, null)) ?? []} entityType={profile.entityType} taxIdLast4={profile.taxIdLast4 ?? null} recertifyBy={profile.status === "APPROVED" ? profile.recertifyBy : null} />
             <Strikes rows={strikes.get(profile.userId) ?? []} limit={limit} back="/admin/verification" canClear={vets} />
-            <Entities userId={profile.userId} rows={entitiesOf(profile.userId)} canReview={vets} />
+            <Entities userId={profile.userId} rows={entitiesOf(profile.userId)} canReview={vets} owners={owners} />
             {profile.proofKey && (
               <a className="mt-3 inline-block text-sm text-link" href={`/api/verification/${profile.userId}`}>Download proof</a>
             )}
@@ -113,10 +121,11 @@ type EntityRow = {
   reviewerNote: string;
   reviewedAt: Date | null;
   createdAt: Date;
+  taxIdLast4?: string | null;
 };
 
 // The buyer's other buying entities. Each is approved or declined with a note, and approval screens it again.
-function Entities({ userId, rows, canReview }: { userId: string; rows: EntityRow[]; canReview: boolean }) {
+function Entities({ userId, rows, canReview, owners }: { userId: string; rows: EntityRow[]; canReview: boolean; owners: Map<string, OwnerView[]> }) {
   if (!rows.length) return null;
   return (
     <div className="mt-3 rounded-lg border border-border p-3">
@@ -126,7 +135,7 @@ function Entities({ userId, rows, canReview }: { userId: string; rows: EntityRow
           <li key={entity.id} className="py-3 text-sm">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
               <p className="font-medium text-foreground">{entity.name}</p>
-              <p className="text-[13px] font-medium text-link">{entity.status === "SUBMITTED" ? "waiting for review" : entity.status.replaceAll("_", " ").toLowerCase()}</p>
+              <p className="text-[13px] font-medium text-link">{deskEntityStatus(entity.status)}</p>
             </div>
             <p className="text-xs text-muted-foreground">
               {entityLabel(entity.entityType)}
@@ -135,6 +144,7 @@ function Entities({ userId, rows, canReview }: { userId: string; rows: EntityRow
               {entity.reviewedAt ? ` · decided ${prettyDate(entity.reviewedAt)}` : ""}
             </p>
             {entity.reviewerNote && <p className="text-xs text-muted-foreground">Note: {entity.reviewerNote}</p>}
+            <FileOwners owners={owners.get(fileKey(userId, entity.id)) ?? []} entityType={entity.entityType} taxIdLast4={entity.taxIdLast4 ?? null} />
             {canReview && <form action={reviewEntity} className="mt-2 flex flex-wrap items-end gap-2">
               <input type="hidden" name="entityId" value={entity.id} />
               <input type="hidden" name="userId" value={userId} />

@@ -8,10 +8,12 @@ import { Input } from "@/components/ui/input";
 type Kind = { value: string; label: string };
 
 // Another buying entity for the buyer's file. An IRA asks for its custodian and the account title the paper vests in,
-// with the note that the custodian signs and funds.
-export function BuyerEntityForm({ kinds, iraNote, titleExample }: { kinds: readonly Kind[]; iraNote: string; titleExample: string }) {
+// with the note that the custodian signs and funds. An LLC, trust, fund or other entity lists its owners next.
+export function BuyerEntityForm({ kinds, iraNote, titleExample, taxNote }: { kinds: readonly Kind[]; iraNote: string; titleExample: string; taxNote: string }) {
   const [kind, setKind] = useState(kinds[0]?.value ?? "LLC");
   const ira = kind === "IRA";
+  // Kept beside lib/beneficial-owners.ts needsOwners: a person and an IRA list no owners.
+  const listsOwners = !ira && kind !== "INDIVIDUAL";
   return (
     <form action={addEntity} className="mt-4 space-y-4">
       <label className="block">
@@ -44,9 +46,15 @@ export function BuyerEntityForm({ kinds, iraNote, titleExample }: { kinds: reado
           <Input name="jurisdiction" required minLength={2} maxLength={80} placeholder="Delaware" className="mt-2 h-11 bg-card" />
         </label>
       )}
+      <label className="block">
+        <span className="text-[13px] text-muted-foreground">{ira ? "Last four digits of the IRA's tax ID, if it has one" : kind === "INDIVIDUAL" ? "Last four digits of the SSN or EIN" : "Last four digits of its EIN"}</span>
+        <Input name="taxIdLast4" inputMode="numeric" pattern="[0-9]{4}" minLength={4} maxLength={4} autoComplete="off" required={!ira} placeholder="1234" className="mt-2 h-11 w-32 bg-card tabular-nums" aria-describedby="entity-tax-note" />
+        <span id="entity-tax-note" className="mt-1 block text-xs text-muted-foreground">{taxNote}</span>
+      </label>
       <SubmitButton variant="outline" className="h-11 text-[13px] font-medium" pendingLabel="Sending…">
-        Send to the desk
+        {listsOwners ? "Add the entity" : "Send to the desk"}
       </SubmitButton>
+      {listsOwners && <p className="text-xs text-muted-foreground">Next you list its owners and send it to the desk.</p>}
     </form>
   );
 }

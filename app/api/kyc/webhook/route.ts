@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { audit } from "@/lib/audit";
 import { notifyDesk } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
+import { sellerVendorResult } from "@/lib/seller-identity";
 import { parseKycWebhook } from "@/lib/vendors";
 
 export const runtime = "nodejs";
@@ -27,6 +28,8 @@ export async function POST(request: Request) {
   const profile = reference
     ? await prisma.buyerProfile.findFirst({ where: { vendorRef: reference }, include: { user: { select: { name: true } } } })
     : null;
+  // A case no buyer file opened may be a seller's, from the seller file page.
+  if (!profile && (await sellerVendorResult(parsed))) return NextResponse.json({ ok: true, matched: true });
   if (!profile || profile.status !== "SUBMITTED" || (parsed.userId && parsed.userId !== profile.userId)) {
     return NextResponse.json({ ok: true, matched: false });
   }

@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { withdrawInquiry } from "@/actions/buyer";
+import { BackupAsks } from "@/components/backup-asks";
 import { ConfirmSubmit } from "@/components/confirm-submit";
 import { DestructionRequests } from "@/components/destruction-requests";
+import { MasterAgreementBanner } from "@/components/master-agreement-banner";
 import { OfferThread } from "@/components/offer-thread";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
@@ -33,7 +35,9 @@ export default async function OffersPage({
     <div>
       <PageIntro eyebrow="Inquiries" title="What you have asked for." />
       <Notice notice={q(params, "notice")} error={q(params, "error")} />
+      <MasterAgreementBanner user={user} kind="MASTER_PURCHASE" back="/buyer/offers" />
       <DestructionRequests userId={user.id} />
+      <BackupAsks userId={user.id} />
       <ul className="mt-8 space-y-3">
         {inquiries.length === 0 && <li className="text-sm text-muted-foreground">No offers or requests yet.</li>}
         {inquiries.map((inquiry) => {
@@ -49,7 +53,7 @@ export default async function OffersPage({
           const loanPrices = poolBid ? standingLoanPrices(inquiry.loanPrices, amount) : null;
           const withdrawProblem = withdrawBlock({ type: inquiry.type, status: inquiry.status, bidMode: inquiry.listing.bidMode, bidDeadline: inquiry.listing.bidDeadline, group: Boolean(groupId) });
           return (
-            <li key={inquiry.id} className="glass p-5">
+            <li key={inquiry.id} id={`inquiry-${inquiry.id}`} className="glass scroll-mt-6 p-5">
               <div className="flex flex-wrap items-baseline justify-between gap-3">
                 <Link href={`/marketplace/${inquiry.listingId}`} className="font-semibold tracking-tight text-2xl text-foreground">{inquiry.listing.title}</Link>
                 <span className="text-[13px] font-medium text-link">{inquiry.status.toLowerCase()}</span>

@@ -1,12 +1,18 @@
+export type SignatureSigner = { name: string; email: string };
+
+// One signer, as the NDA sends, or several on one envelope, as lib/signatures.ts sends a closing's papers. Every
+// signer on an envelope signs in parallel, and the vendor reports each one back by email and order.
 export type SignatureJob = {
   title: string;
-  signerName: string;
-  signerEmail: string;
   pdf: Buffer;
-  kind: "nda" | "psa";
-};
+  kind: "nda" | "psa" | "assignment" | "allonge";
+} & ({ signerName: string; signerEmail: string } | { signers: SignatureSigner[] });
 
 export type SignatureResult = { provider: string; id: string; status: string; url: string };
+
+function signersOf(job: SignatureJob): SignatureSigner[] {
+  return "signers" in job ? job.signers : [{ name: job.signerName, email: job.signerEmail }];
+}
 
 export async function sendForSignature(job: SignatureJob): Promise<SignatureResult> {
   const dropbox = process.env.DROPBOX_SIGN_API_KEY;
@@ -39,8 +45,10 @@ async function dropboxSign(apiKey: string, job: SignatureJob): Promise<Signature
   form.set("title", job.title.slice(0, 180));
   form.set("subject", job.title.slice(0, 180));
   form.set("message", "UPB Capital sent this for signature.");
-  form.set("signers[0][email_address]", job.signerEmail);
-  form.set("signers[0][name]", job.signerName);
+  signersOf(job).forEach((signer, index) => {
+    form.set(`signers[${index}][email_address]`, signer.email);
+    form.set(`signers[${index}][name]`, signer.name);
+  });
   form.set("file[0]", new Blob([new Uint8Array(job.pdf)], { type: "application/pdf" }), `${job.kind}.pdf`);
   const response = await fetch("https://api.hellosign.com/v3/signature_request/send", {
     method: "POST",
@@ -66,12 +74,40 @@ async function docusign(token: string, accountId: string, job: SignatureJob): Pr
       emailSubject: job.title.slice(0, 100),
       status: "sent",
       documents: [{ documentBase64: job.pdf.toString("base64"), name: job.title.slice(0, 80), fileExtension: "pdf", documentId: "1" }],
-      recipients: { signers: [{ email: job.signerEmail, name: job.signerName, recipientId: "1" }] },
+      // The recipient id is the signer's place in the list, which is how a Connect event names a recipient.
+      recipients: { signers: signersOf(job).map((signer, index) => ({ email: signer.email, name: signer.name, recipientId: String(index + 1), routingOrder: "1" })) },
     }),
   });
   if (!response.ok) throw new Error("DocuSign rejected the envelope");
   const payload = (await response.json()) as { envelopeId?: string };
   return { provider: "docusign", id: payload.envelopeId || "sent", status: "sent", url: "" };
+}
+
+// Withdraws an envelope a party could still sign, after the desk voids or resends it or its time runs out. Best
+// effort: the request is already void on UPB's side, and a late signature on it is ignored.
+export async function cancelSignature(provider: string, reference: string, reason: string) {
+  if (!reference) return false;
+  try {
+    if (provider === "dropbox-sign" && process.env.DROPBOX_SIGN_API_KEY) {
+      const response = await fetch(`https://api.hellosign.com/v3/signature_request/cancel/${encodeURIComponent(reference)}`, {
+        method: "POST",
+        headers: { Authorization: `Basic ${Buffer.from(`${process.env.DROPBOX_SIGN_API_KEY}:`).toString("base64")}` },
+      });
+      return response.ok;
+    }
+    if (provider === "docusign" && process.env.DOCUSIGN_ACCESS_TOKEN && process.env.DOCUSIGN_ACCOUNT_ID) {
+      const base = process.env.DOCUSIGN_BASE_URL || "https://demo.docusign.net/restapi";
+      const response = await fetch(`${base}/v2.1/accounts/${process.env.DOCUSIGN_ACCOUNT_ID}/envelopes/${encodeURIComponent(reference)}`, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${process.env.DOCUSIGN_ACCESS_TOKEN}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "voided", voidedReason: reason.slice(0, 200) || "Withdrawn by the desk." }),
+      });
+      return response.ok;
+    }
+  } catch {
+    // The vendor was unreachable. The envelope stays open there, and nothing it reports changes the request.
+  }
+  return false;
 }
 
 export function signatureMode() {

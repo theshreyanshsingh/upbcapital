@@ -47,7 +47,10 @@ async function buyersOf(listingId: string) {
   });
   const inquiryIds = closings.map((closing) => closing.inquiryId).filter((id): id is string => Boolean(id));
   const bids = inquiryIds.length ? await prisma.inquiry.findMany({ where: { id: { in: inquiryIds } }, select: { buyerId: true } }) : [];
-  return new Set([...bids.map((bid) => bid.buyerId), ...closings.flatMap((closing) => closing.funders.map((funder) => funder.userId))]);
+  // A bid asked to stand as backup, or standing, may still buy, so it keeps the files until it closes
+  // (lib/backup-bids.ts asks then).
+  const backups = await prisma.inquiry.findMany({ where: { listingId, type: "OFFER", status: { in: ["OPEN", "REVIEWED"] }, backupAskedAt: { not: null } }, select: { buyerId: true } });
+  return new Set([...bids.map((bid) => bid.buyerId), ...backups.map((bid) => bid.buyerId), ...closings.flatMap((closing) => closing.funders.map((funder) => funder.userId))]);
 }
 
 const ndaInclude = { user: { select: { email: true, name: true, role: true, deletedAt: true } }, listing: { select: { title: true } } } as const;

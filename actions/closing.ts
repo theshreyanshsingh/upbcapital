@@ -8,6 +8,7 @@ import { requireUser } from "@/lib/auth";
 import { notify } from "@/lib/email";
 import { canCompleteStep } from "@/lib/closing";
 import { buyerSideEmails, cancelOpenClosing, completeDepositFromWire, finalizeClosing, isClosingStepKey, walkAwayFromClosing } from "@/lib/closing-service";
+import { depositNoticeLine } from "@/lib/deposits";
 import { prisma } from "@/lib/prisma";
 import { OFAC_HOLD_MESSAGE, ofacHold } from "@/lib/screening";
 import { moneyGate, proceedsGate } from "@/lib/settlement";
@@ -167,7 +168,9 @@ export async function cancelClosing(formData: FormData) {
       const standing = await strikeStanding(inquiry.buyerId);
       strikeNote = ` The desk recorded this as the buyer's failure to close, which is a strike on your buyer file. You have ${standing.active} of ${standing.limit}.${standing.paused ? " Your new bids are paused until the desk reviews them." : ""} Your verification page lists them.`;
     }
-    await notify(inquiry.buyer.email, `Closing canceled · ${closing.listing.title}`, `${message}${strikeNote}`);
+    // What the deposit is owed under the rules, read from the closing as the cancel left it. lib/deposits.ts.
+    const ended = await prisma.closing.findUnique({ where: { id: closingId } });
+    await notify(inquiry.buyer.email, `Closing canceled · ${closing.listing.title}`, `${message}${strikeNote}${ended ? depositNoticeLine(ended) : ""}`);
   }
   await notify(closing.listing.seller.email, `Closing canceled · ${closing.listing.title}`, message);
   const thread = await prisma.deskThread.findUnique({ where: { closingId } });
@@ -216,7 +219,9 @@ export async function setClosingDates(formData: FormData) {
       changed.push(`${step.key} ${due.toISOString().slice(0, 10)}`);
     }
   }
-  await prisma.closing.update({ where: { id: closingId }, data: { targetCloseAt: target } });
+  // A new target starts the stalled-deal backstop's notices over (lib/backstop.ts).
+  const moved = target.getTime() !== closing.targetCloseAt?.getTime();
+  await prisma.closing.update({ where: { id: closingId }, data: { targetCloseAt: target, ...(moved ? { stallWarnedAt: null, stallFinalAt: null, stallEscalatedAt: null } : {}) } });
   await audit(user.id, "CLOSING_DATES", "closing", closingId, `Target ${target.toISOString().slice(0, 10)}${changed.length ? `. ${changed.join(", ")}` : ""}`);
   revalidatePath(`/closings/${closingId}`);
   revalidatePath("/closings");

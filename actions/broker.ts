@@ -272,7 +272,8 @@ async function createBrokerListing(input: {
       notes: { create: input.loans as never },
       documents: {
         create: {
-          type: "OTHER" as DocType,
+          // The holder's authorization for this listing is its mandate, which only the desk and the broker read.
+          type: "MANDATE" as DocType,
           originalName: input.authorization.name,
           storedName: input.authorization.key,
           mime: input.authorization.mime || "application/octet-stream",

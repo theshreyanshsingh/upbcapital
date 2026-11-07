@@ -1,4 +1,4 @@
-import { canManageRoom, canReadDocument, isPrivateDocument, loanFileAccess, ndaOpensRoom } from "@/lib/acl";
+import { canManageRoom, canReadDocument, isDeskOnlyDocument, isPrivateDocument, loanFileAccess, ndaOpensRoom } from "@/lib/acl";
 import { audit } from "@/lib/audit";
 import { bidderAlias } from "@/lib/bidder-alias";
 import { dealAccess } from "@/lib/data-room";
@@ -151,6 +151,7 @@ export async function documentGate(user: DocumentViewer, documentId: string) {
     admin,
     ownNda: Boolean(ownNda),
     privateFile: isPrivateDocument(document, document.listing),
+    deskOnly: isDeskOnlyDocument(document),
     proBuyer: user.role === "BUYER" && user.accountStatus === "APPROVED" && isPro(user),
     signedNda,
     listingStatus: document.listing.status,

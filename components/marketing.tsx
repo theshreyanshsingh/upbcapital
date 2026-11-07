@@ -85,6 +85,7 @@ export function MarketingFooter() {
           <Link href="/signup" className="transition-colors hover:text-foreground">Request access</Link>
           <Link href="/results" className="transition-colors hover:text-foreground">Results</Link>
           <Link href="/fees" className="transition-colors hover:text-foreground">Fees</Link>
+          <Link href="/servicers" className="transition-colors hover:text-foreground">Servicers</Link>
           <Link href="/terms" className="transition-colors hover:text-foreground">Terms</Link>
           <Link href="/privacy" className="transition-colors hover:text-foreground">Privacy</Link>
           <Link href="/security" className="transition-colors hover:text-foreground">Security</Link>

@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { audit } from "@/lib/audit";
+import { DEFAULT_TEMPLATES } from "@/lib/closing-docs";
 import { requireDesk } from "@/lib/staff";
 import { isTemplateKey } from "@/lib/templates";
 import { prisma } from "@/lib/prisma";
@@ -24,4 +25,22 @@ export async function saveTemplate(formData: FormData) {
   revalidatePath("/admin/templates");
   revalidatePath("/closings");
   redirect("/admin/templates?notice=template");
+}
+
+// A saved form overrides the built-in one, so a database from before a change to the built-in text keeps the old
+// wording until someone puts the current default back.
+export async function resetTemplate(formData: FormData) {
+  const user = await requireDesk("content", "/admin/templates");
+  const key = String(formData.get("key") || "");
+  if (!isTemplateKey(key)) redirect("/admin/templates");
+  const fallback = DEFAULT_TEMPLATES[key];
+  await prisma.documentTemplate.upsert({
+    where: { key },
+    update: { title: fallback.title, body: fallback.body },
+    create: { key, title: fallback.title, body: fallback.body },
+  });
+  await audit(user.id, "TEMPLATE_RESET", "template", key, `${fallback.title} reset to the built-in form.`);
+  revalidatePath("/admin/templates");
+  revalidatePath("/closings");
+  redirect(`/admin/templates?notice=${encodeURIComponent(`${fallback.title} is back to the built-in form.`)}`);
 }

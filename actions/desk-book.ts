@@ -9,6 +9,7 @@ import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import { claimLoan, declineLosingBids, deskBidNotAcceptable, sellerPage } from "@/lib/awards";
 import { OFAC_HOLD_MESSAGE, ofacHold } from "@/lib/screening";
+import { sendOnAward } from "@/lib/signatures";
 import { DESK_ROLE_LABELS, deskRoleOf, requireDesk } from "@/lib/staff";
 
 // Who on the desk placed or decided a book bid, for the audit log: the book's buyer is a named person.
@@ -54,7 +55,8 @@ type OpenDeskBid = { id: string; listingId: string; noteId: string | null; amoun
 // Returns no closing when the loan was taken by another award, or the bid was answered, in the meantime. The
 // bid leaves OPEN in one conditional write, so a seller's accept and the desk's take or pass can't both land.
 // A one-loan purchase leaves the rest of a pool on the book; only a whole-listing purchase puts it in contract.
-async function acceptDeskBid(bid: OpenDeskBid) {
+// The purchase agreement goes out at once, signed for the desk by the deal owner, or else the desk member taking it.
+async function acceptDeskBid(bid: OpenDeskBid, deskSignerId: string | null = null) {
   if (bid.noteId && !(await claimLoan(bid.noteId))) return { closing: null, reason: "loan" } as const;
   const taken = await prisma.deskBid.updateMany({ where: { id: bid.id, status: "OPEN" }, data: { status: "ACCEPTED" } });
   if (taken.count !== 1) {
@@ -72,6 +74,7 @@ async function acceptDeskBid(bid: OpenDeskBid) {
     title: bid.listing.title,
   });
   await declineLosingBids({ id: null, listingId: bid.listingId, noteId: bid.noteId }, bid.listing.title);
+  await sendOnAward(closing.id, { deskSignerId });
   return { closing, reason: null } as const;
 }
 
@@ -97,7 +100,7 @@ export async function decideDeskBid(formData: FormData) {
   if (await ofacHold({ listingId: bid.listingId, userIds: [bid.listing.sellerId] })) redirect(`/admin/book?error=${encodeURIComponent(OFAC_HOLD_MESSAGE)}`);
   const conflict = await tradeConflict(bid.listingId, bid.noteId);
   if (conflict) redirect(`/admin/book?error=${encodeURIComponent(conflict)}`);
-  const { closing, reason } = await acceptDeskBid(bid);
+  const { closing, reason } = await acceptDeskBid(bid, user.id);
   if (!closing) {
     redirect(`/admin/book?error=${encodeURIComponent(reason === "loan" ? "That loan went into contract a moment ago. Check its open closing." : "That bid is already decided.")}`);
   }

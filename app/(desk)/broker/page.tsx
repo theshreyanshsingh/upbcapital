@@ -4,6 +4,7 @@ import QRCode from "qrcode";
 import { EarningsChart } from "@/components/broker-chart";
 import { ReferralKit } from "@/components/broker-share";
 import { MarketView } from "@/components/market-view";
+import { SellerIdentityBanner } from "@/components/seller-identity";
 import { requireRole } from "@/lib/auth";
 import { brokerGate, brokerRoleLabel, feeMonths, portraitSrc } from "@/lib/broker-fees";
 import { loadClosedTrades, marketView } from "@/lib/comps";
@@ -86,6 +87,7 @@ export default async function BrokerHome() {
           {!profile?.w9Key && <p className="mt-3 text-sm text-foreground">Add a W-9 before the first deal. The public page stays down until approval.</p>}
         </section>
       )}
+      <SellerIdentityBanner user={user} />
 
       <section className="mt-8 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <FeeCard k="Earned" v={money(earned / 100)} hint="Paid and still owed." delay="" />

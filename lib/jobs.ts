@@ -105,6 +105,10 @@ export async function runJobs(now = new Date()) {
     ["Bid reminders", () => remindBidDeadlines(now)],
     ["Bid expiry", () => expireBids(now)],
     ["Closing reminders", () => remindClosingSteps(now)],
+    ["Signature clock", () => import("@/lib/signatures").then((signatures) => signatures.signatureClock(now))],
+    // Open closings past their target hear twice, then fail or go to the desk. Backup bids past their date close.
+    ["Stalled closings", () => import("@/lib/backstop").then((backstop) => backstop.runBackstop(now))],
+    ["Backup bids", () => import("@/lib/backup-bids").then((backups) => backups.lapseBackups(now))],
     ["Sale notice reminders", () => remindSaleNotices(now)],
     ["Closed auctions", () => notifyClosedAuctions().then(() => "closed auctions checked")],
     ["Retention", () => cleanRetention(now)],
@@ -124,6 +128,8 @@ export async function runJobs(now = new Date()) {
     ["Destruction requests", () => sendDestructionRequests(now)],
     ["Destruction reminders", () => remindDestruction(now)],
     ["Treasury 10-year", () => import("@/lib/treasury").then((treasury) => treasury.treasuryJob(now))],
+    // Each approved buyer hears once, 30 days before their file is due for its yearly re-certification.
+    ["Re-certification reminders", () => import("@/lib/buyer-file").then((file) => file.remindRecertifications(now))],
   ]);
 }
 
@@ -306,7 +312,8 @@ export async function remindBidDeadlines(now = new Date(), options: { listingIds
 // own bids.
 export async function expireBids(now = new Date(), options: { inquiryIds?: string[] } = {}) {
   const bids = await prisma.inquiry.findMany({
-    where: { type: "OFFER", status: { in: ["OPEN", "REVIEWED"] }, expiresAt: { lte: now }, ...(options.inquiryIds ? { id: { in: options.inquiryIds } } : {}) },
+    // A backup bid is good until its backup ends, and lib/backup-bids.ts lapseBackups closes it with its own notice.
+    where: { type: "OFFER", status: { in: ["OPEN", "REVIEWED"] }, expiresAt: { lte: now }, ...unset("backupAt"), ...(options.inquiryIds ? { id: { in: options.inquiryIds } } : {}) },
     include: { buyer: true, listing: { include: { seller: true } } },
   });
   return eachItem("bid expiry", bids, (bid) => `inquiry ${bid.id}`, async (bid) => {

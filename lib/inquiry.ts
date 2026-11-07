@@ -26,6 +26,7 @@ import {
   exposureByKey,
   fundsCredential,
   headroomFor,
+  recertBlock,
   type BidStanding,
   type Exposure,
 } from "@/lib/verification";
@@ -189,6 +190,9 @@ export async function checkOffer(input: {
   const profile = await prisma.buyerProfile.findUnique({ where: { userId: user.id } });
   const gate = canSubmitOffer({ role: user.role, accountStatus: user.accountStatus, verificationStatus: profile?.status ?? null });
   if (!gate.ok) return { error: "The desk has to approve your buyer file before you can offer.", verification: true };
+  // A file past its yearly re-certification bids again once the buyer re-certifies and the desk approves it.
+  const lapsed = recertBlock(profile, now);
+  if (lapsed) return { error: lapsed, verification: true };
   const entity = await chosenEntity(user.id, input.buyerEntityId);
   if (entity.error !== null) return { error: entity.error, verification: false };
   // Strikes pause bids only. Information and data room requests still go through.

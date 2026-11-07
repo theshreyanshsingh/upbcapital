@@ -1,7 +1,7 @@
 import { addPoolDocuments } from "@/actions/listings";
 import { SubmitButton } from "@/components/submit-button";
 import { docLabel } from "@/lib/labels";
-import { SELLER_DOC_TYPES } from "@/lib/room-files";
+import { BROKER_DOC_TYPES, SELLER_DOC_TYPES } from "@/lib/room-files";
 
 // A pool's seller or broker adds files after filing: to the whole pool, or to one loan, whose file then opens by
 // that loan's rule. Bidders who saved the listing hear about new files once it is live.
@@ -34,7 +34,7 @@ export function RoomFiles({
         <label className="block">
           <span className="text-[13px] text-muted-foreground">What they are</span>
           <select name="documentType" defaultValue="OTHER" className="desk-input mt-2">
-            {SELLER_DOC_TYPES.map((type) => (
+            {(from === "broker" ? BROKER_DOC_TYPES : SELLER_DOC_TYPES).map((type) => (
               <option key={type} value={type}>{docLabel(type)}</option>
             ))}
           </select>
@@ -49,7 +49,7 @@ export function RoomFiles({
           </select>
         </label>
       </div>
-      <p className="text-xs text-muted-foreground">A loan&apos;s own file opens only with that loan&apos;s street and borrower. A loan tape goes on the whole pool.</p>
+      <p className="text-xs text-muted-foreground">A loan&apos;s own file opens only with that loan&apos;s street and borrower. A loan tape goes on the whole pool.{from === "broker" ? " A mandate goes on the whole pool and only the desk reads it." : ""}</p>
       <SubmitButton className="h-10 text-[13px] font-medium" pendingLabel="Uploading…">Add to the data room</SubmitButton>
     </form>
   );

@@ -1,6 +1,34 @@
+import { monthsBetween, type AccretionLoan } from "@/lib/accretion";
 import { closingLoans } from "@/lib/closing";
 import { annualYield } from "@/lib/holdings";
 import { prisma } from "@/lib/prisma";
+
+// The loans behind each holding, as discount accretion reads them: balance, note rate, payment, and the months from
+// the purchase to maturity. A note added by hand has no loan on file, so it gets none and accretes straight-line.
+export async function holdingLoanTerms(holdings: { id: string; closingId: string | null; listingId: string | null; acquiredAt: Date }[]) {
+  const listingIds = [...new Set(holdings.map((holding) => holding.listingId).filter((id): id is string => Boolean(id)))];
+  const closingIds = [...new Set(holdings.map((holding) => holding.closingId).filter((id): id is string => Boolean(id)))];
+  const [notes, closings] = await Promise.all([
+    listingIds.length
+      ? prisma.note.findMany({ where: { listingId: { in: listingIds } }, select: { id: true, listingId: true, upb: true, interestRate: true, monthlyPi: true, maturityDate: true } })
+      : [],
+    closingIds.length ? prisma.closing.findMany({ where: { id: { in: closingIds } }, select: { id: true, noteId: true, noteIds: true } }) : [],
+  ]);
+  const closingOf = new Map(closings.map((closing) => [closing.id, closing]));
+  const terms = new Map<string, AccretionLoan[]>();
+  for (const holding of holdings) {
+    const onListing = notes.filter((note) => note.listingId === holding.listingId);
+    const closing = holding.closingId ? closingOf.get(holding.closingId) : null;
+    const loans = closing ? closingLoans({ noteId: closing.noteId, noteIds: closing.noteIds ?? [] }, onListing) : onListing;
+    terms.set(holding.id, loans.map((note) => ({
+      upb: Number(note.upb),
+      annualRate: Number.isFinite(Number(note.interestRate)) ? Number(note.interestRate) : null,
+      monthlyPi: Number(note.monthlyPi) > 0 ? Number(note.monthlyPi) : null,
+      termMonths: monthsBetween(holding.acquiredAt, note.maturityDate),
+    })));
+  }
+  return terms;
+}
 
 export async function ensureBuyerHolding(closingId: string) {
   const closing = await prisma.closing.findUnique({

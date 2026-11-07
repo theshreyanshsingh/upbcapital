@@ -8,6 +8,7 @@ import { ReaderSummary } from "@/components/document-reader";
 import { QuestionQueue } from "@/components/listing-questions";
 import { RoomAccessPanel } from "@/components/room-access";
 import { RoomFiles } from "@/components/room-files";
+import { MandateFile } from "@/components/seller-identity";
 import { SubmitButton } from "@/components/submit-button";
 import { SaleApproval, WithdrawListing } from "@/components/sale-approval";
 import { Notice } from "@/components/notice";
@@ -146,6 +147,7 @@ export default async function BrokerDealPage({
         </section>
       )}
       {listing.kind === "POOL" && roomOpenStatus && <RoomFiles listingId={listing.id} from="broker" live={listing.status === "APPROVED"} loans={loanOptions} />}
+      <MandateFile listingId={listing.id} open={roomOpenStatus} />
       {listing.status !== "REJECTED" && listing.status !== "WITHDRAWN" && <SaleApproval listing={listing} offers={listing.inquiries} canAnswer={listing.sellerId === user.id} />}
       <QuestionQueue
         rows={questions.map((row) => ({ ...row, asker: nameOf(row.asker) }))}

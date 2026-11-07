@@ -6,6 +6,7 @@ import { addEventListing, removeEventListing } from "@/actions/sale-events";
 import { sendToBuyers } from "@/actions/outreach";
 import { AuctionForm } from "@/components/auction-form";
 import { ComplianceNote } from "@/components/compliance-note";
+import { SellerIdentityLine } from "@/components/seller-identity";
 import { DeskNotes } from "@/components/desk-notes";
 import { DiscrepancyDesk } from "@/components/discrepancy-desk";
 import { LaunchControls } from "@/components/launch-controls";
@@ -187,6 +188,7 @@ export default async function AdminListingPage({
             </form>
           )}
         </section>
+        <SellerIdentityLine listing={listing} viewer={user} />
         <ComplianceNote states={listing.notes.map((item) => item.state)} sellerFinanced={listing.sellerFinanced} sellerRole={listing.seller.role} />
         <p className="mt-4 text-sm text-foreground">Aggregate ask {money(ask)} · {listing.notes.length} loan{listing.notes.length === 1 ? "" : "s"} · {listing.matches.length} buy-box matches</p>
 
@@ -560,7 +562,7 @@ export default async function AdminListingPage({
           </div>
         </form>
         )}
-        <ul className="space-y-1 text-xs text-muted-foreground">
+        <ul id="documents" className="scroll-mt-6 space-y-1 text-xs text-muted-foreground">
           {listing.documents.map((document) => (
             <li key={document.id}><a className="text-link" href={`/api/documents/${document.id}`}>{document.originalName}</a></li>
           ))}

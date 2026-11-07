@@ -283,7 +283,9 @@ export async function addPoolDocuments(formData: FormData) {
   const result = await addPoolFiles(user, { listingId, noteId: String(formData.get("noteId") || "") || null, files });
   if (result.error) redirect(`${page}?error=${encodeURIComponent(result.error)}#room-files`);
   for (const path of [page, `/marketplace/${listingId}`, `/admin/listings/${listingId}`]) revalidatePath(path);
-  const added = result.added ? `notice=${encodeURIComponent(`${result.added} file${result.added === 1 ? " is" : "s are"} in the data room.`)}` : "";
+  // A mandate goes to the desk alone, so it isn't counted as in the data room.
+  const said = formData.get("documentType") === "MANDATE" && page.startsWith("/broker/") ?"The mandate is with the desk. Buyers never see it." : `${result.added} file${result.added === 1 ? " is" : "s are"} in the data room.`;
+  const added = result.added ? `notice=${encodeURIComponent(said)}` : "";
   redirect(`${page}?${added}${skippedNotice(result.skipped)}#room-files`);
 }
 

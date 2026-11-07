@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { requireUser } from "@/lib/auth";
 import { guardDesk } from "@/lib/staff";
 import { prisma } from "@/lib/prisma";
+import { boardingServicer } from "@/lib/servicers";
 
 export async function saveBoarding(formData: FormData) {
   const user = await requireUser();
@@ -19,8 +20,17 @@ export async function saveBoarding(formData: FormData) {
   if (closing.status !== "COMPLETE" && user.role !== "ADMIN") {
     redirect(`/closings/${closingId}?error=${encodeURIComponent("Boarding opens after the file is closed.")}`);
   }
-  const servicerName = String(formData.get("servicerName") || "").trim();
-  const contactEmail = String(formData.get("contactEmail") || "").trim();
+  // A pick from the desk's servicer directory names the servicer as the directory has it and links it. Without one,
+  // the typed name stands and any earlier link is cleared.
+  const current = await prisma.servicerBoarding.findUnique({ where: { closingId }, select: { servicerId: true } });
+  const picked = await boardingServicer({
+    servicerId: String(formData.get("servicerId") || ""),
+    servicerName: String(formData.get("servicerName") || "").trim(),
+    contactEmail: String(formData.get("contactEmail") || "").trim(),
+    currentId: current?.servicerId,
+  });
+  if (picked.error !== null) redirect(`/closings/${closingId}?error=${encodeURIComponent(picked.error)}`);
+  const { servicerId, servicerName, contactEmail } = picked;
   const loanNumber = String(formData.get("loanNumber") || "").trim().slice(0, 40);
   const notes = String(formData.get("notes") || "").trim().slice(0, 2000);
   const boarded = String(formData.get("boardedAt") || "");
@@ -38,7 +48,7 @@ export async function saveBoarding(formData: FormData) {
   if (boardedAt === undefined || goodbyeSentAt === undefined || helloSentAt === undefined) {
     redirect(`/closings/${closingId}?error=${encodeURIComponent("Enter dates as year, month, and day.")}`);
   }
-  const fields = { servicerName, contactEmail, loanNumber, notes, boardedAt, goodbyeSentAt, helloSentAt };
+  const fields = { servicerName, servicerId, contactEmail, loanNumber, notes, boardedAt, goodbyeSentAt, helloSentAt };
   await prisma.servicerBoarding.upsert({
     where: { closingId },
     update: fields,

@@ -22,6 +22,7 @@ import { OfferPanel } from "@/components/offer-panel";
 import { ListingPhotos } from "@/components/photo-manager";
 import { PoolTape } from "@/components/pool-tape";
 import { StatusPill } from "@/components/status-pill";
+import { SellerVerifiedBadge } from "@/components/seller-identity";
 import { StrataPanel } from "@/components/strata-panel";
 import { SubmitButton } from "@/components/submit-button";
 import { TabsContent } from "@/components/ui/tabs";
@@ -331,6 +332,7 @@ export default async function ListingPage({
         <div className="flex flex-wrap items-center gap-3">
           <p className="eyebrow">{lead?.state} · {listing.kind === "POOL" ? `Pool of ${notes.length}` : `${labelOf("lien", lead.lienPosition)} lien`} · {bidModeLabel(listing.bidMode)}</p>
           <StatusPill status={listing.status} />
+          <SellerVerifiedBadge sellerId={listing.sellerId} />
         </div>
         <h1 className="mt-3 font-semibold tracking-tight text-[28px] leading-tight text-foreground">{listing.title}</h1>
         <p className="mt-3 max-w-3xl text-sm leading-relaxed text-muted-foreground">{listing.summary || "No narrative from the seller."}</p>

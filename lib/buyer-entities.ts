@@ -1,9 +1,11 @@
 import type { BuyerEntity, InvestorEntity } from "@prisma/client";
 import { audit } from "@/lib/audit";
+import { needsOwners, ownerApprovalBlock, ownerGaps, ownersOf } from "@/lib/beneficial-owners";
 import { notify, notifyDesk } from "@/lib/email";
 import { entityLabel, IRA_NOTE, IRA_TITLE_EXAMPLE } from "@/lib/labels";
 import { prisma } from "@/lib/prisma";
 import { OFAC_DOWN_MESSAGE, OFAC_HOLD_MESSAGE, ofacHold, screenAndRecord } from "@/lib/screening";
+import { readTaxIdLast4 } from "@/lib/verification";
 import { entityVestingName } from "@/lib/vesting";
 
 // One buyer login, several buying entities: the main buyer file the desk approved, plus other LLCs, trusts or a
@@ -14,11 +16,12 @@ export const ENTITY_TYPES = ["LLC", "TRUST", "FUND", "IRA", "INDIVIDUAL", "OTHER
 export const MAX_ENTITIES = 12;
 export { IRA_NOTE, IRA_TITLE_EXAMPLE };
 
-type EntityInput = { name: unknown; entityType: unknown; jurisdiction?: unknown; iraCustodian?: unknown; iraAccountTitle?: unknown };
+type EntityInput = { name: unknown; entityType: unknown; jurisdiction?: unknown; iraCustodian?: unknown; iraAccountTitle?: unknown; taxIdLast4?: unknown };
 
 const text = (value: unknown, max: number) => String(value ?? "").replace(/\s+/g, " ").trim().slice(0, max);
 
-// The fields as the form sent them, checked. An IRA needs its custodian and the account title the paper vests in.
+// The fields as the form sent them, checked. An IRA needs its custodian and the account title the paper vests in. Every
+// other entity gives the last four digits of its EIN; an IRA may.
 export function readEntity(input: EntityInput) {
   const entityType = text(input.entityType, 20);
   if (!(ENTITY_TYPES as readonly string[]).includes(entityType)) return { error: "Choose the kind of entity." } as const;
@@ -34,6 +37,8 @@ export function readEntity(input: EntityInput) {
   if (ira && (iraAccountTitle.length < 10 || !/\bFBO\b|benefit/i.test(iraAccountTitle))) {
     return { error: `Write the account title the way your custodian vests it, such as “${IRA_TITLE_EXAMPLE}”.` } as const;
   }
+  const taxId = readTaxIdLast4(input.taxIdLast4, ira);
+  if (taxId.error !== null) return { error: taxId.error } as const;
   return {
     error: null,
     data: {
@@ -42,13 +47,15 @@ export function readEntity(input: EntityInput) {
       jurisdiction,
       iraCustodian: ira ? iraCustodian : null,
       iraAccountTitle: ira ? iraAccountTitle : null,
+      taxIdLast4: taxId.value,
     },
   } as const;
 }
 
 const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
 
-// A buyer whose main file the desk approved adds another entity. It waits for the desk like the main file did.
+// A buyer whose main file the desk approved adds another entity. It waits for the desk like the main file did. One
+// that lists owners waits on the buyer first, until they add its owners and send it.
 export async function addBuyerEntity(user: { id: string; name: string }, input: EntityInput) {
   const profile = await prisma.buyerProfile.findUnique({ where: { userId: user.id }, select: { status: true, entityName: true } });
   if (profile?.status !== "APPROVED") return { error: "The desk approves your main buyer file first. Then you can add more buying entities." } as const;
@@ -60,11 +67,36 @@ export async function addBuyerEntity(user: { id: string; name: string }, input: 
     return { error: "That entity is already on your file." } as const;
   }
   if (kept.length >= MAX_ENTITIES) return { error: `Your file holds ${MAX_ENTITIES} buying entities. Write the desk to add more.` } as const;
-  const entity = await prisma.buyerEntity.create({ data: { userId: user.id, ...read.data, status: "SUBMITTED" } });
+  const entity = await prisma.buyerEntity.create({ data: { userId: user.id, ...read.data, status: needsOwners(read.data.entityType) ? "NOT_STARTED" : "SUBMITTED" } });
   await audit(user.id, "BUYER_ENTITY_ADDED", "user", user.id, `${entity.id} · ${entity.name} · ${entityLabel(entity.entityType)}`);
+  if (entity.status === "SUBMITTED") await entityToDesk(user, entity);
+  return { error: null, entity } as const;
+}
+
+async function entityToDesk(user: { name: string }, entity: BuyerEntity) {
   const detail = entity.entityType === "IRA" ? `Custodian ${entity.iraCustodian}. Account title ${entity.iraAccountTitle}.` : `Formed in ${entity.jurisdiction}.`;
   await notifyDesk(`Buying entity submitted · ${user.name}`, `${entity.name} (${entityLabel(entity.entityType)}) is waiting on the desk. ${detail} Review it on the buyer files page.`);
-  return { error: null, entity } as const;
+}
+
+// An entity's status as the desk's buyer files page reads it. A draft is still with the buyer, adding owners.
+export function deskEntityStatus(status: string) {
+  if (status === "SUBMITTED") return "waiting for review";
+  if (status === "NOT_STARTED") return "draft, not sent";
+  return status.replaceAll("_", " ").toLowerCase();
+}
+
+// The buyer sends an entity to the desk once its owners and a control person are listed.
+export async function submitBuyerEntity(user: { id: string; name: string }, entityId: string) {
+  const entity = await prisma.buyerEntity.findUnique({ where: { id: entityId } });
+  if (!entity || entity.userId !== user.id) return { error: "Choose one of your own buying entities." } as const;
+  if (entity.status !== "NOT_STARTED" && entity.status !== "CHANGES_REQUESTED") return { error: "This entity is already with the desk." } as const;
+  const gaps = ownerGaps(entity.entityType, await ownersOf(user.id, entity.id));
+  if (gaps.length) return { error: `${gaps.join(" ")} Add them, then send it.` } as const;
+  const claimed = await prisma.buyerEntity.updateMany({ where: { id: entity.id, status: entity.status }, data: { status: "SUBMITTED" } });
+  if (claimed.count !== 1) return { error: "The entity changed a moment ago. Check it and try again." } as const;
+  await audit(user.id, "BUYER_ENTITY_SUBMITTED", "user", user.id, `${entity.id} · ${entity.name}`);
+  await entityToDesk(user, entity);
+  return { error: null, entity: { ...entity, status: "SUBMITTED" as const } } as const;
 }
 
 // The entity's name, and an IRA's custodian too since the money comes from them, screened and recorded against the
@@ -93,6 +125,9 @@ export async function reviewBuyerEntity(reviewer: { id: string }, input: { entit
   const note = text(input.note, 600);
   if (status === "REJECTED" && note.length < 3) return { error: "Tell the buyer why the entity is declined." } as const;
   if (status === "APPROVED") {
+    if (entity.status === "NOT_STARTED") return { error: "The buyer hasn't sent this entity to the desk yet." } as const;
+    const owners = await ownerApprovalBlock({ userId: entity.userId, buyerEntityId: entity.id, entityType: entity.entityType }, now);
+    if (owners) return { error: owners } as const;
     if ((await screenEntity(entity, "Buying entity approval")).unavailable) return { error: OFAC_DOWN_MESSAGE } as const;
     if (await ofacHold({ userIds: [entity.userId] })) return { error: OFAC_HOLD_MESSAGE } as const;
   }

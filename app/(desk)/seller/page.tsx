@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { MarketView } from "@/components/market-view";
+import { MasterAgreementBanner } from "@/components/master-agreement-banner";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
+import { SellerIdentityBanner } from "@/components/seller-identity";
 import { StatusPill } from "@/components/status-pill";
 import { requireRole } from "@/lib/auth";
 import { compsFor, loadClosedTrades, marketView, suggestedPrice } from "@/lib/comps";
@@ -58,11 +60,13 @@ export default async function SellerHome({
         lede={`Commission comes off the accepted price: ${rateText(today, "commission")}. Buyers also pay a premium on top, ${rateText(today, "premium")}. It is not taken from you.`}
       />
       <Notice notice={q(params, "notice")} error={q(params, "error")} />
+      <MasterAgreementBanner user={user} kind="MASTER_SALE" back="/seller" />
       {user.role === "INSTITUTIONAL_SELLER" && user.accountStatus !== "APPROVED" && (
         <p className="mt-6 border border-link/30 bg-link/10 px-4 py-3 text-sm text-foreground rounded-xl">
           {user.companyName || "This institution"} is waiting on the desk. Tape upload opens after approval.
         </p>
       )}
+      <SellerIdentityBanner user={user} />
       <div className="mt-8 grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-3">
         <Figure k="Live asking price" v={money(liveAsk)} />
         <Figure k="Estimated commission" v={money(commission)} />

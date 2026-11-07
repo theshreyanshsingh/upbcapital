@@ -1,9 +1,11 @@
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from "pdf-lib";
+import { ACCRETION_NOTE, accretedBetween, accretionSchedule, type Accretion } from "@/lib/accretion";
 import { appOrigin } from "@/lib/billing";
 import { closingLoans } from "@/lib/closing";
 import { toCsv } from "@/lib/csv";
 import { sendAlert } from "@/lib/email";
 import { money } from "@/lib/format";
+import { holdingLoanTerms } from "@/lib/portfolio";
 import { prisma } from "@/lib/prisma";
 
 // The buyer's year-end statement: what each holding paid in a tax year, split into interest, principal, fees and
@@ -109,6 +111,8 @@ export type StatementHolding = {
   annualRate: number | null;
   receipts: SplitReceipt[];
   proceeds: Proceeds[];
+  // Discount accretion from lib/accretion.ts, when the holding was bought below its balance. Kept apart from the split.
+  accretion?: Accretion | null;
 };
 
 type HoldingRow = {
@@ -178,9 +182,10 @@ export async function loadStatementHoldings(userId: string): Promise<StatementHo
     include: { payments: { orderBy: { paidOn: "asc" } } },
     orderBy: { acquiredAt: "desc" },
   });
-  const [rates, proceeds] = await Promise.all([holdingRates(holdings), resaleProceeds(holdings.map((holding) => holding.id))]);
+  const [rates, proceeds, terms] = await Promise.all([holdingRates(holdings), resaleProceeds(holdings.map((holding) => holding.id)), holdingLoanTerms(holdings)]);
   return holdings.map((holding) => {
     const annualRate = rates.get(holding.id) ?? null;
+    const accretion = accretionSchedule({ costBasis: Number(holding.costBasis), upb: Number(holding.upb), acquiredAt: holding.acquiredAt, loans: terms.get(holding.id) ?? [] });
     return {
       id: holding.id,
       title: holding.title,
@@ -193,6 +198,7 @@ export async function loadStatementHoldings(userId: string): Promise<StatementHo
       annualRate,
       receipts: splitReceipts(holding.payments.map((payment) => ({ ...payment, amount: Number(payment.amount) })), { upb: Number(holding.upb), annualRate, acquiredAt: holding.acquiredAt }),
       proceeds: proceeds.get(holding.id) ?? [],
+      accretion,
     };
   });
 }
@@ -215,9 +221,18 @@ export type StatementRow = {
   saleProceeds: number;
   soldOn: Date | null;
   basis: string;
+  // Discount accreted in the year, through a sale, for the holder's tax adviser. Null when bought at or above the
+  // balance. Not a receipt, so it stays out of the received total.
+  accreted: number | null;
+  accretionBasis: string;
 };
 
-export type Statement = { year: number; rows: StatementRow[]; totals: Omit<StatementRow, "id" | "title" | "acquiredAt" | "soldOn" | "basis"> };
+// The accretion total is there only when some holding accretes, and so are its CSV columns.
+export type Statement = {
+  year: number;
+  rows: StatementRow[];
+  totals: Omit<StatementRow, "id" | "title" | "acquiredAt" | "soldOn" | "basis" | "accreted" | "accretionBasis"> & { accreted?: number };
+};
 
 const inYear = (date: Date, year: number) => date.getUTCFullYear() === year;
 
@@ -243,6 +258,9 @@ export function taxYearStatement(holdings: StatementHolding[], year: number): St
             : logged === receipts.length
               ? "As logged"
               : `Part ${ESTIMATED.toLowerCase()}`;
+      // Accretion stops at the first sale. Months ending before it count.
+      const sold = holding.proceeds.reduce((first, sale) => Math.min(first, sale.on.getTime()), end);
+      const accreted = holding.accretion ? accretedBetween(holding.accretion, new Date(start), new Date(Math.min(end, sold))) : null;
       return {
         id: holding.id,
         title: holding.title,
@@ -257,9 +275,12 @@ export function taxYearStatement(holdings: StatementHolding[], year: number): St
         saleProceeds: cents(sales.reduce((total, sale) => total + sale.amount, 0)),
         soldOn: sales.length ? sales[sales.length - 1].on : null,
         basis,
+        accreted,
+        accretionBasis: holding.accretion?.basis ?? "",
       };
     });
   const total = (pick: (row: StatementRow) => number) => cents(rows.reduce((sum, row) => sum + pick(row), 0));
+  const accretes = rows.some((row) => row.accreted != null);
   return {
     year,
     rows,
@@ -272,6 +293,7 @@ export function taxYearStatement(holdings: StatementHolding[], year: number): St
       unsplit: total((row) => row.unsplit),
       received: total((row) => row.received),
       saleProceeds: total((row) => row.saleProceeds),
+      ...(accretes ? { accreted: total((row) => row.accreted ?? 0) } : {}),
     },
   };
 }
@@ -295,11 +317,15 @@ const CSV_HEADERS = ["Holding", "Acquired", "Cost basis", "Interest", "Principal
 
 // One row per holding, a total, and the note last, so the file says what it is wherever it is opened.
 export function statementCsv(statement: Statement) {
-  const line = (values: (string | number)[]) => Object.fromEntries(CSV_HEADERS.map((header, index) => [header, values[index] ?? ""]));
-  const figures = (row: Statement["totals"]) => [row.costBasis, row.interest, row.principal, row.fees, row.escrow, row.unsplit, row.received, row.saleProceeds];
+  // A book with a holding bought below its balance adds the accretion after the split, with its own note.
+  const accretes = statement.totals.accreted != null;
+  const headers = accretes ? [...CSV_HEADERS, "Discount accreted", "Accretion method"] : CSV_HEADERS;
+  const line = (values: (string | number)[]) => Object.fromEntries(headers.map((header, index) => [header, values[index] ?? ""]));
+  const figures = (row: Omit<Statement["totals"], "accreted">) => [row.costBasis, row.interest, row.principal, row.fees, row.escrow, row.unsplit, row.received, row.saleProceeds];
   return toCsv([
-    ...statement.rows.map((row) => line([row.title, day(row.acquiredAt), ...figures(row), day(row.soldOn), row.basis])),
-    line([`Total ${statement.year}`, "", ...figures(statement.totals)]),
+    ...statement.rows.map((row) => line([row.title, day(row.acquiredAt), ...figures(row), day(row.soldOn), row.basis, ...(accretes ? [row.accreted ?? "", row.accretionBasis] : [])])),
+    line([`Total ${statement.year}`, "", ...figures(statement.totals), ...(accretes ? ["", "", statement.totals.accreted ?? ""] : [])]),
+    ...(accretes ? [line([ACCRETION_NOTE])] : []),
     line([STATEMENT_NOTE]),
   ]);
 }
@@ -322,6 +348,7 @@ export async function buildYearStatementPdf(statement: Statement, holder: string
   const footer = (page: PDFPage) => {
     page.drawText(clean(STATEMENT_NOTE), { x: 48, y: 72, size: 8, font, color: quiet });
     page.drawText("Prepared from the receipts you logged. An estimated split applies the note rate to the balance; check it against your servicer's statement.", { x: 48, y: 60, size: 7, font, color: quiet });
+    if (statement.totals.accreted != null) page.drawText(clean(`${ACCRETION_NOTE} It is not a receipt, so it is not in the totals received.`), { x: 48, y: 48, size: 7, font, color: quiet });
   };
   let page = pdf.addPage([612, 792]);
   page.drawText("UPB CAPITAL  -  YEAR-END STATEMENT", { x: 48, y: 744, size: 10, font: bold, color: quiet });
@@ -354,7 +381,8 @@ export async function buildYearStatementPdf(statement: Statement, holder: string
     for (const [label, value] of lines) amountLine(label, value, face);
     y -= 12;
   };
-  const linesOf = (row: Statement["totals"]): [string, number][] => [
+  // The accretion line shows only for a holding that accretes, and in the totals of a book that has one.
+  const linesOf = (row: Omit<Statement["totals"], "accreted">, accreted?: number | null, method = ""): [string, number][] => [
     ["Interest received", row.interest],
     ["Principal received", row.principal],
     ["Fees received", row.fees],
@@ -362,13 +390,14 @@ export async function buildYearStatementPdf(statement: Statement, holder: string
     ...(row.unsplit > 0 ? [["Received, not split", row.unsplit] as [string, number]] : []),
     ["Cost basis", row.costBasis],
     ["Sale proceeds, net of commission", row.saleProceeds],
+    ...(accreted != null ? [[`Discount accreted, for your tax adviser${method ? ` (${method})` : ""}`, accreted] as [string, number]] : []),
   ];
   for (const row of statement.rows) {
     const sold = row.soldOn ? `  -  sold ${day(row.soldOn)}` : "";
-    section(row.title, `Acquired ${day(row.acquiredAt)}  -  split: ${row.basis}${sold}`, linesOf(row));
+    section(row.title, `Acquired ${day(row.acquiredAt)}  -  split: ${row.basis}${sold}`, linesOf(row, row.accreted, row.accretionBasis));
   }
   if (!statement.rows.length) section("No notes held", `Nothing on your book was held during ${statement.year}.`, []);
-  section(`Totals for ${statement.year}`, "", linesOf(statement.totals), bold);
+  section(`Totals for ${statement.year}`, "", linesOf(statement.totals, statement.totals.accreted), bold);
   return pdf.save();
 }
 

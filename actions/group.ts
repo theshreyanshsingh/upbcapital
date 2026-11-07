@@ -11,7 +11,14 @@ import { notify, notifyDesk } from "@/lib/email";
 import { fillState, resolvePositionAmount } from "@/lib/group-buy";
 import { notifySeats } from "@/lib/group-events";
 import { prisma } from "@/lib/prisma";
+import { lapsedFileBlock } from "@/lib/buyer-file";
 import { canSubmitOffer } from "@/lib/verification";
+
+// A seat commits money like a bid, so a file past its yearly re-certification sends the buyer to re-certify first.
+async function seatRecertGate(userId: string) {
+  const lapsed = await lapsedFileBlock(userId);
+  if (lapsed) redirect(`/buyer/verification?error=${encodeURIComponent(lapsed)}`);
+}
 
 const OPEN_GROUP = ["GATHERING", "OFFERED", "COUNTERED", "CLOSING"] as const;
 
@@ -118,6 +125,7 @@ export async function openGroup(formData: FormData) {
   guardDesk(user, "sales", back);
   const blocked = user.role === "ADMIN" ? null : await buyerReady(user.id, listingId);
   if (blocked) redirect(`${back}?error=${encodeURIComponent(blocked)}`);
+  if (user.role !== "ADMIN") await seatRecertGate(user.id);
   const existing = await prisma.groupBuy.findFirst({ where: { listingId, status: { in: [...OPEN_GROUP] } } });
   if (existing) redirect(`/groups/${existing.id}?error=This listing already has a group.`);
   const target = dollars(formData.get("targetAmount"));
@@ -171,6 +179,8 @@ export async function joinGroup(formData: FormData) {
   if (group.deadline.getTime() < Date.now() && group.status === "GATHERING") redirect(`${back}?error=The deadline passed. Extend it, bid what is filled, or dissolve.`);
   const blocked = await buyerReady(user.id, group.listingId);
   if (blocked) redirect(`${back}?error=${encodeURIComponent(blocked)}`);
+  // Taking a seat, or taking a dropped one back at a new size.
+  await seatRecertGate(user.id);
   if (group.positions.some((seat) => seat.userId === user.id && seat.status !== "DROPPED")) redirect(`${back}?error=You already have a seat.`);
   const state = fillState(Number(group.targetAmount), group.positions.map((seat) => ({ amount: Number(seat.amount), status: seat.status })));
   const sized = resolvePositionAmount({
@@ -204,6 +214,8 @@ export async function reconfirmSeat(formData: FormData) {
   const groupId = String(formData.get("groupId") || "");
   const seat = await prisma.groupPosition.findFirst({ where: { groupId, userId: user.id, status: "RECONFIRM" } });
   if (!seat) redirect(`/groups/${groupId}?error=There is nothing to reconfirm.`);
+  // Reconfirming holds the seat to the counter's price.
+  await seatRecertGate(user.id);
   await prisma.groupPosition.update({ where: { id: seat.id }, data: { status: "PLEDGED" } });
   const group = await prisma.groupBuy.findUnique({ where: { id: groupId }, include: { positions: true } });
   const waiting = group?.positions.some((row) => row.id !== seat.id && row.status === "RECONFIRM");

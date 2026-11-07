@@ -263,7 +263,7 @@ export default async function SellerListingPage({
           <input type="hidden" name="listingId" value={listing.id} />
           <SubmitButton variant="ghost" className="h-10 px-0 text-[13px] font-medium text-link">Duplicate listing</SubmitButton>
         </form>
-        <ul className="mt-6 space-y-2 text-sm text-muted-foreground">
+        <ul id="documents" className="mt-6 scroll-mt-6 space-y-2 text-sm text-muted-foreground">
           {listing.documents.map((document) => (
             <li key={document.id}><a className="text-link" href={`/api/documents/${document.id}`}>{docLabel(document.type)} · {document.originalName}</a></li>
           ))}

@@ -149,5 +149,7 @@ export const LOAN_DOC_TYPES = [
 // A tape comes from the pool upload, not the note wizard's file list, so its label lives here.
 export function docLabel(type: string) {
   if (type === "TAPE") return "Loan tape";
+  // A broker's own file type, never in the seller's wizard: lib/room-files.ts BROKER_DOC_TYPES.
+  if (type === "MANDATE") return "Note holder's mandate";
   return [...DOC_TYPES, ...LOAN_DOC_TYPES].find((doc) => doc.value === type)?.label ?? type;
 }

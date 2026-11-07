@@ -15,9 +15,13 @@ import { diligenceDays } from "@/lib/closing-service";
 import { launchReadiness } from "@/lib/readiness";
 import { strikeLimitOf } from "@/lib/strikes";
 import { decideWires } from "@/actions/wires";
+import { BackstopSettings } from "@/components/backstop-settings";
 import { ConfirmSubmit } from "@/components/confirm-submit";
 import { ReaderSettings } from "@/components/document-reader";
 import { FeeScheduleForm } from "@/components/fee-schedule-form";
+import { RecertifySettings } from "@/components/recertify-settings";
+import { SellerIdentitySetting } from "@/components/seller-identity";
+import { SignatureSettings } from "@/components/signature-panel";
 import { deskCan } from "@/lib/staff";
 import { pendingWireChanges } from "@/lib/wire-changes";
 
@@ -268,7 +272,11 @@ export default async function SettingsPage({
         </label>
         {owns ? <SubmitButton className="h-11 text-[13px] font-medium" pendingLabel="Saving…">Save settlement</SubmitButton> : <p className="text-sm text-muted-foreground">Only an owner changes settlement days.</p>}
       </form>
+      <BackstopSettings owns={owns} stallDays={settings.stallDays} />
+      <RecertifySettings owns={owns} months={settings.recertifyMonths} />
+      <SignatureSettings owns={owns} setting={settings.psaSignHours} />
       <ReaderSettings owns={owns} />
+      <SellerIdentitySetting value={settings.requireSellerIdentity} owns={owns} />
     </div>
   );
 }

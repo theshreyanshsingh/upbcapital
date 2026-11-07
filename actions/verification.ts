@@ -2,19 +2,22 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import type { InvestorEntity, VerificationStatus } from "@prisma/client";
+import type { InvestorEntity } from "@prisma/client";
 import { audit } from "@/lib/audit";
-import { proofExpiry } from "@/lib/bid-sheet";
+import { addBeneficialOwner, fileGaps, removeBeneficialOwner } from "@/lib/beneficial-owners";
+import { confirmRecertification, reviewBuyerFile } from "@/lib/buyer-file";
 import { ROAD_THRESHOLD, readEligibility, reoStrategyLabel } from "@/lib/eligibility";
+import { prettyDate } from "@/lib/format";
 import { MAIN_FILE_ENTITIES } from "@/lib/labels";
 import { requireUser } from "@/lib/auth";
 import { requireDesk } from "@/lib/staff";
-import { notify, notifyDesk } from "@/lib/email";
+import { notifyDesk } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
-import { OFAC_DOWN_MESSAGE, OFAC_HOLD_MESSAGE, ofacHold, screenInBackground, screenUser } from "@/lib/screening";
+import { screenInBackground, screenUser } from "@/lib/screening";
+import { clearSettingsCache, getSettings } from "@/lib/settings";
 import { extensionOf, mimeFor, putBytes, safeBasename } from "@/lib/storage";
 import { uploadProblem } from "@/lib/uploads";
-import { ACCREDITATION_TEXT, VENDOR_LOCKED, vendorBlocked } from "@/lib/verification";
+import { ACCREDITATION_TEXT, VENDOR_LOCKED, readTaxIdLast4, recertOpen, recertifyMonthsOf, vendorBlocked } from "@/lib/verification";
 import { startKyc } from "@/lib/vendors";
 
 // The main file is never an IRA. An IRA is added as another buying entity, with its custodian and account title.
@@ -32,6 +35,12 @@ export async function submitVerification(formData: FormData) {
     redirect("/buyer/verification?error=Name the investing entity and where it is formed.");
   }
   if (!accredited) redirect("/buyer/verification?error=Offers require the accredited-investor certification.");
+  // The last four only. Anything longer is refused rather than cut down, so the whole number is never kept.
+  const taxId = readTaxIdLast4(formData.get("taxIdLast4"));
+  if (taxId.error !== null) redirect(`/buyer/verification?error=${encodeURIComponent(taxId.error)}`);
+  // An entity lists its owners and a control person before the file goes to the desk.
+  const gaps = await fileGaps(user.id, null, entityType);
+  if (gaps.length) redirect(`/buyer/verification?error=${encodeURIComponent(`${gaps.join(" ")} Add them under Owners, then submit.`)}#owners`);
   // An approved buyer's form leaves the two eligibility questions to their own form, so resubmitting keeps the answers.
   let eligibility: { homesControlled: number; reoStrategy: string; eligibilityAt: Date } | null = null;
   if (formData.has("homesControlled")) {
@@ -48,6 +57,8 @@ export async function submitVerification(formData: FormData) {
   let proofName = "";
   let proofMime = "";
   const existing = await prisma.buyerProfile.findUnique({ where: { userId: user.id } });
+  const wasDue = recertOpen(existing);
+  const proofExpired = Boolean(existing?.proofExpiresAt && existing.proofExpiresAt.getTime() < Date.now());
   if (file instanceof File && file.size > 0) {
     const bytes = Buffer.from(await file.arrayBuffer());
     const problem = uploadProblem(file.name, bytes.length, bytes);
@@ -61,6 +72,9 @@ export async function submitVerification(formData: FormData) {
     await putBytes(proofKey, bytes, proofMime);
   } else if (!existing?.proofKey) {
     redirect("/buyer/verification?error=Upload proof of funds.");
+  } else if (proofExpired) {
+    // The desk's date on the proof has passed, so the file goes back with a fresh one.
+    redirect(`/buyer/verification?error=${encodeURIComponent(`Your proof of funds expired on ${prettyDate(existing.proofExpiresAt)}. Upload a fresh one.`)}`);
   } else {
     proofKey = existing.proofKey;
     proofName = existing.proofName;
@@ -80,6 +94,7 @@ export async function submitVerification(formData: FormData) {
       proofAmount,
       proofExpiresAt: null,
       proofVerifiedAt: null,
+      taxIdLast4: taxId.value,
       status: "SUBMITTED",
       submittedAt: new Date(),
       reviewerNote: "",
@@ -96,11 +111,13 @@ export async function submitVerification(formData: FormData) {
       proofName,
       proofMime,
       proofAmount,
+      taxIdLast4: taxId.value,
       status: "SUBMITTED",
       submittedAt: new Date(),
       ...(eligibility ?? {}),
     },
   });
+  if (wasDue) await audit(user.id, "RECERTIFIED", "user", user.id, "Updated with the form");
   screenInBackground(() => screenUser(user.id, "Buyer file"));
   if (eligibility) await audit(user.id, "ELIGIBILITY_ANSWERS", "user", user.id, `${eligibility.homesControlled} homes · ${reoStrategyLabel(eligibility.reoStrategy)}`);
   const homes = eligibility ? ` They state ${eligibility.homesControlled.toLocaleString("en-US")} single-family homes controlled.` : "";
@@ -136,43 +153,85 @@ export async function saveEligibility(formData: FormData) {
 
 export async function reviewVerification(formData: FormData) {
   const reviewer = await requireDesk("compliance", "/admin/verification");
-  const userId = String(formData.get("userId") || "");
-  const decision = String(formData.get("decision") || "");
-  const reviewerNote = String(formData.get("reviewerNote") || "").trim();
-  const status: VerificationStatus | null =
-    decision === "APPROVED" ? "APPROVED" : decision === "REJECTED" ? "REJECTED" : decision === "CHANGES_REQUESTED" ? "CHANGES_REQUESTED" : null;
-  if (!status) redirect("/admin/verification");
-  if (status !== "APPROVED" && reviewerNote.length < 3) {
-    redirect("/admin/verification?error=Tell the buyer what to fix.");
-  }
-  const verified = Number(String(formData.get("proofAmount") || "").replace(/[$,\s]/g, ""));
-  if (status === "APPROVED" && (!Number.isFinite(verified) || verified <= 0)) {
-    redirect(`/admin/verification?error=${encodeURIComponent("Enter the funds amount the proof supports before approving.")}`);
-  }
-  if (status === "APPROVED") {
-    if ((await screenUser(userId, "Buyer file approval")).unavailable) redirect(`/admin/verification?error=${encodeURIComponent(OFAC_DOWN_MESSAGE)}`);
-    if (await ofacHold({ userIds: [userId] })) redirect(`/admin/verification?error=${encodeURIComponent(OFAC_HOLD_MESSAGE)}`);
-  }
-  const now = new Date();
-  const expires = status === "APPROVED" ? proofExpiry(String(formData.get("proofExpiresAt") || ""), now) : null;
-  const profile = await prisma.buyerProfile.update({
-    where: { userId },
-    data: {
-      status,
-      reviewerNote,
-      reviewedAt: now,
-      ...(status === "APPROVED" && expires ? { proofAmount: verified, proofExpiresAt: expires, proofVerifiedAt: now } : {}),
-    },
-    include: { user: true },
+  const field = (key: string) => String(formData.get(key) || "");
+  const result = await reviewBuyerFile(reviewer, {
+    userId: field("userId"),
+    decision: field("decision"),
+    reviewerNote: field("reviewerNote"),
+    proofAmount: field("proofAmount"),
+    proofExpiresAt: field("proofExpiresAt"),
   });
-  await audit(reviewer.id, "VERIFICATION", "user", userId, status === "APPROVED" && expires ? `APPROVED · funds $${verified.toLocaleString("en-US")} through ${expires.toISOString().slice(0, 10)}` : status);
-  await notify(
-    profile.user.email,
-    `Verification ${status === "APPROVED" ? "approved" : status === "REJECTED" ? "declined" : "needs changes"}`,
-    reviewerNote || "The desk approved your buyer file. You can submit offers.",
-  );
+  if (result.error !== null) redirect(`/admin/verification?error=${encodeURIComponent(result.error)}#buyer-${field("userId")}`);
   revalidatePath("/admin/verification");
+  revalidatePath("/buyer/verification");
   redirect("/admin/verification?notice=kyc");
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Owners of the main file or of one buying entity. Each is screened when saved.
+
+function ownersBack(entityId: string) {
+  return entityId ? `#entity-${entityId}` : "#owners";
+}
+
+export async function addOwner(formData: FormData) {
+  const user = await requireUser();
+  if (user.role !== "BUYER") redirect("/");
+  if (user.accountStatus === "REJECTED") redirect("/buyer/pending");
+  const entityId = String(formData.get("buyerEntityId") || "");
+  const result = await addBeneficialOwner(user, {
+    buyerEntityId: entityId,
+    name: formData.get("name"),
+    title: formData.get("title"),
+    ownershipPct: formData.get("ownershipPct"),
+    controlPerson: String(formData.get("controlPerson") || ""),
+    country: formData.get("country"),
+  });
+  if (result.error !== null) redirect(`/buyer/verification?error=${encodeURIComponent(result.error)}${ownersBack(entityId)}`);
+  revalidatePath("/buyer/verification");
+  revalidatePath("/admin/verification");
+  redirect(`/buyer/verification?notice=${encodeURIComponent(`${result.owner.name} is listed.`)}${ownersBack(entityId)}`);
+}
+
+export async function removeOwner(formData: FormData) {
+  const user = await requireUser();
+  if (user.role !== "BUYER") redirect("/");
+  if (user.accountStatus === "REJECTED") redirect("/buyer/pending");
+  const entityId = String(formData.get("buyerEntityId") || "");
+  const result = await removeBeneficialOwner(user, String(formData.get("ownerId") || ""));
+  if (result.error !== null) redirect(`/buyer/verification?error=${encodeURIComponent(result.error)}${ownersBack(entityId)}`);
+  revalidatePath("/buyer/verification");
+  revalidatePath("/admin/verification");
+  redirect(`/buyer/verification?notice=${encodeURIComponent("The owner is removed.")}${ownersBack(entityId)}`);
+}
+
+// The yearly re-certification, when nothing on the file has changed. A change goes through the main form instead.
+export async function confirmRecertify(formData: FormData) {
+  const user = await requireUser();
+  if (user.role !== "BUYER") redirect("/");
+  if (user.accountStatus === "REJECTED") redirect("/buyer/pending");
+  const result = await confirmRecertification(user, { confirmed: String(formData.get("unchanged") || "") === "yes" });
+  if (result.error !== null) redirect(`/buyer/verification?error=${encodeURIComponent(result.error)}#recertify`);
+  screenInBackground(() => screenUser(user.id, "Buyer file re-certified"));
+  revalidatePath("/buyer/verification");
+  revalidatePath("/admin/verification");
+  redirect(`/buyer/verification?notice=${encodeURIComponent("Your file is back with the desk. New bids wait until they approve it again.")}`);
+}
+
+// How long an approved file stays current, from the settings page. Files keep the date they were approved with.
+export async function saveRecertifySettings(formData: FormData) {
+  const actor = await requireDesk("admin", "/admin/settings");
+  const raw = String(formData.get("recertifyMonths") || "").trim();
+  const months = Number(raw);
+  if (!/^\d+$/.test(raw) || recertifyMonthsOf(months) !== months) {
+    redirect(`/admin/settings?error=${encodeURIComponent("Set re-certification as a whole number of months from 1 to 36.")}#recertify`);
+  }
+  const before = recertifyMonthsOf((await getSettings()).recertifyMonths);
+  await prisma.platformSettings.upsert({ where: { id: "default" }, update: { recertifyMonths: months }, create: { id: "default", recertifyMonths: months } });
+  clearSettingsCache();
+  await audit(actor.id, "RECERTIFY_SETTINGS", "settings", "default", `Re-certification ${before} to ${months} months.`);
+  revalidatePath("/admin/settings");
+  redirect(`/admin/settings?notice=${encodeURIComponent(`Files the desk approves from now on stay current for ${months} month${months === 1 ? "" : "s"}.`)}#recertify`);
 }
 
 export async function startVendorKyc() {

@@ -11,7 +11,7 @@
     "db:indexes": "tsx scripts/db-indexes.ts",
     "db:seed": "prisma db seed",
     "db:reset": "prisma db seed",
-    "test": "node --import tsx --test tests/*.test.ts",
+    "test": "node --import tsx --import ./tests/setup-env.ts --test tests/*.test.ts",
     "jobs": "tsx scripts/jobs.ts",
     "ai:eval": "tsx scripts/ai-eval.ts",
     "postinstall": "prisma generate"

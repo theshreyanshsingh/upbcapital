@@ -121,6 +121,10 @@ const REDUCED_PROFILE = {
   vendorRef: "",
   submittedAt: null,
   reviewedAt: null,
+  taxIdLast4: null,
+  // Nobody re-certifies a deleted file, so the reminder job passes it by.
+  recertifyBy: null,
+  recertRemindedAt: null,
 } as const;
 
 export type ProofOutcome = "none" | "removed" | "kept" | "failed";
@@ -128,6 +132,38 @@ export type ProofOutcome = "none" | "removed" | "kept" | "failed";
 // Clears the person and the things that only served them. Closings, signed papers, NDAs, bids and the audit log
 // stay. The proof of funds goes only when no closing names the account; if the store refuses, the key stays so the
 // file isn't lost track of.
+// A seller file follows the proof of funds: its identity and authority documents go only when no closing names the
+// account, and then the entity and signer stay too, since that closing's papers name them. A refused removal keeps
+// its key, so the file isn't lost track of.
+async function clearSellerFile(userId: string) {
+  const file = await prisma.sellerProfile.findUnique({ where: { userId } });
+  if (!file) return;
+  const keep = await closingReferences(userId);
+  const stays = async (key: string) => {
+    if (!key || keep) return Boolean(key);
+    return removeStoredFile(key).then(
+      () => false,
+      (error) => {
+        console.error(`[upb-deletion] a seller file document for ${userId} was not removed:`, error instanceof Error ? error.message : error);
+        return true;
+      },
+    );
+  };
+  const [idStays, authorityStays] = await Promise.all([stays(file.idDocKey), stays(file.authorityDocKey)]);
+  await prisma.sellerProfile.update({
+    where: { userId },
+    data: {
+      taxIdLast4: null,
+      reviewerNote: "",
+      vendor: "",
+      vendorRef: "",
+      ...(keep ? {} : { entityName: "", signerName: "", signerTitle: "" }),
+      ...(idStays ? {} : { idDocKey: "", idDocName: "", idDocMime: "" }),
+      ...(authorityStays ? {} : { authorityDocKey: "", authorityDocName: "", authorityDocMime: "" }),
+    },
+  });
+}
+
 export async function anonymiseAccount(userId: string, now = new Date()): Promise<{ proof: ProofOutcome }> {
   const user = await prisma.user.findUnique({ where: { id: userId }, include: { buyerProfile: true } });
   if (!user) return { proof: "none" };
@@ -158,6 +194,9 @@ export async function anonymiseAccount(userId: string, now = new Date()): Promis
     prisma.webhookEndpoint.deleteMany({ where: { userId } }),
     prisma.loginCode.deleteMany({ where: { userId } }),
     prisma.passwordReset.deleteMany({ where: { userId } }),
+    // The owners listed on the buyer's files are people too. Their screens stay in the compliance log.
+    prisma.beneficialOwner.deleteMany({ where: { userId } }),
+    prisma.buyerEntity.updateMany({ where: { userId }, data: { taxIdLast4: null } }),
     // In-app copies of mail carry the old address. They aren't deal records.
     prisma.notification.deleteMany({ where: { OR: [{ userId }, { toEmail: user.email }] } }),
   ]);
@@ -167,6 +206,7 @@ export async function anonymiseAccount(userId: string, now = new Date()): Promis
       data: { ...REDUCED_PROFILE, ...(proof === "kept" || proof === "failed" ? {} : { proofKey: "", proofName: "", proofMime: "" }) },
     });
   }
+  await clearSellerFile(userId);
   await prisma.user.update({
     where: { id: userId },
     data: {

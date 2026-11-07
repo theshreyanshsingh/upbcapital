@@ -18,6 +18,7 @@ import { postRevenueOnce } from "@/lib/ledger";
 import { percentToBps } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
 import { OFAC_DOWN_MESSAGE, OFAC_HOLD_MESSAGE, ofacHold, screenInBackground, screenListing, screenUser } from "@/lib/screening";
+import { sellerIdentityHold } from "@/lib/seller-identity";
 import { clearSettingsCache, getSettings } from "@/lib/settings";
 import { cancelBuyerSubscription } from "@/lib/stripe-billing";
 import { syncProPrice } from "@/lib/stripe-sync";
@@ -86,6 +87,9 @@ export async function reviewListing(formData: FormData) {
     // The discrepancy gate: nothing goes live while a difference between the tape and a document the desk read is unanswered.
     const hold = await approvalHold(listingId);
     if (hold) redirect(`/admin/listings/${listingId}?error=${encodeURIComponent(hold)}`);
+    // The seller identity gate: when the desk requires it, a seller's listing waits on their approved seller file.
+    const identity = await sellerIdentityHold(listing, await getSettings());
+    if (identity) redirect(`/admin/listings/${listingId}?error=${encodeURIComponent(identity)}`);
     const screened = await screenListing(listingId, user.id);
     if (screened.unavailable) redirect(`/admin/listings/${listingId}?error=${encodeURIComponent(OFAC_DOWN_MESSAGE)}`);
     if (await ofacHold({ listingId, userIds: [listing.sellerId] })) {
@@ -302,7 +306,8 @@ export async function decideInquiry(formData: FormData) {
       revalidatePath("/admin/offers");
       redirect("/admin/offers?notice=sent_to_seller");
     }
-    const result = await awardOffer(inquiry.id, user.id);
+    // The next two bids on the same loans are asked to stand as backup (lib/backup-bids.ts).
+    const result = await awardOffer(inquiry.id, user.id, { backups: true });
     if (result.error !== null) redirect(`/admin/offers?error=${encodeURIComponent(result.error)}`);
     revalidatePath("/admin/offers");
     revalidatePath(`/admin/listings/${inquiry.listingId}`);

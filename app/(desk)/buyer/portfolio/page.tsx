@@ -4,6 +4,7 @@ import { addOwnedNote, emailStatement, logBuyerPayment, setBuyerHoldingStatus } 
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { SubmitButton } from "@/components/submit-button";
+import { ACCRETION_NOTE, accretedThrough, accretionByYear, type Accretion } from "@/lib/accretion";
 import { requireRole } from "@/lib/auth";
 import { money, pct, prettyDate, q } from "@/lib/format";
 import { partialShare, participationsOpen, PARTICIPATIONS_PAUSED } from "@/lib/participation";
@@ -61,7 +62,7 @@ export default async function PortfolioPage({
       <button type="submit" formAction={emailStatement} className="inline-flex h-11 items-center rounded-lg border border-border px-4 text-[13px] font-medium text-foreground">Email me the PDF</button>
     </form>
   );
-  const statementHelp = "Interest, principal, fees and escrow received on each note, its cost, and any resale. Where you logged a total only, the split is estimated from the note rate and marked as such.";
+  const statementHelp = "Interest, principal, fees and escrow received on each note, its cost, and any resale. Where you logged a total only, the split is estimated from the note rate and marked as such. A note bought below its balance also shows the discount accreted that year, for your tax adviser.";
   return (
     <div>
       <PageIntro eyebrow="Portfolio" title="Notes you hold." lede="Closed trades land here. Log what the servicer sends and compare it with the yield you underwrote. A note bought before this desk can be added by hand." />
@@ -113,6 +114,7 @@ export default async function PortfolioPage({
                     {holding.underwrittenYield != null ? ` · underwritten ${holding.underwrittenYield.toFixed(1)}%` : ""}
                   </p>
                   <ReturnLine result={result} />
+                  {holding.accretion && <AccretionLine accretion={holding.accretion} title={holding.title} through={holding.proceeds.reduce((first, sale) => (sale.on < first ? sale.on : first), now)} />}
                   {/* The loan record, collateral, chain and payments as one PDF, for a note-on-note lender. */}
                   <a href={`/api/holdings/${holding.id}/lender-pack`} className="mt-2 inline-block text-[13px] font-medium text-link">
                     Download the lender pack<span className="sr-only"> for {holding.title}</span>
@@ -253,6 +255,27 @@ function ReturnLine({ result }: { result: HoldingReturn }) {
       In {money(result.moneyIn)} · back {money(result.moneyBack)} · net {result.netGain < 0 ? "−" : ""}{money(Math.abs(result.netGain))} · IRR {irrText(result)}
       {gap ? ` · ${gap}` : ""}
     </p>
+  );
+}
+
+// The discount a note bought below its balance earns over its life, apart from the split above. To date, and by year.
+function AccretionLine({ accretion, title, through }: { accretion: Accretion; title: string; through: Date }) {
+  const years = accretionByYear(accretion);
+  return (
+    <details className="mt-2">
+      <summary className="cursor-pointer text-sm text-foreground tabular-nums">
+        Discount {money(accretion.discount)} · accreted to date {money(accretedThrough(accretion, through), 2)} · for your tax adviser<span className="sr-only"> on {title}</span>
+      </summary>
+      <p className="mt-2 text-[13px] text-muted-foreground">{accretion.label}. {ACCRETION_NOTE}</p>
+      <ul className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1 text-[13px] tabular-nums sm:grid-cols-4">
+        {years.map((row) => (
+          <li key={row.year} className="flex justify-between gap-3 border-b border-border pb-1">
+            <span className="text-muted-foreground">{row.year}</span>
+            <span className="text-foreground">{money(row.amount, 2)}</span>
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }
 

@@ -33,7 +33,36 @@ type StatementClosing = {
   depositReceivedCents?: number | null;
   depositReceivedAt?: Date | null;
   depositReference?: string | null;
+  // What became of the deposit once the deal ended. lib/deposits.ts.
+  depositStatus?: string | null;
+  depositResolvedAt?: Date | null;
+  depositRefundReference?: string | null;
 };
+
+// The deposit's outcome as a statement line, once the deal ended. The refund reference is the buyer's wire, so the
+// seller's line leaves it out.
+export const DEPOSIT_OUTCOME_LABELS: Record<string, string> = {
+  HELD: "Deposit held",
+  APPLIED: "Deposit applied to the price",
+  REFUND_DUE: "Deposit refund due",
+  REFUNDED: "Deposit refunded",
+  FORFEITED: "Deposit forfeited",
+};
+
+function depositOutcomeLines(closing: StatementClosing, forSeller: boolean): StatementLine[] {
+  const status = closing.depositStatus;
+  const label = status ? DEPOSIT_OUTCOME_LABELS[status] : undefined;
+  if (!status || !label) return [];
+  const day = closing.depositResolvedAt ? closing.depositResolvedAt.toISOString().slice(0, 10) : "";
+  const detail = status === "APPLIED"
+    ? "Counted toward the price"
+    : status === "REFUND_DUE"
+      ? "Not yet sent"
+      : status === "HELD"
+        ? "Waiting on the desk's decision"
+        : [day, status === "REFUNDED" && !forSeller ? closing.depositRefundReference : ""].filter(Boolean).join(" · ");
+  return [{ label: forSeller ? `Buyer ${label.toLowerCase()}` : label, cents: closing.depositReceivedCents ?? null, ...(detail ? { detail } : {}) }];
+}
 
 // One seat holder's part of a group closing.
 export type FunderShare = { amount: number; premiumCents: number; status: string; fundedAt: Date | null };
@@ -230,6 +259,7 @@ export function statementLines(
               detail: wireDetail(closing.depositReceivedAt, closing.depositReference, closing.depositCents != null ? variance(closing.depositCents, closing.depositReceivedCents) : undefined),
             },
             { label: "Balance due", cents: balanceDueCents(closing) },
+            ...depositOutcomeLines(closing, false),
           ]
         : []),
       { label: "Funds received", cents: closing.fundsReceivedCents, detail: wireDetail(closing.fundsReceivedAt, closing.fundsReference, buyerFundsCheck(closing)) },
@@ -242,6 +272,7 @@ export function statementLines(
       { label: "Seller commission", cents: -closing.sellerCommissionCents },
       { label: "Net proceeds to seller", cents: closing.netToSellerCents },
       { label: "Proceeds sent", cents: closing.proceedsSentCents, detail: wireDetail(closing.proceedsSentAt, closing.proceedsReference, variance(closing.netToSellerCents, closing.proceedsSentCents)) },
+      ...depositOutcomeLines(closing, true),
     ],
   };
   if (side === "buyer") return [buyer, ...kickoutSection(kickouts, side)];

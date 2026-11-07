@@ -55,7 +55,8 @@ export async function answerSaleApproval(formData: FormData) {
   const approved = await prisma.inquiry.updateMany({ where: sameQuestion(offer), data: { sellerApprovedAmount: amount, sellerAnsweredAt: new Date(), sellerDeclined: false } });
   if (approved.count !== 1) redirect(`${back}?error=${encodeURIComponent("This bid was answered a moment ago.")}`);
   await audit(user.id, "SELLER_APPROVED", "inquiry", offer.id, `${offer.listing.title} · ${price}${part ? ` for ${part.length} loan${part.length === 1 ? "" : "s"}` : ""}`);
-  const result = part ? await awardPartial(offer.id, part, user.id) : await awardOffer(offer.id, user.id);
+  // A whole or one-loan award asks the next two bids to stand as backup (lib/backup-bids.ts).
+  const result = part ? await awardPartial(offer.id, part, user.id) : await awardOffer(offer.id, user.id, { backups: true });
   if (result.error !== null) {
     // The approval stands. The desk finishes the award once whatever stopped it is cleared.
     await notifyDesk(`Seller approved · ${offer.listing.title}`, `${user.name} approved the sale at ${price}, but the award didn't finish: ${result.error}`, { capability: "sealedBids" });
