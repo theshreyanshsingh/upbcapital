@@ -1,7 +1,6 @@
 import { getApiUser } from "@/lib/auth";
 import { toCsv } from "@/lib/csv";
-import { prisma } from "@/lib/prisma";
-import { buildYearStatementPdf, ESTIMATED, loadStatementHoldings, statementCsv, taxYearStatement } from "@/lib/portfolio-tax";
+import { buildYearStatementPdf, ESTIMATED, loadStatementHoldings, statementCsv, statementHolder, statementYearProblem, taxYearStatement } from "@/lib/portfolio-tax";
 
 export const runtime = "nodejs";
 
@@ -14,17 +13,15 @@ export async function GET(request: Request) {
   const holdings = await loadStatementHoldings(user.id);
   if (rawYear) {
     const year = Number(rawYear);
-    const current = new Date().getUTCFullYear();
-    if (!Number.isInteger(year) || year < 1990 || year > current) return new Response("Choose a tax year up to this one.", { status: 400 });
+    const problem = statementYearProblem(year);
+    if (problem) return new Response(problem, { status: 400 });
     const statement = taxYearStatement(holdings, year);
     if (url.searchParams.get("format") === "csv") {
       return new Response(statementCsv(statement), {
         headers: { "Content-Type": "text/csv", "Content-Disposition": `attachment; filename="upb-statement-${year}.csv"`, "Cache-Control": "private, no-store" },
       });
     }
-    const profile = await prisma.buyerProfile.findUnique({ where: { userId: user.id }, select: { entityName: true } });
-    const holder = [profile?.entityName || user.companyName || user.name, user.email].filter(Boolean).join("  -  ");
-    const pdf = await buildYearStatementPdf(statement, holder);
+    const pdf = await buildYearStatementPdf(statement, await statementHolder(user));
     return new Response(new Uint8Array(pdf), {
       headers: { "Content-Type": "application/pdf", "Content-Disposition": `attachment; filename="upb-statement-${year}.pdf"`, "Cache-Control": "private, no-store" },
     });

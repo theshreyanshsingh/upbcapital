@@ -429,7 +429,7 @@ export async function inviteToConfirm(matchId: string, listingId: string, actorI
 type Buyer = Pick<User, "id" | "name" | "email" | "role" | "accountStatus" | "subscriptionTier" | "subscriptionStatus" | "subscriptionCurrentPeriodEnd">;
 
 // The buyer turns an invitation into a real bid at the standing price. It runs every check the bid form runs.
-export async function confirmStanding(input: { matchId: string; user: Buyer; price: number; goodUntil: string; now?: Date }) {
+export async function confirmStanding(input: { matchId: string; user: Buyer; price: number; goodUntil: string; buyerEntityId?: string | null; now?: Date }) {
   const now = input.now ?? new Date();
   const match = await prisma.listingMatch.findUnique({ where: { id: input.matchId }, include: { listing: { include: { seller: true } } } });
   if (!match || match.userId !== input.user.id) return { error: "That invitation isn't yours.", verification: false } as const;
@@ -438,7 +438,7 @@ export async function confirmStanding(input: { matchId: string; user: Buyer; pri
   if (!match.invitedAt || price == null) return { error: "The desk hasn't sent this standing bid to confirm.", verification: false } as const;
   // The buyer binds to the figure they saw. A reprice since the page loaded asks them to look again.
   if (Math.round(input.price) !== price) return { error: "The standing price changed. Check the new figure and confirm again.", verification: false } as const;
-  const check = await checkOffer({ user: input.user, listing: match.listing, noteId: "", amount: price, goodUntil: input.goodUntil, now });
+  const check = await checkOffer({ user: input.user, listing: match.listing, noteId: "", amount: price, goodUntil: input.goodUntil, buyerEntityId: input.buyerEntityId, now });
   if (check.error !== null) return check;
   // A double click or a second tab: one claim lands, so one bid is written.
   const claimed = await prisma.listingMatch.updateMany({
@@ -446,7 +446,7 @@ export async function confirmStanding(input: { matchId: string; user: Buyer; pri
     data: { answeredAt: now },
   });
   if (claimed.count !== 1) return { error: "You answered this invitation a moment ago.", verification: false } as const;
-  const bid = { user: input.user, listing: match.listing, type: "OFFER", noteId: "", amount: price, message: "Confirmed from a standing bid.", expiresAt: check.expiresAt };
+  const bid = { user: input.user, listing: match.listing, type: "OFFER", noteId: "", amount: price, message: "Confirmed from a standing bid.", expiresAt: check.expiresAt, buyerEntityId: check.buyerEntityId };
   let inquiry: Awaited<ReturnType<typeof writeInquiry>>;
   try {
     inquiry = await writeInquiry(bid);

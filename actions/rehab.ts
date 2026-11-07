@@ -2,20 +2,11 @@
 
 import { redirect } from "next/navigation";
 import { requireDesk } from "@/lib/staff";
-import { SOUTH_FLORIDA_COSTS } from "@/lib/rehab";
 import { prisma } from "@/lib/prisma";
 
 // Rehab plans and unit costs are work on the desk's own holdings.
 async function admin() {
   return requireDesk("deskBook", "/admin/book");
-}
-
-export async function ensureUnitCosts() {
-  const count = await prisma.unitCost.count();
-  if (count > 0) return;
-  await prisma.unitCost.createMany({
-    data: SOUTH_FLORIDA_COSTS.map((row) => ({ ...row, region: "South Florida" })),
-  });
 }
 
 function back(holdingId: string, notice: string) {

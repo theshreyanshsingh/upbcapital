@@ -12,7 +12,12 @@ export async function buyItNow(formData: FormData) {
   if (user.accountStatus !== "APPROVED") redirect("/buyer/pending");
   const listingId = String(formData.get("listingId") || "");
   const back = `/marketplace/${listingId}`;
-  const result = await placeBuyNow({ user, listingId, price: Number(String(formData.get("price") || "").replace(/[$,\s]/g, "")) });
+  const result = await placeBuyNow({
+    user,
+    listingId,
+    price: Number(String(formData.get("price") || "").replace(/[$,\s]/g, "")),
+    buyerEntityId: String(formData.get("buyerEntityId") || ""),
+  });
   if (result.error !== null) {
     redirect(result.verification ? `/buyer/verification?error=${encodeURIComponent(result.error)}` : `${back}?error=${encodeURIComponent(result.error)}#offer`);
   }

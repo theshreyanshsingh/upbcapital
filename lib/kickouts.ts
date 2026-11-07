@@ -1,6 +1,7 @@
 import { audit } from "@/lib/audit";
-import { closingIsWhole, closingLoans, closingTotals } from "@/lib/closing";
+import { closingIsWhole, closingLoans } from "@/lib/closing";
 import { buyerSideEmails } from "@/lib/closing-service";
+import { chargeFees, flatTerms, readSchedule, type Fees } from "@/lib/fee-schedule";
 import { notify, notifyDesk } from "@/lib/email";
 import { money } from "@/lib/format";
 import { pricesFor } from "@/lib/loan-prices";
@@ -39,8 +40,9 @@ type TermsClosing = {
 
 // What taking this loan out does to the closing. The price comes down by the buyer's price for the loan when the
 // bid priced every loan on the closing and those prices still add up to it; otherwise by the loan's share of the
-// asking prices. Fees follow at the closing's own rates, and the deposit comes down in proportion to the price.
-export function kickoutTerms(input: { closing: TermsClosing; loans: { id: string; ask: number }[]; noteId: string; loanPrices: unknown }) {
+// asking prices. Fees follow at the closing's own rates, or through `fees` when the listing went live with a graded
+// schedule, so the smaller price takes its own tier and minimums. The deposit comes down in proportion to the price.
+export function kickoutTerms(input: { closing: TermsClosing; loans: { id: string; ask: number }[]; noteId: string; loanPrices: unknown; fees?: ((price: number) => Fees) | null }) {
   const { closing, loans, noteId } = input;
   const oldCents = Math.round(closing.salePrice * 100);
   const prices = pricesFor(input.loanPrices, loans.map((loan) => loan.id), closing.salePrice);
@@ -52,7 +54,7 @@ export function kickoutTerms(input: { closing: TermsClosing; loans: { id: string
     prices ? Math.round(prices[noteId] * 100) : basis === "askShare" ? Math.round((oldCents * ask) / asks) : Math.round(oldCents / loans.length);
   const priceCents = oldCents - dropCents;
   const rates = closingRates(closing);
-  const fees = closingTotals(priceCents / 100, rates.premiumBps, rates.commissionBps);
+  const fees = input.fees ? input.fees(priceCents / 100) : chargeFees(flatTerms(rates.premiumBps, rates.commissionBps), priceCents / 100);
   const deposit = closing.depositCents == null ? null : oldCents > 0 ? Math.round((closing.depositCents * priceCents) / oldCents) : 0;
   // Buyer money already on record past the new total has to go back. The deposit counts toward the total.
   const recorded = (closing.depositReceivedCents ?? 0) + (closing.fundsReceivedCents ?? 0);
@@ -104,11 +106,18 @@ export async function kickOutLoan(input: { closingId: string; noteId: string; re
   if (loans.length <= 1) return { error: "This is the closing's last loan. Cancel the closing instead." } as const;
   const inquiry = closing.inquiryId ? await prisma.inquiry.findUnique({ where: { id: closing.inquiryId }, select: { loanPrices: true } }) : null;
   const salePrice = Number(closing.salePrice);
+  // A listing that went live with a schedule grades the new price on it. A desk purchase pays no premium, and the
+  // seller pays the commission only if the closing charged one.
+  const kept = readSchedule(closing.listing.feeSchedule);
+  const graded = kept
+    ? (price: number) => chargeFees({ ...flatTerms(0), schedule: kept }, price, { deskPurchase: Boolean(closing.deskBidId), chargeDeskFees: closing.sellerCommissionCents > 0 })
+    : null;
   const terms = kickoutTerms({
     closing: { ...closing, salePrice },
     loans: loans.map((loan) => ({ id: loan.id, ask: Number(loan.askingPrice) })),
     noteId: note.id,
     loanPrices: inquiry?.loanPrices ?? null,
+    fees: graded,
   });
   const remaining = loans.filter((loan) => loan.id !== note.id).map((loan) => loan.id);
   const wrote = await prisma.closing.updateMany({

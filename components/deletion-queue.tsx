@@ -3,8 +3,8 @@ import { blockerSentence, deletionQueue } from "@/lib/account-deletion";
 import { prettyDate } from "@/lib/format";
 
 // The compliance page's deletion requests. Completing one anonymises the account; it is refused while something is
-// still open, and the line says what.
-export async function DeletionQueue() {
+// still open, and the line says what. A desk role outside compliance reads it without the form; the action checks.
+export async function DeletionQueue({ readOnly = false }: { readOnly?: boolean } = {}) {
   const { open, decided } = await deletionQueue();
   return (
     <section id="deletion" className="glass mt-8 scroll-mt-6 p-6">
@@ -19,14 +19,14 @@ export async function DeletionQueue() {
             <p className="text-sm text-foreground">{request.user.name} · {request.user.email} · {request.user.role.replaceAll("_", " ").toLowerCase()}</p>
             <p className="mt-1 text-xs text-muted-foreground">Asked {prettyDate(request.requestedAt)}{request.reason ? ` · ${request.reason}` : ""}</p>
             {request.blockers.length > 0 && <p className="mt-2 text-xs text-bad">{blockerSentence(request.blockers)}</p>}
-            <form action={decideDeletionRequest} className="mt-3 space-y-2">
+            {!readOnly && <form action={decideDeletionRequest} className="mt-3 space-y-2">
               <input type="hidden" name="requestId" value={request.id} />
               <input name="note" className="desk-input" aria-label={`Note on the deletion request from ${request.user.name}`} placeholder="A note for the record. A refusal goes to the holder." />
               <div className="flex flex-wrap gap-2">
                 <button type="submit" name="decision" value="COMPLETED" disabled={request.blockers.length > 0} className="h-9 rounded-lg border border-bad/40 px-3 text-[13px] font-medium text-bad hover:bg-bad/10 disabled:opacity-50">Delete and anonymise</button>
                 <button type="submit" name="decision" value="REFUSED" className="h-9 rounded-lg border border-border px-3 text-[13px] font-medium hover:bg-hover">Refuse</button>
               </div>
-            </form>
+            </form>}
           </li>
         ))}
       </ul>

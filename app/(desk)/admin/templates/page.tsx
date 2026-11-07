@@ -7,6 +7,7 @@ import { SubmitButton } from "@/components/submit-button";
 import { requireRole } from "@/lib/auth";
 import { prettyDate, q } from "@/lib/format";
 import { LEGAL_KEYS, LEGAL_PATHS, currentLegalVersion, loadLegal, nextLegalVersion } from "@/lib/legal";
+import { deskCan } from "@/lib/staff";
 import { loadTemplates } from "@/lib/templates";
 
 export const metadata = { title: "Forms" };
@@ -16,7 +17,8 @@ export default async function TemplatesPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  await requireRole(["ADMIN"]);
+  // Every desk role reads the forms and legal texts. Only an owner edits them, and the actions check the same.
+  const owns = deskCan(await requireRole(["ADMIN"]), "admin");
   const params = await searchParams;
   const [templates, legal, version] = await Promise.all([loadTemplates(), Promise.all(LEGAL_KEYS.map((key) => loadLegal(key))), currentLegalVersion()]);
   return (
@@ -27,8 +29,9 @@ export default async function TemplatesPage({
         lede="Purchase agreement, assignment, and allonge. Tokens such as {{buyer}}, {{seller}}, {{price}}, {{upb}}, {{street}}, and {{date}} fill from the deal."
       />
       <Notice notice={q(params, "notice")} error={q(params, "error")} />
+      {!owns && <p className="mt-4 text-sm text-muted-foreground">Your desk role reads these. Only an owner changes them.</p>}
       <div className="mt-8 space-y-6">
-        {templates.map((template) => (
+        {templates.map((template) => owns ? (
           <form key={template.key} action={saveTemplate} className="glass space-y-3 p-5">
             <p className="eyebrow">{template.key}</p>
             <input type="hidden" name="key" value={template.key} />
@@ -42,6 +45,12 @@ export default async function TemplatesPage({
             </label>
             <SubmitButton className="h-11 text-[13px] font-medium">Save form</SubmitButton>
           </form>
+        ) : (
+          <article key={template.key} className="glass space-y-3 p-5">
+            <p className="eyebrow">{template.key}</p>
+            <p className="font-medium text-foreground">{template.title}</p>
+            <p className="whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">{template.body}</p>
+          </article>
         ))}
       </div>
 
@@ -51,7 +60,7 @@ export default async function TemplatesPage({
           Public at <Link href="/terms" className="text-link">/terms</Link> and <Link href="/privacy" className="text-link">/privacy</Link>, and agreed to at sign-up. Accounts have accepted version {version}. Put a blank line between paragraphs, start a heading with ##, a list item with -, and the draft note with &gt;. {"{{retentionYears}}"} fills from the compliance settings and {"{{contact}}"} from the desk&apos;s email.
         </p>
         <div className="mt-6 space-y-6">
-          {legal.map((doc) => (
+          {legal.map((doc) => owns ? (
             <form key={doc.key} action={saveLegal} className="glass space-y-3 p-5">
               <p className="eyebrow">
                 {doc.key} · <Link href={LEGAL_PATHS[doc.key]} className="text-link normal-case">{LEGAL_PATHS[doc.key]}</Link>
@@ -75,6 +84,14 @@ export default async function TemplatesPage({
               </label>
               <SubmitButton className="h-11 text-[13px] font-medium">Save page</SubmitButton>
             </form>
+          ) : (
+            <article key={doc.key} className="glass space-y-3 p-5">
+              <p className="eyebrow">
+                {doc.key} · <Link href={LEGAL_PATHS[doc.key]} className="text-link normal-case">{LEGAL_PATHS[doc.key]}</Link>
+                {doc.updatedAt ? ` · saved ${prettyDate(doc.updatedAt)}` : " · built-in draft"}
+              </p>
+              <p className="font-medium text-foreground">{doc.title}</p>
+            </article>
           ))}
         </div>
       </section>

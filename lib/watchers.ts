@@ -23,8 +23,9 @@ export function watchLink(listingId: string, appUrl = process.env.NEXT_PUBLIC_AP
 export async function notifyWatchers(input: { listingId: string; event: WatchEvent; subject: string; body: string; except?: string[] }) {
   const listing = await prisma.listing.findUnique({ where: { id: input.listingId }, select: { id: true, sellerId: true, brokerId: true, launchAt: true } });
   if (!listing) return 0;
-  // A coming-soon listing hides its price and file, so watchers hear only that it went live, or that it was withdrawn.
-  if (launchPending(listing) && input.event !== "WITHDRAWN") return 0;
+  // A coming-soon listing hides its price and file, so watchers hear only about its launch (it went live, or the
+  // date moved), or that it was withdrawn.
+  if (launchPending(listing) && input.event !== "WITHDRAWN" && input.event !== "LAUNCH") return 0;
   const skip = new Set([listing.sellerId, ...(listing.brokerId ? [listing.brokerId] : []), ...(input.except ?? [])]);
   const watchers = await prisma.favorite.findMany({
     where: { listingId: input.listingId },

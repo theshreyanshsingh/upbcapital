@@ -152,6 +152,8 @@ async function tellDeskOfStandingBids(listing: ListingRow, bids: { userId: strin
   await notifyDesk(
     `Standing bids · ${listing.title}`,
     `${standingNotice(listing.title, bids)} They are indicative until each buyer confirms. Review them and invite buyers here: ${link}`,
+    // The top figure is a bid amount, so it stays behind the wall with the sheet.
+    { capability: "sealedBids" },
   );
 }
 

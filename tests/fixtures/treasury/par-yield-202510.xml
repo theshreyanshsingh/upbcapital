@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<feed xml:base="https://home.treasury.gov/resource-center/data-chart-center/interest-rates/pages/xml" xmlns:d="http://schemas.microsoft.com/ado/2007/08/dataservices" xmlns:m="http://schemas.microsoft.com/ado/2007/08/dataservices/metadata" xmlns="http://www.w3.org/2005/Atom">
+  <title type="text">DailyTreasuryYieldCurveRateData</title>
+  <id>https://home.treasury.gov/resource-center/data-chart-center/interest-rates/pages/xml?data=daily_treasury_yield_curve&amp;field_tdr_date_value_month=202510</id>
+  <updated>2025-10-31T00:00:00Z</updated>
+  <link rel="self" title="DailyTreasuryYieldCurveRateData" href="DailyTreasuryYieldCurveRateData" />
+  <!-- A trimmed sample in the feed's shape: three business days, the last with no 10-year figure. -->
+  <entry>
+    <id>https://home.treasury.gov/resource-center/data-chart-center/interest-rates/pages/xml?data=daily_treasury_yield_curve(78)</id>
+    <title type="text"></title>
+    <updated>2025-10-31T00:00:00Z</updated>
+    <author><name /></author>
+    <link rel="edit" title="DailyTreasuryYieldCurveRateDatum" href="DailyTreasuryYieldCurveRateData(78)" />
+    <category term="TreasuryDataWarehouseModel.DailyTreasuryYieldCurveRateDatum" scheme="http://schemas.microsoft.com/ado/2007/08/dataservices/scheme" />
+    <content type="application/xml">
+      <m:properties>
+        <d:Id m:type="Edm.Int32">78</d:Id>
+        <d:NEW_DATE m:type="Edm.DateTime">2025-10-01T00:00:00</d:NEW_DATE>
+        <d:BC_1MONTH m:type="Edm.Double">4.20</d:BC_1MONTH>
+        <d:BC_2YEAR m:type="Edm.Double">3.55</d:BC_2YEAR>
+        <d:BC_10YEAR m:type="Edm.Double">4.12</d:BC_10YEAR>
+        <d:BC_30YEAR m:type="Edm.Double">4.71</d:BC_30YEAR>
+        <d:BC_30YEARDISPLAY m:type="Edm.Double">4.71</d:BC_30YEARDISPLAY>
+      </m:properties>
+    </content>
+  </entry>
+  <entry>
+    <id>https://home.treasury.gov/resource-center/data-chart-center/interest-rates/pages/xml?data=daily_treasury_yield_curve(80)</id>
+    <title type="text"></title>
+    <updated>2025-10-31T00:00:00Z</updated>
+    <author><name /></author>
+    <link rel="edit" title="DailyTreasuryYieldCurveRateDatum" href="DailyTreasuryYieldCurveRateData(80)" />
+    <category term="TreasuryDataWarehouseModel.DailyTreasuryYieldCurveRateDatum" scheme="http://schemas.microsoft.com/ado/2007/08/dataservices/scheme" />
+    <content type="application/xml">
+      <m:properties>
+        <d:Id m:type="Edm.Int32">80</d:Id>
+        <d:NEW_DATE m:type="Edm.DateTime">2025-10-03T00:00:00</d:NEW_DATE>
+        <d:BC_1MONTH m:type="Edm.Double">4.18</d:BC_1MONTH>
+        <d:BC_2YEAR m:type="Edm.Double">3.58</d:BC_2YEAR>
+        <d:BC_10YEAR m:type="Edm.Double">4.13</d:BC_10YEAR>
+        <d:BC_30YEAR m:type="Edm.Double">4.72</d:BC_30YEAR>
+        <d:BC_30YEARDISPLAY m:type="Edm.Double">4.72</d:BC_30YEARDISPLAY>
+      </m:properties>
+    </content>
+  </entry>
+  <entry>
+    <id>https://home.treasury.gov/resource-center/data-chart-center/interest-rates/pages/xml?data=daily_treasury_yield_curve(79)</id>
+    <title type="text"></title>
+    <updated>2025-10-31T00:00:00Z</updated>
+    <author><name /></author>
+    <link rel="edit" title="DailyTreasuryYieldCurveRateDatum" href="DailyTreasuryYieldCurveRateData(79)" />
+    <category term="TreasuryDataWarehouseModel.DailyTreasuryYieldCurveRateDatum" scheme="http://schemas.microsoft.com/ado/2007/08/dataservices/scheme" />
+    <content type="application/xml">
+      <m:properties>
+        <d:Id m:type="Edm.Int32">79</d:Id>
+        <d:NEW_DATE m:type="Edm.DateTime">2025-10-02T00:00:00</d:NEW_DATE>
+        <d:BC_1MONTH m:type="Edm.Double">4.19</d:BC_1MONTH>
+        <d:BC_2YEAR m:type="Edm.Double">3.54</d:BC_2YEAR>
+        <d:BC_10YEAR m:type="Edm.Double">4.10</d:BC_10YEAR>
+        <d:BC_30YEAR m:type="Edm.Double">4.70</d:BC_30YEAR>
+        <d:BC_30YEARDISPLAY m:type="Edm.Double">4.70</d:BC_30YEARDISPLAY>
+      </m:properties>
+    </content>
+  </entry>
+  <entry>
+    <id>https://home.treasury.gov/resource-center/data-chart-center/interest-rates/pages/xml?data=daily_treasury_yield_curve(81)</id>
+    <title type="text"></title>
+    <updated>2025-10-31T00:00:00Z</updated>
+    <author><name /></author>
+    <link rel="edit" title="DailyTreasuryYieldCurveRateDatum" href="DailyTreasuryYieldCurveRateData(81)" />
+    <category term="TreasuryDataWarehouseModel.DailyTreasuryYieldCurveRateDatum" scheme="http://schemas.microsoft.com/ado/2007/08/dataservices/scheme" />
+    <content type="application/xml">
+      <m:properties>
+        <d:Id m:type="Edm.Int32">81</d:Id>
+        <d:NEW_DATE m:type="Edm.DateTime">2025-10-06T00:00:00</d:NEW_DATE>
+        <d:BC_1MONTH m:type="Edm.Double">4.17</d:BC_1MONTH>
+        <d:BC_10YEAR m:type="Edm.Double" m:null="true" />
+      </m:properties>
+    </content>
+  </entry>
+</feed>

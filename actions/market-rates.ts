@@ -15,6 +15,7 @@ import { prisma } from "@/lib/prisma";
 import { consumeRateLimit } from "@/lib/rate-limit";
 import { clearSettingsCache, getSettings } from "@/lib/settings";
 import type { TapeFieldKey } from "@/lib/tape-fields";
+import { MANUAL_SOURCE } from "@/lib/treasury";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -23,7 +24,8 @@ function back(message: string, kind: "notice" | "error"): never {
 }
 
 // The desk enters the 10-year Treasury rate and the day it was read, and the yield the book's indicative price
-// solves for. A new rate reprices every spread rule's open matches at once.
+// solves for. A new rate reprices every spread rule's open matches at once. The jobs run reads the rate from Treasury
+// each day (lib/treasury.ts); a rate typed here holds over that read until the next business day.
 export async function saveMarketRates(formData: FormData) {
   const actor = await requireDesk("admin", "/admin/settings");
   const rateText = String(formData.get("tenYearRate") || "").trim();
@@ -38,7 +40,10 @@ export async function saveMarketRates(formData: FormData) {
   // Blank keeps the default target, so clearing the box never prices the book at 0%.
   const target = targetText ? typedNumber(targetText) : null;
   if (target != null && (!Number.isFinite(target) || !(target >= 1 && target <= 50))) back("Enter the indicative yield as a percent from 1 to 50, or leave it blank for the default.", "error");
-  const data = { tenYearRate: rate, tenYearAsOf: asOf, indicativeTargetYield: target };
+  // Saving the target alone keeps the rate's source, so a Treasury rate left in the box isn't frozen as the desk's.
+  const before = await prisma.platformSettings.findUnique({ where: { id: "default" }, select: { tenYearRate: true, tenYearAsOf: true } });
+  const changed = before?.tenYearRate !== rate || before?.tenYearAsOf?.getTime() !== asOf.getTime();
+  const data = { tenYearRate: rate, tenYearAsOf: asOf, indicativeTargetYield: target, ...(changed ? { tenYearSource: MANUAL_SOURCE } : {}) };
   await prisma.platformSettings.upsert({ where: { id: "default" }, update: data, create: { id: "default", ...data } });
   clearSettingsCache();
   await audit(actor.id, "MARKET_RATES", "settings", "default", `10-year ${rate}% as of ${dateText}; indicative ${indicativeTarget(target).label}`);

@@ -2,7 +2,7 @@ import { canReadClosingFile } from "@/lib/acl";
 import { getApiUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { buildStatementPdf, statementLines, statementScope, statementSide } from "@/lib/settlement";
-import { namesOnTitle } from "@/lib/vesting";
+import { CUSTODIAN_FUNDS, fundingParty, namesOnTitle } from "@/lib/vesting";
 
 export const runtime = "nodejs";
 
@@ -25,7 +25,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   const share = mine ? { amount: Number(mine.amount), premiumCents: mine.premiumCents, status: mine.status, fundedAt: mine.fundedAt } : null;
   const brokerCents = closing.brokerFees.reduce((sum, fee) => sum + fee.amountCents, 0);
   const seller = closing.listing.seller.companyName || closing.listing.seller.name;
-  const names = await namesOnTitle(closing, inquiry?.buyerId ?? null, closing.funders);
+  const [names, funding] = await Promise.all([namesOnTitle(closing, inquiry?.buyerId ?? null, closing.funders), fundingParty(closing)]);
   const buyer = closing.deskBidId ? "UPB Capital desk" : funderIds.length > 1 ? "A buying group" : names.buyer || "Buyer";
   const record = { ...closing, salePrice: Number(closing.salePrice) };
   // The loans the closing covers now, and any the desk took out before settlement.
@@ -34,7 +34,14 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     title: closing.listing.title,
     parties: `Seller ${seller}  -  Buyer ${buyer}  -  ${loans.length} loan${loans.length === 1 ? "" : "s"}`,
     closing: record,
-    sections: statementLines(record, side, side === "desk" ? brokerCents : 0, share, kickouts),
+    sections: [
+      ...statementLines(record, side, side === "desk" ? brokerCents : 0, share, kickouts),
+      // An IRA buyer's money comes from its custodian, so the buyer's and the desk's statements name them with what
+      // they wire. The seller's statement carries only the seller's own figures.
+      ...(funding && side !== "seller"
+        ? [{ heading: "Funding party", lines: [{ label: `Due from ${funding.custodian}, IRA custodian`, cents: closing.buyerTotalCents, detail: CUSTODIAN_FUNDS }] }]
+        : []),
+    ],
   });
   return new Response(Buffer.from(pdf), {
     headers: {

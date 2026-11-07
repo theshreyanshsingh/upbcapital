@@ -1,7 +1,7 @@
 import { NoteWizard } from "@/components/note-wizard";
 import { PageIntro } from "@/components/page-intro";
 import { requireRole } from "@/lib/auth";
-import { bpsToPercent } from "@/lib/money";
+import { feeTerms, rateText } from "@/lib/fee-schedule";
 import { prisma } from "@/lib/prisma";
 import { getSettings } from "@/lib/settings";
 
@@ -23,12 +23,13 @@ export default async function NewNotePage({
       <PageIntro
         eyebrow="New note"
         title="File a single loan."
-        lede={`At today's schedule the desk keeps ${bpsToPercent(settings.sellerCommissionBps).toFixed(2)}% of the accepted price. The price step shows your estimated net before you send it.`}
+        lede={`At today's schedule the desk keeps ${rateText(feeTerms(null, settings), "commission")} of the accepted price. The price step shows your estimated net before you send it.`}
       />
       <NoteWizard
         mode="create"
         premiumBps={settings.buyerPremiumBps}
         commissionBps={settings.sellerCommissionBps}
+        fees={feeTerms(null, settings)}
         leadId={owned?.id}
         initial={owned ? {
           city: owned.city,

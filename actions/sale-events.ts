@@ -3,11 +3,19 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireDesk } from "@/lib/staff";
-import { cancelEvent, createEvent, editEvent, enterEvent, leaveEvent } from "@/lib/sale-events";
+import { CALENDAR_KEYS, cancelEvent, createEvent, editEvent, enterEvent, leaveEvent } from "@/lib/sale-events";
 
 // Every action here is the desk's. Each one checks the role itself, since a server action is a public endpoint.
 
 const field = (formData: FormData, key: string) => String(formData.get(key) || "");
+
+// The process calendar's four optional dates and the letter's notes, as the event forms send them.
+function calendarFields(formData: FormData) {
+  return {
+    ...Object.fromEntries(CALENDAR_KEYS.map((key) => [key, field(formData, key)])),
+    processNotes: field(formData, "processNotes"),
+  };
+}
 
 function to(path: string, key: "notice" | "error", text: string): never {
   redirect(`${path}?${key}=${encodeURIComponent(text)}`);
@@ -36,6 +44,7 @@ export async function createSaleEvent(formData: FormData) {
     summary: field(formData, "summary"),
     indicationsAt: field(formData, "indicationsAt"),
     bestFinalAt: field(formData, "bestFinalAt"),
+    ...calendarFields(formData),
     actorId: user.id,
   });
   if (result.error !== null) to("/admin/events", "error", result.error);
@@ -52,6 +61,7 @@ export async function editSaleEvent(formData: FormData) {
     summary: field(formData, "summary"),
     indicationsAt: field(formData, "indicationsAt"),
     bestFinalAt: field(formData, "bestFinalAt"),
+    ...calendarFields(formData),
     actorId: user.id,
   });
   if (result.error !== null) to(`/admin/events/${eventId}`, "error", result.error);

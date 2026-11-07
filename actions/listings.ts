@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import type { DocType } from "@prisma/client";
+import { readInBackground } from "@/lib/ai-reading";
 import { requireUser } from "@/lib/auth";
 import { settleByEdit } from "@/lib/discrepancies";
 import { flagDuplicates } from "@/lib/duplicates";
@@ -59,6 +60,8 @@ async function saveDocuments(listingId: string, formData: FormData) {
       },
     });
   }
+  // The desk's reader reads the new files in the background, after the response has gone back.
+  readInBackground(listingId);
   return skipped;
 }
 

@@ -4,14 +4,18 @@ import { redirect } from "next/navigation";
 import { requireUser } from "@/lib/auth";
 import { deskWrites } from "@/lib/staff";
 import { prisma } from "@/lib/prisma";
-import { notifyThread } from "@/lib/threads";
+import { notifyThread, threadWall } from "@/lib/threads";
 import { putBytes } from "@/lib/storage";
 import { uploadProblem } from "@/lib/uploads";
 import crypto from "crypto";
 
 async function canPost(userId: string, role: string, threadId: string, deskRole?: string | null) {
-  // A read-only desk account reads every thread and posts in none.
-  if (role === "ADMIN") return deskWrites({ role, deskRole });
+  // A read-only desk account reads every thread and posts in none, and no desk role posts in a thread behind its wall.
+  if (role === "ADMIN") {
+    if (!deskWrites({ role, deskRole })) return false;
+    const thread = await prisma.deskThread.findUnique({ where: { id: threadId }, select: { id: true, inquiryId: true } });
+    return thread ? !(await threadWall({ role, deskRole }, thread)) : false;
+  }
   const seat = await prisma.threadMember.findUnique({ where: { threadId_userId: { threadId, userId } } });
   return Boolean(seat);
 }

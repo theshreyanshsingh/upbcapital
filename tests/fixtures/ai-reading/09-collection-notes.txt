@@ -1,0 +1,11 @@
+COLLECTION NOTES · LOAN 55-2093
+FICTIONAL SAMPLE FOR TESTING ONLY
+10/02/2026  Called borrower, no answer. Left message about the September payment.
+10/09/2026  Borrower called back. Says the payment will post by 10/20.
+10/21/2026  Payment of $1,240.00 received.
+
+Borrower name: Teresa Gomez
+Last paid date: October 21, 2026
+Payoff quote requested by borrower: $98,412.33 good through 11/15/2026
+Principal balance per servicing system: $96,500.00
+Rate: 9.5% (second lien, adjustable after 2028)

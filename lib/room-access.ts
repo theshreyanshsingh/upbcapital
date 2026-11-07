@@ -24,6 +24,7 @@ export const ENTITY_LABELS: Record<string, string> = {
   TRUST: "Trust",
   FUND: "Fund",
   OTHER: "Other entity",
+  IRA: "Self-directed IRA",
 };
 
 function listingLink(listingId: string) {

@@ -1,8 +1,8 @@
 import type { ClosingStepKey } from "@prisma/client";
 import { audit } from "@/lib/audit";
-import { CLOSING_STEPS, canCompleteStep, closingCovers, closingIsWhole, closingLoans, closingTotals, stepLabel } from "@/lib/closing";
+import { CLOSING_STEPS, canCompleteStep, closingCovers, closingIsWhole, closingLoans, stepLabel } from "@/lib/closing";
 import { STEP_OWNER, closingSchedule, depositCents, depositTerms, effectiveDue, settlementWeekdays, stepClock, targetDays } from "@/lib/closing-clock";
-import { deskFeeBps, listingFeeBps } from "@/lib/desk-fees";
+import { feesFor } from "@/lib/fee-schedule";
 import { notify, notifyDesk } from "@/lib/email";
 import { getEscrowProvider } from "@/lib/escrow";
 import { money, prettyDate } from "@/lib/format";
@@ -15,7 +15,7 @@ import { getSettings } from "@/lib/settings";
 import { countWord, recordStrike, type CancelFault } from "@/lib/strikes";
 import { postBrokerFees } from "@/lib/broker-pay";
 import { ensureClosingThread } from "@/lib/threads";
-import { vestingNames } from "@/lib/vesting";
+import { bidVesting } from "@/lib/vesting";
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -94,13 +94,12 @@ export async function openClosing(input: {
   }
   const [settings, listingFees] = await Promise.all([
     getSettings(),
-    prisma.listing.findUnique({ where: { id: input.listingId }, select: { feeBuyerPremiumBps: true, feeSellerCommissionBps: true, deskOwnerId: true } }),
+    prisma.listing.findUnique({ where: { id: input.listingId }, select: { feeBuyerPremiumBps: true, feeSellerCommissionBps: true, feeSchedule: true, deskOwnerId: true } }),
   ]);
-  // The fees fixed when the desk approved the listing. The desk buying for its own book pays no premium, and the
-  // seller's commission is still the one the listing went live with.
-  const listed = listingFeeBps(listingFees, settings);
-  const bps = input.deskBidId ? deskFeeBps(settings.chargeDeskFees, listed.commissionBps) : listed;
-  const fees = closingTotals(input.salePrice, bps.premiumBps, bps.commissionBps);
+  // The fees fixed when the desk approved the listing, graded on this price when it went live with a schedule. The
+  // desk buying for its own book pays no premium, and the seller's commission is still the one the listing went
+  // live with.
+  const fees = feesFor(listingFees, settings, input.salePrice, { deskPurchase: Boolean(input.deskBidId) });
   const provider = getEscrowProvider();
   const preview = await provider.open({
     closingId: input.inquiryId || input.deskBidId || "desk",
@@ -117,8 +116,10 @@ export async function openClosing(input: {
   const depositDue = !input.deskBidId && deposit.bps > 0 ? new Date(Date.now() + deposit.days * 24 * 60 * 60 * 1000) : null;
   if (depositDue) schedule.due.BUYER_DEPOSIT = depositDue;
   const diligenceEndsAt = diligenceEnd(settings.diligenceDays, Boolean(input.deskBidId));
-  const bid = input.inquiryId ? await prisma.inquiry.findUnique({ where: { id: input.inquiryId }, select: { buyerId: true } }) : null;
-  const buyerEntity = bid ? ((await vestingNames([bid.buyerId])).get(bid.buyerId) ?? null) : null;
+  // The name on title is fixed now: the buying entity chosen on the bid (an IRA's account title), or the main file.
+  const bid = input.inquiryId ? await prisma.inquiry.findUnique({ where: { id: input.inquiryId }, select: { buyerId: true, buyerEntityId: true } }) : null;
+  const vesting = bid ? await bidVesting(bid) : null;
+  const buyerEntity = vesting?.name ?? null;
   const created = await prisma.closing.create({
     data: {
       listingId: input.listingId,
@@ -135,6 +136,7 @@ export async function openClosing(input: {
       providerRef: preview.providerRef,
       wireInstructions: preview.instructions,
       ...(buyerEntity ? { buyerEntity } : {}),
+      ...(vesting?.entityId ? { buyerEntityId: vesting.entityId } : {}),
       // The deal owner carries over, so the seller keeps one named contact from listing to close.
       ...(listingFees?.deskOwnerId ? { deskOwnerId: listingFees.deskOwnerId } : {}),
       targetCloseAt: schedule.targetCloseAt,

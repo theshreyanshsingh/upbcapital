@@ -4,10 +4,12 @@ import { canSubmitBid, sealedFromSeller } from "@/lib/auction";
 import { audit } from "@/lib/audit";
 import { awardOffer } from "@/lib/awards";
 import { bidderAlias } from "@/lib/bidder-alias";
+import { chosenEntity } from "@/lib/buyer-entities";
 import { buyNowOffer, samePrice } from "@/lib/buy-now";
 import { unset } from "@/lib/db-filters";
 import { ACKNOWLEDGE_FIRST, acknowledgementMissing, eligibilityFor, eligibilityLog, type Eligibility } from "@/lib/eligibility";
 import { notify, notifyDesk } from "@/lib/email";
+import { allInFor, feeTerms } from "@/lib/fee-schedule";
 import { money } from "@/lib/format";
 import { loanPriceProblem, type LoanPrices } from "@/lib/loan-prices";
 import { launchBlock } from "@/lib/launch-rules";
@@ -17,7 +19,6 @@ import { getSettings, isPro } from "@/lib/settings";
 import { strikeStanding } from "@/lib/strikes";
 import { ensureInquiryThread } from "@/lib/threads";
 import {
-  allInOf,
   bidLimit,
   bidTarget,
   canSubmitOffer,
@@ -84,7 +85,7 @@ export async function acknowledgeRoad(user: Buyer, listingId: string) {
 
 export type OfferCheck =
   | { error: string; verification: boolean }
-  | { error: null; expiresAt: Date | null; eligibility: Eligibility; acknowledgedAt: Date | null; headroomAfter: number | null };
+  | { error: null; expiresAt: Date | null; eligibility: Eligibility; acknowledgedAt: Date | null; headroomAfter: number | null; buyerEntityId: string | null };
 
 // ---------------------------------------------------------------------------------------------------------------
 // The bid limit. A buyer's open bids, all-in, may not together run past the funds the desk verified.
@@ -97,7 +98,8 @@ const HELD = ["OPEN", "REVIEWED", "ACCEPTED"] as const;
 // Group seats are out of scope. A group's one bid sits on its lead's account at the whole group's price, though
 // each seat funds only its share, so it isn't held against the lead's ceiling; and a seat is a pledge made on the
 // group page, not a bid of the buyer's own. Holding seats to the ceiling belongs with the seat flow.
-// premiumBps is the settings' premium, for a listing approved before its own fees were kept.
+// premiumBps is the settings' premium, for a listing approved before its own fees were kept. Such a listing takes
+// the desk's graded schedule when one is set, as its closing would.
 export async function fundsExposure(userId: string, premiumBps: number, now = new Date()): Promise<Exposure[]> {
   const bids = await prisma.inquiry.findMany({
     where: { buyerId: userId, type: "OFFER", status: { in: [...HELD] } },
@@ -105,13 +107,15 @@ export async function fundsExposure(userId: string, premiumBps: number, now = ne
   });
   if (!bids.length) return [];
   const ids = bids.map((bid) => bid.id);
-  const [groups, closings, listings] = await Promise.all([
+  const [groups, closings, listings, settings] = await Promise.all([
     prisma.groupBuy.findMany({ where: { inquiryId: { in: ids } }, select: { inquiryId: true } }),
     prisma.closing.findMany({ where: { inquiryId: { in: ids } }, select: { id: true, inquiryId: true, status: true, buyerTotalCents: true } }),
-    prisma.listing.findMany({ where: { id: { in: [...new Set(bids.map((bid) => bid.listingId))] } }, select: { id: true, feeBuyerPremiumBps: true } }),
+    prisma.listing.findMany({ where: { id: { in: [...new Set(bids.map((bid) => bid.listingId))] } }, select: { id: true, feeBuyerPremiumBps: true, feeSellerCommissionBps: true, feeSchedule: true } }),
+    getSettings(),
   ]);
   // Each bid at the premium its listing went live with, the one its closing would charge.
-  const premiumOf = new Map(listings.map((listing) => [listing.id, listing.feeBuyerPremiumBps ?? premiumBps]));
+  const day = { ...settings, buyerPremiumBps: premiumBps };
+  const termsOf = new Map(listings.map((listing) => [listing.id, feeTerms(listing, day)]));
   const grouped = new Set(groups.map((group) => group.inquiryId));
   const closingOf = new Map(closings.map((closing) => [closing.inquiryId, closing]));
   const held: Exposure[] = [];
@@ -125,7 +129,7 @@ export async function fundsExposure(userId: string, premiumBps: number, now = ne
     // An accepted bid with no closing is waiting on the seller or the desk, so it still holds its price.
     if (bid.status !== "ACCEPTED" && bidExpired(bid.expiresAt, now)) continue;
     const price = buyerPrice(bid.amount, bid.messages, userId);
-    if (price && price > 0) held.push({ key: bidTarget(bid.listingId, bid.noteId), allIn: allInOf(price, premiumOf.get(bid.listingId) ?? premiumBps) });
+    if (price && price > 0) held.push({ key: bidTarget(bid.listingId, bid.noteId), allIn: allInFor(termsOf.get(bid.listingId) ?? feeTerms(null, day), price) });
   }
   return held;
 }
@@ -155,11 +159,10 @@ export async function fundsLimitBlock(input: { userId: string; listingId: string
   if (!credential) return { error: null, headroomAfter: null } as const;
   const [settings, listing] = await Promise.all([
     getSettings(),
-    prisma.listing.findUnique({ where: { id: input.listingId }, select: { feeBuyerPremiumBps: true } }),
+    prisma.listing.findUnique({ where: { id: input.listingId }, select: { feeBuyerPremiumBps: true, feeSellerCommissionBps: true, feeSchedule: true } }),
   ]);
   const byKey = exposureByKey(await fundsExposure(input.userId, settings.buyerPremiumBps, now));
-  const premiumBps = listing?.feeBuyerPremiumBps ?? settings.buyerPremiumBps;
-  const limit = bidLimit({ credential, byKey, key: bidTarget(input.listingId, input.noteId), allIn: allInOf(input.amount, premiumBps), now });
+  const limit = bidLimit({ credential, byKey, key: bidTarget(input.listingId, input.noteId), allIn: allInFor(feeTerms(listing, settings), input.amount), now });
   if (!limit.ok) return { error: limit.message, verification: limit.reason === "expired" } as const;
   return { error: null, headroomAfter: limit.headroomAfter } as const;
 }
@@ -175,6 +178,8 @@ export async function checkOffer(input: {
   goodUntil: string;
   loanPrices?: LoanPrices | null;
   allowPartial?: boolean;
+  // The buying entity the bid is for, from the buyer's approved ones. Blank or missing means the main file.
+  buyerEntityId?: string | null;
   now?: Date;
 }): Promise<OfferCheck> {
   const { user, listing, noteId } = input;
@@ -184,6 +189,8 @@ export async function checkOffer(input: {
   const profile = await prisma.buyerProfile.findUnique({ where: { userId: user.id } });
   const gate = canSubmitOffer({ role: user.role, accountStatus: user.accountStatus, verificationStatus: profile?.status ?? null });
   if (!gate.ok) return { error: "The desk has to approve your buyer file before you can offer.", verification: true };
+  const entity = await chosenEntity(user.id, input.buyerEntityId);
+  if (entity.error !== null) return { error: entity.error, verification: false };
   // Strikes pause bids only. Information and data room requests still go through.
   const strikes = await strikeStanding(user.id);
   if (strikes.paused) return { error: strikes.paused, verification: true };
@@ -236,7 +243,7 @@ export async function checkOffer(input: {
   // Last, since it needs the price: the bid's all-in with the buyer's other open bids must fit the verified funds.
   const limit = await fundsLimitBlock({ userId: user.id, listingId: listing.id, noteId: noteId || null, amount: input.amount, now });
   if (limit.error !== null) return { error: limit.error, verification: limit.verification };
-  return { error: null, expiresAt: goodUntil.expiresAt, eligibility, acknowledgedAt, headroomAfter: limit.headroomAfter };
+  return { error: null, expiresAt: goodUntil.expiresAt, eligibility, acknowledgedAt, headroomAfter: limit.headroomAfter, buyerEntityId: entity.entityId };
 }
 
 // What the buyer was shown on this bid goes into the log beside it. Nothing is written when no notice applied.
@@ -258,6 +265,8 @@ type InquiryInput = {
   // A whole-pool bid's price for each loan, already checked against the bid, and whether part may be taken.
   loanPrices?: LoanPrices | null;
   allowPartial?: boolean;
+  // The approved buying entity checkOffer passed. Missing means the main file.
+  buyerEntityId?: string | null;
 };
 
 // The row and the opening bid message. Callers that claim something first write this, link it, then announce it.
@@ -274,6 +283,7 @@ export async function writeInquiry(input: InquiryInput) {
       ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
       ...(offer && input.buyNow ? { buyNow: true } : {}),
       ...(offer && !input.noteId && input.loanPrices ? { loanPrices: input.loanPrices, allowPartial: Boolean(input.allowPartial) } : {}),
+      ...(offer && input.buyerEntityId ? { buyerEntityId: input.buyerEntityId } : {}),
     },
   });
   if (offer && input.amount != null) {
@@ -325,7 +335,7 @@ export type BuyNowResult =
 // at once, and the first buyer whose award claims the listing wins. A buyer who lost the race, or whose price the
 // seller changed in that instant, has their bid closed and owes nothing. Anything else that stops the award, such
 // as a screening hold, leaves the bid open at the seller's price for the desk to clear.
-export async function placeBuyNow(input: { user: Buyer; listingId: string; price: number; now?: Date }): Promise<BuyNowResult> {
+export async function placeBuyNow(input: { user: Buyer; listingId: string; price: number; buyerEntityId?: string | null; now?: Date }): Promise<BuyNowResult> {
   const { user } = input;
   const now = input.now ?? new Date();
   const listing = await prisma.listing.findUnique({ where: { id: input.listingId }, include: { seller: true } });
@@ -337,11 +347,11 @@ export async function placeBuyNow(input: { user: Buyer; listingId: string; price
   if (!samePrice(input.price, offer.price)) return { error: "The buy-it-now price changed. Check the new figure and confirm again.", verification: false };
   // The price is veiled on the free desk like the ask, so taking it is a Pro privilege like seeing it.
   if (!isPro(user)) return { error: "Buy it now is a Pro privilege.", verification: false };
-  const check = await checkOffer({ user, listing, noteId: "", amount: offer.price, goodUntil: "", now });
+  const check = await checkOffer({ user, listing, noteId: "", amount: offer.price, goodUntil: "", buyerEntityId: input.buyerEntityId, now });
   if (check.error !== null) return check;
   const mine = await prisma.inquiry.findFirst({ where: { listingId: listing.id, buyerId: user.id, type: "OFFER", buyNow: true, status: { in: [...LIVE, "ACCEPTED"] } }, select: { id: true } });
   if (mine) return { error: "You already confirmed buy it now on this listing.", verification: false };
-  const bid = { user, listing, type: "OFFER", noteId: "", amount: offer.price, message: "Confirmed at the seller's buy-it-now price.", expiresAt: null, buyNow: true };
+  const bid = { user, listing, type: "OFFER", noteId: "", amount: offer.price, message: "Confirmed at the seller's buy-it-now price.", expiresAt: null, buyNow: true, buyerEntityId: check.buyerEntityId };
   const inquiry = await writeInquiry(bid);
   await announceInquiry(inquiry, bid);
   await logEligibility(user.id, inquiry.id, check);

@@ -7,6 +7,7 @@ import { requireRole } from "@/lib/auth";
 import { brokerRoleLabel } from "@/lib/broker-fees";
 import { money, prettyDate, q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
+import { deskCan } from "@/lib/staff";
 
 export const metadata = { title: "Broker payouts" };
 
@@ -15,7 +16,8 @@ export default async function PayoutsPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  await requireRole(["ADMIN"]);
+  // Every desk role reads the queue. Marking a fee paid is closings work, and the action checks the same.
+  const closes = deskCan(await requireRole(["ADMIN"]), "closings");
   const params = await searchParams;
   const fees = await prisma.brokerFee.findMany({
     include: { broker: true, closing: { include: { listing: true } } },
@@ -48,7 +50,7 @@ export default async function PayoutsPage({
             </div>
             <div className="flex items-center justify-between gap-4 sm:justify-end">
               <p className="font-semibold tracking-tight text-3xl text-foreground">{money(fee.amountCents / 100)}</p>
-              {fee.status === "OWED" && (
+              {fee.status === "OWED" && closes && (
                 <form action={markBrokerFeePaid}>
                   <input type="hidden" name="feeId" value={fee.id} />
                   <SubmitButton className="h-11 text-[13px] font-medium">Mark paid</SubmitButton>

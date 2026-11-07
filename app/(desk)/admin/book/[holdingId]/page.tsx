@@ -1,14 +1,15 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { addLossTask, completeLossTask, handoffReo, listSlice, logOutreach, quoteSlice, relistDeskNote, saveLossStatus, saveMilestone, savePlan } from "@/actions/assets";
-import { ensureUnitCosts } from "@/actions/rehab";
 import { RehabPanel } from "@/components/rehab-panel";
+import { ensureUnitCosts } from "@/lib/unit-costs";
 import { Notice } from "@/components/notice";
 import { SubmitButton } from "@/components/submit-button";
 import { requireRole } from "@/lib/auth";
 import { money, prettyDate, q } from "@/lib/format";
 import { participationsOpen, PARTICIPATIONS_PAUSED } from "@/lib/participation";
 import { prisma } from "@/lib/prisma";
+import { deskCan } from "@/lib/staff";
 
 export const metadata = { title: "Loss file" };
 
@@ -21,7 +22,8 @@ export default async function LossFilePage({
   params: Promise<{ holdingId: string }>;
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  await requireRole(["ADMIN"]);
+  // Every desk role reads the file. Only a role that works the desk book changes it, and the actions check the same.
+  const books = deskCan(await requireRole(["ADMIN"]), "deskBook");
   await ensureUnitCosts();
   const { holdingId } = await params;
   const query = await searchParams;
@@ -64,17 +66,22 @@ export default async function LossFilePage({
       <a href={`/api/holdings/${holding.id}/lender-pack`} className="mt-3 inline-block text-[13px] font-medium text-link">
         Download the lender pack
       </a>
+      {!books && <p className="mt-3 text-sm text-muted-foreground">Your desk role reads this file. Changes are for the desk book.</p>}
 
       <section className="glass mt-8 p-6">
         <p className="eyebrow">File status</p>
-        <form action={saveLossStatus} className="mt-4 grid gap-3 sm:grid-cols-[220px_minmax(0,1fr)_auto]">
-          <input type="hidden" name="holdingId" value={holding.id} />
-          <select name="status" defaultValue={file?.status || "OUTREACH"} className="desk-input" aria-label="Loss file status">
-            {STATUSES.map((status) => <option key={status} value={status}>{status.toLowerCase()}</option>)}
-          </select>
-          <input name="summary" defaultValue={file?.summary || ""} className="desk-input" aria-label="File summary" placeholder="Where the file stands" />
-          <SubmitButton className="h-11 text-[13px] font-medium">Save</SubmitButton>
-        </form>
+        {books ? (
+          <form action={saveLossStatus} className="mt-4 grid gap-3 sm:grid-cols-[220px_minmax(0,1fr)_auto]">
+            <input type="hidden" name="holdingId" value={holding.id} />
+            <select name="status" defaultValue={file?.status || "OUTREACH"} className="desk-input" aria-label="Loss file status">
+              {STATUSES.map((status) => <option key={status} value={status}>{status.toLowerCase()}</option>)}
+            </select>
+            <input name="summary" defaultValue={file?.summary || ""} className="desk-input" aria-label="File summary" placeholder="Where the file stands" />
+            <SubmitButton className="h-11 text-[13px] font-medium">Save</SubmitButton>
+          </form>
+        ) : (
+          <p className="mt-4 text-sm text-foreground">{(file?.status || "OUTREACH").toLowerCase()}{file?.summary ? ` · ${file.summary}` : ""}</p>
+        )}
       </section>
 
       <section className="mt-8 grid gap-6 lg:grid-cols-2">
@@ -89,7 +96,7 @@ export default async function LossFilePage({
               </li>
             ))}
           </ul>
-          <form action={logOutreach} className="mt-4 grid gap-3">
+          {books && <form action={logOutreach} className="mt-4 grid gap-3">
             <input type="hidden" name="holdingId" value={holding.id} />
             <div className="grid gap-3 sm:grid-cols-2">
               <input name="contactedAt" type="date" className="desk-input" aria-label="Outreach date" required />
@@ -102,7 +109,7 @@ export default async function LossFilePage({
             </div>
             <input name="note" className="desk-input" aria-label="Outreach note" placeholder="What was said" required />
             <SubmitButton className="h-11 text-[13px] font-medium">Log contact</SubmitButton>
-          </form>
+          </form>}
         </div>
         <div className="border border-border p-5 rounded-xl">
           <p className="eyebrow">Workout plans</p>
@@ -117,7 +124,7 @@ export default async function LossFilePage({
               </li>
             ))}
           </ul>
-          <form action={savePlan} className="mt-4 grid gap-3">
+          {books && <form action={savePlan} className="mt-4 grid gap-3">
             <input type="hidden" name="holdingId" value={holding.id} />
             <select name="kind" className="desk-input" aria-label="Plan kind">
               <option value="REINSTATEMENT">Reinstatement</option>
@@ -132,7 +139,7 @@ export default async function LossFilePage({
             <input name="startOn" type="date" className="desk-input" aria-label="Plan start" />
             <input name="note" className="desk-input" aria-label="Plan note" placeholder="Terms" />
             <SubmitButton className="h-11 text-[13px] font-medium">Save plan</SubmitButton>
-          </form>
+          </form>}
         </div>
       </section>
 
@@ -153,7 +160,7 @@ export default async function LossFilePage({
               </li>
             ))}
           </ul>
-          <form action={saveMilestone} className="mt-4 grid gap-3">
+          {books && <form action={saveMilestone} className="mt-4 grid gap-3">
             <input type="hidden" name="holdingId" value={holding.id} />
             <input name="label" className="desk-input" aria-label="Milestone" placeholder="Complaint, hearing, sale" required />
             <input name="attorney" className="desk-input" aria-label="Attorney" placeholder="Attorney" />
@@ -163,7 +170,7 @@ export default async function LossFilePage({
             </div>
             <input name="note" className="desk-input" aria-label="Milestone note" placeholder="Note" />
             <SubmitButton className="h-11 text-[13px] font-medium">Add milestone</SubmitButton>
-          </form>
+          </form>}
         </div>
         <div className="border border-border p-5 rounded-xl">
           <p className="eyebrow">Deadlines</p>
@@ -172,7 +179,7 @@ export default async function LossFilePage({
             {file?.tasks.map((task) => (
               <li key={task.id} className="flex items-center justify-between gap-3 text-sm">
                 <span className={task.doneAt ? "text-muted-foreground line-through" : "text-foreground"}>{task.title} · {prettyDate(task.dueOn)}</span>
-                {!task.doneAt && (
+                {!task.doneAt && books && (
                   <form action={completeLossTask}>
                     <input type="hidden" name="holdingId" value={holding.id} />
                     <input type="hidden" name="id" value={task.id} />
@@ -182,12 +189,12 @@ export default async function LossFilePage({
               </li>
             ))}
           </ul>
-          <form action={addLossTask} className="mt-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_160px_auto]">
+          {books && <form action={addLossTask} className="mt-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_160px_auto]">
             <input type="hidden" name="holdingId" value={holding.id} />
             <input name="title" className="desk-input" aria-label="Task" placeholder="Call counsel" required />
             <input name="dueOn" type="date" className="desk-input" aria-label="Due date" required />
             <SubmitButton className="h-11 text-[13px] font-medium">Add</SubmitButton>
-          </form>
+          </form>}
         </div>
       </section>
 
@@ -203,7 +210,8 @@ export default async function LossFilePage({
             {Number(file.property.monthlyRent) ? ` · rent ${money(Number(file.property.monthlyRent))}` : ""}
           </p>
         )}
-        <form action={handoffReo} className="mt-4 grid gap-3 sm:grid-cols-2">
+        {!books && !file?.property && <p className="mt-4 text-sm text-muted-foreground">No property opened yet.</p>}
+        {books && <form action={handoffReo} className="mt-4 grid gap-3 sm:grid-cols-2">
           <input type="hidden" name="holdingId" value={holding.id} />
           <label className="block sm:col-span-2"><span className="text-[13px] text-muted-foreground">Address</span><input name="address" defaultValue={file?.property?.address || ""} className="desk-input mt-2" aria-label="Property address" required /></label>
           <label className="block"><span className="text-[13px] text-muted-foreground">Rehab budget</span><input name="rehabBudget" defaultValue={file?.property ? Number(file.property.rehabBudget) : ""} className="desk-input mt-2" aria-label="Rehab budget" required /></label>
@@ -218,7 +226,7 @@ export default async function LossFilePage({
           <label className="block"><span className="text-[13px] text-muted-foreground">Monthly rent</span><input name="monthlyRent" defaultValue={file?.property ? Number(file.property.monthlyRent) : ""} className="desk-input mt-2" aria-label="Monthly rent" /></label>
           <label className="block sm:col-span-2"><span className="text-[13px] text-muted-foreground">Scope</span><input name="note" defaultValue={file?.property?.note || ""} className="desk-input mt-2" aria-label="Rehab scope" placeholder="Roof, kitchen, rental set" /></label>
           <SubmitButton className="h-11 text-[13px] font-medium">Open the property</SubmitButton>
-        </form>
+        </form>}
       </section>
 
       <RehabPanel
@@ -226,35 +234,36 @@ export default async function LossFilePage({
         basis={Number(holding.costBasis)}
         costs={await prisma.unitCost.findMany({ where: { region: "South Florida" }, orderBy: { trade: "asc" } })}
         estimate={holding.rehab}
+        readOnly={!books}
       />
 
       <section className="mt-8 grid gap-6 lg:grid-cols-2">
-        <form action={relistDeskNote} className="border border-border p-5 rounded-xl">
+        {books && <form action={relistDeskNote} className="border border-border p-5 rounded-xl">
           <p className="eyebrow">Relist the note</p>
           <p className="mt-2 text-sm text-muted-foreground">One price puts this note back on the book, with the same documents, the payment log, and the loan facts. It goes live as a desk listing.</p>
           <input type="hidden" name="holdingId" value={holding.id} />
           <input name="askingPrice" inputMode="decimal" className="desk-input mt-4" aria-label="Relist asking price" placeholder="Asking price" required />
           <SubmitButton className="mt-3 h-11 text-[13px] font-medium">Relist</SubmitButton>
-        </form>
+        </form>}
         <div className="border border-border p-5 rounded-xl">
           <p className="eyebrow">Participation</p>
           <p className="mt-2 text-sm text-muted-foreground">Sell a percent of the note, or the next few payments. The model splits the cash flows before anything is listed.</p>
           {!slicesOpen && <p className="mt-2 text-sm text-muted-foreground">{PARTICIPATIONS_PAUSED} Set UPB_PARTICIPATIONS=1 once counsel signs off.</p>}
-          <form action={quoteSlice} className="mt-4 grid gap-3 sm:grid-cols-2">
+          {books && <form action={quoteSlice} className="mt-4 grid gap-3 sm:grid-cols-2">
             <input type="hidden" name="holdingId" value={holding.id} />
             <input type="hidden" name="side" value="desk" />
             <input name="percent" className="desk-input" aria-label="Percent sold" placeholder="Percent" defaultValue="50" />
             <input name="paymentCount" className="desk-input" aria-label="Payments sold" placeholder="Or payment count" />
             <input name="price" inputMode="decimal" className="desk-input sm:col-span-2" aria-label="Slice price" placeholder="Price for the slice" required />
             <SubmitButton className="h-11 text-[13px] font-medium">Model the split</SubmitButton>
-          </form>
+          </form>}
           <ul className="mt-4 space-y-3">
             {holding.participations.map((slice) => (
               <li key={slice.id} className="flex flex-wrap items-center justify-between gap-3 text-sm">
                 <span className="text-foreground">
                   {slice.paymentCount ? `${slice.paymentCount} payments` : `${Number(slice.percent)}%`} · {money(Number(slice.price))} · {slice.status.toLowerCase()}
                 </span>
-                {slice.status === "DRAFT" && slicesOpen && (
+                {slice.status === "DRAFT" && slicesOpen && books && (
                   <form action={listSlice}>
                     <input type="hidden" name="id" value={slice.id} />
                     <SubmitButton variant="outline" className="h-9 text-[13px] font-medium">List it</SubmitButton>

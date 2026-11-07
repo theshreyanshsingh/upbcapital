@@ -12,7 +12,7 @@ import { prisma } from "@/lib/prisma";
 
 const DAY = 24 * 60 * 60 * 1000;
 export const REMIND_AFTER_DAYS = 7;
-// A request older than this gets no reminder, so the reminder marker below outlives every request it could match.
+// A request older than this gets no reminder, so an old reminder marker (below) outlives every request it could match.
 const REMIND_UNTIL_DAYS = 90;
 // How far the first run looks back when no earlier run is on record.
 const FIRST_LOOKBACK_DAYS = 30;
@@ -101,7 +101,7 @@ export async function destructionRemindersDue(now = new Date(), options: { listi
   const ndas = await prisma.ndaAcknowledgment.findMany({
     where: {
       destroyRequestedAt: { lte: new Date(now.getTime() - REMIND_AFTER_DAYS * DAY), gte: new Date(now.getTime() - REMIND_UNTIL_DAYS * DAY) },
-      ...unset("destroyedAt"),
+      AND: [unset("destroyedAt"), unset("destroyRemindedAt")],
       ...(options.listingIds ? { listingId: { in: options.listingIds } } : {}),
     },
     include: ndaInclude,
@@ -109,24 +109,22 @@ export async function destructionRemindersDue(now = new Date(), options: { listi
   return ndas.filter((nda) => !nda.user.deletedAt);
 }
 
-// NdaAcknowledgment has no reminder field, so the one reminder is claimed with a marker row keyed by the NDA. The key
-// is the row's id, so only the run that created it sends. It outlasts the reminder window.
+// Before destroyRemindedAt existed, the one reminder was claimed with a marker row keyed by the NDA. Those rows
+// outlast the reminder window, so a reminder sent under the old claim is still read as sent.
 export const reminderMarker = (ndaId: string) => `destroy-reminder:${ndaId}`;
 
+// Claimed on destroyRemindedAt, so two overlapping runs remind once. An NDA reminded under the old marker gets the
+// field filled in from it and nothing sent.
 export async function sendDestructionReminder(nda: DestructionNda, now = new Date()) {
-  try {
-    // The first run creates the row at 1; a later run only counts up, and sends nothing.
-    const marker = await prisma.rateWindow.upsert({
-      where: { key: reminderMarker(nda.id) },
-      create: { key: reminderMarker(nda.id), count: 1, expiresAt: new Date(now.getTime() + 400 * DAY) },
-      update: { count: { increment: 1 } },
-    });
-    if (marker.count !== 1) return false;
-  } catch (error) {
-    // Two runs inserting at once: the one that lost sends nothing.
-    if ((error as { code?: string }).code === "P2002") return false;
-    throw error;
+  const open = { id: nda.id, AND: [unset("destroyRemindedAt"), unset("destroyedAt")] };
+  const marker = await prisma.rateWindow.findUnique({ where: { key: reminderMarker(nda.id) }, select: { expiresAt: true } });
+  if (marker) {
+    // The marker was written 400 days before it expires, which dates the old reminder closely enough for the record.
+    await prisma.ndaAcknowledgment.updateMany({ where: open, data: { destroyRemindedAt: new Date(Math.min(now.getTime(), marker.expiresAt.getTime() - 400 * DAY)) } });
+    return false;
   }
+  const claim = await prisma.ndaAcknowledgment.updateMany({ where: open, data: { destroyRemindedAt: now } });
+  if (claim.count !== 1) return false;
   await sendAlert(nda.user.email, `Reminder: destroy the data room files · ${nda.listing.title}`, requestBody(nda.listing.title, true));
   await audit(null, "DATA_DESTRUCTION_REMINDED", "listing", nda.listingId, `Reminded bidder ${nda.userId} · nda ${nda.id}`);
   return true;
@@ -137,7 +135,7 @@ export async function sendDestructionReminder(nda: DestructionNda, now = new Dat
 export async function certifyDestruction(input: { ndaId: string; userId: string; ipAddress?: string }, now = new Date()) {
   const nda = await prisma.ndaAcknowledgment.findFirst({
     where: { id: input.ndaId, userId: input.userId },
-    include: { listing: { select: { title: true, seller: { select: { email: true } } } }, user: { select: { email: true } } },
+    include: { listing: { select: { title: true, seller: { select: { email: true } } } }, user: { select: { email: true, name: true, companyName: true } } },
   });
   if (!nda) return { error: "That request isn't on your account." } as const;
   if (!nda.destroyRequestedAt) return { error: "Nobody has asked you to destroy these files yet." } as const;
@@ -148,10 +146,46 @@ export async function certifyDestruction(input: { ndaId: string; userId: string;
   const title = nda.listing.title;
   const day = now.toISOString().slice(0, 10);
   const link = certificateLink(nda.id);
-  await notify(nda.user.email, `Destruction certificate · ${title}`, `You certified on ${day} that you destroyed the data room files for ${title}. The certificate, as a PDF: ${link}\n\nThe seller has a copy that names you by your bidder letter.`);
   const alias = await bidderAlias(nda.listingId, input.userId);
-  await notify(nda.listing.seller.email, `Destruction certificate · ${title}`, `${alias} certified on ${day} that they destroyed the data room files for ${title}. The certificate, as a PDF: ${link}`);
+  // Each copy is attached as well as linked, named as that reader's link would name the bidder.
+  const facts = { ndaId: nda.id, listingId: nda.listingId, listingTitle: title, ndaSignedAt: nda.acknowledgedAt, requestedAt: nda.destroyRequestedAt, destroyedAt: now };
+  const [own, sellers] = await Promise.all([
+    certificateFile({ ...facts, bidder: await bidderName(nda) }),
+    certificateFile({ ...facts, bidder: alias }),
+  ]);
+  await notify(
+    nda.user.email,
+    `Destruction certificate · ${title}`,
+    `You certified on ${day} that you destroyed the data room files for ${title}. The certificate is attached as a PDF, and stays at ${link}\n\nThe seller has a copy that names you by your bidder letter.`,
+    { attachments: own },
+  );
+  await notify(
+    nda.listing.seller.email,
+    `Destruction certificate · ${title}`,
+    `${alias} certified on ${day} that they destroyed the data room files for ${title}. The certificate is attached as a PDF, and stays at ${link}`,
+    { attachments: sellers },
+  );
   return { ok: true } as const;
+}
+
+// A certificate that can't be drawn still leaves the link, so the notice goes without the file.
+async function certificateFile(input: CertificateInput) {
+  try {
+    const pdf = await buildDestructionPdf(input);
+    return [{ filename: `destruction-certificate-${input.ndaId}.pdf`, content: Buffer.from(pdf), contentType: "application/pdf" }];
+  } catch (error) {
+    console.error(`[upb-destruction] certificate ${input.ndaId} was not attached:`, error instanceof Error ? error.message : error);
+    return [];
+  }
+}
+
+// The bidder by name, for themselves and the desk: the signer, for their entity when it has another name. The NDA's
+// signer name stays after an account is deleted, so the desk's copy still reads.
+async function bidderName(nda: { userId: string; signerName: string; user: { name: string; companyName: string } }) {
+  const profile = await prisma.buyerProfile.findUnique({ where: { userId: nda.userId }, select: { entityName: true } });
+  const entity = profile?.entityName || nda.user.companyName;
+  const signer = nda.signerName || nda.user.name;
+  return entity && entity !== signer ? `${signer} for ${entity}` : signer;
 }
 
 // What the buyer's inquiries page lists: open requests first, then the ones already certified.
@@ -245,15 +279,7 @@ export async function destructionCertificate(ndaId: string, viewer: { id: string
   if (!nda?.destroyedAt) return { status: 404 as const };
   const own = viewer.id === nda.userId;
   if (!own && !canManageRoom(viewer, nda.listing)) return { status: 403 as const };
-  let bidder: string;
-  if (own || viewer.role === "ADMIN") {
-    const profile = await prisma.buyerProfile.findUnique({ where: { userId: nda.userId }, select: { entityName: true } });
-    const entity = profile?.entityName || nda.user.companyName;
-    const signer = nda.signerName || nda.user.name;
-    bidder = entity && entity !== signer ? `${signer} for ${entity}` : signer;
-  } else {
-    bidder = await bidderAlias(nda.listingId, nda.userId);
-  }
+  const bidder = own || viewer.role === "ADMIN" ? await bidderName(nda) : await bidderAlias(nda.listingId, nda.userId);
   const pdf = await buildDestructionPdf({
     ndaId: nda.id,
     listingId: nda.listing.id,

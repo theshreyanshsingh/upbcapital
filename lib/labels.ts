@@ -60,6 +60,28 @@ export const DOC_TYPES = [
   { value: "OTHER", label: "Other", hint: "Allonge, modification, photos" },
 ] as const;
 
+// The kinds of buying entity a buyer file or an extra buying entity can be. The main file is never an IRA, since
+// an IRA needs a custodian and an account title the main file doesn't carry.
+export const INVESTOR_ENTITIES = [
+  { value: "INDIVIDUAL", label: "Individual" },
+  { value: "LLC", label: "Limited liability company" },
+  { value: "TRUST", label: "Trust" },
+  { value: "FUND", label: "Fund" },
+  { value: "OTHER", label: "Other entity" },
+  { value: "IRA", label: "Self-directed IRA" },
+] as const;
+
+export const MAIN_FILE_ENTITIES = INVESTOR_ENTITIES.filter((entity) => entity.value !== "IRA");
+
+export function entityLabel(value: string | null | undefined) {
+  return INVESTOR_ENTITIES.find((entity) => entity.value === value)?.label ?? (value || "");
+}
+
+export const IRA_TITLE_EXAMPLE = "Equity Trust Company Custodian FBO Jane Doe IRA #12345";
+// Counsel: the buyer confirms with their own custodian. UPB doesn't say what an IRA may hold.
+export const IRA_NOTE =
+  "The custodian signs the purchase papers and sends the deposit and balance wires from the IRA. Check with your custodian that the account may buy mortgage notes before you bid.";
+
 export const US_STATES = [
   "AL","AK","AZ","AR","CA","CO","CT","DC","DE","FL","GA","HI","IA","ID","IL","IN","KS","KY","LA","MA","MD","ME","MI","MN","MO","MS","MT","NC","ND","NE","NH","NJ","NM","NV","NY","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VA","VT","WA","WI","WV","WY",
 ] as const;

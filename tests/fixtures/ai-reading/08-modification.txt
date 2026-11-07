@@ -1,0 +1,11 @@
+LOAN MODIFICATION AGREEMENT
+FICTIONAL SAMPLE FOR TESTING ONLY
+Borrower(s): Kevin O'Neil and Sara O'Neil
+Original Principal Balance: $250,000.00
+Modified Interest Rate: 4.000%
+New Principal Balance: $241,318.07
+New Maturity Date: 05/01/2052
+New monthly principal and interest payment: $1,152.11
+Effective date: 06/01/2024
+
+The Borrower promises to pay the New Principal Balance, plus interest, to the order of the Lender.

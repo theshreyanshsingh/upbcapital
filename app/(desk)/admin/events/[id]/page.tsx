@@ -2,6 +2,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { addEventListing, cancelSaleEvent, editSaleEvent, removeEventListing } from "@/actions/sale-events";
 import { ConfirmSubmit } from "@/components/confirm-submit";
+import { EventCalendarFields } from "@/components/event-calendar-fields";
+import { EventCalendar, EventPaperLinks } from "@/components/event-papers";
 import { bidModeLabel } from "@/components/listing-timeline";
 import { Notice } from "@/components/notice";
 import { StatusPill } from "@/components/status-pill";
@@ -11,6 +13,7 @@ import { requireRole } from "@/lib/auth";
 import { q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 import { currentSaleEvent, EVENT_STATUS_LABEL, FINAL_MAX_DAYS, FINAL_MIN_DAYS, FINAL_USUAL_DAYS, inputValue, joinBlock, leaveBlock, roundText, when } from "@/lib/sale-events";
+import { deskCan } from "@/lib/staff";
 
 export const metadata = { title: "Sale event" };
 
@@ -23,7 +26,8 @@ export default async function AdminEventPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  await requireRole(["ADMIN"]);
+  // Every desk role reads the event. Running it is sales work, and the actions check the same.
+  const sells = deskCan(await requireRole(["ADMIN"]), "sales");
   const { id } = await params;
   const query = await searchParams;
   // A round whose date passed moves before the page shows it. A failure here leaves it for the daily job.
@@ -95,6 +99,14 @@ export default async function AdminEventPage({
             </div>
           </dl>
           <p className="mt-3 text-sm text-foreground">{roundText(event)}</p>
+          <div className="mt-4 max-w-2xl rounded-xl border border-border p-4">
+            <p className="text-[13px] font-medium text-foreground">Process calendar</p>
+            <div className="mt-2">
+              <EventCalendar event={event} />
+            </div>
+            {event.processNotes && <p className="mt-3 whitespace-pre-line text-sm leading-relaxed text-muted-foreground">{event.processNotes}</p>}
+            <EventPaperLinks eventId={event.id} className="mt-3" />
+          </div>
         </header>
 
         <section aria-labelledby="event-listings" className="mt-8">
@@ -118,7 +130,7 @@ export default async function AdminEventPage({
                       {holder(listing.seller)} · {listing.notes.length} loan{listing.notes.length === 1 ? "" : "s"} · {indications} indication{indications === 1 ? "" : "s"} · {finals} best-and-final bid{finals === 1 ? "" : "s"} open
                     </p>
                   </div>
-                  {open && (block ? (
+                  {open && sells && (block ? (
                     <p className="max-w-56 text-xs text-muted-foreground md:text-right">{block}</p>
                   ) : (
                     <form action={removeEventListing}>
@@ -144,7 +156,8 @@ export default async function AdminEventPage({
       </div>
 
       <aside className="space-y-6">
-        {takingNow ? (
+        {!sells && <p className="text-sm text-muted-foreground">Sale events are run by the sales side of the desk.</p>}
+        {sells && (takingNow ? (
           <form action={addEventListing} className="space-y-4 border border-border p-5 rounded-xl">
             <h2 className="eyebrow">Add a listing</h2>
             {eligible.length === 0 ? (
@@ -180,9 +193,9 @@ export default async function AdminEventPage({
           </form>
         ) : (
           open && <p className="border border-border p-5 text-sm text-muted-foreground rounded-xl">Indications are due, so no more listings join this event.</p>
-        )}
+        ))}
 
-        {open && (
+        {open && sells && (
           <form action={editSaleEvent} className="space-y-4 border border-border p-5 rounded-xl">
             <h2 className="eyebrow">Details</h2>
             <input type="hidden" name="eventId" value={event.id} />
@@ -217,11 +230,12 @@ export default async function AdminEventPage({
                 </p>
               </>
             )}
+            <EventCalendarFields values={event} />
             <SubmitButton variant="outline" className="h-10 w-full text-[13px] font-medium" pendingLabel="Saving…">Save the event</SubmitButton>
           </form>
         )}
 
-        {open && (
+        {open && sells && (
           <form action={cancelSaleEvent} className="space-y-3 border border-border p-5 rounded-xl">
             <h2 className="eyebrow">Cancel</h2>
             <input type="hidden" name="eventId" value={event.id} />

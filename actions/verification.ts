@@ -6,6 +6,7 @@ import type { InvestorEntity, VerificationStatus } from "@prisma/client";
 import { audit } from "@/lib/audit";
 import { proofExpiry } from "@/lib/bid-sheet";
 import { ROAD_THRESHOLD, readEligibility, reoStrategyLabel } from "@/lib/eligibility";
+import { MAIN_FILE_ENTITIES } from "@/lib/labels";
 import { requireUser } from "@/lib/auth";
 import { requireDesk } from "@/lib/staff";
 import { notify, notifyDesk } from "@/lib/email";
@@ -16,7 +17,8 @@ import { uploadProblem } from "@/lib/uploads";
 import { ACCREDITATION_TEXT, VENDOR_LOCKED, vendorBlocked } from "@/lib/verification";
 import { startKyc } from "@/lib/vendors";
 
-const ENTITIES = new Set(["INDIVIDUAL", "LLC", "TRUST", "FUND", "OTHER"]);
+// The main file is never an IRA. An IRA is added as another buying entity, with its custodian and account title.
+const ENTITIES = new Set<string>(MAIN_FILE_ENTITIES.map((entity) => entity.value));
 
 export async function submitVerification(formData: FormData) {
   const user = await requireUser();

@@ -2,6 +2,7 @@ import { canReadThreadFile } from "@/lib/acl";
 import { getApiUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { getBytes } from "@/lib/storage";
+import { threadWall } from "@/lib/threads";
 import { attachmentName } from "@/lib/uploads";
 
 export const runtime = "nodejs";
@@ -20,7 +21,8 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     userId: user.id,
     memberIds: file.post.thread.members.map((member) => member.userId),
   });
-  if (!allowed) return new Response("Closed.", { status: 403 });
+  // A file on an offer thread behind the desk's wall stays closed with the thread.
+  if (!allowed || (await threadWall(user, file.post.thread))) return new Response("Closed.", { status: 403 });
   const bytes = await getBytes(file.storageKey);
   return new Response(new Uint8Array(bytes), {
     headers: {

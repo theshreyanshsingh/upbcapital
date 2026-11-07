@@ -1,8 +1,8 @@
-import { answerSaleApproval, saveBuyNow, setReserve } from "@/actions/sale-approval";
+import { answerSaleApproval, pickBid, saveBuyNow, setReserve } from "@/actions/sale-approval";
 import { withdrawListing } from "@/actions/seller-controls";
 import { ConfirmRows, ConfirmSubmit } from "@/components/confirm-submit";
 import { SubmitButton } from "@/components/submit-button";
-import { sealedFromSeller } from "@/lib/auction";
+import { deadlinePassed, sealedFromSeller } from "@/lib/auction";
 import { askedPartPrice, askedPriceStands, awaitingSeller, partAsked, rivalBids } from "@/lib/awards";
 import { bidderNamer } from "@/lib/bidder-alias";
 import { BUY_NOW_STATUSES, buyNowClearBlock, buyNowConsent, buyNowSellerNext, buyNowSellerSummary, buyNowSetBlock } from "@/lib/buy-now";
@@ -11,9 +11,8 @@ import { diligenceDays } from "@/lib/closing-service";
 import { launchPending } from "@/lib/launch-rules";
 import { listingWithdrawBlock } from "@/lib/listing-status";
 import { money, prettyDate } from "@/lib/format";
-import { bpsToPercent } from "@/lib/money";
 import { bidExpired, buyerPrice, type OfferMoney } from "@/lib/offers";
-import { listingFeeBps } from "@/lib/desk-fees";
+import { feeTerms, feesFor, rateText } from "@/lib/fee-schedule";
 import { getSettings } from "@/lib/settings";
 import { prisma } from "@/lib/prisma";
 import { standingLoanPrices } from "@/lib/loan-prices";
@@ -37,6 +36,9 @@ type Offer = {
   messages: OfferMoney[];
   // A pool bid's price for each loan, which a question about part of the pool is priced from.
   loanPrices?: unknown;
+  // The seller's own pick of this bid, and the price they agreed to with it.
+  sellerRequestedAt?: Date | null;
+  sellerApprovedAmount?: number | null;
 };
 
 type Listing = {
@@ -53,7 +55,10 @@ type Listing = {
   // The fees fixed when the listing went live, which the sale is charged at.
   feeBuyerPremiumBps?: number | null;
   feeSellerCommissionBps?: number | null;
+  feeSchedule?: unknown;
   launchAt?: Date | null;
+  // The sale event the listing trades in, which names each bid's round.
+  saleEventId?: string | null;
 };
 
 const live = (offer: Offer) => offer.type === "OFFER" && (offer.status === "OPEN" || offer.status === "REVIEWED");
@@ -92,10 +97,15 @@ export async function SaleApproval({ listing, offers, canAnswer, revealNames = f
         const scope = part ? `${part.length} of the ${poolSize} loans in the pool` : offer.noteId ? "one loan" : "the whole listing";
         const notLive = listing.status !== "APPROVED";
         const lapsed = bidExpired(offer.expiresAt);
+        // What this sale leaves the seller, at the fees the listing went live with.
+        const sale = feesFor(listing, settings, Number(offer.sellerAskedAmount));
         return (
           <div key={offer.id} className="mt-4 border border-link/30 bg-link/5 p-4 rounded-xl">
             <p className="text-[13px] text-muted-foreground">The desk recommends · {prettyDate(offer.sellerAskedAt)}</p>
             <p className="mt-1 font-semibold tracking-tight text-2xl">{money(Number(offer.sellerAskedAmount))}</p>
+            <p className="mt-1 text-sm text-muted-foreground tabular-nums">
+              Commission {money(sale.commissionCents / 100)} · your estimated net {money(sale.netToSellerCents / 100)}
+            </p>
             <p className="mt-1 text-sm text-muted-foreground">
               {who(offer)} · {scope}
               {part ? " · the other loans stay on the book" : rest.count ? ` · ${rest.count} other open bid${rest.count === 1 ? "" : "s"} for it${rest.best && !sealed ? `, highest ${money(rest.best)}` : ""}` : " · no other open bids for it"}
@@ -181,6 +191,8 @@ export async function SaleApproval({ listing, offers, canAnswer, revealNames = f
           </div>
         );
       })}
+      {/* The desk reads bids on its own sheet, behind the sealed-bids wall, so this list is the seller's view only. */}
+      {!revealNames && <LiveBids listing={listing} offers={offers} canAnswer={canAnswer} sealed={sealed} who={who} settings={settings} />}
       {canAnswer && (
         <form action={setReserve} className="mt-5 flex flex-wrap items-end gap-3">
           <input type="hidden" name="listingId" value={listing.id} />
@@ -197,6 +209,103 @@ export async function SaleApproval({ listing, offers, canAnswer, revealNames = f
   );
 }
 
+// Every live bid, so the seller can pick the one to sell to rather than only answer the desk's recommendation.
+// Each shows by its bidder letter, with its round, its good-until date and whether it meets the reserve. While a sealed
+// round runs the amounts stay hidden from the seller, and so does anything that would hint at them.
+async function LiveBids({
+  listing,
+  offers,
+  canAnswer,
+  sealed,
+  who,
+  settings,
+}: {
+  listing: Listing;
+  offers: Offer[];
+  canAnswer: boolean;
+  sealed: boolean;
+  who: (offer: Offer) => string;
+  settings: Parameters<typeof feesFor>[1];
+}) {
+  const bids = offers.filter((offer) => live(offer) && !bidExpired(offer.expiresAt));
+  if (!bids.length) return null;
+  const [event, loans] = await Promise.all([
+    listing.saleEventId ? prisma.saleEvent.findUnique({ where: { id: listing.saleEventId }, select: { indicationsAt: true } }) : null,
+    prisma.note.findMany({ where: { id: { in: bids.map((bid) => bid.noteId).filter((id): id is string => Boolean(id)) } }, select: { id: true, city: true, state: true } }),
+  ]);
+  const placeOf = new Map(loans.map((note) => [note.id, `${note.city}, ${note.state}`]));
+  const priceOf = (offer: Offer) => buyerPrice(offer.amount, offer.messages, offer.buyerId);
+  const round = (offer: Offer) =>
+    event && offer.createdAt
+      ? offer.createdAt.getTime() < event.indicationsAt.getTime() ? "Indication" : "Best and final"
+      : listing.bidMode === "SEALED" ? "Sealed bid" : listing.bidMode === "BEST_AND_FINAL" ? "Best and final" : "Open offer";
+  const reserve = listing.reservePrice != null && listing.reservePrice > 0 ? Number(listing.reservePrice) : null;
+  const sorted = sealed ? bids : [...bids].sort((a, b) => (priceOf(b) ?? 0) - (priceOf(a) ?? 0));
+  const waitsForDeadline = listing.bidMode !== "NONE" && !deadlinePassed(listing.bidDeadline);
+  return (
+    <div className="mt-6 border-t border-border pt-5">
+      <p className="text-[13px] font-semibold text-foreground">Every live bid</p>
+      <p className="mt-1 text-sm text-muted-foreground">
+        {sealed
+          ? "Bids are sealed until the deadline, so their amounts stay hidden from you. Once it passes you can pick any bid."
+          : "You can ask the desk to award any bid here, not only the one it recommends. Asking records your agreement to that price, and the desk awards it once its checks pass."}
+      </p>
+      <ul className="mt-3 divide-y divide-border border border-border rounded-xl">
+        {sorted.map((offer) => {
+          const price = priceOf(offer);
+          const scope = offer.noteId ? `Loan in ${placeOf.get(offer.noteId) ?? "the pool"}` : "Whole listing";
+          const picked = Boolean(offer.sellerRequestedAt) && askedPriceStands(offer.sellerApprovedAmount, price);
+          const asked = awaitingSeller(offer);
+          const sale = price != null ? feesFor(listing, settings, price) : null;
+          return (
+            <li key={offer.id} className="grid gap-2 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+              <div className="min-w-0 text-sm">
+                <p className="font-medium text-foreground">
+                  {who(offer)}
+                  {sealed ? <span className="font-normal text-muted-foreground"> · amount sealed until the deadline</span> : price != null && <span className="tabular-nums"> · {money(price)}</span>}
+                </p>
+                <p className="mt-0.5 text-muted-foreground">
+                  {scope} · {round(offer)} · {offer.expiresAt ? `good until ${prettyDate(offer.expiresAt)}` : "no end date"}
+                  {!sealed && price != null && ` · ${reserve == null ? "no reserve set" : price >= reserve ? "meets your reserve" : "under your reserve"}`}
+                </p>
+                {picked && <p className="mt-1 text-[13px] font-medium text-good">You asked the desk to award this bid{offer.sellerRequestedAt ? ` on ${prettyDate(offer.sellerRequestedAt)}` : ""}.</p>}
+                {offer.sellerRequestedAt && !picked && <p className="mt-1 text-[13px] text-foreground">You picked this bid, but the buyer has changed it since. Pick it again to agree to the new price.</p>}
+                {asked && <p className="mt-1 text-[13px] text-muted-foreground">The desk asked you about this bid above.</p>}
+              </div>
+              {canAnswer && !sealed && !asked && !picked && price != null && listing.status === "APPROVED" && (
+                <form action={pickBid}>
+                  <input type="hidden" name="inquiryId" value={offer.id} />
+                  <input type="hidden" name="price" value={price} />
+                  <ConfirmSubmit
+                    title={`Ask the desk to award ${who(offer)} at ${money(price)}?`}
+                    consequence={`This records your agreement to sell ${offer.noteId ? "this loan" : "the whole listing"} at this price. The desk awards it once its checks pass${waitsForDeadline ? ", after the bid deadline" : ""}, and the other bids on it then close. Until the award you can pick a different bid instead.`}
+                    details={
+                      <ConfirmRows
+                        rows={[
+                          ["Bidder", who(offer)],
+                          ["Sale price", money(price)],
+                          ["What sells", scope],
+                          ...(sale ? ([["Commission", money(sale.commissionCents / 100)], ["Your estimated net", money(sale.netToSellerCents / 100)]] as [string, string][]) : []),
+                        ]}
+                      />
+                    }
+                    confirmLabel="Ask the desk to award it"
+                    pendingLabel="Sending…"
+                    variant="outline"
+                    className="h-9 px-3 text-[13px] font-medium"
+                  >
+                    Pick this bid
+                  </ConfirmSubmit>
+                </form>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 // Buy it now, set or changed with the seller's consent restated, and taken off while no buyer has confirmed it.
 // Whole listing only, open offers only: a sealed or best-and-final round sets its price at the deadline.
 function BuyNow({
@@ -210,7 +319,7 @@ function BuyNow({
   offers: Offer[];
   canAnswer: boolean;
   who: (offer: Offer) => string;
-  settings: { buyerPremiumBps: number; sellerCommissionBps: number; depositBps?: number | null; depositDays?: number | null; diligenceDays?: number | null };
+  settings: { buyerPremiumBps: number; sellerCommissionBps: number; feeSchedule?: unknown; depositBps?: number | null; depositDays?: number | null; diligenceDays?: number | null };
 }) {
   // A page that didn't load the field has nothing to show here.
   if (listing.buyNowPrice === undefined) return null;
@@ -227,7 +336,7 @@ function BuyNow({
   if (price == null && !editable) return null;
   const terms = depositTerms(settings);
   const diligence = diligenceDays(settings.diligenceDays);
-  const fees = listingFeeBps(listing, settings);
+  const fees = feeTerms(listing, settings);
   const paused = price != null && listing.status === "APPROVED" && listing.bidMode !== "NONE";
   return (
     <div id="buy-now" className="mt-6 scroll-mt-6 border-t border-border pt-5">
@@ -271,8 +380,8 @@ function BuyNow({
               <ConfirmRows
                 rows={[
                   ...(ask > 0 ? ([["Asking price", money(ask)]] as [string, string][]) : []),
-                  ["Buyer premium, paid by the buyer", `${bpsToPercent(fees.premiumBps).toFixed(2)}%`],
-                  ["Seller commission, off the price", `${bpsToPercent(fees.commissionBps).toFixed(2)}%`],
+                  ["Buyer premium, paid by the buyer", rateText(fees, "premium")],
+                  ["Seller commission, off the price", rateText(fees, "commission")],
                   ["Buyer deposit", terms.bps > 0 ? `${terms.bps / 100}% within ${terms.days} day${terms.days === 1 ? "" : "s"}` : "None"],
                   ["Buyer's diligence window", diligence ? `${diligence} day${diligence === 1 ? "" : "s"}` : "None"],
                 ]}

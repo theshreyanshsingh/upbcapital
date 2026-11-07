@@ -71,6 +71,12 @@ export async function saleFile(listingId: string, viewer: Staff, now = new Date(
       : Promise.resolve([]),
   ]);
   const nameOfBuyer = (buyerId: string) => names.get(buyerId) ?? "A buyer";
+  // A bid made for one of the buyer's added entities names that entity, an IRA by its account title.
+  const entityIds = [...new Set(listing.inquiries.map((inquiry) => inquiry.buyerEntityId).filter((id): id is string => Boolean(id)))];
+  const entities = entityIds.length ? await prisma.buyerEntity.findMany({ where: { id: { in: entityIds } }, select: { id: true, name: true, iraAccountTitle: true } }) : [];
+  const entityName = new Map(entities.map((entity) => [entity.id, entity.iraAccountTitle || entity.name]));
+  const partyOf = (inquiry: { buyerId: string; buyerEntityId?: string | null }) =>
+    (inquiry.buyerEntityId ? entityName.get(inquiry.buyerEntityId) : null) ?? nameOfBuyer(inquiry.buyerId);
   const byEmail = new Map(listing.inquiries.map((inquiry) => [inquiry.buyer.email, inquiry.buyerId]));
   const reserve = listing.reservePrice != null ? Number(listing.reservePrice) : null;
   const amount = (value: number | null | undefined) => (walled || value == null ? null : Number(value));
@@ -117,7 +123,7 @@ export async function saleFile(listingId: string, viewer: Staff, now = new Date(
       priced.map((message) => ({ kind: message.kind, amount: Number(message.amount), createdAt: message.createdAt, authorId: message.authorId })),
       inquiry.buyerId,
     );
-    const party = nameOfBuyer(inquiry.buyerId);
+    const party = partyOf(inquiry);
     row({
       section: "Bid",
       at: inquiry.createdAt,
@@ -160,7 +166,7 @@ export async function saleFile(listingId: string, viewer: Staff, now = new Date(
   const inquiryOf = new Map(listing.inquiries.map((inquiry) => [inquiry.id, inquiry]));
   for (const entry of audits) {
     const inquiry = inquiryOf.get(entry.entityId);
-    const party = inquiry ? nameOfBuyer(inquiry.buyerId) : "";
+    const party = inquiry ? partyOf(inquiry) : "";
     const detail = walled ? SEALED : entry.detail;
     const by = entry.actor?.name ?? "System";
     if (APPROVAL_ACTIONS.includes(entry.action)) {

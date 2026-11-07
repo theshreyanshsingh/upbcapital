@@ -8,6 +8,8 @@ import { AuctionForm } from "@/components/auction-form";
 import { ComplianceNote } from "@/components/compliance-note";
 import { DeskNotes } from "@/components/desk-notes";
 import { DiscrepancyDesk } from "@/components/discrepancy-desk";
+import { LaunchControls } from "@/components/launch-controls";
+import { DocumentReaderPanel } from "@/components/document-reader";
 import { QuestionQueue } from "@/components/listing-questions";
 import { RoomAccessPanel } from "@/components/room-access";
 import { LoanFileDesk } from "@/components/loan-file-desk";
@@ -29,10 +31,12 @@ import { roomRequests } from "@/lib/room-access";
 import { deadlinePassed, deskWalled, eventSetsTerms } from "@/lib/auction";
 import { requireRole } from "@/lib/auth";
 import { bidSheetFor, type BidRow } from "@/lib/bid-sheet";
+import { bidEntityNames } from "@/lib/buyer-entities";
 import { loadPoolPlan } from "@/lib/pool-optimizer";
 import { saveDealOwner } from "@/actions/staff";
-import { dealOwners, deskCan, deskContact } from "@/lib/staff";
+import { dealOwners, deskCan, deskContact, deskWrites } from "@/lib/staff";
 import { gateMessage } from "@/lib/discrepancies";
+import { READER_ID, READER_NAME } from "@/lib/ai-reading";
 import { money, num, pct, prettyDate, q } from "@/lib/format";
 import { labelOf } from "@/lib/labels";
 import { launchPending, launchTime } from "@/lib/launch-rules";
@@ -41,7 +45,7 @@ import { RESEND_AFTER, sendAudience } from "@/lib/outreach";
 import { buyerPrice } from "@/lib/offers";
 import { DUPLICATE_REASONS, duplicatesFor } from "@/lib/duplicates";
 import { prisma } from "@/lib/prisma";
-import { listingFeeBps } from "@/lib/desk-fees";
+import { feeTerms, rateText } from "@/lib/fee-schedule";
 import { getSettings } from "@/lib/settings";
 import { joinBlock, leaveBlock, roundText, when } from "@/lib/sale-events";
 import { sheetShows, standingSheet } from "@/lib/standing-bids";
@@ -132,6 +136,8 @@ export default async function AdminListingPage({
   // A pool bid's loan prices and the optimiser's combination are sealed amounts, so they show only beside the sheet.
   const poolLoans = listing.notes.map((item, index) => ({ id: item.id, label: `Loan ${index + 1} · ${item.city}, ${item.state}` }));
   const inquiryOf = new Map(listing.inquiries.map((inquiry) => [inquiry.id, inquiry]));
+  // The buying entity a bid is for, when the buyer chose one beyond their main file.
+  const entityOf = bids?.length ? await bidEntityNames(listing.inquiries.map((inquiry) => inquiry.buyerEntityId)) : new Map<string, { name: string; kind: string }>();
   const poolPlan = listing.kind === "POOL" && bids?.length ? await loadPoolPlan(listing.id) : null;
   // What this desk role may change here. The actions check the same capabilities; the forms just stay out of the way.
   const sells = deskCan(user, "sales");
@@ -248,7 +254,8 @@ export default async function AdminListingPage({
           listingId={listing.id}
           from="admin"
           roomApproval={Boolean(listing.roomApproval)}
-          editable={["SUBMITTED", "UNDER_REVIEW", "CHANGES_REQUESTED", "APPROVED"].includes(listing.status)}
+          editable={sells && ["SUBMITTED", "UNDER_REVIEW", "CHANGES_REQUESTED", "APPROVED"].includes(listing.status)}
+          readOnly={!sells}
           requests={requests.map((request) => ({ ...request, bidder: realName(request.user) }))}
           engagement={log.status === 200 ? log.engagement : []}
         />
@@ -256,6 +263,7 @@ export default async function AdminListingPage({
           rows={questions.map((row) => ({ ...row, asker: realName(row.asker) }))}
           from="admin"
           live={listing.status === "APPROVED"}
+          readOnly={!sells}
           loans={listing.kind === "POOL" ? listing.notes.map((item, index) => ({ id: item.id, label: `Loan ${index + 1} · ${item.streetAddress ? `${item.streetAddress}, ` : ""}${item.city}, ${item.state}` })) : []}
         />
 
@@ -374,9 +382,10 @@ export default async function AdminListingPage({
         <DiscrepancyDesk
           rows={differences}
           loans={listing.notes.map((item) => ({ id: item.id, label: `${item.city}, ${item.state} · ${item.streetAddress || "No street"}`, record: item }))}
-          people={deskPeople}
+          people={{ ...deskPeople, [READER_ID]: READER_NAME }}
           listingId={listing.id}
           listingStatus={listing.status}
+          readOnly={!sells}
         />
 
         {fileNote && (
@@ -389,6 +398,7 @@ export default async function AdminListingPage({
             people={deskPeople}
             discrepancies={differences.filter((row) => row.noteId === fileNote.id)}
             listedAt={listing.submittedAt}
+            readOnly={!sells}
             heading={`${fileNote.streetAddress || "No street"} · ${fileNote.city}, ${fileNote.state}${fileNote.borrowerName ? ` · ${fileNote.borrowerName}` : ""} · ${labelOf("lien", fileNote.lienPosition)} lien`}
             picker={listing.kind === "POOL" ? {
               action: listingHref,
@@ -403,12 +413,14 @@ export default async function AdminListingPage({
           />
         )}
 
-        {standingOpen && <StandingBidSheet listingId={listing.id} status={listing.status} rows={standing} />}
+        <DocumentReaderPanel listingId={listing.id} noteId={fileNote?.id ?? null} canAct={sells} />
 
-        <PhotoManager listing={listing} desk />
+        {standingOpen && <StandingBidSheet listingId={listing.id} status={listing.status} rows={standing} walled={walled} canInvite={sells} />}
+
+        <PhotoManager listing={listing} desk readOnly={!sells} />
         <section id="bids" className="mt-8 scroll-mt-6">
           <p className="eyebrow">Bid sheet</p>
-          <p className="mt-1 text-sm text-muted-foreground">Highest price first. All-in includes the {pct(listingFeeBps(listing, settings).premiumBps / 100, 2)} premium and is checked against the funds the desk verified.</p>
+          <p className="mt-1 text-sm text-muted-foreground">Highest price first. All-in includes the buyer premium of {rateText(feeTerms(listing, settings), "premium")} and is checked against the funds the desk verified.</p>
           {bids === null ? (
             <p className="mt-3 text-sm text-muted-foreground">The bid sheet is for desk roles that read sealed bids. Your role sees how many bids there are, not their amounts.</p>
           ) : bids.length === 0 ? (
@@ -426,6 +438,13 @@ export default async function AdminListingPage({
                       <td className="px-3 py-2">
                         <p className="text-foreground">{bid.buyerName}</p>
                         <p className="text-xs text-muted-foreground">{bid.noteLabel ? `Loan in ${bid.noteLabel}` : "Whole listing"} · {bid.status.toLowerCase()} · {prettyDate(bid.createdAt)}</p>
+                        {entityOf.get(inquiryOf.get(bid.inquiryId)?.buyerEntityId ?? "") && (
+                          <p className="text-xs text-muted-foreground">For {entityOf.get(inquiryOf.get(bid.inquiryId)?.buyerEntityId ?? "")!.name}</p>
+                        )}
+                        {/* The sheet is behind the sealed-bids wall already, so the seller's pick shows with the amounts. */}
+                        {inquiryOf.get(bid.inquiryId)?.sellerRequestedAt && (
+                          <p className="text-xs font-medium text-foreground">Seller asked to award this bid</p>
+                        )}
                         {!bid.noteLabel && <BidLoanPrices loanPrices={inquiryOf.get(bid.inquiryId)?.loanPrices} allowPartial={inquiryOf.get(bid.inquiryId)?.allowPartial} price={bid.amount} loans={poolLoans} />}
                       </td>
                       <td className="px-3 py-2 font-medium text-foreground">{money(bid.amount)}</td>
@@ -493,6 +512,7 @@ export default async function AdminListingPage({
             Coming soon until {launchTime(listing.launchAt)}. Buyers see a teaser and can save it. The room, bids and alerts open at that time.
           </p>
         )}
+        {sells && listing.status === "APPROVED" && launchPending(listing) && listing.launchAt && <LaunchControls listingId={listing.id} launchAt={listing.launchAt} />}
         {!sells ? (
           <p className="text-sm text-muted-foreground">Review decisions are for the sales side of the desk.</p>
         ) : (
@@ -562,8 +582,8 @@ export default async function AdminListingPage({
             )}
           </>
         )}
-        <ResultConsent listing={listing} desk />
-        <DeskNotes subjectType="listing" subjectId={listing.id} back={listingHref} viewerId={user.id} />
+        <ResultConsent listing={listing} desk readOnly={!sells} />
+        <DeskNotes subjectType="listing" subjectId={listing.id} back={listingHref} viewerId={user.id} readOnly={!deskWrites(user)} />
       </aside>
     </div>
   );

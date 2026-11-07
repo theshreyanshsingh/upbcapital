@@ -1,4 +1,5 @@
 import type { DocType } from "@prisma/client";
+import { readInBackground } from "@/lib/ai-reading";
 import { audit } from "@/lib/audit";
 import { notifyDesk } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
@@ -53,6 +54,8 @@ export async function addPoolFiles(actor: { id: string; name: string; companyNam
     added += 1;
   }
   if (added > 0) {
+    // The desk's reader reads the new files in the background, after the response has gone back.
+    readInBackground(listing.id);
     const what = `${added} file${added === 1 ? "" : "s"}`;
     await notifyDesk(`Files added · ${listing.title}`, `${actor.companyName || actor.name} added ${what} to ${listing.title}${noteId ? ", on one loan" : ""}.`);
     // Watchers hear about new files only once the listing is live; in review nobody but the desk can see them.

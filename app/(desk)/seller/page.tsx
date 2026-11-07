@@ -7,7 +7,7 @@ import { requireRole } from "@/lib/auth";
 import { compsFor, loadClosedTrades, marketView, suggestedPrice } from "@/lib/comps";
 import { isReleaseBuild } from "@/lib/deploy";
 import { money, num, q } from "@/lib/format";
-import { bpsToPercent } from "@/lib/money";
+import { feeTerms, feesFor, rateText } from "@/lib/fee-schedule";
 import { prisma } from "@/lib/prisma";
 import { getSettings } from "@/lib/settings";
 
@@ -26,11 +26,12 @@ export default async function SellerHome({
     include: { notes: true, inquiries: true },
     orderBy: { createdAt: "desc" },
   });
-  const liveAsk = listings
-    .filter((listing) => listing.status === "APPROVED" || listing.status === "PENDING")
-    .flatMap((listing) => listing.notes)
-    .reduce((sum, note) => sum + num(note.askingPrice), 0);
-  const commission = (liveAsk * settings.sellerCommissionBps) / 10000;
+  const liveListings = listings.filter((listing) => listing.status === "APPROVED" || listing.status === "PENDING");
+  const askOf = (listing: (typeof listings)[number]) => listing.notes.reduce((sum, note) => sum + num(note.askingPrice), 0);
+  const liveAsk = liveListings.reduce((sum, listing) => sum + askOf(listing), 0);
+  // Each listing at its own fees on its own ask, since a graded schedule charges by the size of each sale.
+  const commission = liveListings.reduce((sum, listing) => sum + feesFor(listing, settings, askOf(listing)).commissionCents / 100, 0);
+  const today = feeTerms(null, settings);
   const soldNet = listings.filter((listing) => listing.netToSellerCents != null).reduce((sum, listing) => sum + (listing.netToSellerCents ?? 0), 0);
   const [peers, trades] = await Promise.all([
     prisma.note.findMany({
@@ -54,7 +55,7 @@ export default async function SellerHome({
       <PageIntro
         eyebrow="Seller desk"
         title={user.companyName || user.name}
-        lede={`Commission on a sale is ${bpsToPercent(settings.sellerCommissionBps).toFixed(2)}% of the accepted price. Buyers pay an additional ${bpsToPercent(settings.buyerPremiumBps).toFixed(2)}% premium, which is not taken from you.`}
+        lede={`Commission comes off the accepted price: ${rateText(today, "commission")}. Buyers also pay a premium on top, ${rateText(today, "premium")}. It is not taken from you.`}
       />
       <Notice notice={q(params, "notice")} error={q(params, "error")} />
       {user.role === "INSTITUTIONAL_SELLER" && user.accountStatus !== "APPROVED" && (

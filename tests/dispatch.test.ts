@@ -260,5 +260,6 @@ test("each month goes out once, and only to approved accounts that opted in", as
     await prisma.auditEvent.deleteMany({ where: { OR: [{ entityId: settingsId }, { actorId: { in: userIds } }] } });
     await prisma.user.deleteMany({ where: { id: { in: userIds } } });
     await prisma.platformSettings.deleteMany({ where: { id: settingsId } });
+    await prisma.dispatchIssue.deleteMany({ where: { month: { startsWith: `${settingsId}:` } } });
   }
 });

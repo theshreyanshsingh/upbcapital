@@ -1,6 +1,8 @@
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from "pdf-lib";
+import { appOrigin } from "@/lib/billing";
 import { closingLoans } from "@/lib/closing";
 import { toCsv } from "@/lib/csv";
+import { sendAlert } from "@/lib/email";
 import { money } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 
@@ -368,4 +370,35 @@ export async function buildYearStatementPdf(statement: Statement, holder: string
   if (!statement.rows.length) section("No notes held", `Nothing on your book was held during ${statement.year}.`, []);
   section(`Totals for ${statement.year}`, "", linesOf(statement.totals), bold);
   return pdf.save();
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The statement by email, when the buyer asks for it: the PDF attached, and the link to download it signed in.
+
+type StatementOwner = { id: string; email: string; name: string; companyName: string };
+
+// Who the statement is made out to: the buyer's entity, else their company or name, with their email.
+export async function statementHolder(user: StatementOwner) {
+  const profile = await prisma.buyerProfile.findUnique({ where: { userId: user.id }, select: { entityName: true } });
+  return [profile?.entityName || user.companyName || user.name, user.email].filter(Boolean).join("  -  ");
+}
+
+export function statementYearProblem(year: number, now = new Date()) {
+  return Number.isInteger(year) && year >= 1990 && year <= now.getUTCFullYear() ? null : "Choose a tax year up to this one.";
+}
+
+// It reaches the inbox whatever the email notice setting says, because the buyer asked for it just now.
+export async function emailYearStatement(user: StatementOwner, year: number, now = new Date()) {
+  const problem = statementYearProblem(year, now);
+  if (problem) return { error: problem } as const;
+  const statement = taxYearStatement(await loadStatementHoldings(user.id), year);
+  const pdf = await buildYearStatementPdf(statement, await statementHolder(user));
+  const link = `${appOrigin()}/api/portfolio/statement?year=${year}&format=pdf`;
+  await sendAlert(
+    user.email,
+    `Year-end statement · ${year}`,
+    `Your ${year} year-end statement from UPB Capital is attached as a PDF. You can also download it signed in: ${link}\n\n${STATEMENT_NOTE}`,
+    { attachments: [{ filename: `upb-statement-${year}.pdf`, content: Buffer.from(pdf), contentType: "application/pdf" }] },
+  );
+  return { error: null } as const;
 }

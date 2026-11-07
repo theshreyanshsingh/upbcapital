@@ -4,6 +4,7 @@ import { answerDeskBid } from "@/actions/desk-book";
 import { resubmitBrokerDeal } from "@/actions/broker";
 import { ConfirmSubmit } from "@/components/confirm-submit";
 import { DiscrepancyAnswers } from "@/components/discrepancy-answers";
+import { ReaderSummary } from "@/components/document-reader";
 import { QuestionQueue } from "@/components/listing-questions";
 import { RoomAccessPanel } from "@/components/room-access";
 import { RoomFiles } from "@/components/room-files";
@@ -120,6 +121,7 @@ export default async function BrokerDealPage({
         listingStatus={listing.status}
         client={listing.clientSellerName || "your client"}
       />
+      <ReaderSummary listingId={listing.id} />
       {changeRequest && (
         <section className="mt-8 border border-warn/40 bg-warn/10 p-5 rounded-xl" aria-labelledby="changes-heading">
           <p id="changes-heading" className="eyebrow">The desk asked for changes · {prettyDate(changeRequest.createdAt)}</p>

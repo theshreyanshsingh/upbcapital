@@ -9,6 +9,7 @@ import { AGENCY_PROGRAMS, COVER_BID_HEADER, COVER_BID_NOTE, agencyLines, coverBi
 import { isoDate, moneyCompact, prettyDate, q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 import { getSettings } from "@/lib/settings";
+import { deskCan } from "@/lib/staff";
 
 export const metadata = { title: "Agency sales" };
 
@@ -17,7 +18,8 @@ export default async function AgencySalesPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  await requireRole(["ADMIN"]);
+  // Every desk role reads the sales on file. Entering them is content work, and the actions check the same.
+  const writes = deskCan(await requireRole(["ADMIN"]), "content");
   const params = await searchParams;
   const now = new Date();
   const [rows, settings, readers] = await Promise.all([
@@ -46,19 +48,23 @@ export default async function AgencySalesPage({
         </p>
       </section>
 
-      <form id="add-sale" action={saveAgencySale} className="glass mt-8 scroll-mt-6 space-y-5 p-6" aria-labelledby="add-sale-heading">
-        <div>
-          <h2 id="add-sale-heading" className="eyebrow">Add a sale</h2>
-          <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{COVER_BID_NOTE}</p>
-        </div>
-        <SaleFields prefix="new" />
-        <SubmitButton className="h-11 text-[13px] font-medium">Add the sale</SubmitButton>
-      </form>
+      {writes ? (
+        <form id="add-sale" action={saveAgencySale} className="glass mt-8 scroll-mt-6 space-y-5 p-6" aria-labelledby="add-sale-heading">
+          <div>
+            <h2 id="add-sale-heading" className="eyebrow">Add a sale</h2>
+            <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{COVER_BID_NOTE}</p>
+          </div>
+          <SaleFields prefix="new" />
+          <SubmitButton className="h-11 text-[13px] font-medium">Add the sale</SubmitButton>
+        </form>
+      ) : (
+        <p className="mt-8 text-sm text-muted-foreground">Agency sales are entered by the content side of the desk.</p>
+      )}
 
       <section className="mt-10" aria-labelledby="sales-heading">
         <h2 id="sales-heading" className="eyebrow">On file</h2>
         {rows.length === 0 ? (
-          <p className="mt-3 rounded-xl border border-dashed border-border px-4 py-6 text-sm text-muted-foreground">No sales yet. Add the next agency or HUD sale above.</p>
+          <p className="mt-3 rounded-xl border border-dashed border-border px-4 py-6 text-sm text-muted-foreground">No sales yet.{writes ? " Add the next agency or HUD sale above." : ""}</p>
         ) : (
           <ul className="mt-3 divide-y divide-border rounded-xl border border-border">
             {rows.map((row) => {
@@ -85,7 +91,7 @@ export default async function AgencySalesPage({
                       </>
                     ) : null}
                   </p>
-                  <details className="mt-3">
+                  {writes && <details className="mt-3">
                     <summary className="cursor-pointer text-[13px] font-medium text-link">Edit or remove</summary>
                     <form action={saveAgencySale} className="mt-4 space-y-5">
                       <input type="hidden" name="id" value={row.id} />
@@ -106,7 +112,7 @@ export default async function AgencySalesPage({
                         Remove
                       </ConfirmSubmit>
                     </form>
-                  </details>
+                  </details>}
                 </li>
               );
             })}

@@ -1,5 +1,6 @@
 import { answerListingQuestion, askListingQuestion, declineListingQuestion } from "@/actions/questions";
 import { ConfirmSubmit } from "@/components/confirm-submit";
+import { AiDraftNote } from "@/components/document-reader";
 import { SubmitButton } from "@/components/submit-button";
 import { prettyDate } from "@/lib/format";
 import { ANSWER_MAX, NOTE_MAX, QUESTION_MAX } from "@/lib/questions";
@@ -107,6 +108,9 @@ type Queued = {
   createdAt: Date;
   answeredAt: Date | null;
   asker: string;
+  // The document reader's draft, for the room's owners and the desk. Never passed to a bidder's page.
+  aiDraft?: string | null;
+  aiSources?: string | null;
 };
 
 // The seller's, broker's and desk's side: open questions to answer for the room or decline, then what was decided.
@@ -115,11 +119,14 @@ export function QuestionQueue({
   from,
   live,
   loans,
+  readOnly = false,
 }: {
   rows: Queued[];
   from: "seller" | "broker" | "admin" | "resale";
   live: boolean;
   loans: Loan[];
+  // A desk role outside sales reads the questions without the answer and decline forms. The actions refuse it too.
+  readOnly?: boolean;
 }) {
   const loanName = new Map(loans.map((loan) => [loan.id, loan.label]));
   const open = rows.filter((row) => row.status === "OPEN");
@@ -131,19 +138,21 @@ export function QuestionQueue({
         An answer is published to every bidder in the data room, without the asker&apos;s name. Declining closes the question, and only the bidder who asked is told.
       </p>
       {rows.length === 0 && <p className="mt-4 text-sm text-muted-foreground">No questions yet.</p>}
+      {readOnly && open.length > 0 && <p className="mt-4 text-sm text-muted-foreground">Answers are for the sales side of the desk.</p>}
       {open.map((row) => (
         <div key={row.id} className="mt-4 border border-link/30 bg-link/5 p-4 rounded-xl">
           <p className="text-[13px] text-muted-foreground">
             {row.asker} · asked {prettyDate(row.createdAt)}{row.noteId && loanName.get(row.noteId) ? ` · ${loanName.get(row.noteId)}` : ""}
           </p>
           <p className="mt-1 whitespace-pre-line text-sm font-medium text-foreground">{row.question}</p>
-          {live ? (
+          {live && !readOnly && <AiDraftNote question={row} from={from} />}
+          {readOnly ? null : live ? (
             <form action={answerListingQuestion} className="mt-3 space-y-2">
               <input type="hidden" name="questionId" value={row.id} />
               <input type="hidden" name="from" value={from} />
               <label className="block">
                 <span className="text-[13px] text-muted-foreground">Answer for every bidder</span>
-                <textarea name="answer" required maxLength={ANSWER_MAX} className="desk-input mt-2 min-h-20" />
+                <textarea id={`answer-${row.id}`} name="answer" required maxLength={ANSWER_MAX} className="desk-input mt-2 min-h-20" />
               </label>
               <ConfirmSubmit
                 title="Publish this answer?"
@@ -158,7 +167,7 @@ export function QuestionQueue({
           ) : (
             <p className="mt-2 text-sm text-muted-foreground">The listing isn&apos;t live, so an answer has no bidders to go to.</p>
           )}
-          <form action={declineListingQuestion} className="mt-3 flex flex-wrap items-end gap-2">
+          {!readOnly && <form action={declineListingQuestion} className="mt-3 flex flex-wrap items-end gap-2">
             <input type="hidden" name="questionId" value={row.id} />
             <input type="hidden" name="from" value={from} />
             <label className="block min-w-0 flex-1">
@@ -166,7 +175,7 @@ export function QuestionQueue({
               <input name="note" maxLength={NOTE_MAX} className="desk-input mt-2" />
             </label>
             <SubmitButton variant="outline" pendingLabel="Declining…" className="h-11 px-3 text-[13px] font-medium">Decline</SubmitButton>
-          </form>
+          </form>}
         </div>
       ))}
       {closed.length > 0 && (

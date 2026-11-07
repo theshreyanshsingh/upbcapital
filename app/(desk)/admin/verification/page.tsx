@@ -1,5 +1,6 @@
 import { clearBuyerStrike } from "@/actions/strikes";
 import { reviewVerification } from "@/actions/verification";
+import { reviewEntity } from "@/actions/buyer-entities";
 import { ConfirmSubmit } from "@/components/confirm-submit";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
@@ -7,7 +8,9 @@ import { requireRole } from "@/lib/auth";
 import { ROAD_THRESHOLD, reoStrategyLabel } from "@/lib/eligibility";
 import { isoDate, money, prettyDate, q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
+import { entityLabel } from "@/lib/labels";
 import { getSettings } from "@/lib/settings";
+import { deskCan } from "@/lib/staff";
 import { strikeLimitOf, strikesFor, type StrikeRow } from "@/lib/strikes";
 
 export const metadata = { title: "Verification" };
@@ -17,15 +20,26 @@ export default async function AdminVerificationPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  await requireRole(["ADMIN"]);
+  // Every desk role reads the buyer files. Decisions on them are compliance work, and the actions check the same.
+  const vets = deskCan(await requireRole(["ADMIN"]), "compliance");
   const params = await searchParams;
   const profiles = await prisma.buyerProfile.findMany({ include: { user: true }, orderBy: { updatedAt: "desc" } });
-  const [strikes, settings] = await Promise.all([strikesFor(profiles.map((profile) => profile.userId)), getSettings()]);
+  const [strikes, settings, entityRows] = await Promise.all([
+    strikesFor(profiles.map((profile) => profile.userId)),
+    getSettings(),
+    prisma.buyerEntity.findMany({ where: { userId: { in: profiles.map((profile) => profile.userId) } }, orderBy: { createdAt: "asc" } }),
+  ]);
   const limit = strikeLimitOf(settings.strikeLimit);
+  const entitiesOf = (userId: string) => entityRows.filter((entity) => entity.userId === userId);
+  const waitingEntities = entityRows.filter((entity) => entity.status === "SUBMITTED").length;
   return (
     <div>
       <PageIntro eyebrow="Buyer files" title="Accreditation and proof of funds." lede="An approved account can browse. An approved file can offer." />
       <Notice notice={q(params, "notice")} error={q(params, "error")} />
+      {!vets && <p className="mt-4 text-sm text-muted-foreground">Your desk role reads these files. Decisions are for compliance.</p>}
+      {waitingEntities > 0 && (
+        <p className="mt-4 text-sm text-foreground">{waitingEntities} buying entit{waitingEntities === 1 ? "y is" : "ies are"} waiting for review under the buyers below.</p>
+      )}
       <ul className="mt-8 space-y-4">
         {profiles.length === 0 && <li className="text-sm text-muted-foreground">No buyer files yet.</li>}
         {profiles.map((profile) => (
@@ -34,7 +48,7 @@ export default async function AdminVerificationPage({
               <div>
                 <p className="font-semibold tracking-tight text-3xl text-foreground">{profile.entityName || profile.user.name}</p>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  {profile.user.email} · {profile.entityType.toLowerCase()} · {profile.jurisdiction} · {profile.accredited ? "self-certified accredited" : "not certified"}
+                  {profile.user.email} · {entityLabel(profile.entityType).toLowerCase()} · {profile.jurisdiction} · {profile.accredited ? "self-certified accredited" : "not certified"}
                 </p>
               </div>
               <p className="text-[13px] font-medium text-link">{profile.status.replaceAll("_", " ").toLowerCase()}</p>
@@ -56,11 +70,12 @@ export default async function AdminVerificationPage({
             {profile.homesControlled != null && profile.homesControlled >= ROAD_THRESHOLD && (
               <p className="mt-1 text-[13px] font-medium text-foreground">At or over {ROAD_THRESHOLD} homes. They acknowledge the ROAD Act notice before bidding on non-performing one- and two-unit loans.</p>
             )}
-            <Strikes rows={strikes.get(profile.userId) ?? []} limit={limit} back="/admin/verification" />
+            <Strikes rows={strikes.get(profile.userId) ?? []} limit={limit} back="/admin/verification" canClear={vets} />
+            <Entities userId={profile.userId} rows={entitiesOf(profile.userId)} canReview={vets} />
             {profile.proofKey && (
               <a className="mt-3 inline-block text-sm text-link" href={`/api/verification/${profile.userId}`}>Download proof</a>
             )}
-            <form action={reviewVerification} className="mt-4 space-y-3">
+            {vets && <form action={reviewVerification} className="mt-4 space-y-3">
               <input type="hidden" name="userId" value={profile.userId} />
               <input name="reviewerNote" placeholder="Note to the buyer" className="desk-input" />
               <div className="grid gap-3 sm:grid-cols-2">
@@ -79,7 +94,61 @@ export default async function AdminVerificationPage({
                 <button type="submit" name="decision" value="CHANGES_REQUESTED" className="h-9 border border-border px-3 text-[13px] font-medium text-foreground rounded-lg">Request changes</button>
                 <button type="submit" name="decision" value="REJECTED" className="h-9 px-3 text-[13px] font-medium text-bad">Decline</button>
               </div>
-            </form>
+            </form>}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+type EntityRow = {
+  id: string;
+  name: string;
+  entityType: string;
+  jurisdiction: string;
+  iraCustodian: string | null;
+  iraAccountTitle: string | null;
+  status: string;
+  reviewerNote: string;
+  reviewedAt: Date | null;
+  createdAt: Date;
+};
+
+// The buyer's other buying entities. Each is approved or declined with a note, and approval screens it again.
+function Entities({ userId, rows, canReview }: { userId: string; rows: EntityRow[]; canReview: boolean }) {
+  if (!rows.length) return null;
+  return (
+    <div className="mt-3 rounded-lg border border-border p-3">
+      <p className="text-[13px] font-medium text-foreground">Other buying entities</p>
+      <ul className="mt-2 divide-y divide-border">
+        {rows.map((entity) => (
+          <li key={entity.id} className="py-3 text-sm">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <p className="font-medium text-foreground">{entity.name}</p>
+              <p className="text-[13px] font-medium text-link">{entity.status === "SUBMITTED" ? "waiting for review" : entity.status.replaceAll("_", " ").toLowerCase()}</p>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {entityLabel(entity.entityType)}
+              {entity.entityType === "IRA" ? ` · custodian ${entity.iraCustodian} · account title ${entity.iraAccountTitle}` : ` · formed in ${entity.jurisdiction}`}
+              {` · added ${prettyDate(entity.createdAt)}`}
+              {entity.reviewedAt ? ` · decided ${prettyDate(entity.reviewedAt)}` : ""}
+            </p>
+            {entity.reviewerNote && <p className="text-xs text-muted-foreground">Note: {entity.reviewerNote}</p>}
+            {canReview && <form action={reviewEntity} className="mt-2 flex flex-wrap items-end gap-2">
+              <input type="hidden" name="entityId" value={entity.id} />
+              <input type="hidden" name="userId" value={userId} />
+              <label className="block min-w-56 flex-1">
+                <span className="text-xs text-muted-foreground">Note to the buyer</span>
+                <input name="note" maxLength={600} className="desk-input mt-1" placeholder={entity.status === "APPROVED" ? "Why it is declined" : "Optional when approving"} />
+              </label>
+              {entity.status !== "APPROVED" && (
+                <button type="submit" name="decision" value="APPROVED" className="h-9 bg-primary px-3 text-[13px] font-medium text-primary-foreground rounded-lg">Approve</button>
+              )}
+              {entity.status !== "REJECTED" && (
+                <button type="submit" name="decision" value="REJECTED" className="h-9 px-3 text-[13px] font-medium text-bad">Decline</button>
+              )}
+            </form>}
           </li>
         ))}
       </ul>
@@ -88,7 +157,7 @@ export default async function AdminVerificationPage({
 }
 
 // Closings this buyer won and didn't complete. Clearing one takes a note, which goes in the audit log.
-function Strikes({ rows, limit, back }: { rows: StrikeRow[]; limit: number; back: string }) {
+function Strikes({ rows, limit, back, canClear }: { rows: StrikeRow[]; limit: number; back: string; canClear: boolean }) {
   if (!rows.length) return null;
   const active = rows.filter((row) => !row.clearedAt).length;
   return (
@@ -105,7 +174,7 @@ function Strikes({ rows, limit, back }: { rows: StrikeRow[]; limit: number; back
             <p className="text-xs text-muted-foreground">{row.reason}</p>
             {row.clearedAt ? (
               <p className="text-xs text-muted-foreground">Cleared {prettyDate(row.clearedAt)}. {row.clearNote}</p>
-            ) : (
+            ) : !canClear ? null : (
               <form action={clearBuyerStrike} className="mt-2 flex flex-wrap items-end gap-2">
                 <input type="hidden" name="strikeId" value={row.id} />
                 <input type="hidden" name="back" value={back} />

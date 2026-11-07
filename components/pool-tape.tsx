@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { LoanBid } from "@/components/loan-bid";
+import type { EntityOption } from "@/components/entity-picker";
+import type { FeeTerms } from "@/lib/fee-schedule";
 import type { BidStanding } from "@/lib/verification";
 import { money, pct } from "@/lib/format";
 import { labelOf } from "@/lib/labels";
@@ -36,7 +38,7 @@ export function PoolTape({
   loans: TapeLoan[];
   pro: boolean;
   // Set for a buyer: the bid terms each loan's box restates, and whether the listing takes bids.
-  bidding: { deposit?: [number, number]; diligenceDays?: number; premiumBps: number; verified: boolean; listingOpen: boolean; noticesFor?: (noteId: string) => string[]; standing?: BidStanding | null } | null;
+  bidding: { deposit?: [number, number]; diligenceDays?: number; premiumBps: number; fees?: FeeTerms; verified: boolean; listingOpen: boolean; noticesFor?: (noteId: string) => string[]; standing?: BidStanding | null; entities?: EntityOption[] } | null;
   fileHref: (noteId: string) => string;
   fileSummary: (noteId: string) => ReturnType<typeof completeness> | null;
 }) {
@@ -51,10 +53,12 @@ export function PoolTape({
         deposit={bidding.deposit}
         diligenceDays={bidding.diligenceDays}
         premiumBps={bidding.premiumBps}
+        fees={bidding.fees}
         verified={bidding.verified}
         closed={!bidding.listingOpen || note.tradeStatus !== "AVAILABLE"}
         notices={bidding.noticesFor?.(note.id) ?? []}
         standing={bidding.standing ?? null}
+        entities={bidding.entities}
       />
     );
   return (

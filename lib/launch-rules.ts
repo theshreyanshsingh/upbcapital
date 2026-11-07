@@ -52,6 +52,15 @@ export function readLaunchAt(raw: string, now = new Date()): { at: Date | null; 
   return { at, error: null };
 }
 
+// Moving a coming-soon launch: the approval field's limits, but a time is needed. Going live now is its own button.
+export function readMovedLaunch(raw: string, current: Date | null, now = new Date()): { at: Date | null; error: string | null } {
+  if (!raw.trim()) return { at: null, error: "Enter the new launch time." };
+  const read = readLaunchAt(raw, now);
+  if (read.error) return read;
+  if (current && read.at && read.at.getTime() === current.getTime()) return { at: null, error: "That is already the launch time." };
+  return read;
+}
+
 // What approval writes. approvedAt is the moment the listing goes live, so the Pro early-access window, saved-search
 // roundups and the book's newest-first order all count from the launch. The approval itself stays in the review log.
 export function approvalFields(at: Date | null, now = new Date()) {

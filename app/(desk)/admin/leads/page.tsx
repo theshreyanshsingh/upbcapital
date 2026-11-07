@@ -6,6 +6,7 @@ import { requireRole } from "@/lib/auth";
 import { money, q } from "@/lib/format";
 import { labelOf } from "@/lib/labels";
 import { prisma } from "@/lib/prisma";
+import { deskCan } from "@/lib/staff";
 
 export const metadata = { title: "Seller leads" };
 
@@ -16,7 +17,8 @@ export default async function LeadsPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  await requireRole(["ADMIN"]);
+  // Every desk role reads the leads. Moving one is sales work, and the action checks the same.
+  const sells = deskCan(await requireRole(["ADMIN"]), "sales");
   const params = await searchParams;
   const leads = await prisma.sellerLead.findMany({ orderBy: { createdAt: "desc" }, take: 100 });
   return (
@@ -37,13 +39,17 @@ export default async function LeadsPage({
               </p>
               {lead.note && <p className="mt-2 text-sm text-muted-foreground">{lead.note}</p>}
             </div>
-            <form action={setLeadStatus} className="flex flex-wrap items-center gap-2">
-              <input type="hidden" name="id" value={lead.id} />
-              <select name="status" defaultValue={lead.status} className="desk-input" aria-label={`Status for ${lead.name}`}>
-                {STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}
-              </select>
-              <SubmitButton variant="outline" className="h-10 text-[13px] font-medium">Save</SubmitButton>
-            </form>
+            {sells ? (
+              <form action={setLeadStatus} className="flex flex-wrap items-center gap-2">
+                <input type="hidden" name="id" value={lead.id} />
+                <select name="status" defaultValue={lead.status} className="desk-input" aria-label={`Status for ${lead.name}`}>
+                  {STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}
+                </select>
+                <SubmitButton variant="outline" className="h-10 text-[13px] font-medium">Save</SubmitButton>
+              </form>
+            ) : (
+              <p className="text-[13px] font-medium text-muted-foreground">{lead.status.toLowerCase()}</p>
+            )}
           </li>
         ))}
       </ul>

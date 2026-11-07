@@ -196,6 +196,8 @@ Buyers get a referral code on the membership page. The first time someone who us
 
 `UPB_PARTICIPATIONS=1` opens fractional sales. Without it, the desk can still model a participation split, but it can't list a slice, and a buyer can't relist a partial position. It stays off until counsel rules on the securities question.
 
+`AI_READING_MODEL=1` lets the document reader send loan files to the language model set by `LLM_API_KEY`. Without it the reader uses its offline rules on text files, and nothing leaves the server. Loan files carry borrowers' names and addresses, so use UPB's own model account with a data-processing agreement before turning it on. Run `npm run ai:eval` first: the desk can't switch the reader to On until the active reader scores 95% or better on the labelled test files.
+
 ## Sign-in, limits, and sessions
 
 Two-step sign-in is required, by default, for every approved buyer, seller, and broker as well as for admins, because they can see borrower data. Pages send an account that hasn't enrolled to Security, and API routes answer 401 until it does. The fee schedule can turn this off. Demo seats on undeliverable addresses are exempt. Security shows a QR code for an authenticator, eight one-time recovery codes, and an optional email code. Sign-in stops at `/login/verify` when two-factor is on. Recovery codes and email codes are accepted on that screen. Codes are limited to five tries per fifteen minutes per account, at sign-in and when turning two-factor off.

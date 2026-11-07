@@ -1,15 +1,18 @@
-import { ensureUnitCosts, saveUnitCost } from "@/actions/rehab";
+import { saveUnitCost } from "@/actions/rehab";
+import { ensureUnitCosts } from "@/lib/unit-costs";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { SubmitButton } from "@/components/submit-button";
 import { requireRole } from "@/lib/auth";
 import { money, q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
+import { deskCan } from "@/lib/staff";
 
 export const metadata = { title: "Unit costs" };
 
 export default async function CostsPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
-  await requireRole(["ADMIN"]);
+  // Unit costs feed the desk book's rehab budgets, so only that role edits them. The action checks the same.
+  const books = deskCan(await requireRole(["ADMIN"]), "deskBook");
   await ensureUnitCosts();
   const query = await searchParams;
   const costs = await prisma.unitCost.findMany({ where: { region: "South Florida" }, orderBy: { trade: "asc" } });
@@ -25,12 +28,16 @@ export default async function CostsPage({ searchParams }: { searchParams: Promis
           </li>
         ))}
       </ul>
-      <form action={saveUnitCost} className="mt-8 grid max-w-xl gap-3 sm:grid-cols-3">
-        <input name="trade" className="desk-input" aria-label="Trade" placeholder="Trade" required />
-        <input name="unit" className="desk-input" aria-label="Unit" placeholder="sqft, each, square" required />
-        <input name="cost" inputMode="decimal" className="desk-input" aria-label="Cost" placeholder="Cost in dollars" required />
-        <SubmitButton className="h-11 text-[13px] font-medium">Save cost</SubmitButton>
-      </form>
+      {books ? (
+        <form action={saveUnitCost} className="mt-8 grid max-w-xl gap-3 sm:grid-cols-3">
+          <input name="trade" className="desk-input" aria-label="Trade" placeholder="Trade" required />
+          <input name="unit" className="desk-input" aria-label="Unit" placeholder="sqft, each, square" required />
+          <input name="cost" inputMode="decimal" className="desk-input" aria-label="Cost" placeholder="Cost in dollars" required />
+          <SubmitButton className="h-11 text-[13px] font-medium">Save cost</SubmitButton>
+        </form>
+      ) : (
+        <p className="mt-8 text-sm text-muted-foreground">Your desk role reads this page. Changes are for the desk book.</p>
+      )}
     </div>
   );
 }

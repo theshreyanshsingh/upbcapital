@@ -12,17 +12,16 @@ import { bidStanding } from "@/lib/inquiry";
 import { getSettings } from "@/lib/settings";
 import { strikeLimitOf, strikesFor } from "@/lib/strikes";
 import { ACCREDITATION_TEXT } from "@/lib/verification";
+import { BuyerEntityForm } from "@/components/buyer-entity-form";
+import { ENTITY_TYPES, IRA_NOTE, IRA_TITLE_EXAMPLE } from "@/lib/buyer-entities";
+import { INVESTOR_ENTITIES, MAIN_FILE_ENTITIES, entityLabel } from "@/lib/labels";
 import { redirect } from "next/navigation";
 
 export const metadata = { title: "Verification" };
 
-const ENTITIES = [
-  ["INDIVIDUAL", "Individual"],
-  ["LLC", "Limited liability company"],
-  ["TRUST", "Trust"],
-  ["FUND", "Fund"],
-  ["OTHER", "Other entity"],
-] as const;
+const ENTITIES = MAIN_FILE_ENTITIES.map((entity) => [entity.value, entity.label] as const);
+// Extra entities list the usual buying vehicles first.
+const ENTITY_KINDS = ENTITY_TYPES.map((value) => INVESTOR_ENTITIES.find((entity) => entity.value === value)!);
 
 export default async function VerificationPage({
   searchParams,
@@ -32,11 +31,12 @@ export default async function VerificationPage({
   const user = await requireUser();
   if (user.role !== "BUYER") redirect("/");
   const params = await searchParams;
-  const [profile, standing, strikeRows, settings] = await Promise.all([
+  const [profile, standing, strikeRows, settings, entities] = await Promise.all([
     prisma.buyerProfile.findUnique({ where: { userId: user.id } }),
     bidStanding(user.id),
     strikesFor([user.id]),
     getSettings(),
+    prisma.buyerEntity.findMany({ where: { userId: user.id }, orderBy: { createdAt: "asc" } }),
   ]);
   const strikes = strikeRows.get(user.id) ?? [];
   const strikeLimit = strikeLimitOf(settings.strikeLimit);
@@ -129,6 +129,39 @@ export default async function VerificationPage({
           </SubmitButton>
           <p className="text-xs text-muted-foreground">Saving these doesn&apos;t reopen your file or change its status.</p>
         </form>
+      )}
+      {/* More buying entities open once the main file is approved. Each one waits for the desk like the main file. */}
+      {(profile?.status === "APPROVED" || entities.length > 0) && (
+        <section id="entities" aria-labelledby="entities-heading" className="mt-8 scroll-mt-6 border border-border p-6 rounded-xl">
+          <p id="entities-heading" className="eyebrow">Other buying entities</p>
+          <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+            Buy through another LLC, a trust or a self-directed IRA. Once the desk approves one, you choose it when you bid, and the closing papers name it. Your funds credential and record stay with your login.
+          </p>
+          {entities.length > 0 && (
+            <ul className="mt-4 divide-y divide-border border border-border rounded-xl">
+              {entities.map((entity) => (
+                <li key={entity.id} className="px-4 py-3 text-sm">
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <p className="font-medium text-foreground">{entity.name}</p>
+                    <p className={`text-[13px] font-medium ${entity.status === "APPROVED" ? "text-good" : entity.status === "REJECTED" ? "text-bad" : "text-link"}`}>
+                      {entity.status === "SUBMITTED" ? "With the desk" : entity.status === "APPROVED" ? "Approved" : entity.status === "REJECTED" ? "Declined" : entity.status.replaceAll("_", " ").toLowerCase()}
+                    </p>
+                  </div>
+                  <p className="mt-1 text-muted-foreground">
+                    {entityLabel(entity.entityType)}
+                    {entity.entityType === "IRA" ? ` · custodian ${entity.iraCustodian} · vests as ${entity.iraAccountTitle}` : entity.jurisdiction ? ` · formed in ${entity.jurisdiction}` : ""}
+                  </p>
+                  {entity.reviewerNote && <p className="mt-1 text-muted-foreground">The desk: {entity.reviewerNote}</p>}
+                </li>
+              ))}
+            </ul>
+          )}
+          {profile?.status === "APPROVED" ? (
+            <BuyerEntityForm kinds={ENTITY_KINDS} iraNote={IRA_NOTE} titleExample={IRA_TITLE_EXAMPLE} />
+          ) : (
+            <p className="mt-4 text-sm text-muted-foreground">New entities open again once the desk approves your main file.</p>
+          )}
+        </section>
       )}
       <form action={submitVerification} className="mt-8 space-y-5 glass p-6">
         <label className="block">

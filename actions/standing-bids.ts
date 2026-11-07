@@ -33,6 +33,7 @@ export async function confirmStandingBid(formData: FormData) {
     user,
     price: Number(String(formData.get("price") || "").replace(/[$,]/g, "")),
     goodUntil: String(formData.get("goodUntil") || ""),
+    buyerEntityId: String(formData.get("buyerEntityId") || ""),
   });
   if (result.error !== null) {
     redirect(result.verification ? `/buyer/verification?error=${encodeURIComponent(result.error)}` : `/buyer/buy-box?error=${encodeURIComponent(result.error)}#invitations`);

@@ -1,11 +1,13 @@
 import type { ListingStatus } from "@prisma/client";
 import { notifySeats, onGroupAccepted, onGroupCounter, onGroupDeclined } from "@/lib/group-events";
-import { deadlinePassed } from "@/lib/auction";
+import { deadlinePassed, sealedFromSeller } from "@/lib/auction";
 import { audit } from "@/lib/audit";
+import { bidderAlias } from "@/lib/bidder-alias";
 import { unset } from "@/lib/db-filters";
 import { openClosing, partConflict, tradeConflict } from "@/lib/closing-service";
 import { notify, notifyDesk } from "@/lib/email";
 import { buyNowAgreed, buyNowClearBlock, buyNowConsent, buyNowSetBlock, samePrice } from "@/lib/buy-now";
+import { entityAwardBlock } from "@/lib/buyer-entities";
 import { listingWithdrawBlock } from "@/lib/listing-status";
 import { loanPriceProblem, standingLoanPrices, sumPrices, type LoanPrices } from "@/lib/loan-prices";
 import { bidExpired, buyerPrice, withdrawBlock, type OfferMoney } from "@/lib/offers";
@@ -224,6 +226,9 @@ export async function checkAward(inquiryId: string, part?: { noteIds: string[] }
   if (seats.some((seat) => seat.user.accountStatus !== "APPROVED")) return { error: "A group seat holder's account is not approved." } as const;
   const parties = [offer.buyerId, offer.listing.sellerId, ...seats.map((seat) => seat.userId)];
   if (await ofacHold({ listingId: offer.listingId, userIds: parties })) return { error: OFAC_HOLD_MESSAGE } as const;
+  // The papers name the entity the bid is for, so it must still be one the desk approved.
+  const entityBlock = await entityAwardBlock(offer);
+  if (entityBlock) return { error: entityBlock } as const;
   // A strike pause stops awards as well as new bids, so a bid placed before the pause can't win during it. The
   // error reaches the desk only: a seller whose approval stops here sees a pending notice.
   const standings = await Promise.all([offer.buyerId, ...seats.map((seat) => seat.userId)].map((userId) => strikeStanding(userId)));
@@ -295,8 +300,9 @@ function sameLoans(a: readonly string[], b: readonly string[]) {
   return left.size === new Set(b).size && b.every((noteId) => left.has(noteId));
 }
 
-// A question to the seller about part of a pool names the loans. The audit log is the record of which ones, keyed to
-// the moment of the question, so a later question about the whole pool or another part replaces it.
+// A question to the seller about part of a pool names the loans, on the bid's sellerAskedNoteIds, which every new
+// question rewrites. The audit log keeps the record too, keyed to the moment of the question, and is how a question
+// asked before the field existed is still read.
 const PART_ASK = "SELLER_ASKED_PART";
 
 async function recordPartAsk(inquiryId: string, askedAt: Date, noteIds: string[], actorId: string | null) {
@@ -313,8 +319,10 @@ export function readPartAsk(detail: string) {
 
 // The loans the seller is being asked about, when the open question is about part of the pool. Null for a question
 // about the whole bid, or no question.
-export async function partAsked(offer: { id: string; sellerAskedAt: Date | null }) {
+export async function partAsked(offer: { id: string; sellerAskedAt: Date | null; sellerAskedNoteIds?: string[] | null }) {
   if (!offer.sellerAskedAt) return null;
+  // askSeller is the one writer of sellerAskedAt, and it sets the loans in the same write, empty for the whole bid.
+  if (offer.sellerAskedNoteIds?.length) return offer.sellerAskedNoteIds;
   const at = offer.sellerAskedAt.toISOString();
   const rows = await prisma.auditEvent.findMany({ where: { entityId: offer.id, action: PART_ASK }, orderBy: { createdAt: "desc" }, take: 10, select: { detail: true } });
   for (const row of rows) {
@@ -343,7 +351,7 @@ export async function askSeller(offer: Offer, price: number, part?: { noteIds: s
   const askedAt = new Date();
   await prisma.inquiry.update({
     where: { id: offer.id },
-    data: { sellerAskedAt: askedAt, sellerAskedAmount: price, sellerAnsweredAt: null, sellerDeclined: null },
+    data: { sellerAskedAt: askedAt, sellerAskedAmount: price, sellerAnsweredAt: null, sellerDeclined: null, sellerAskedNoteIds: part ? part.noteIds : [] },
   });
   if (part) await recordPartAsk(offer.id, askedAt, part.noteIds, part.actorId);
   const link = `${process.env.NEXT_PUBLIC_APP_URL || ""}${sellerPage(offer.listing, offer.listing.seller.role)}`;
@@ -655,6 +663,7 @@ export async function withdrawBid(inquiryId: string, buyerId: string, now = new 
   await notifyDesk(
     `Bid withdrawn · ${title}`,
     `${offer.buyer.name} withdrew their bid of ${dollars(price)}${offer.noteId ? " for one loan" : ""}.${asked ? " The seller had been asked to approve it and was told." : ""}`,
+    { capability: "sealedBids" },
   );
   if (asked) {
     await notify(
@@ -709,8 +718,68 @@ export async function recordSellerCounter(inquiryId: string, sellerId: string, a
   await notifyDesk(
     `Seller countered · ${title}`,
     `The seller answered ${dollars(asked)} with a counter at ${dollars(amount)}. It's posted to the buyer. If they accept, it can be awarded without asking the seller again.`,
+    { capability: "sealedBids" },
   );
   return { error: null, amount } as const;
+}
+
+// The seller asks the desk to award a bid of their choosing, which need not be the one the desk recommended. It
+// records their agreement to that bid's price as it stands, the way an approval does, so the award's checks pass on
+// it and the desk awards as usual. A bid sealed from the seller can't be picked, and one the desk asked them about is
+// answered where it waits. The same loans sell once, so a pick replaces an earlier pick on bids that can't both win,
+// and a recommendation waiting on one of those is declined.
+export async function sellerPickBid(input: { inquiryId: string; sellerId: string; price: number; now?: Date }) {
+  const now = input.now ?? new Date();
+  const offer = await prisma.inquiry.findUnique({ where: { id: input.inquiryId }, include: { listing: true, messages: true, buyer: { select: { name: true } } } });
+  if (!offer || offer.listing.sellerId !== input.sellerId) return { error: "That bid isn't on your listing." } as const;
+  if (offer.type !== "OFFER" || (offer.status !== "OPEN" && offer.status !== "REVIEWED")) return { error: "That bid is no longer open." } as const;
+  if (offer.listing.status !== "APPROVED") return { error: "This listing isn't live right now, so you can't pick a bid." } as const;
+  if (sealedFromSeller(offer.listing, now)) return { error: "Bids are sealed until the deadline, so you can pick one once it passes." } as const;
+  if (bidExpired(offer.expiresAt, now)) return { error: "That bid passed its good-until date, so it can't be awarded." } as const;
+  if (awaitingSeller(offer)) return { error: "The desk asked you about this bid. Approve, decline or counter it where it waits." } as const;
+  const price = buyerPrice(offer.amount, pricedMessages(offer.messages), offer.buyerId);
+  if (!price || price <= 0) return { error: "That bid has no amount." } as const;
+  // The seller binds to the figure they saw. A change since the page loaded asks them to look again.
+  if (!askedPriceStands(input.price, price)) return { error: "The buyer changed this bid since the page loaded. Check the new figure and pick again." } as const;
+  // Claimed on the bid as read, so a desk question or an award landing in the same instant wins or loses cleanly.
+  const picked = await prisma.inquiry.updateMany({
+    where: { id: offer.id, status: { in: [...LIVE] }, ...(offer.sellerAskedAt ? { sellerAskedAt: offer.sellerAskedAt } : unset("sellerAskedAt")) },
+    data: { sellerRequestedAt: now, sellerApprovedAmount: price, sellerDeclined: false },
+  });
+  if (picked.count !== 1) return { error: "This bid changed a moment ago. Reload the page and try again." } as const;
+  // Bids that can't both win: the same loan or the whole listing for a loan bid, every other bid for a whole one.
+  const rivals = {
+    listingId: offer.listingId,
+    id: { not: offer.id },
+    type: "OFFER" as const,
+    status: { in: [...LIVE] },
+    ...(offer.noteId ? { OR: [{ noteId: offer.noteId }, ...unset("noteId").OR] } : {}),
+  };
+  const replaced = await prisma.inquiry.updateMany({ where: { ...rivals, sellerRequestedAt: { not: null } }, data: { sellerRequestedAt: null, sellerApprovedAmount: null } });
+  const asked = await prisma.inquiry.findMany({ where: { ...rivals, sellerAskedAt: { not: null } }, select: { id: true, sellerAskedAt: true, sellerAnsweredAt: true, sellerAskedAmount: true } });
+  let declined = 0;
+  for (const row of asked.filter(awaitingSeller)) {
+    const answered = await prisma.inquiry.updateMany({ where: sameQuestion(row), data: { sellerAnsweredAt: now, sellerDeclined: true } });
+    if (answered.count !== 1) continue;
+    declined += 1;
+    await audit(input.sellerId, "SELLER_DECLINED", "inquiry", row.id, `${offer.listing.title} · ${dollars(Number(row.sellerAskedAmount ?? 0))} · picked another bid`);
+  }
+  const scope = offer.noteId ? "one loan" : "the whole listing";
+  await audit(
+    input.sellerId,
+    "SELLER_PICKED",
+    "inquiry",
+    offer.id,
+    `${offer.listing.title} · ${dollars(price)} for ${scope} · the seller agrees to sell at this price${replaced.count ? ` · replaces an earlier pick` : ""}${declined ? ` · declined ${declined} recommended bid${declined === 1 ? "" : "s"}` : ""}`,
+  );
+  const alias = await bidderAlias(offer.listingId, offer.buyerId);
+  const wait = offer.listing.bidMode !== "NONE" && !deadlinePassed(offer.listing.bidDeadline, now) ? " It can be awarded after the bid deadline." : "";
+  await notifyDesk(
+    `Seller picked a bid · ${offer.listing.title}`,
+    `The seller asked the desk to award ${offer.buyer.name}'s bid (${alias} to the seller) of ${dollars(price)} for ${scope}, and agreed to sell at that price. Award it from the offer book.${wait}${declined ? " The seller declined the bid the desk recommended." : ""}`,
+    { capability: "sealedBids" },
+  );
+  return { error: null, price, alias, declined } as const;
 }
 
 const OPEN_GROUPS = ["GATHERING", "OFFERED", "COUNTERED"] as const;

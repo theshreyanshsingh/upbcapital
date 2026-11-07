@@ -8,12 +8,14 @@ import { SubmitButton } from "@/components/submit-button";
 import { requireRole } from "@/lib/auth";
 import { depositTerms } from "@/lib/closing-clock";
 import { diligenceDays } from "@/lib/closing-service";
+import { effectiveBps, feesFor } from "@/lib/fee-schedule";
 import { money, prettyDate, q } from "@/lib/format";
 import { marketRate, rateStamp, type MarketRate } from "@/lib/indicative";
 import { LIEN_POSITIONS, PAYMENT_STATUSES } from "@/lib/labels";
 import { prisma } from "@/lib/prisma";
 import { getSettings, isPro } from "@/lib/settings";
 import { openInvitations, ruleLabel, ruleOf, type StandingBox } from "@/lib/standing-bids";
+import { bidEntities } from "@/lib/buyer-entities";
 
 export const metadata = { title: "Buy box" };
 
@@ -30,7 +32,7 @@ export default async function BuyBoxPage({
     include: { matches: { where: { listing: { status: { in: ["APPROVED", "PENDING"] } } }, include: { listing: true }, orderBy: { score: "desc" }, take: 5 } },
     orderBy: { createdAt: "desc" },
   });
-  const [invitations, settings] = await Promise.all([openInvitations(user.id), getSettings()]);
+  const [invitations, settings, entities] = await Promise.all([openInvitations(user.id), getSettings(), bidEntities(user.id)]);
   const pro = isPro(user);
   const rate = marketRate(settings);
   // Spread-priced invitations whose rate is over a week old, so the buyer knows before confirming.
@@ -68,9 +70,11 @@ export default async function BuyBoxPage({
                     price={price}
                     ofUpb={upb > 0 ? (price / upb) * 100 : null}
                     invitedAt={prettyDate(invite.invitedAt)}
-                    premiumBps={settings.buyerPremiumBps}
+                    // The listing's own premium on this price, graded when it went live with a schedule.
+                    premiumBps={effectiveBps(feesFor(invite.listing, settings, price))}
                     deposit={deposit}
                     diligenceDays={diligence}
+                    entities={entities}
                   />
                 );
               })}

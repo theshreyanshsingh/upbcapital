@@ -49,14 +49,51 @@ function still<K extends string>(field: K, seen: Date | null) {
   return seen ? ({ [field]: seen } as Record<K, Date>) : unset(field);
 }
 
-type JobResult = { job: string; ok: boolean; line: string };
+// One job's part of a run: whether it finished clean, its line in the summary, and how long it took.
+export type JobResult = { job: string; ok: boolean; line: string; ms?: number };
 
-function describe(job: string, outcome: PromiseSettledResult<Tally | string>): JobResult {
-  if (outcome.status === "rejected") return { job, ok: false, line: `${job} failed: ${errorText(outcome.reason)}.` };
+function describe(job: string, outcome: PromiseSettledResult<Tally | string>, ms?: number): JobResult {
+  if (outcome.status === "rejected") return { job, ok: false, line: `${job} failed: ${errorText(outcome.reason)}.`, ms };
   const value = outcome.value;
-  if (typeof value === "string") return { job, ok: true, line: `${value.charAt(0).toUpperCase()}${value.slice(1)}.` };
+  if (typeof value === "string") return { job, ok: true, line: `${value.charAt(0).toUpperCase()}${value.slice(1)}.`, ms };
   const ok = value.failed === 0;
-  return { job, ok, line: `${job} ${value.sent}${ok ? "" : `, ${value.failed} failed (${value.error})`}.` };
+  return { job, ok, line: `${job} ${value.sent}${ok ? "" : `, ${value.failed} failed (${value.error})`}.`, ms };
+}
+
+// The run record keeps its one summary field, written as JSON: the summary sentence as before, and each job's
+// result, so the desk's job history can mark failures without reading the sentence.
+const SUMMARY_VERSION = 1;
+
+export function jobSummary(results: JobResult[]) {
+  return JSON.stringify({ v: SUMMARY_VERSION, text: results.map((result) => result.line).join(" "), jobs: results });
+}
+
+export type JobSummary = { text: string; jobs: JobResult[]; failed: string[] };
+
+// A run record as the job history shows it. Records from before the JSON were the sentence alone; each job's line
+// there starts with a capital after the last one's full stop, and a failure says "failed".
+export function readJobSummary(summary: string): JobSummary {
+  try {
+    const parsed = JSON.parse(summary) as { v?: number; text?: unknown; jobs?: unknown };
+    if (parsed && parsed.v === SUMMARY_VERSION && Array.isArray(parsed.jobs)) {
+      const jobs = parsed.jobs
+        .filter((row): row is JobResult => Boolean(row) && typeof row.job === "string" && typeof row.line === "string" && typeof row.ok === "boolean")
+        .map((row) => ({ job: row.job, ok: row.ok, line: row.line, ...(typeof row.ms === "number" ? { ms: row.ms } : {}) }));
+      return { text: typeof parsed.text === "string" ? parsed.text : jobs.map((row) => row.line).join(" "), jobs, failed: jobs.filter((row) => !row.ok).map((row) => row.job) };
+    }
+  } catch {
+    // The sentence from before the JSON.
+  }
+  const text = summary.trim();
+  const jobs = text
+    ? text.split(/(?<=\.)\s+(?=[A-Z])/).map((line) => {
+        const failedJob = /^(.+?) failed: /.exec(line)?.[1] ?? null;
+        const partial = /^(.+?) \d+, \d+ failed \(/.exec(line)?.[1] ?? null;
+        const job = failedJob ?? partial ?? (/^(.+?) \d+\.$/.exec(line)?.[1] ?? line.replace(/\.$/, ""));
+        return { job, ok: !failedJob && !partial, line };
+      })
+    : [];
+  return { text, jobs, failed: jobs.filter((row) => !row.ok).map((row) => row.job) };
 }
 
 export type Job = [name: string, run: () => Promise<Tally | string>];
@@ -86,22 +123,54 @@ export async function runJobs(now = new Date()) {
     // Losing bidders are asked once to certify they destroyed the room's files, and reminded once a week later.
     ["Destruction requests", () => sendDestructionRequests(now)],
     ["Destruction reminders", () => remindDestruction(now)],
+    ["Treasury 10-year", () => import("@/lib/treasury").then((treasury) => treasury.treasuryJob(now))],
   ]);
 }
 
 // Each job settles on its own, so one failure neither stops the others nor loses the run record.
 export async function runJobList(jobs: Job[]) {
   const startedAt = new Date();
-  const settled = await Promise.allSettled(jobs.map(([, run]) => Promise.resolve().then(run)));
-  const results = settled.map((outcome, index) => describe(jobs[index][0], outcome));
+  const took: number[] = [];
+  const settled = await Promise.allSettled(
+    jobs.map(([, run], index) => {
+      const start = Date.now();
+      return Promise.resolve().then(run).finally(() => {
+        took[index] = Date.now() - start;
+      });
+    }),
+  );
+  const results = settled.map((outcome, index) => describe(jobs[index][0], outcome, took[index]));
   const failed = results.filter((result) => !result.ok).map((result) => result.job);
   const summary = results.map((result) => result.line).join(" ");
   try {
-    await prisma.jobRun.create({ data: { startedAt, finishedAt: new Date(), summary } });
+    await prisma.jobRun.create({ data: { startedAt, finishedAt: new Date(), summary: jobSummary(results) } });
   } catch (error) {
     console.error("[upb-jobs] the run record was not saved:", errorText(error), summary);
   }
   return { startedAt, summary, failed, results };
+}
+
+// How long a run or a job took, as the job history prints it. A run with no finish time never wrote one.
+export function durationText(ms: number | null | undefined) {
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return "Didn't finish";
+  if (ms < 1000) return "Under a second";
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds} second${seconds === 1 ? "" : "s"}`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return `${minutes} min${rest ? ` ${rest} s` : ""}`;
+}
+
+export type JobRunRow = { id: string; startedAt: Date; finishedAt: Date | null; durationMs: number | null; summary: JobSummary; failed: boolean };
+
+// The desk's job history, newest first. A run counts as failed when a job in it failed or it never finished.
+export async function jobHistory(take = 50): Promise<JobRunRow[]> {
+  const runs = await prisma.jobRun.findMany({ orderBy: { startedAt: "desc" }, take });
+  return runs.map((run) => {
+    const summary = readJobSummary(run.summary);
+    const durationMs = run.finishedAt ? run.finishedAt.getTime() - run.startedAt.getTime() : null;
+    return { id: run.id, startedAt: run.startedAt, finishedAt: run.finishedAt, durationMs, summary, failed: !run.finishedAt || summary.failed.length > 0 };
+  });
 }
 
 export async function sendDueDigests(now = new Date()) {

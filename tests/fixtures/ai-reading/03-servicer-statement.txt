@@ -1,0 +1,14 @@
+MORTGAGE STATEMENT                                   Statement Date: 10/15/2026
+FICTIONAL SAMPLE FOR TESTING ONLY
+Account Number: 0042-118-905
+Mortgagor: Luis and Carmen Ortega
+Property Location: 1502 Harbour Island Blvd, Unit 4, Tampa, FL 33602
+
+Interest Rate: 7.125%          Maturity Date: 03/01/2051
+Outstanding Principal Balance: $186,212.55
+Monthly P&I: $1,284.06
+Lien Position     1st
+Date of Last Payment: September 3, 2026
+Origination Date: 02/14/2021
+
+Amount due on 11/01/2026: $1,712.40, which includes escrow of $428.34.

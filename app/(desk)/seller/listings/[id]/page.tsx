@@ -10,6 +10,7 @@ import { AuctionForm } from "@/components/auction-form";
 import { ComplianceNote } from "@/components/compliance-note";
 import { Countdown } from "@/components/countdown";
 import { DiscrepancyAnswers } from "@/components/discrepancy-answers";
+import { ReaderSummary } from "@/components/document-reader";
 import { QuestionQueue } from "@/components/listing-questions";
 import { RoomAccessPanel } from "@/components/room-access";
 import { RoomFiles } from "@/components/room-files";
@@ -32,11 +33,10 @@ import { docLabel } from "@/lib/labels";
 import { money, num, prettyDate, q } from "@/lib/format";
 import { launchPending, launchTime } from "@/lib/launch-rules";
 import { buyerPrice } from "@/lib/offers";
-import { bpsToPercent } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
 import { deskBidNotAcceptable } from "@/lib/awards";
 import { reviewLabel } from "@/lib/listing-status";
-import { listingFeeBps } from "@/lib/desk-fees";
+import { chargedText, feesFor } from "@/lib/fee-schedule";
 import { getSettings } from "@/lib/settings";
 
 export const metadata = { title: "Your listing" };
@@ -64,8 +64,8 @@ export default async function SellerListingPage({
   ]);
   const deskBidBlock = deskBidNotAcceptable(listing);
   const ask = listing.notes.reduce((sum, note) => sum + num(note.askingPrice), 0);
-  const fees = listingFeeBps(listing, settings);
-  const commission = listing.sellerCommissionCents != null ? listing.sellerCommissionCents / 100 : (ask * fees.commissionBps) / 10000;
+  const fees = feesFor(listing, settings, listing.salePrice ? num(listing.salePrice) : ask);
+  const commission = listing.sellerCommissionCents != null ? listing.sellerCommissionCents / 100 : fees.commissionCents / 100;
   const net = listing.netToSellerCents != null ? listing.netToSellerCents / 100 : ask - commission;
   const editable = listing.status === "SUBMITTED" || listing.status === "CHANGES_REQUESTED";
   // The desk itself as the seller still stands behind its own wall when its role doesn't read sealed bids.
@@ -113,6 +113,7 @@ export default async function SellerListingPage({
           canAnswer={listing.sellerId === user.id}
           listingStatus={listing.status}
         />
+        <ReaderSummary listingId={listing.id} />
         {answerable(listing.status) && <ServicerReportPanel listingId={listing.id} from="seller" />}
         {editable && listing.kind === "SINGLE" && (
           <Link href={`/seller/listings/${listing.id}/edit`} className="mt-6 inline-flex h-11 items-center border border-link/40 px-5 text-[13px] font-medium text-link rounded-lg">Edit and resubmit</Link>
@@ -215,7 +216,7 @@ export default async function SellerListingPage({
         <p className="mt-3 font-semibold tracking-tight text-3xl text-foreground">{money(listing.salePrice ? num(listing.salePrice) : ask)}</p>
         <p className="text-[13px] font-medium text-muted-foreground">{listing.salePrice ? "Sale price" : "Asking price"}</p>
         <dl className="mt-5 space-y-2 text-sm">
-          <div className="flex justify-between"><dt className="text-muted-foreground">Commission {bpsToPercent(fees.commissionBps).toFixed(2)}%</dt><dd>{money(commission)}</dd></div>
+          <div className="flex justify-between"><dt className="text-muted-foreground">Commission {chargedText(fees, "commission")}</dt><dd>{money(commission)}</dd></div>
           <div className="flex justify-between border-t border-border pt-2"><dt>Estimated net</dt><dd className="font-semibold tracking-tight text-xl">{money(net)}</dd></div>
         </dl>
         {report ? (

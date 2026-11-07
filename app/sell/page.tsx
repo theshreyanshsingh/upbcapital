@@ -26,6 +26,9 @@ export default async function SellPage({
       <p className="mt-4 max-w-xl text-sm leading-relaxed text-muted-foreground">
         A few facts produce a desk range from the same bands and comps used on the book. It is not an offer. The listing still waits on review.
       </p>
+      <p className="mt-3 max-w-xl text-sm leading-relaxed text-muted-foreground">
+        Several loans, or a tape? <Link href="/sell/value" className="text-link">Value my loans</Link> prices up to ten typed loans or a whole tape, and the desk follows up with its own range.
+      </p>
       {error && <p role="alert" className="mt-6 border border-bad/40 bg-bad/10 px-4 py-3 text-sm text-bad rounded-xl">{error}</p>}
       <form action={quoteLead} className="glass mt-8 grid gap-4 p-6 md:grid-cols-2 md:p-8">
         <label className="block"><span className="text-[13px] text-muted-foreground">Name</span><input name="name" required className="desk-input mt-2" aria-label="Name" /></label>

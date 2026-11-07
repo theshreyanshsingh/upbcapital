@@ -13,10 +13,13 @@ export function RehabPanel({
   basis,
   costs,
   estimate,
+  readOnly = false,
 }: {
   holdingId: string;
   basis: number;
   costs: Cost[];
+  // A desk role that doesn't work the book reads the picture without the forms. The actions check the same.
+  readOnly?: boolean;
   estimate: {
     arv: unknown;
     holdingMonths: number;
@@ -34,10 +37,14 @@ export function RehabPanel({
       <section className="glass mt-8 p-6">
         <p className="eyebrow">Rehab estimator</p>
         <p className="mt-2 max-w-2xl text-sm text-muted-foreground">Room and trade lines, contractor bids, a draw schedule, and a resale or rental picture. Unit costs start from the South Florida schedule.</p>
-        <form action={openEstimate} className="mt-4">
-          <input type="hidden" name="holdingId" value={holdingId} />
-          <SubmitButton className="h-11 text-[13px] font-medium">Open the estimator</SubmitButton>
-        </form>
+        {readOnly ? (
+          <p className="mt-4 text-sm text-muted-foreground">No estimate on this file yet.</p>
+        ) : (
+          <form action={openEstimate} className="mt-4">
+            <input type="hidden" name="holdingId" value={holdingId} />
+            <SubmitButton className="h-11 text-[13px] font-medium">Open the estimator</SubmitButton>
+          </form>
+        )}
       </section>
     );
   }
@@ -63,7 +70,12 @@ export function RehabPanel({
           ? ` · NOI ${money(picture.noi)} · cap ${picture.capRate == null ? "—" : `${picture.capRate.toFixed(1)}%`}`
           : ` · resale profit ${money(picture.resaleProfit)} against ARV ${money(Number(estimate.arv))}`}
       </p>
-      <form action={saveEstimate} className="mt-5 grid gap-3 sm:grid-cols-3">
+      {readOnly && (
+        <p className="mt-2 text-sm text-muted-foreground">
+          ARV {money(Number(estimate.arv))} · {estimate.holdingMonths} months at {money(Number(estimate.monthlyHold))} a month · rent {money(Number(estimate.monthlyRent))} · expenses {Number(estimate.expenseRatio)}%
+        </p>
+      )}
+      {!readOnly && <form action={saveEstimate} className="mt-5 grid gap-3 sm:grid-cols-3">
         <input type="hidden" name="holdingId" value={holdingId} />
         <label className="block"><span className="text-[13px] text-muted-foreground">ARV</span><input name="arv" defaultValue={Number(estimate.arv) || ""} className="desk-input mt-2" aria-label="After repair value" /></label>
         <label className="block"><span className="text-[13px] text-muted-foreground">Hold months</span><input name="holdingMonths" defaultValue={estimate.holdingMonths} className="desk-input mt-2" aria-label="Holding months" /></label>
@@ -78,7 +90,7 @@ export function RehabPanel({
           </select>
         </label>
         <SubmitButton className="h-11 text-[13px] font-medium">Save the picture</SubmitButton>
-      </form>
+      </form>}
 
       <div className="mt-8 grid gap-8 lg:grid-cols-2">
         <div>
@@ -91,18 +103,20 @@ export function RehabPanel({
               </li>
             ))}
           </ul>
-          <form action={addRehabLine} className="mt-4 grid gap-3">
-            <input type="hidden" name="holdingId" value={holdingId} />
-            <input name="room" className="desk-input" aria-label="Room" placeholder="Kitchen, bath, roof" />
-            <select name="trade" className="desk-input" aria-label="Trade" defaultValue={costs[0]?.trade || ""}>
-              {costs.map((cost) => (
-                <option key={`${cost.trade}-${cost.unit}`} value={cost.trade}>{cost.trade} · {cost.unit} · {money(cost.costCents / 100)}</option>
-              ))}
-            </select>
-            <input name="quantity" className="desk-input" aria-label="Quantity" placeholder="Quantity" />
-            <input name="unitCost" className="desk-input" aria-label="Unit cost" placeholder="Unit cost, dollars" />
-            <SubmitButton variant="outline" className="h-10 text-[13px] font-medium">Add line</SubmitButton>
-          </form>
+          {!readOnly && (
+            <form action={addRehabLine} className="mt-4 grid gap-3">
+              <input type="hidden" name="holdingId" value={holdingId} />
+              <input name="room" className="desk-input" aria-label="Room" placeholder="Kitchen, bath, roof" />
+              <select name="trade" className="desk-input" aria-label="Trade" defaultValue={costs[0]?.trade || ""}>
+                {costs.map((cost) => (
+                  <option key={`${cost.trade}-${cost.unit}`} value={cost.trade}>{cost.trade} · {cost.unit} · {money(cost.costCents / 100)}</option>
+                ))}
+              </select>
+              <input name="quantity" className="desk-input" aria-label="Quantity" placeholder="Quantity" />
+              <input name="unitCost" className="desk-input" aria-label="Unit cost" placeholder="Unit cost, dollars" />
+              <SubmitButton variant="outline" className="h-10 text-[13px] font-medium">Add line</SubmitButton>
+            </form>
+          )}
         </div>
         <div>
           <p className="eyebrow">Contractor bids</p>
@@ -111,7 +125,7 @@ export function RehabPanel({
             {estimate.bids.map((bid) => (
               <li key={bid.id} className="flex items-center justify-between gap-3">
                 <span className="text-foreground">{bid.contractor} · {money(Number(bid.amount))}{bid.days ? ` · ${bid.days} days` : ""}{bid.selected ? " · selected" : ""}</span>
-                {!bid.selected && (
+                {!bid.selected && !readOnly && (
                   <form action={selectContractor}>
                     <input type="hidden" name="holdingId" value={holdingId} />
                     <input type="hidden" name="bidId" value={bid.id} />
@@ -121,23 +135,26 @@ export function RehabPanel({
               </li>
             ))}
           </ul>
-          <form action={addContractorBid} className="mt-4 grid gap-3">
-            <input type="hidden" name="holdingId" value={holdingId} />
-            <input name="contractor" className="desk-input" aria-label="Contractor" placeholder="Contractor" />
-            <input name="amount" inputMode="decimal" className="desk-input" aria-label="Bid amount" placeholder="Bid" />
-            <input name="days" className="desk-input" aria-label="Bid days" placeholder="Days" />
-            <SubmitButton variant="outline" className="h-10 text-[13px] font-medium">Add bid</SubmitButton>
-          </form>
+          {!readOnly && (
+            <form action={addContractorBid} className="mt-4 grid gap-3">
+              <input type="hidden" name="holdingId" value={holdingId} />
+              <input name="contractor" className="desk-input" aria-label="Contractor" placeholder="Contractor" />
+              <input name="amount" inputMode="decimal" className="desk-input" aria-label="Bid amount" placeholder="Bid" />
+              <input name="days" className="desk-input" aria-label="Bid days" placeholder="Days" />
+              <SubmitButton variant="outline" className="h-10 text-[13px] font-medium">Add bid</SubmitButton>
+            </form>
+          )}
         </div>
       </div>
 
       <div className="mt-8">
         <p className="eyebrow">Draws</p>
         <ul className="mt-3 space-y-2 text-sm">
+          {readOnly && estimate.draws.length === 0 && <li className="text-muted-foreground">No draws yet.</li>}
           {estimate.draws.map((draw) => (
             <li key={draw.id} className="flex items-center justify-between gap-3 text-foreground">
               <span>{draw.label} · {Number(draw.percent)}% · {money(drawDollars(picture.hard, Number(draw.percent)))}{draw.fundedAt ? " · funded" : ""}</span>
-              {!draw.fundedAt && (
+              {!draw.fundedAt && !readOnly && (
                 <form action={fundDraw}>
                   <input type="hidden" name="holdingId" value={holdingId} />
                   <input type="hidden" name="id" value={draw.id} />
@@ -147,12 +164,14 @@ export function RehabPanel({
             </li>
           ))}
         </ul>
-        <form action={addDraw} className="mt-4 flex flex-wrap gap-3">
-          <input type="hidden" name="holdingId" value={holdingId} />
-          <input name="label" className="desk-input" aria-label="Draw name" placeholder="Rough, finish" />
-          <input name="percent" className="desk-input w-28" aria-label="Draw percent" placeholder="%" />
-          <SubmitButton variant="outline" className="h-11 text-[13px] font-medium">Add draw</SubmitButton>
-        </form>
+        {!readOnly && (
+          <form action={addDraw} className="mt-4 flex flex-wrap gap-3">
+            <input type="hidden" name="holdingId" value={holdingId} />
+            <input name="label" className="desk-input" aria-label="Draw name" placeholder="Rough, finish" />
+            <input name="percent" className="desk-input w-28" aria-label="Draw percent" placeholder="%" />
+            <SubmitButton variant="outline" className="h-11 text-[13px] font-medium">Add draw</SubmitButton>
+          </form>
+        )}
       </div>
     </section>
   );

@@ -55,6 +55,9 @@ export default async function MarketDispatchPage() {
           {user.marketDispatch === true ? "This issue reaches you by email on the first of each month. " : "Each issue can reach you by email on the first of the month. "}
           <Link href="/account/notifications" className="text-link">{user.marketDispatch === true ? "Change it under Notices" : "Turn it on under Notices"}</Link>.
         </p>
+        <p>
+          Earlier issues are in the <Link href="/market/dispatch" className="text-link">dispatch archive</Link>.
+        </p>
       </footer>
     </div>
   );

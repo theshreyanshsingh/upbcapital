@@ -11,6 +11,7 @@ import { sanctionSource } from "@/lib/ofac";
 import { prisma } from "@/lib/prisma";
 import { openReviewWhere, reviewKey } from "@/lib/screening";
 import { getSettings } from "@/lib/settings";
+import { deskCan } from "@/lib/staff";
 
 export const metadata = { title: "Compliance" };
 
@@ -19,7 +20,8 @@ export default async function CompliancePage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  await requireRole(["ADMIN"]);
+  // Every desk role reads the page. Decisions, screens and settings here are compliance work; the actions check the same.
+  const vets = deskCan(await requireRole(["ADMIN"]), "compliance");
   const params = await searchParams;
   // Open reviews and confirmed matches are holds, so every one shows. Only the cleared history is cut short.
   const [settings, disclosures, checks, openRows, confirmedRows, clearedRows, source] = await Promise.all([
@@ -51,10 +53,11 @@ export default async function CompliancePage({
         lede="State notes show on the listing and the closing checklist. Seller-financed paper also carries the Dodd-Frank and SAFE Act reminders. None of this is a legal opinion."
       />
       <Notice notice={q(params, "notice")} error={q(params, "error")} />
+      {!vets && <p className="mt-4 text-sm text-muted-foreground">Your desk role reads this page. Changes are for compliance.</p>}
 
       <section className="glass mt-8 p-6">
         <p className="eyebrow">State disclosure</p>
-        <form action={saveDisclosure} className="mt-4 grid gap-3">
+        {vets && <form action={saveDisclosure} className="mt-4 grid gap-3">
           <div className="grid gap-3 sm:grid-cols-[120px_minmax(0,1fr)]">
             <select name="state" defaultValue={florida?.state || "FL"} className="desk-input" aria-label="State">
               {US_STATES.map((state) => <option key={state} value={state}>{state}</option>)}
@@ -63,8 +66,9 @@ export default async function CompliancePage({
           </div>
           <textarea name="body" defaultValue={florida?.body || FLORIDA_DISCLOSURE.body} className="desk-input min-h-32" aria-label="Disclosure" required />
           <SubmitButton className="h-11 w-fit text-[13px] font-medium">Save disclosure</SubmitButton>
-        </form>
+        </form>}
         <ul className="mt-6 space-y-3">
+          {!vets && disclosures.length === 0 && <li className="text-sm text-muted-foreground">No state notes saved yet.</li>}
           {disclosures.map((row) => (
             <li key={row.state} className="text-sm">
               <p className="text-foreground">{row.state}</p>
@@ -95,7 +99,7 @@ export default async function CompliancePage({
               <p className="text-sm text-foreground">{check.name}{check.matched ? ` · matched ${check.matched}` : ""}</p>
               <p className="mt-1 text-xs text-muted-foreground">{check.context || "Screened before reviews were tracked"} · {check.provider} · {prettyDate(check.createdAt)}</p>
               {check.detail && <p className="mt-1 text-xs text-muted-foreground">{check.detail}</p>}
-              <form action={decideOfacReview} className="mt-3 space-y-2">
+              {vets && <form action={decideOfacReview} className="mt-3 space-y-2">
                 {/* Not name="id": it shadows form.id in the DOM, and React then drops the clicked button's value. */}
                 <input type="hidden" name="checkId" value={check.id} />
                 <input name="note" className="desk-input" aria-label={`Reason for the decision on ${check.name}`} placeholder="What you checked: date of birth, address, country" required minLength={3} />
@@ -103,7 +107,7 @@ export default async function CompliancePage({
                   <button type="submit" name="decision" value="CLEARED" className="h-9 rounded-lg border border-border px-3 text-[13px] font-medium hover:bg-hover">Clear as a false match</button>
                   <button type="submit" name="decision" value="CONFIRMED" className="h-9 rounded-lg border border-bad/40 px-3 text-[13px] font-medium text-bad hover:bg-bad/10">Confirm the match</button>
                 </div>
-              </form>
+              </form>}
             </li>
           ))}
         </ul>
@@ -114,14 +118,14 @@ export default async function CompliancePage({
               {decided.map((check) => (
                 <li key={check.id} className="text-muted-foreground">
                   <span className={check.status === "CONFIRMED" ? "text-bad" : "text-foreground"}>{check.name}</span>{check.matched ? ` · matched ${check.matched}` : ""} · {check.status?.toLowerCase()}{check.reviewedAt ? ` ${prettyDate(check.reviewedAt)}` : ""} · {check.reviewNote}
-                  <details className="mt-1">
+                  {vets && <details className="mt-1">
                     <summary className="w-fit cursor-pointer text-[13px] text-link">Reopen</summary>
                     <form action={reopenOfacReview} className="mt-2 flex flex-wrap gap-2">
                       <input type="hidden" name="checkId" value={check.id} />
                       <input name="note" className="desk-input min-w-56 flex-1" aria-label={`Reason to reopen the decision on ${check.name}`} placeholder="Why it needs another look" required minLength={3} />
                       <button type="submit" className="h-11 rounded-lg border border-border px-3 text-[13px] font-medium hover:bg-hover">Reopen the review</button>
                     </form>
-                  </details>
+                  </details>}
                 </li>
               ))}
             </ul>
@@ -133,10 +137,12 @@ export default async function CompliancePage({
         <div className="border border-border p-5 rounded-xl">
           <p className="eyebrow">Name screen</p>
           <p className="mt-2 text-sm text-muted-foreground">Check any name by hand, with fuzzy spelling and either word order. The planted strings “blocked test” and “ofac sample” always go to review, so you can test the flow.</p>
-          <form action={screenName} className="mt-4 flex flex-wrap gap-3">
-            <input name="name" className="desk-input min-w-56" aria-label="Name to screen" placeholder="Borrower or entity" required />
-            <SubmitButton className="h-11 text-[13px] font-medium">Screen</SubmitButton>
-          </form>
+          {vets && (
+            <form action={screenName} className="mt-4 flex flex-wrap gap-3">
+              <input name="name" className="desk-input min-w-56" aria-label="Name to screen" placeholder="Borrower or entity" required />
+              <SubmitButton className="h-11 text-[13px] font-medium">Screen</SubmitButton>
+            </form>
+          )}
           <ul className="mt-4 space-y-2 text-sm">
             {checks.length === 0 && <li className="text-muted-foreground">No screens yet.</li>}
             {checks.map((check) => (
@@ -147,17 +153,23 @@ export default async function CompliancePage({
         <div className="border border-border p-5 rounded-xl">
           <p className="eyebrow">Retention</p>
           <p className="mt-2 text-sm text-muted-foreground">Page visits and read notices older than this window can be removed. Loan files, closings, and the ledger stay.</p>
-          <form action={saveRetention} className="mt-4 flex flex-wrap items-center gap-3">
-            <input name="retentionYears" defaultValue={settings.retentionYears} className="desk-input w-28" aria-label="Retention years" />
-            <SubmitButton variant="outline" className="h-11 text-[13px] font-medium">Save years</SubmitButton>
-          </form>
-          <form action={runRetention} className="mt-4">
-            <SubmitButton className="h-11 text-[13px] font-medium">Run retention</SubmitButton>
-          </form>
+          {vets ? (
+            <>
+              <form action={saveRetention} className="mt-4 flex flex-wrap items-center gap-3">
+                <input name="retentionYears" defaultValue={settings.retentionYears} className="desk-input w-28" aria-label="Retention years" />
+                <SubmitButton variant="outline" className="h-11 text-[13px] font-medium">Save years</SubmitButton>
+              </form>
+              <form action={runRetention} className="mt-4">
+                <SubmitButton className="h-11 text-[13px] font-medium">Run retention</SubmitButton>
+              </form>
+            </>
+          ) : (
+            <p className="mt-4 text-sm text-foreground">{settings.retentionYears} years</p>
+          )}
         </div>
       </section>
 
-      <DeletionQueue />
+      <DeletionQueue readOnly={!vets} />
     </div>
   );
 }

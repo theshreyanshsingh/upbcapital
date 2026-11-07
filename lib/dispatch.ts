@@ -569,6 +569,11 @@ export async function sendMarketDispatch(now = new Date(), scope: DispatchScope 
   if (!(await claimDispatchMonth(month, settingsId))) return { month, claimed: false, sent: 0, failed: 0, error: "" };
   if (settingsId === "default") clearSettingsCache();
   const { subject, body } = dispatchEmail(dispatch);
+  // Filed before anyone hears, so the archive holds the issue even if some sends fail. A failed write is logged and
+  // the mail still goes, since the month is already claimed.
+  await archiveIssue({ month, subject, body, settingsId, now }).catch((error) => {
+    console.error(`[upb-jobs] market dispatch ${month} was not archived:`, error instanceof Error ? error.message : error);
+  });
   const recipients = await dispatchRecipients(scope.userIds);
   const tally: DispatchTally = { month, claimed: true, sent: 0, failed: 0, error: "" };
   // A claimed month that fails for one reader is logged and not retried, so nobody gets it twice.
@@ -585,4 +590,70 @@ export async function sendMarketDispatch(now = new Date(), scope: DispatchScope 
   }
   await audit(null, "MARKET_DISPATCH", "settings", settingsId, `${dispatch.title} to ${plural(tally.sent, "account")}${tally.failed ? `, ${tally.failed} failed` : ""}`);
   return tally;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The archive: each issue as it was sent, for members to read back.
+
+const MONTH = /^\d{4}-(0[1-9]|1[0-2])$/;
+
+// A scoped run, such as a test's, files under its own settings row, so it never stands in for the real month.
+export function issueKey(month: string, settingsId = "default") {
+  return settingsId === "default" ? month : `${settingsId}:${month}`;
+}
+
+export async function archiveIssue(input: { month: string; subject: string; body: string; settingsId?: string; now?: Date }) {
+  const key = issueKey(input.month, input.settingsId);
+  const sentAt = input.now ?? new Date();
+  return prisma.dispatchIssue.upsert({
+    where: { month: key },
+    create: { month: key, subject: input.subject, body: input.body, sentAt },
+    update: { subject: input.subject, body: input.body, sentAt },
+  });
+}
+
+// Back issues, newest first. Only real months list; a scoped run's rows carry a prefix.
+export async function dispatchIssues(take = 60) {
+  const rows = await prisma.dispatchIssue.findMany({
+    where: { NOT: { month: { contains: ":" } } },
+    orderBy: { month: "desc" },
+    take,
+    select: { month: true, subject: true, sentAt: true },
+  });
+  return rows.filter((row) => MONTH.test(row.month)).map((row) => ({ ...row, title: monthTitle(row.month) }));
+}
+
+export async function dispatchIssue(month: string) {
+  if (!MONTH.test(month)) return null;
+  const row = await prisma.dispatchIssue.findUnique({ where: { month } });
+  return row ? { ...row, title: monthTitle(row.month) } : null;
+}
+
+export type IssueBlock = { kind: "list"; items: string[] } | { kind: "text"; lines: string[] };
+
+// The plain-text issue as paragraphs and lists, the way the email reads.
+export function issueBlocks(body: string): IssueBlock[] {
+  return body
+    .replace(/\r\n?/g, "\n")
+    .split(/\n\s*\n/)
+    .map((block) => block.split("\n").filter((line) => line.trim()))
+    .filter((lines) => lines.length)
+    .map((lines) =>
+      lines.every((line) => line.startsWith("- ")) ? { kind: "list" as const, items: lines.map((line) => line.slice(2)) } : { kind: "text" as const, lines },
+    );
+}
+
+// A line's web addresses as links, the rest as text.
+export function linkParts(line: string): { text: string; href?: string }[] {
+  const parts: { text: string; href?: string }[] = [];
+  let last = 0;
+  for (const match of line.matchAll(/https?:\/\/[^\s<>"']+[^\s<>"'.,;:!?)]/g)) {
+    const at = match.index ?? 0;
+    if (at > last) parts.push({ text: line.slice(last, at) });
+    const href = safeSourceUrl(match[0]);
+    parts.push(href ? { text: match[0], href } : { text: match[0] });
+    last = at + match[0].length;
+  }
+  if (last < line.length) parts.push({ text: line.slice(last) });
+  return parts;
 }

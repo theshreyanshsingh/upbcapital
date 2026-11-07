@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { sendMatchDigests } from "@/actions/prefs";
 import { HorizontalBars } from "@/components/charts";
 import { Notice } from "@/components/notice";
@@ -8,6 +9,7 @@ import { deskWalled } from "@/lib/auction";
 import { average, daysBetween, funnelSteps } from "@/lib/analytics";
 import { q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
+import { deskCan } from "@/lib/staff";
 
 export const metadata = { title: "Analytics" };
 
@@ -49,13 +51,18 @@ export default async function AnalyticsPage({
     byBuyer.set(offer.buyerId, row);
   }
   const top = [...byBuyer.values()].sort((a, b) => b.volume - a.volume).slice(0, 5);
+  // Every desk role reads the numbers. Sending the digest is a sales job, and the action checks the same.
+  const sells = deskCan(user, "sales");
   return (
     <div>
       <PageIntro eyebrow="Analytics" title="How the desk is moving." lede="Visits are pages opened since this counter started. Days to sell runs from the day a listing was filed to the day it was marked sold. Days to close, on the desk home, runs from the award to the closed file." />
       <Notice notice={q(params, "notice")} error={q(params, "error")} />
-      <form action={sendMatchDigests} className="mt-4">
-        <SubmitButton variant="outline" className="h-11 text-[13px] font-medium">Send match digest</SubmitButton>
-      </form>
+      <p className="mt-2 text-sm text-muted-foreground"><Link href="/admin/market/backtest" className="text-link">Indicative back-test</Link>: how the book&apos;s indicative range compares with what buyers paid.</p>
+      {sells && (
+        <form action={sendMatchDigests} className="mt-4">
+          <SubmitButton variant="outline" className="h-11 text-[13px] font-medium">Send match digest</SubmitButton>
+        </form>
+      )}
       <div className="mt-8 grid gap-4 md:grid-cols-3">
         <Stat label="Mean days to sell" value={meanClose == null ? "—" : meanClose.toFixed(0)} />
         <Stat label="Offers" value={String(offers)} />

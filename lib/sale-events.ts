@@ -174,6 +174,100 @@ function liveBidCount(listingIds: string[]) {
   return listingIds.length ? prisma.inquiry.count({ where: { listingId: { in: listingIds }, type: "OFFER", status: { in: [...LIVE_BIDS] } } }) : Promise.resolve(0);
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// The sale calendar, for the process letter: the NDA date, the Q&A cutoff, the two round dates, and the award and
+// closing targets, in the order the sale runs. Only the two round dates drive bid terms; the rest are optional.
+
+export const MILESTONES = [
+  { key: "ndaDueAt", label: "NDA signed by", name: "the NDA date" },
+  { key: "qaCutoffAt", label: "Questions close", name: "the Q&A cutoff" },
+  { key: "indicationsAt", label: "Indications due", name: "the indications date" },
+  { key: "bestFinalAt", label: "Best and final due", name: "the best-and-final date" },
+  { key: "awardTargetAt", label: "Award target", name: "the award target" },
+  { key: "closingTargetAt", label: "Closing target", name: "the closing target" },
+] as const;
+
+export type MilestoneKey = (typeof MILESTONES)[number]["key"];
+export const CALENDAR_KEYS = ["ndaDueAt", "qaCutoffAt", "awardTargetAt", "closingTargetAt"] as const;
+export type CalendarKey = (typeof CALENDAR_KEYS)[number];
+export type CalendarDates = Record<CalendarKey, Date | null>;
+type Calendar = Partial<Record<CalendarKey, Date | null>> & { indicationsAt: Date; bestFinalAt: Date };
+export const NOTES_MAX = 4000;
+
+const capital = (text: string) => `${text.charAt(0).toUpperCase()}${text.slice(1)}`;
+
+// Every date the event has set, in the order the sale runs.
+export function milestones(event: Calendar) {
+  return MILESTONES.map((milestone) => ({ key: milestone.key, label: milestone.label, at: event[milestone.key] ?? null })).filter(
+    (milestone): milestone is { key: MilestoneKey; label: (typeof MILESTONES)[number]["label"]; at: Date } => milestone.at instanceof Date,
+  );
+}
+
+// Why the dates are out of order, or null. Each date set has to fall after the one before it. A date before the
+// rounds is named as the one to move, and so is a target after them, since the round dates are the anchor.
+export function calendarProblem(event: Calendar) {
+  const set = MILESTONES.map((milestone, index) => ({ ...milestone, index, at: event[milestone.key] ?? null })).filter((milestone) => milestone.at instanceof Date);
+  const rounds = MILESTONES.findIndex((milestone) => milestone.key === "indicationsAt");
+  for (let i = 1; i < set.length; i += 1) {
+    const before = set[i - 1];
+    const after = set[i];
+    if (after.at!.getTime() > before.at!.getTime()) continue;
+    return after.index <= rounds ? `${capital(before.name)} has to fall before ${after.name}.` : `${capital(after.name)} has to fall after ${before.name}.`;
+  }
+  return null;
+}
+
+// The form's four optional dates, read as UTC like the round dates. A blank one clears it, and one the form didn't
+// send stays as it was. A date that is new or moved has to be in the future; one already on the event may have passed.
+export function readCalendar(raw: Partial<Record<CalendarKey, string>>, rounds: { indicationsAt: Date; bestFinalAt: Date }, previous: Partial<CalendarDates> | null = null, now = new Date()) {
+  const calendar = {} as CalendarDates;
+  for (const key of CALENDAR_KEYS) {
+    const name = MILESTONES.find((milestone) => milestone.key === key)!.name;
+    if (raw[key] === undefined) {
+      calendar[key] = previous?.[key] ?? null;
+      continue;
+    }
+    const typed = String(raw[key]).trim();
+    if (!typed) {
+      calendar[key] = null;
+      continue;
+    }
+    const date = readUtc(typed);
+    if (!date) return { error: `Enter ${name} as a date and time, or leave it blank.` } as const;
+    const kept = previous?.[key]?.getTime() === date.getTime();
+    if (!kept && date.getTime() <= now.getTime()) return { error: `${capital(name)} has to be in the future.` } as const;
+    calendar[key] = date;
+  }
+  const problem = calendarProblem({ ...rounds, ...calendar });
+  if (problem) return { error: problem } as const;
+  return { error: null, calendar } as const;
+}
+
+export function readNotes(raw: string | null | undefined) {
+  return String(raw ?? "").replace(/\r\n/g, "\n").trim().slice(0, NOTES_MAX);
+}
+
+// Bidder questions on an event's listings close at its Q&A cutoff, so the seller can answer before bids are due.
+export function qaClosed(event: { status: string; qaCutoffAt?: Date | null } | null | undefined, now = new Date()) {
+  return Boolean(event?.qaCutoffAt && event.status !== "CANCELED" && event.qaCutoffAt.getTime() <= now.getTime());
+}
+
+export function qaClosedText(qaCutoffAt: Date) {
+  return `Questions for this sale event closed ${when(qaCutoffAt)}, so no new ones go to the seller. Published answers stay in the data room.`;
+}
+
+// Why a new question on this listing is refused for its event's cutoff, or null.
+export async function qaCutoffBlock(listing: { saleEventId?: string | null }, now = new Date()) {
+  if (!listing.saleEventId) return null;
+  const event = await prisma.saleEvent.findUnique({ where: { id: listing.saleEventId }, select: { status: true, qaCutoffAt: true } });
+  return event?.qaCutoffAt && qaClosed(event, now) ? qaClosedText(event.qaCutoffAt) : null;
+}
+
+function calendarLine(calendar: CalendarDates) {
+  const set = CALENDAR_KEYS.filter((key) => calendar[key]).map((key) => `${MILESTONES.find((milestone) => milestone.key === key)!.label} ${when(calendar[key]!)}`);
+  return set.length ? set.join(" · ") : "No other dates";
+}
+
 // Back to open offers, out of the event. Only a listing still in this event moves.
 async function releaseListing(listingId: string, eventId: string) {
   const done = await prisma.listing.updateMany({
@@ -183,21 +277,33 @@ async function releaseListing(listingId: string, eventId: string) {
   return done.count === 1;
 }
 
-export async function createEvent(input: { name: string; summary: string; indicationsAt: string; bestFinalAt: string; actorId: string; now?: Date }) {
+type CalendarInput = Partial<Record<CalendarKey, string>> & { processNotes?: string };
+
+export async function createEvent(input: { name: string; summary: string; indicationsAt: string; bestFinalAt: string; actorId: string; now?: Date } & CalendarInput) {
   const name = input.name.trim().slice(0, 120);
   if (name.length < 3) return { error: "Name the event." } as const;
   const dates = readEventDates(input.indicationsAt, input.bestFinalAt, input.now);
   if (dates.error !== null) return { error: dates.error } as const;
+  const calendar = readCalendar(input, dates, null, input.now);
+  if (calendar.error !== null) return { error: calendar.error } as const;
   const event = await prisma.saleEvent.create({
-    data: { name, summary: input.summary.trim().slice(0, 1000), indicationsAt: dates.indicationsAt, bestFinalAt: dates.bestFinalAt, createdById: input.actorId },
+    data: {
+      name,
+      summary: input.summary.trim().slice(0, 1000),
+      indicationsAt: dates.indicationsAt,
+      bestFinalAt: dates.bestFinalAt,
+      ...calendar.calendar,
+      processNotes: readNotes(input.processNotes),
+      createdById: input.actorId,
+    },
   });
-  await audit(input.actorId, "SALE_EVENT_CREATED", "saleEvent", event.id, `${name} · indications ${when(dates.indicationsAt)} · best and final ${when(dates.bestFinalAt)}`);
+  await audit(input.actorId, "SALE_EVENT_CREATED", "saleEvent", event.id, `${name} · indications ${when(dates.indicationsAt)} · best and final ${when(dates.bestFinalAt)} · ${calendarLine(calendar.calendar)}`);
   return { error: null, event, usual: dates.usual } as const;
 }
 
-// The name and summary change until the event is over. The dates change only before any bid is in, and the
-// listings' deadlines move with them.
-export async function editEvent(input: { eventId: string; name: string; summary: string; indicationsAt: string; bestFinalAt: string; actorId: string; now?: Date }) {
+// The name, summary, notes and calendar change until the event is over. The round dates change only before any bid
+// is in, and the listings' deadlines move with them. The other dates stay in order around the round dates.
+export async function editEvent(input: { eventId: string; name: string; summary: string; indicationsAt: string; bestFinalAt: string; actorId: string; now?: Date } & CalendarInput) {
   const now = input.now ?? new Date();
   const event = await prisma.saleEvent.findUnique({ where: { id: input.eventId } });
   if (!event) return { error: "That event no longer exists." } as const;
@@ -205,18 +311,24 @@ export async function editEvent(input: { eventId: string; name: string; summary:
   const name = input.name.trim().slice(0, 120);
   if (name.length < 3) return { error: "Name the event." } as const;
   const summary = input.summary.trim().slice(0, 1000);
+  // A form without the notes field leaves the notes as they are.
+  const processNotes = input.processNotes === undefined ? event.processNotes : readNotes(input.processNotes);
   const typedIndications = readUtc(input.indicationsAt);
   const typedFinal = readUtc(input.bestFinalAt);
   const same = typedIndications?.getTime() === event.indicationsAt.getTime() && typedFinal?.getTime() === event.bestFinalAt.getTime();
-  if (!same) {
-    if (event.status === "BEST_AND_FINAL") return { error: "Best and final is open, so the dates stay as printed." } as const;
-    const dates = readEventDates(input.indicationsAt, input.bestFinalAt, now);
-    if (dates.error !== null) return { error: dates.error } as const;
+  const dates = same ? null : readEventDates(input.indicationsAt, input.bestFinalAt, now);
+  if (!same && event.status === "BEST_AND_FINAL") return { error: "Best and final is open, so the dates stay as printed." } as const;
+  if (dates && dates.error !== null) return { error: dates.error } as const;
+  const calendar = readCalendar(input, dates ?? event, event, now);
+  if (calendar.error !== null) return { error: calendar.error } as const;
+  const calendarMoved = CALENDAR_KEYS.some((key) => (calendar.calendar[key]?.getTime() ?? null) !== (event[key]?.getTime() ?? null));
+  const logCalendar = () => (calendarMoved ? audit(input.actorId, "SALE_EVENT_CALENDAR", "saleEvent", event.id, calendarLine(calendar.calendar)) : null);
+  if (dates) {
     const listings = await prisma.listing.findMany({ where: { saleEventId: event.id }, select: { id: true, title: true, seller: { select: { email: true } } } });
     if ((await liveBidCount(listings.map((listing) => listing.id))) > 0) return { error: "Bids are in, so the dates stay as printed." } as const;
     const claimed = await prisma.saleEvent.updateMany({
       where: { id: event.id, status: event.status, indicationsAt: event.indicationsAt, bestFinalAt: event.bestFinalAt },
-      data: { name, summary, indicationsAt: dates.indicationsAt, bestFinalAt: dates.bestFinalAt },
+      data: { name, summary, processNotes, ...calendar.calendar, indicationsAt: dates.indicationsAt, bestFinalAt: dates.bestFinalAt },
     });
     if (claimed.count !== 1) return { error: "The event changed a moment ago. Check it and try again." } as const;
     await prisma.listing.updateMany({
@@ -224,6 +336,7 @@ export async function editEvent(input: { eventId: string; name: string; summary:
       data: { bidDeadline: dates.bestFinalAt, bidReminderAt: null, watchReminderAt: null, auctionNotifiedAt: null },
     });
     await audit(input.actorId, "SALE_EVENT_DATES", "saleEvent", event.id, `Indications ${when(dates.indicationsAt)} · best and final ${when(dates.bestFinalAt)}`);
+    await logCalendar();
     for (const listing of listings) {
       await notify(
         listing.seller.email,
@@ -240,7 +353,8 @@ export async function editEvent(input: { eventId: string; name: string; summary:
     }
     return { error: null, moved: true } as const;
   }
-  await prisma.saleEvent.update({ where: { id: event.id }, data: { name, summary } });
+  await prisma.saleEvent.update({ where: { id: event.id }, data: { name, summary, processNotes, ...calendar.calendar } });
+  await logCalendar();
   return { error: null, moved: false } as const;
 }
 

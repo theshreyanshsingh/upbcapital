@@ -25,6 +25,7 @@ export function RoomAccessPanel({
   editable,
   requests,
   engagement,
+  readOnly = false,
 }: {
   listingId: string;
   from: "seller" | "broker" | "admin" | "resale";
@@ -33,6 +34,8 @@ export function RoomAccessPanel({
   editable: boolean;
   requests: RoomRequest[];
   engagement: Engagement[];
+  // A desk role that doesn't run sales reads the requests and answers none.
+  readOnly?: boolean;
 }) {
   const waiting = requests.filter((request) => request.status === "PENDING");
   const declined = requests.filter((request) => request.status === "DECLINED");
@@ -63,12 +66,12 @@ export function RoomAccessPanel({
             {waiting.map((request) => (
               <li key={request.id} className="border border-link/30 bg-link/5 p-4 rounded-xl">
                 <RequestLine request={request} />
-                <form action={answerRoomRequest} className="mt-3 flex flex-wrap gap-2">
+                {!readOnly && <form action={answerRoomRequest} className="mt-3 flex flex-wrap gap-2">
                   <input type="hidden" name="ndaId" value={request.id} />
                   <input type="hidden" name="from" value={from} />
                   <SubmitButton name="decision" value="APPROVED" pendingLabel="Saving…" className="h-9 px-3 text-[13px] font-medium">Approve access</SubmitButton>
                   <SubmitButton name="decision" value="DECLINED" variant="outline" pendingLabel="Saving…" className="h-9 px-3 text-[13px] font-medium">Decline</SubmitButton>
-                </form>
+                </form>}
               </li>
             ))}
           </ul>
@@ -84,11 +87,13 @@ export function RoomAccessPanel({
                   <RequestLine request={request} />
                   <p className="text-xs text-muted-foreground">Declined {prettyDate(request.decidedAt)}</p>
                 </div>
-                <form action={answerRoomRequest}>
-                  <input type="hidden" name="ndaId" value={request.id} />
-                  <input type="hidden" name="from" value={from} />
-                  <SubmitButton name="decision" value="APPROVED" variant="ghost" pendingLabel="Saving…" className="h-9 px-3 text-[13px] font-medium text-link">Approve after all</SubmitButton>
-                </form>
+                {!readOnly && (
+                  <form action={answerRoomRequest}>
+                    <input type="hidden" name="ndaId" value={request.id} />
+                    <input type="hidden" name="from" value={from} />
+                    <SubmitButton name="decision" value="APPROVED" variant="ghost" pendingLabel="Saving…" className="h-9 px-3 text-[13px] font-medium text-link">Approve after all</SubmitButton>
+                  </form>
+                )}
               </li>
             ))}
           </ul>

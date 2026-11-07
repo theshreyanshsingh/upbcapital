@@ -4,6 +4,8 @@ import { useCallback, useId, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { submitInquiry } from "@/actions/buyer";
 import { ConfirmRows, ConfirmSubmit } from "@/components/confirm-submit";
+import { EntityField, entityRows, useEntityChoice, type EntityOption } from "@/components/entity-picker";
+import { flatTerms, premiumOn, type FeeTerms } from "@/lib/fee-schedule";
 import { money } from "@/lib/format";
 import { bidTerms, goodUntilRow } from "@/lib/offers";
 import { bidTarget, credentialRows, headroomAfter, type BidStanding } from "@/lib/verification";
@@ -44,6 +46,7 @@ export function LoanBid({
   listingId,
   noteId,
   premiumBps,
+  fees,
   verified,
   closed,
   loanName,
@@ -51,10 +54,13 @@ export function LoanBid({
   diligenceDays,
   notices = [],
   standing = null,
+  entities = [],
 }: {
   listingId: string;
   noteId: string;
   premiumBps: number;
+  // The listing's fee terms, so a graded premium follows the figure typed. Missing means premiumBps flat.
+  fees?: FeeTerms;
   verified: boolean;
   closed: boolean;
   // What screen readers hear for this box, and what the confirmation names: "the loan in Tampa, FL".
@@ -65,12 +71,15 @@ export function LoanBid({
   notices?: string[];
   // The buyer's verified-funds credential and any strike pause, from bidStanding in lib/inquiry.
   standing?: BidStanding | null;
+  // The buying entities a bid can be for. The buyer picks one in the bid panel, and every loan box carries it.
+  entities?: EntityOption[];
 }) {
   // The tape renders this box twice, as a phone card and as a table row, so the field ids come from useId.
   const ids = useId();
   const [{ amount, goodUntil }, updateDraft] = useDraft(`${listingId}:${noteId}`);
+  const [entity] = useEntityChoice(listingId, entities);
   const offer = Number(amount.replace(/[$,]/g, ""));
-  const premium = Number.isFinite(offer) && offer > 0 ? (offer * premiumBps) / 10000 : 0;
+  const premium = premiumOn(fees ?? flatTerms(premiumBps), offer);
   const credential = standing?.credential ?? null;
   const room = offer > 0 ? headroomAfter(credential, bidTarget(listingId, noteId), offer + premium) : null;
   if (closed) return <span className="text-[13px] font-medium text-muted-foreground">Closed</span>;
@@ -95,6 +104,7 @@ export function LoanBid({
       <input type="hidden" name="noteId" value={noteId} />
       <input type="hidden" name="type" value="OFFER" />
       <input type="hidden" name="message" value="Loan-level bid." />
+      <EntityField chosen={entity} />
       <label className="text-xs text-muted-foreground" htmlFor={`${ids}-bid`}>Your bid<span className="sr-only"> for {loanName}</span></label>
       <input
         id={`${ids}-bid`}
@@ -120,7 +130,7 @@ export function LoanBid({
       <ConfirmSubmit
         title={`Bid ${money(offer)} for ${loanName}?`}
         consequence={`If the desk accepts it, you're committed to buy this loan at this price plus the buyer premium${deposit ? `, and a ${deposit[0]}% deposit is due within ${deposit[1]} day${deposit[1] === 1 ? "" : "s"}` : ""}.${bidTerms(diligenceDays)}${notices.length ? ` ${notices.join(" ")}` : ""}`}
-        details={<ConfirmRows rows={[["Your bid", money(offer)], ["Buyer premium", money(premium)], ["All-in", money(offer + premium)], ...credentialRows(credential?.line ?? null, room), goodUntilRow(goodUntil)]} />}
+        details={<ConfirmRows rows={[["Your bid", money(offer)], ["Buyer premium", money(premium)], ["All-in", money(offer + premium)], ...entityRows(entity, entities), ...credentialRows(credential?.line ?? null, room), goodUntilRow(goodUntil)]} />}
         confirmLabel="Place the bid"
         pendingLabel="Sending…"
         className="h-8 text-xs font-medium max-md:h-11 max-md:text-sm"

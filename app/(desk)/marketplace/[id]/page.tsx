@@ -44,6 +44,7 @@ import {
   type Eligibility,
 } from "@/lib/eligibility";
 import { bidStanding, roadAcknowledgedAt } from "@/lib/inquiry";
+import { bidEntities } from "@/lib/buyer-entities";
 import { compsFor, loadClosedTrades } from "@/lib/comps";
 import { loadIndicative } from "@/lib/indicative";
 import { enrichListing, notifyIfAuctionClosed, rememberView } from "@/lib/listing-intel";
@@ -57,9 +58,10 @@ import { diligenceDays } from "@/lib/closing-service";
 import { allInYield, noteMetrics, poolMetrics } from "@/lib/metrics";
 import { prisma } from "@/lib/prisma";
 import { publishedQuestions, questionsAskedBy } from "@/lib/questions";
-import { eventSetsTerms } from "@/lib/auction";
-import { currentSaleEvent, roundText, when } from "@/lib/sale-events";
-import { listingFeeBps } from "@/lib/desk-fees";
+import { deskWalled, eventSetsTerms } from "@/lib/auction";
+import { currentSaleEvent, qaClosed, qaClosedText, roundText, when } from "@/lib/sale-events";
+import { EventPaperLinks } from "@/components/event-papers";
+import { chargeFees, effectiveBps, feeTerms } from "@/lib/fee-schedule";
 import { getSettings, isPro } from "@/lib/settings";
 import { canSubmitOffer } from "@/lib/verification";
 import { mapPoint, showableAvm } from "@/lib/enrichment";
@@ -181,7 +183,8 @@ export default async function ListingPage({
     // rather than an empty one that would read as "no trades".
     pro ? loadClosedTrades().catch(() => null) : Promise.resolve(null),
     // The indicative range is a price, so it is veiled like the ask. A failed read shows nothing rather than a guess.
-    pro ? loadIndicative(listing.id).catch(() => null) : Promise.resolve(null),
+    // Its standing-bid point is a bid amount, so a desk role behind the sealed-bid wall gets the range without it.
+    pro ? loadIndicative(listing.id, undefined, { standing: !deskWalled(listing, user) }).catch(() => null) : Promise.resolve(null),
   ]);
   const verified = canSubmitOffer({
     role: user.role,
@@ -237,9 +240,12 @@ export default async function ListingPage({
   const economics = listing.kind === "POOL" ? pool : noteMetrics(notes[0]);
   const asking = listing.kind === "POOL" ? pool.totalAsk : notes[0].askingPrice;
   const avms = forSale.map((note) => note.avm).filter((value): value is number => value != null);
-  // The fees the listing went live with, which the closing will charge.
-  const fees = listingFeeBps(listing, settings);
-  const premium = (asking * fees.premiumBps) / 10000;
+  // The fees the listing went live with, which the closing will charge. A graded schedule prices the premium on the
+  // ask here, and the bid forms price it on the figure the buyer types; premiumBps is the rate it comes to at the ask.
+  const listingFees = feeTerms(listing, settings);
+  const atAsk = chargeFees(listingFees, asking);
+  const premium = atAsk.premiumCents / 100;
+  const fees = { premiumBps: effectiveBps(atAsk) };
   // What a winning bidder owes, for the bid confirmation. A 0% deposit says nothing.
   const terms = depositTerms(settings);
   const deposit: [number, number] | undefined = terms.bps > 0 ? [terms.bps / 100, terms.days] : undefined;
@@ -292,6 +298,8 @@ export default async function ListingPage({
   const notices = confirmNotices(eligibility);
   // The buyer's verified-funds credential and headroom, and any strike pause, for the bid forms.
   const standing = user.role === "BUYER" ? await bidStanding(user.id) : null;
+  // The buying entities a bid here can be for: the main file and each one the desk approved.
+  const entities = user.role === "BUYER" ? await bidEntities(user.id) : [];
   // Shared Q&A: answers read inside the room, a bidder's own questions, and the form for a bidder in the room.
   const managesRoom = canManageRoom(user, listing);
   const [answered, myQuestions] = await Promise.all([
@@ -334,6 +342,9 @@ export default async function ListingPage({
         {event && (
           <p className="mt-3 max-w-3xl border border-link/30 bg-link/5 px-3 py-2 text-sm leading-relaxed text-foreground rounded-lg tabular-nums">
             In the sale event <Link href={`/events#${event.id}`} className="font-medium text-link">{event.name}</Link>. Indications due {when(event.indicationsAt)}. Best and final due {when(event.bestFinalAt)}. {roundText(event)}
+            {event.qaCutoffAt && (qaClosed(event) ? ` ${qaClosedText(event.qaCutoffAt)}` : ` Questions close ${when(event.qaCutoffAt)}.`)}
+            {/* The letter and calendar are for buyers, the desk and this listing's own side, as the routes check. */}
+            {(user.role === "BUYER" || user.role === "ADMIN" || listing.sellerId === user.id || listing.brokerId === user.id) && <EventPaperLinks eventId={event.id} className="mt-2" />}
           </p>
         )}
         {listing.broker && (
@@ -447,10 +458,12 @@ export default async function ListingPage({
                     deposit,
                     diligenceDays: diligence,
                     premiumBps: fees.premiumBps,
+                    fees: listingFees,
                     verified,
                     listingOpen: listing.status === "APPROVED",
                     noticesFor: loanNotices,
                     standing,
+                    entities,
                   } : null}
                 />
               )}
@@ -511,7 +524,7 @@ export default async function ListingPage({
                 listingId={listing.id}
                 published={answered}
                 mine={myQuestions}
-                canAsk={user.role === "BUYER" && !managesRoom && listing.status === "APPROVED" && roomNda}
+                canAsk={user.role === "BUYER" && !managesRoom && listing.status === "APPROVED" && roomNda && !qaClosed(event)}
                 inRoom={unlocked || managesRoom}
                 waiting={accessWaiting}
                 loans={listing.kind === "POOL" ? notes.map((note, index) => ({ id: note.id, label: `Loan ${index + 1} · ${note.open ? `${note.streetAddress}, ` : ""}${note.city}, ${note.state}` })) : []}
@@ -655,6 +668,7 @@ export default async function ListingPage({
           <OfferPanel
             listingId={listing.id}
             premiumBps={fees.premiumBps}
+            fees={listingFees}
             deposit={deposit}
             diligenceDays={diligence}
             canOffer={canOffer}
@@ -664,6 +678,7 @@ export default async function ListingPage({
             notices={notices}
             acknowledgeFirst={acknowledgeFirst}
             standing={standing}
+            entities={entities}
             heading={listing.kind === "POOL" ? "Bid the whole pool" : undefined}
             loans={listing.kind === "POOL" && canOffer ? notes.map((note, index) => ({ id: note.id, label: `Loan ${index + 1} · ${note.open && note.streetAddress ? `${note.streetAddress}, ` : ""}${note.city}, ${note.state}`, ask: pro ? note.askingPrice : null })) : []}
             closedText={listing.status === "APPROVED" && !wholeOpen ? "Some loans in this pool have traded, so it can't be bid whole. Bid the loans still for sale in the table." : undefined}

@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { confirmStandingBid, passStandingBid } from "@/actions/standing-bids";
 import { ConfirmRows, ConfirmSubmit } from "@/components/confirm-submit";
+import { entityRows, type EntityOption } from "@/components/entity-picker";
 import { SubmitButton } from "@/components/submit-button";
 import { Input } from "@/components/ui/input";
 import { money } from "@/lib/format";
@@ -23,6 +24,7 @@ export function StandingBidInvite({
   premiumBps,
   deposit,
   diligenceDays,
+  entities = [],
 }: {
   matchId: string;
   listingId: string;
@@ -36,13 +38,18 @@ export function StandingBidInvite({
   // The deposit a winning bidder owes: [percent, days to wire].
   deposit?: [number, number];
   diligenceDays?: number;
+  // The buying entities the bid can be for. With more than one, the buyer picks here.
+  entities?: EntityOption[];
 }) {
   const [goodUntil, setGoodUntil] = useState("");
+  const [entityId, setEntityId] = useState("");
+  const entity = entities.find((option) => option.id === entityId) ?? entities[0] ?? null;
   const premium = (price * premiumBps) / 10000;
   const rows: [string, string][] = [
     ["Your bid", money(price)],
     ["Buyer premium", money(premium)],
     ["All-in", money(price + premium)],
+    ...entityRows(entity, entities),
     ["Deposit at award", deposit ? `${money((price * deposit[0]) / 100)} within ${deposit[1]} day${deposit[1] === 1 ? "" : "s"}` : "None"],
     goodUntilRow(goodUntil),
   ];
@@ -65,6 +72,17 @@ export function StandingBidInvite({
       <form action={confirmStandingBid} className="mt-4 space-y-3">
         <input type="hidden" name="matchId" value={matchId} />
         <input type="hidden" name="price" value={price} />
+        {entities.length > 1 && (
+          <label className="block text-[13px] text-muted-foreground">
+            Buying as
+            <select name="buyerEntityId" value={entity?.id ?? ""} onChange={(event) => setEntityId(event.target.value)} className="desk-input mt-1 h-11">
+              {entities.map((option) => (
+                <option key={option.id || "main"} value={option.id}>{option.name} · {option.kind}</option>
+              ))}
+            </select>
+            <span className="mt-1 block text-xs">The closing papers name this entity if the desk accepts the bid.</span>
+          </label>
+        )}
         <label className="block text-[13px] text-muted-foreground">
           Good until (optional)
           <Input name="goodUntil" type="date" value={goodUntil} onChange={(event) => setGoodUntil(event.target.value)} className="mt-1 h-11 bg-card" />

@@ -1,6 +1,39 @@
-import { sealedFromSeller } from "@/lib/auction";
+import { deadlinePassed, deskWalled, sealedFromSeller } from "@/lib/auction";
+import { deskCan, type Staff } from "@/lib/desk-roles";
 import { notify } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
+
+// The desk's wall on the inbox. An offer thread holds the buyer's own words, which can quote a sealed amount, so a
+// desk role behind the wall in lib/auction.ts (a trader, a read-only seat) doesn't read, post in or hear from one on
+// a sealed or best-and-final listing until the wall comes down. The thread still lists, by its subject only.
+export const THREAD_WALLED = "This thread is hidden from your desk role until the deadline.";
+// Desk-book staff stay behind it after the deadline, until the listing leaves the market.
+export const THREAD_WALLED_BOOK = "This thread is hidden from your desk role while the listing is on the market.";
+
+type WalledThread = { id: string; inquiryId: string | null };
+
+// The threads this viewer may not read, each with the line that says why. Empty for anyone the wall doesn't cover.
+export async function threadWalls(viewer: Staff, threads: WalledThread[], now = new Date()) {
+  const walls = new Map<string, string>();
+  if (viewer.role !== "ADMIN" || deskCan(viewer, "sealedBids")) return walls;
+  const inquiryIds = threads.map((thread) => thread.inquiryId).filter((id): id is string => Boolean(id));
+  if (!inquiryIds.length) return walls;
+  const offers = await prisma.inquiry.findMany({
+    where: { id: { in: inquiryIds }, type: "OFFER" },
+    select: { id: true, listing: { select: { bidMode: true, bidDeadline: true, status: true } } },
+  });
+  const listingOf = new Map(offers.map((offer) => [offer.id, offer.listing]));
+  for (const thread of threads) {
+    const listing = thread.inquiryId ? listingOf.get(thread.inquiryId) : null;
+    if (!listing || !deskWalled(listing, viewer, now)) continue;
+    walls.set(thread.id, deadlinePassed(listing.bidDeadline, now) ? THREAD_WALLED_BOOK : THREAD_WALLED);
+  }
+  return walls;
+}
+
+export async function threadWall(viewer: Staff, thread: WalledThread, now = new Date()) {
+  return (await threadWalls(viewer, [thread], now)).get(thread.id) ?? null;
+}
 
 export async function seatMembers(threadId: string, userIds: string[]) {
   const unique = [...new Set(userIds.filter(Boolean))];
@@ -112,6 +145,8 @@ export async function notifyThread(threadId: string, authorId: string, body: str
   if (!thread) return;
   for (const member of thread.members) {
     if (member.userId === authorId) continue;
+    // A desk seat behind the wall hears nothing, since the notice quotes the post.
+    if (await threadWall(member.user, thread)) continue;
     await notify(member.user.email, thread.subject, body.slice(0, 500));
   }
 }

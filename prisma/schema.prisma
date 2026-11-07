@@ -143,6 +143,8 @@ enum InvestorEntity {
   TRUST
   FUND
   OTHER
+  // A self-directed IRA, held by a custodian for the buyer's benefit.
+  IRA
 }
 
 enum OfferMessageKind {
@@ -363,6 +365,7 @@ model User {
   deskNotes                    DeskNote[]
   questionsAsked               ListingQuestion[] @relation("QuestionAsker")
   deletionRequests             DeletionRequest[]
+  buyerEntities                BuyerEntity[]
 }
 
 model PlatformSettings {
@@ -406,6 +409,14 @@ model PlatformSettings {
   // The version of the terms of use and privacy policy every account must have accepted. The desk raises it when it
   // publishes a change that needs fresh consent. Missing means the version built into lib/legal.ts.
   legalVersion         String?
+  // How the desk's document reader runs: OFF, SHADOW (findings go to the desk only, marked unconfirmed) or ON
+  // (findings also open discrepancies for the desk to confirm). Missing means SHADOW. lib/ai-reading.ts.
+  aiReading            String?
+  // A graduated fee schedule, { tiers: [{ upTo, premiumBps, commissionBps }], minPremiumCents, minCommissionCents }.
+  // Missing means the flat buyerPremiumBps and sellerCommissionBps above. lib/fee-schedule.ts reads it.
+  feeSchedule          Json?
+  // Where tenYearRate came from: MANUAL, or TREASURY when the job read it from Treasury's daily par yield curve.
+  tenYearSource        String?
   updatedAt            DateTime @updatedAt
 }
 
@@ -495,6 +506,8 @@ model Listing {
   // deal already marketed. Missing means the settings at award, for listings approved before this was kept.
   feeBuyerPremiumBps   Int?
   feeSellerCommissionBps Int?
+  // The graduated schedule in force when the listing went live, when the desk used one. Wins over the flat fields.
+  feeSchedule          Json?
   // The seller approves each bidder's data-room access after the NDA. Missing means the NDA alone opens it.
   roomApproval         Boolean?
   // The seller agreed to show this sale's anonymised result on the public results page.
@@ -626,6 +639,10 @@ model Document {
   storedName   String
   mime         String
   size         Int
+  // The document reader's pass: READ, FAILED or SKIPPED, when, and the stored plain text it extracted.
+  readStatus   String?
+  readAt       DateTime?
+  textKey      String?
   createdAt    DateTime @default(now())
 }
 
@@ -661,6 +678,12 @@ model Inquiry {
   // pool when allowPartial is set, and sizes a kick-out.
   loanPrices           Json?
   allowPartial         Boolean?
+  // The buying entity this bid is for, when the buyer has more than their main file. Missing means the main file.
+  buyerEntityId        String?
+  // The seller asked the desk to award this bid, which need not be the one the desk recommended.
+  sellerRequestedAt    DateTime?
+  // The loans of a pool the seller was asked to approve, for a part-pool sale. Empty means the whole bid.
+  sellerAskedNoteIds   String[]      @default([])
 
   @@index([listingId])
   @@index([buyerId])
@@ -742,6 +765,12 @@ model SaleEvent {
   // Indications are due by this date; invited bidders then have until bestFinalAt for best and final.
   indicationsAt DateTime
   bestFinalAt   DateTime
+  // The rest of the sale calendar, for the process letter. Each is optional; the two dates above are not.
+  ndaDueAt        DateTime?
+  qaCutoffAt      DateTime?
+  awardTargetAt   DateTime?
+  closingTargetAt DateTime?
+  processNotes    String        @default("")
   status        SaleEventStatus @default(PLANNED)
   createdById   String?
   createdAt     DateTime        @default(now())
@@ -824,6 +853,11 @@ model ListingQuestion {
   status       String    @default("OPEN")
   answeredById String?
   answeredAt   DateTime?
+  // A draft answer the document reader wrote from the room's files, with its sources as JSON. Never shown to buyers
+  // until a person edits or accepts it as the answer.
+  aiDraft      String?
+  aiSources    String?
+  aiDraftedAt  DateTime?
   createdAt    DateTime  @default(now())
 
   @@index([listingId])
@@ -881,6 +915,96 @@ model DeletionRequest {
   @@index([userId])
 }
 
+// A finding the document reader made: a field's value as one document states it, with the words it read.
+model AiFinding {
+  id          String    @id @default(cuid()) @map("_id")
+  listingId   String
+  noteId      String?
+  documentId  String
+  field       String
+  value       String
+  quote       String    @default("")
+  page        Int?
+  confidence  Float?
+  // PROPOSED, CONFIRMED (the desk agreed and marked the field verified) or REJECTED.
+  status      String    @default("PROPOSED")
+  decidedById String?
+  decidedAt   DateTime?
+  // "rules" for the offline reader, or "model:<name>" for a language model.
+  source      String
+  createdAt   DateTime  @default(now())
+
+  @@index([listingId])
+  @@index([documentId])
+}
+
+// One run of the reader's accuracy test against the labelled files in tests/fixtures/ai-reading.
+model AiEvalRun {
+  id        String   @id @default(cuid()) @map("_id")
+  source    String
+  fields    Int
+  correct   Int
+  accuracy  Float
+  detail    String   @default("")
+  createdAt DateTime @default(now())
+}
+
+// A seller's request for a valuation of loans they haven't listed. The desk answers with a range and follows up.
+model ValuationRequest {
+  id        String   @id @default(cuid()) @map("_id")
+  userId    String?
+  name      String
+  email     String
+  company   String   @default("")
+  phone     String   @default("")
+  loans     Int
+  upb       Float
+  rows      Json?
+  tapeKey   String   @default("")
+  tapeName  String   @default("")
+  lowPrice  Float?
+  highPrice Float?
+  basis     String   @default("")
+  // NEW, QUOTED, LISTED or CLOSED.
+  status    String   @default("NEW")
+  listingId String?
+  deskNote  String   @default("")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([email])
+}
+
+// A buying entity beyond the buyer's main file: another LLC, a trust, or a self-directed IRA. The desk vets each.
+model BuyerEntity {
+  id              String             @id @default(cuid()) @map("_id")
+  userId          String
+  user            User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name            String
+  entityType      InvestorEntity
+  jurisdiction    String             @default("")
+  // For an IRA: the custodian, and the account title the paper vests in, such as "Custodian FBO Name IRA #1234".
+  iraCustodian    String?
+  iraAccountTitle String?
+  status          VerificationStatus @default(SUBMITTED)
+  reviewerNote    String             @default("")
+  reviewedById    String?
+  reviewedAt      DateTime?
+  createdAt       DateTime           @default(now())
+
+  @@index([userId])
+}
+
+// A market dispatch as it was sent, for the archive.
+model DispatchIssue {
+  id        String   @id @default(cuid()) @map("_id")
+  month     String   @unique
+  subject   String
+  body      String
+  sentAt    DateTime @default(now())
+}
+
 model Favorite {
   id        String   @id @default(cuid()) @map("_id")
   userId    String
@@ -915,6 +1039,7 @@ model NdaAcknowledgment {
   accessDecidedById String?
   // After the sale goes to someone else, the bidder is asked to certify they destroyed the room's files.
   destroyRequestedAt DateTime?
+  destroyRemindedAt DateTime?
   destroyedAt    DateTime?
 
   @@unique([userId, listingId])
@@ -1007,6 +1132,7 @@ model Closing {
   // The name the buyer takes title in: the investing entity on the buyer file the desk vetted, fixed at award so
   // the papers don't change if the buyer refiles mid-closing. Null for a desk purchase.
   buyerEntity           String?
+  buyerEntityId         String?
   // The desk member who runs this closing. Starts as the listing's deal owner.
   deskOwnerId           String?
   // The loans a closing covers when it is part of a pool, or a pool after a kick-out. Empty means noteId alone,

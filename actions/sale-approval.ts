@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { audit } from "@/lib/audit";
 import { requireUser } from "@/lib/auth";
-import { askedPartPrice, askedPriceStands, awaitingSeller, awardOffer, awardPartial, partAsked, recordSellerCounter, sameQuestion, sellerPage, setBuyNow } from "@/lib/awards";
+import { askedPartPrice, askedPriceStands, awaitingSeller, awardOffer, awardPartial, partAsked, recordSellerCounter, sameQuestion, sellerPage, sellerPickBid, setBuyNow } from "@/lib/awards";
 import { notifyDesk } from "@/lib/email";
 import { bidExpired, buyerPrice } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
@@ -64,6 +64,22 @@ export async function answerSaleApproval(formData: FormData) {
   }
   await notifyDesk(`Seller approved · ${offer.listing.title}`, `${user.name} approved the sale at ${price}. The closing is open.`, { capability: "sealedBids" });
   redirect(`/closings/${result.closingId}?notice=approved`);
+}
+
+// The seller picks any live bid and asks the desk to award it, which records their agreement to its price. The desk
+// awards it from the offer book once its checks pass, as it would an approved bid.
+export async function pickBid(formData: FormData) {
+  const user = await requireUser();
+  const inquiryId = String(formData.get("inquiryId") || "");
+  const offer = await prisma.inquiry.findUnique({ where: { id: inquiryId }, include: { listing: true } });
+  if (!offer || offer.listing.sellerId !== user.id) redirect(user.role === "BROKER" ? "/broker" : user.role === "BUYER" ? "/buyer/portfolio" : "/seller");
+  const back = sellerPage(offer.listing, user.role);
+  const result = await sellerPickBid({ inquiryId, sellerId: user.id, price: Number(String(formData.get("price") || "").replace(/[$,\s]/g, "")) });
+  if (result.error !== null) redirect(`${back}?error=${encodeURIComponent(result.error)}#approval-heading`);
+  revalidatePath(back);
+  revalidatePath("/admin/offers");
+  revalidatePath(`/admin/listings/${offer.listingId}`);
+  redirect(`${back}?notice=${encodeURIComponent(`You asked the desk to award ${result.alias}'s bid of $${result.price.toLocaleString("en-US")}. Your agreement to that price is recorded, and the desk awards it once its checks pass.`)}#approval-heading`);
 }
 
 // A standing approval: the desk may award any bid at or above it without asking again. Blank removes it.

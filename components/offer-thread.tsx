@@ -15,6 +15,7 @@ export function OfferThread({
   acceptAmount,
   acceptFrom = "desk",
   loans = [],
+  readOnly = false,
 }: {
   inquiryId: string;
   canCounter: boolean;
@@ -25,6 +26,8 @@ export function OfferThread({
   acceptFrom?: "desk" | "seller";
   // A buyer's whole-pool bid: the pool's loans, so a new price can carry a price for each loan. A counter clears them.
   loans?: PricedLoan[];
+  // A desk role outside sales reads the thread without the forms. The action refuses it too.
+  readOnly?: boolean;
 }) {
   const seller = acceptFrom === "seller";
   return (
@@ -42,7 +45,7 @@ export function OfferThread({
           </li>
         ))}
       </ul>
-      {canCounter && acceptAmount != null && (
+      {!readOnly && canCounter && acceptAmount != null && (
         <form action={postOfferMessage} className="mt-4 flex flex-wrap items-center gap-3 border border-link/30 bg-link/5 p-3 rounded-xl">
           <input type="hidden" name="inquiryId" value={inquiryId} />
           <input type="hidden" name="amount" value={acceptAmount} />
@@ -67,7 +70,7 @@ export function OfferThread({
           </ConfirmSubmit>
         </form>
       )}
-      <form action={postOfferMessage} className="mt-4 space-y-3">
+      {!readOnly && <form action={postOfferMessage} className="mt-4 space-y-3">
         <input type="hidden" name="inquiryId" value={inquiryId} />
         <label className="block text-[13px] text-muted-foreground">
           Message the other side
@@ -83,7 +86,7 @@ export function OfferThread({
         <SubmitButton variant="outline" className="h-9 text-[13px] font-medium" pendingLabel="Sending…">
           {canCounter ? "Send note or counter" : "Send note"}
         </SubmitButton>
-      </form>
+      </form>}
     </div>
   );
 }

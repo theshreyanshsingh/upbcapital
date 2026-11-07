@@ -1,5 +1,7 @@
 import type { ListingStatus, Role } from "@prisma/client";
+import { navFor } from "@/components/desk-nav";
 import { canOpenListing, openableListingIds, type Viewer } from "@/lib/access";
+import { deskPowers, type DeskCapability } from "@/lib/desk-roles";
 import { literal } from "@/lib/db-filters";
 import { deskSearch, searchTerm } from "@/lib/desk-search";
 import { filtersFromSaved, filtersQuery } from "@/lib/filters";
@@ -50,45 +52,47 @@ const LIMIT = 8;
 
 type Page = { href: string; label: string; keywords?: string };
 
-// The same pages as the sidebar in components/app-shell.tsx, in its order, plus the account menu's two pages.
-export function navPages(role: Role | string): Page[] {
+// Search words for the desk's pages, which come from the sidebar itself (components/desk-nav.ts).
+const DESK_KEYWORDS: Record<string, string> = {
+  "/admin": "home dashboard",
+  "/inbox": "messages threads",
+  "/marketplace": "marketplace listings",
+  "/admin/queue": "submissions approve",
+  "/admin/offers": "bids inquiries",
+  "/admin/events": "sale events auctions",
+  "/admin/market": "hud fannie freddie",
+  "/market": "report monthly",
+  "/closings": "settlement checklist",
+  "/admin/book": "holdings inventory",
+  "/admin/verification": "verification kyc proof of funds",
+  "/admin/users": "users people",
+  "/admin/leads": "sellers prospects",
+  "/admin/valuations": "valuation requests quotes",
+  "/admin/payouts": "broker fees",
+  "/admin/capital": "lenders funding",
+  "/admin/settings": "settings fees commission",
+  "/admin/compliance": "ofac screening",
+  "/admin/templates": "templates documents",
+  "/admin/audit": "history events",
+  "/admin/blog": "blog posts",
+  "/admin/analytics": "metrics digest",
+  "/admin/jobs": "cron runs history failures",
+  "/admin/assistant": "ai",
+  "/seller/api": "keys developers",
+  "/notifications": "notices alerts unread",
+};
+
+// The same pages as the sidebar in components/app-shell.tsx, in its order, plus the account menu's two pages. The
+// desk's list is the sidebar's own, so a page the sidebar hides from a desk role is hidden here too.
+export function navPages(role: Role | string, can?: readonly DeskCapability[]): Page[] {
   const notices: Page = { href: "/notifications", label: "Notifications", keywords: "notices alerts unread" };
   const account: Page[] = [
     { href: "/account/notifications", label: "Notice settings", keywords: "email push preferences digest" },
     { href: "/account/security", label: "Security", keywords: "password two-step authenticator sessions" },
   ];
   if (role === "ADMIN") {
-    return [
-      { href: "/admin", label: "Revenue", keywords: "home dashboard" },
-      notices,
-      { href: "/inbox", label: "Inbox", keywords: "messages threads" },
-      { href: "/marketplace", label: "The book", keywords: "marketplace listings" },
-      { href: "/admin/queue", label: "Review queue", keywords: "submissions approve" },
-      { href: "/admin/offers", label: "Offers", keywords: "bids inquiries" },
-      { href: "/admin/events", label: "Events", keywords: "sale events auctions" },
-      { href: "/admin/market", label: "Agency sales", keywords: "hud fannie freddie" },
-      { href: "/market", label: "Market dispatch", keywords: "report monthly" },
-      { href: "/closings", label: "Closings", keywords: "settlement checklist" },
-      { href: "/admin/book", label: "Desk book", keywords: "holdings inventory" },
-      { href: "/admin/verification", label: "Buyer files", keywords: "verification kyc proof of funds" },
-      { href: "/admin/users", label: "Accounts", keywords: "users people" },
-      { href: "/admin/brokers", label: "Brokers" },
-      { href: "/admin/contacts", label: "Contacts" },
-      { href: "/admin/leads", label: "Leads", keywords: "sellers prospects" },
-      { href: "/admin/payouts", label: "Payouts", keywords: "broker fees" },
-      { href: "/admin/capital", label: "Capital", keywords: "lenders funding" },
-      { href: "/admin/settings", label: "Fee schedule", keywords: "settings fees commission" },
-      { href: "/admin/costs", label: "Unit costs" },
-      { href: "/admin/compliance", label: "Compliance", keywords: "ofac screening" },
-      { href: "/admin/filings", label: "Filings" },
-      { href: "/admin/templates", label: "Forms", keywords: "templates documents" },
-      { href: "/admin/audit", label: "Audit log", keywords: "history events" },
-      { href: "/admin/blog", label: "Journal", keywords: "blog posts" },
-      { href: "/admin/analytics", label: "Analytics", keywords: "metrics digest" },
-      { href: "/admin/assistant", label: "Assistant", keywords: "ai" },
-      { href: "/seller/api", label: "Seller API", keywords: "keys developers" },
-      ...account,
-    ];
+    const desk = navFor({ role: "ADMIN", name: "", email: "", tier: "", unread: 0, ...(can ? { can } : {}) });
+    return [...desk.map((item) => ({ href: item.href, label: item.label, keywords: DESK_KEYWORDS[item.href] })), ...account];
   }
   if (role === "BROKER") {
     return [
@@ -149,13 +153,17 @@ export function shortcutsFor(role: Role | string): ShortcutBinding[] {
   return [go("b", "Your listings", "/seller"), ...common];
 }
 
-function actionsFor(viewer: Pick<Viewer, "role" | "subscriptionTier" | "subscriptionStatus" | "subscriptionCurrentPeriodEnd">): CommandItem[] {
+type PaletteUser = Pick<Viewer, "role" | "subscriptionTier" | "subscriptionStatus" | "subscriptionCurrentPeriodEnd"> & { deskRole?: string | null };
+
+function actionsFor(viewer: PaletteUser, can: readonly DeskCapability[] | undefined): CommandItem[] {
   const items: CommandItem[] = [];
   const role = viewer.role;
-  if (role === "INDIVIDUAL_SELLER" || role === "INSTITUTIONAL_SELLER" || role === "ADMIN") {
+  // Listing paper is the sales side's work on the desk.
+  const lists = role !== "ADMIN" || !can || can.includes("sales");
+  if ((role === "INDIVIDUAL_SELLER" || role === "INSTITUTIONAL_SELLER" || role === "ADMIN") && lists) {
     items.push({ id: "action:new-note", group: "Actions", label: "New note listing", href: "/seller/notes/new", keywords: "list a note sell create add" });
   }
-  if (role === "INSTITUTIONAL_SELLER" || role === "ADMIN") {
+  if ((role === "INSTITUTIONAL_SELLER" || role === "ADMIN") && lists) {
     items.push({ id: "action:tape", group: "Actions", label: "Upload a tape", href: "/seller/pools/new", keywords: "pool csv spreadsheet loans" });
   }
   if (role === "BROKER") {
@@ -176,10 +184,12 @@ function actionsFor(viewer: Pick<Viewer, "role" | "subscriptionTier" | "subscrip
 }
 
 // Everything the palette shows before a search: actions first, then the pages, each with its shortcut if it has one.
-export function paletteCommands(viewer: Pick<Viewer, "role" | "subscriptionTier" | "subscriptionStatus" | "subscriptionCurrentPeriodEnd">) {
+// A desk account's pages and actions follow its role, as the sidebar does.
+export function paletteCommands(viewer: PaletteUser) {
+  const can = viewer.role === "ADMIN" ? deskPowers({ role: viewer.role, deskRole: viewer.deskRole }) : undefined;
   const shortcuts = shortcutsFor(viewer.role);
   const keysFor = (href: string) => shortcuts.find((binding) => binding.href === href)?.keys;
-  const pages: CommandItem[] = navPages(viewer.role).map((page) => ({
+  const pages: CommandItem[] = navPages(viewer.role, can).map((page) => ({
     id: `page:${page.href}`,
     group: "Pages",
     label: page.label,
@@ -187,7 +197,7 @@ export function paletteCommands(viewer: Pick<Viewer, "role" | "subscriptionTier"
     keywords: page.keywords,
     shortcut: keysFor(page.href),
   }));
-  return { commands: [...actionsFor(viewer), ...pages], shortcuts, placeholder: placeholderFor(viewer.role) };
+  return { commands: [...actionsFor(viewer, can), ...pages], shortcuts, placeholder: placeholderFor(viewer.role) };
 }
 
 function placeholderFor(role: Role | string) {

@@ -26,6 +26,7 @@ import { getSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 import { dealOwners, deskCan, deskContact } from "@/lib/staff";
 import { pendingWireChanges } from "@/lib/wire-changes";
+import { CUSTODIAN_FUNDS, fundingParty } from "@/lib/vesting";
 import { saveDealOwner } from "@/actions/staff";
 import { decideWires } from "@/actions/wires";
 import { faultLabel, strikeLimitOf } from "@/lib/strikes";
@@ -100,10 +101,12 @@ export default async function ClosingPage({
   // A group's closing is the seats' money, so the desk ends it on their word rather than one seat walking away.
   const canWalkAway = inDiligence && !isAdmin && closing.funders.length <= 1 && (user.id === inquiry?.buyerId || closing.funders.some((funder) => funder.userId === user.id));
   // The named desk contact, and wire changes waiting for a second desk member's approval.
-  const [owner, owners, pendingWires] = await Promise.all([
+  const [owner, owners, pendingWires, funding] = await Promise.all([
     deskContact(closing.deskOwnerId),
     runs ? dealOwners() : Promise.resolve([]),
     isAdmin ? pendingWireChanges(closing.id) : Promise.resolve([]),
+    // A buyer through a self-directed IRA: its custodian signs and wires, so both sides know who the money is from.
+    fundingParty(closing),
   ]);
   return (
     <div className="grid grid-cols-[minmax(0,1fr)] gap-10 lg:grid-cols-[minmax(0,1fr)_320px]">
@@ -119,6 +122,14 @@ export default async function ClosingPage({
             ? ` · ${closing.noteIds.length} of ${closing.listing.notes.length} loans`
             : inquiry?.note ? ` · ${inquiry.note.city}, ${inquiry.note.state}` : " · whole listing"}
         </p>
+        {(party || isAdmin) && closing.buyerEntity && !closing.deskBidId && closing.funders.length <= 1 && (
+          <p className="mt-2 text-sm text-foreground">Takes title as {closing.buyerEntity}</p>
+        )}
+        {(party || isAdmin) && funding && (
+          <p className="mt-2 border border-link/30 bg-link/5 px-3 py-2 text-sm text-foreground rounded-lg">
+            Funding party: {funding.custodian}, the IRA custodian. {CUSTODIAN_FUNDS}
+          </p>
+        )}
         {(owner || runs) && (
           <div className="mt-3 flex flex-wrap items-center gap-3">
             <p className="text-sm text-foreground">

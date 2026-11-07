@@ -1,9 +1,11 @@
 import { canManageRoom, ndaOpensRoom } from "@/lib/acl";
+import { draftInBackground } from "@/lib/ai-reading";
 import { audit } from "@/lib/audit";
 import { bidderAlias, realName } from "@/lib/bidder-alias";
 import { notify, notifyDesk } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
 import { consumeRateLimit } from "@/lib/rate-limit";
+import { qaCutoffBlock } from "@/lib/sale-events";
 import { notifyWatchers, watchLink } from "@/lib/watchers";
 
 // Shared bidder Q&A. A buyer in the data room asks; the seller, the filing broker or the desk answers once for
@@ -62,6 +64,9 @@ export async function askQuestion(actor: Actor, input: { listingId: string; ques
   });
   if (!listing) return fail("That listing isn't on the book.");
   if (listing.status !== "APPROVED") return fail("This listing isn't live, so it isn't taking questions.");
+  // A sale event's Q&A cutoff closes questions on its listings, so the seller can answer before bids are due.
+  const cutoff = await qaCutoffBlock(listing);
+  if (cutoff) return fail(cutoff);
   if (!(await canAsk(actor, listing))) return fail("Questions open to bidders in the data room. Sign the NDA first.");
   const question = clean(input.question, QUESTION_MAX);
   if (question.length < QUESTION_MIN) return fail("Write the question in a sentence or two.");
@@ -72,6 +77,8 @@ export async function askQuestion(actor: Actor, input: { listingId: string; ques
   if (!(await consumeRateLimit(`question:${actor.id}`, ASK_LIMIT, ASK_WINDOW_MS))) return fail("That is a lot of questions in an hour. Try again shortly.");
   const row = await prisma.listingQuestion.create({ data: { listingId: listing.id, askerId: actor.id, noteId, question } });
   await audit(actor.id, "QUESTION_ASK", "listing", listing.id, row.id);
+  // The desk's reader drafts an answer from the room's files for the seller to check. Bidders never see a draft.
+  draftInBackground(row.id);
   // The seller and broker see the bidder's letter, the desk sees who it is.
   const alias = await bidderAlias(listing.id, actor.id);
   const link = `${process.env.NEXT_PUBLIC_APP_URL || ""}${ownerPath(listing, listing.seller.role)}`;

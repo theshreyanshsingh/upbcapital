@@ -1,0 +1,19 @@
+PROMISSORY NOTE
+FICTIONAL SAMPLE FOR TESTING ONLY. NOT A REAL NOTE.
+
+Note Date: June 15, 2019
+Borrower: Dana R. Whitfield ("Borrower")
+Property Address: 418 Candela Avenue, Coral Gables, FL 33134
+Principal Amount: $350,000.00
+Interest Rate: 5.875% per annum, fixed
+Monthly Principal and Interest Payment: $2,070.38
+Maturity Date: July 1, 2049
+
+1. BORROWER'S PROMISE TO PAY
+In return for a loan that I have received, I promise to pay U.S. $350,000.00 (this amount is called "Principal"), plus interest, to the order of the Lender.
+
+2. INTEREST
+Interest will be charged on unpaid principal until the full amount of Principal has been paid. I will pay interest at a yearly rate of 5.875%.
+
+3. PAYMENTS
+I will make my monthly payment on the 1st day of each month beginning on August 1, 2019. If, on July 1, 2049, I still owe amounts under this Note, I will pay those amounts in full on that date, which is called the "Maturity Date."

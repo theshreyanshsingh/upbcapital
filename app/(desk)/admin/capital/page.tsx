@@ -5,6 +5,7 @@ import { SubmitButton } from "@/components/submit-button";
 import { requireRole } from "@/lib/auth";
 import { money, q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
+import { deskCan } from "@/lib/staff";
 
 export const metadata = { title: "Capital" };
 
@@ -13,7 +14,8 @@ export default async function CapitalPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  await requireRole(["ADMIN"]);
+  // Every desk role reads the capital. The desk's capital is desk book work, and the actions check the same.
+  const books = deskCan(await requireRole(["ADMIN"]), "deskBook");
   const params = await searchParams;
   const [investors, holdings] = await Promise.all([
     prisma.investor.findMany({
@@ -31,9 +33,10 @@ export default async function CapitalPage({
       />
       <Notice notice={q(params, "notice")} error={q(params, "error")} />
       <a className="text-[13px] font-medium text-link" href="/api/admin/capital/statement">Download statements</a>
+      {!books && <p className="mt-3 text-sm text-muted-foreground">Your desk role reads this page. Changes are for the desk book.</p>}
 
       <section className="mt-8 space-y-4">
-        {investors.length === 0 && <p className="border border-dashed border-link/30 px-5 py-8 text-sm text-muted-foreground rounded-xl">No investors yet. Add the first commitment below.</p>}
+        {investors.length === 0 && <p className="border border-dashed border-link/30 px-5 py-8 text-sm text-muted-foreground rounded-xl">No investors yet.{books ? " Add the first commitment below." : ""}</p>}
         {investors.map((investor) => {
           const committed = investor.commitments.reduce((sum, row) => sum + Number(row.amount), 0);
           const allocated = investor.allocations.reduce((sum, row) => sum + Number(row.amount), 0);
@@ -58,18 +61,18 @@ export default async function CapitalPage({
                   <li key={row.id}>{row.holding.title} · {money(Number(row.amount))}</li>
                 ))}
               </ul>
-              <form action={addCommitment} className="mt-4 grid gap-3 sm:grid-cols-[160px_minmax(0,1fr)_auto]">
+              {books && <form action={addCommitment} className="mt-4 grid gap-3 sm:grid-cols-[160px_minmax(0,1fr)_auto]">
                 <input type="hidden" name="investorId" value={investor.id} />
                 <input name="amount" inputMode="decimal" className="desk-input" aria-label={`Commitment for ${investor.name}`} placeholder="Commitment" />
                 <input name="note" className="desk-input" aria-label="Commitment note" placeholder="Note" />
                 <SubmitButton variant="outline" className="h-11 text-[13px] font-medium">Add commitment</SubmitButton>
-              </form>
+              </form>}
             </article>
           );
         })}
       </section>
 
-      <div className="mt-10 grid gap-6 lg:grid-cols-2">
+      {books && <div className="mt-10 grid gap-6 lg:grid-cols-2">
         <form action={addInvestor} className="border border-border p-5 rounded-xl">
           <p className="eyebrow">New investor</p>
           <div className="mt-4 grid gap-3">
@@ -94,7 +97,7 @@ export default async function CapitalPage({
             <SubmitButton className="h-11 text-[13px] font-medium">Allocate</SubmitButton>
           </div>
         </form>
-      </div>
+      </div>}
     </div>
   );
 }

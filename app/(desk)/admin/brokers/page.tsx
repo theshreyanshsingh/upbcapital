@@ -7,6 +7,7 @@ import { requireRole } from "@/lib/auth";
 import { bpsToPercent } from "@/lib/money";
 import { q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
+import { deskCan } from "@/lib/staff";
 
 export const metadata = { title: "Brokers" };
 
@@ -15,7 +16,10 @@ export default async function AdminBrokersPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  await requireRole(["ADMIN"]);
+  const user = await requireRole(["ADMIN"]);
+  // Approving a seat is compliance work and a fee override is the owner's; the actions check the same.
+  const vets = deskCan(user, "compliance");
+  const owns = deskCan(user, "admin");
   const params = await searchParams;
   const brokers = await prisma.user.findMany({
     where: { role: "BROKER" },
@@ -68,7 +72,7 @@ export default async function AdminBrokersPage({
                 <p className="text-[13px] font-medium text-link">{broker.accountStatus.toLowerCase()}</p>
               </div>
               <div className="mt-4 flex flex-wrap gap-2">
-                {(["APPROVED", "PENDING", "REJECTED"] as const).filter((status) => status !== broker.accountStatus).map((status) => (
+                {vets && (["APPROVED", "PENDING", "REJECTED"] as const).filter((status) => status !== broker.accountStatus).map((status) => (
                   <form key={status} action={setBrokerStatus}>
                     <input type="hidden" name="userId" value={broker.id} />
                     <input type="hidden" name="status" value={status} />
@@ -81,7 +85,12 @@ export default async function AdminBrokersPage({
                   <Link href={`/brokers/${broker.referralCode}`} className="inline-flex h-10 items-center px-3 text-[13px] font-medium text-link">Public page</Link>
                 )}
               </div>
-              {profile && (
+              {profile && !owns && (
+                <p className="mt-5 border-t border-border pt-4 text-sm text-muted-foreground">
+                  Broker fee {overrideLabel(profile.brokerFeeBasis, brokerValue)} · affiliate fee {overrideLabel(profile.affiliateFeeBasis, affiliateValue)}
+                </p>
+              )}
+              {profile && owns && (
                 <form action={saveBrokerFeeOverride} className="mt-5 grid gap-3 border-t border-border pt-4 sm:grid-cols-2">
                   <input type="hidden" name="userId" value={broker.id} />
                   <FeeField label="Broker fee override" basisName="brokerFeeBasis" valueName="brokerFeeValue" basis={profile.brokerFeeBasis || ""} value={brokerValue} />
@@ -97,6 +106,11 @@ export default async function AdminBrokersPage({
       </ul>
     </div>
   );
+}
+
+// A seat's override in words, for desk roles that read the page without the form.
+function overrideLabel(basis: string | null, value: string) {
+  return basis === "FLAT" ? `$${value} flat` : basis === "PERCENT" ? `${value}%` : "at the desk default";
 }
 
 function FeeField({ label, basisName, valueName, basis, value }: { label: string; basisName: string; valueName: string; basis: string; value: string }) {

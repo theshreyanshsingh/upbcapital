@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { EventCalendar, EventPaperLinks } from "@/components/event-papers";
 import { PageIntro } from "@/components/page-intro";
 import { requireUser } from "@/lib/auth";
 import { money, num } from "@/lib/format";
@@ -24,9 +25,12 @@ export default async function EventsPage() {
   const listings = events.length
     ? await prisma.listing.findMany({
         where: { saleEventId: { in: events.map((event) => event.id) }, status: { in: ["APPROVED", "PENDING", "SOLD"] } },
-        select: { saleEventId: true, sellerId: true, status: true, notes: { select: { upb: true, askingPrice: true, tradeStatus: true } } },
+        select: { saleEventId: true, sellerId: true, brokerId: true, status: true, notes: { select: { upb: true, askingPrice: true, tradeStatus: true } } },
       })
     : [];
+
+  // The process letter and calendar are for buyers, the desk, and the sellers of an event's own listings.
+  const readsPapers = (eventId: string) => canBook || listings.some((listing) => listing.saleEventId === eventId && (listing.sellerId === user.id || listing.brokerId === user.id));
 
   return (
     <div>
@@ -78,6 +82,15 @@ export default async function EventsPage() {
                 </div>
               </dl>
               <p className="mt-4 text-sm text-foreground">{roundText(event)}</p>
+              {(event.ndaDueAt || event.qaCutoffAt || event.awardTargetAt || event.closingTargetAt) && (
+                <div className="mt-4 border-t border-border pt-3">
+                  <p className="text-xs text-muted-foreground">Process calendar</p>
+                  <div className="mt-2">
+                    <EventCalendar event={event} />
+                  </div>
+                </div>
+              )}
+              {readsPapers(event.id) && <EventPaperLinks eventId={event.id} className="mt-4" />}
               {own.length > 0 ? (canBook && (
                 <Link href={`/marketplace?event=${event.id}`} className="mt-4 inline-flex h-10 items-center rounded-lg border border-border px-4 text-[13px] font-medium text-foreground hover:border-foreground/30">
                   See the {own.length} listing{own.length === 1 ? "" : "s"}

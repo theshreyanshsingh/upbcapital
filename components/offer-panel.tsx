@@ -7,8 +7,9 @@ import { buyItNow } from "@/actions/buy-now";
 import { SubmitButton } from "@/components/submit-button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { bpsToPercent } from "@/lib/money";
+import { flatTerms, premiumOn, rateText, type FeeTerms } from "@/lib/fee-schedule";
 import { ConfirmRows, ConfirmSubmit } from "@/components/confirm-submit";
+import { EntityField, EntityPicker, entityRows, useEntityChoice, type EntityOption } from "@/components/entity-picker";
 import { LoanPriceFields, type LoanPriceSummary, type PricedLoan } from "@/components/loan-price-fields";
 import { BUY_NOW_BUYER_SUMMARY, buyNowTerms } from "@/lib/buy-now";
 import { ACKNOWLEDGE_FIRST } from "@/lib/eligibility";
@@ -19,6 +20,7 @@ import { RENEW_FUNDS, bidTarget, credentialRows, headroomAfter, type BidStanding
 export function OfferPanel({
   listingId,
   premiumBps,
+  fees,
   canOffer,
   pro,
   verified,
@@ -32,9 +34,12 @@ export function OfferPanel({
   acknowledgeFirst = false,
   standing = null,
   loans = [],
+  entities = [],
 }: {
   listingId: string;
   premiumBps: number;
+  // The listing's fee terms, so a graded premium follows the figure typed. Missing means premiumBps flat.
+  fees?: FeeTerms;
   canOffer: boolean;
   pro: boolean;
   verified: boolean;
@@ -56,12 +61,17 @@ export function OfferPanel({
   standing?: BidStanding | null;
   // A whole pool's loans, so the buyer can price each one. Empty for a single note or a one-loan bid.
   loans?: PricedLoan[];
+  // The buying entities a bid can be for. With more than one, the buyer picks once for every bid on the page.
+  entities?: EntityOption[];
 }) {
   const [amount, setAmount] = useState("");
+  const [entity] = useEntityChoice(listingId, entities);
+  const buyingAs = entityRows(entity, entities);
   const [priced, setPriced] = useState<LoanPriceSummary>({ priced: 0, sum: 0, allowPartial: false });
   const [goodUntil, setGoodUntil] = useState("");
   const offer = Number(amount.replace(/[$,]/g, ""));
-  const premium = Number.isFinite(offer) ? (offer * premiumBps) / 10000 : 0;
+  const terms = fees ?? flatTerms(premiumBps);
+  const premium = premiumOn(terms, offer);
   const notice = notices.length ? ` ${notices.join(" ")}` : "";
   const credential = standing?.credential ?? null;
   // A pause or an expired proof stops bids, not information requests.
@@ -82,7 +92,7 @@ export function OfferPanel({
       <p className="eyebrow">Make a bid</p>
       <h2 className="mt-2 font-semibold tracking-tight text-lg text-foreground">{heading || "Offer or ask for the file"}</h2>
       <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-        A buyer premium of {bpsToPercent(premiumBps).toFixed(2)}% is added to an accepted price. It is not part of your bid.{" "}
+        A buyer premium of {rateText(terms, "premium")} is added to an accepted price. It is not part of your bid.{" "}
         <Link href="/fees" className="text-link">See the fee schedule</Link>.
       </p>
       {credential && !credential.expired && canOffer && verified && (
@@ -90,7 +100,9 @@ export function OfferPanel({
           {credential.line} · {money(Math.max(0, credential.headroom))} headroom
         </p>
       )}
-      {bidding && buyNow && <BuyNowForm listingId={listingId} premiumBps={premiumBps} buyNow={buyNow} deposit={deposit} diligenceDays={diligenceDays} notice={notice} standing={standing} />}
+      {/* Loan bids in the pool table carry the same choice, so it shows whenever the buyer can bid at all. */}
+      {verified && !stopped && !acknowledgeFirst && <EntityPicker listingId={listingId} options={entities} />}
+      {bidding && buyNow && <BuyNowForm listingId={listingId} terms={terms} buyNow={buyNow} deposit={deposit} diligenceDays={diligenceDays} notice={notice} standing={standing} entity={entity} buyingAs={buyingAs} />}
       {canOffer && verified && stopped ? (
         <p className="mt-4 text-sm leading-relaxed text-foreground">
           {stopped}{" "}
@@ -106,6 +118,7 @@ export function OfferPanel({
           <input type="hidden" name="listingId" value={listingId} />
           <input type="hidden" name="type" value="OFFER" />
           {noteId ? <input type="hidden" name="noteId" value={noteId} /> : null}
+          <EntityField chosen={entity} />
           <label className="block text-[13px] text-muted-foreground">
             Your bid
             <Input
@@ -151,7 +164,7 @@ export function OfferPanel({
           <ConfirmSubmit
             title={`Bid ${money(offer)}?`}
             consequence={`If the desk accepts it, you're committed to buy ${partial ? "the whole pool, or the part of it the desk awards at your loan prices," : "at this price"} plus the buyer premium${deposit ? `, and a ${deposit[0]}% deposit is due within ${deposit[1]} day${deposit[1] === 1 ? "" : "s"}` : ""}.${bidTerms(diligenceDays)}${notice}`}
-            details={<ConfirmRows rows={[["Your bid", money(offer)], ["Buyer premium", money(premium)], ["All-in", money(offer + premium)], ...loanRows, ...credentialRows(credential?.line ?? null, room), goodUntilRow(goodUntil)]} />}
+            details={<ConfirmRows rows={[["Your bid", money(offer)], ["Buyer premium", money(premium)], ["All-in", money(offer + premium)], ...loanRows, ...buyingAs, ...credentialRows(credential?.line ?? null, room), goodUntilRow(goodUntil)]} />}
             confirmLabel="Place the bid"
             pendingLabel="Sending…"
             className="h-11 w-full text-[13px] font-medium"
@@ -199,31 +212,36 @@ export function OfferPanel({
 // The seller's standing price, one confirmation away. The first verified buyer to confirm opens the closing.
 function BuyNowForm({
   listingId,
-  premiumBps,
+  terms,
   buyNow,
   deposit,
   diligenceDays,
   notice,
   standing,
+  entity,
+  buyingAs,
 }: {
   listingId: string;
-  premiumBps: number;
+  terms: FeeTerms;
   buyNow: { price: number | null; pool: boolean };
   deposit?: [number, number];
   diligenceDays?: number;
   notice: string;
   standing: BidStanding | null;
+  entity: EntityOption | null;
+  buyingAs: [string, string][];
 }) {
   if (buyNow.price == null) {
     return <p className="mt-4 rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground">The seller set a buy-it-now price. It shows on Pro, like the ask.</p>;
   }
   const price = buyNow.price;
-  const premium = (price * premiumBps) / 10000;
+  const premium = premiumOn(terms, price);
   const room = headroomAfter(standing?.credential, bidTarget(listingId, null), price + premium);
   return (
     <form id="buy-now" action={buyItNow} className="mt-4 scroll-mt-6 space-y-3 rounded-lg border border-link/30 bg-link/5 p-3">
       <input type="hidden" name="listingId" value={listingId} />
       <input type="hidden" name="price" value={price} />
+      <EntityField chosen={entity} />
       <div className="space-y-1 text-sm text-muted-foreground tabular-nums">
         <div className="flex justify-between"><span>Buy-it-now price</span><span className="text-foreground">{money(price)}</span></div>
         <div className="flex justify-between"><span>Buyer premium</span><span className="text-foreground">{money(premium)}</span></div>
@@ -239,6 +257,7 @@ function BuyNowForm({
               ["Price", money(price)],
               ["Buyer premium", money(premium)],
               ["All-in", money(price + premium)],
+              ...buyingAs,
               ...credentialRows(standing?.credential?.line ?? null, room),
               ["Deposit", deposit ? `${money((price * deposit[0]) / 100)} within ${deposit[1]} day${deposit[1] === 1 ? "" : "s"}` : "None"],
               ["Diligence window", diligenceDays ? `${diligenceDays} day${diligenceDays === 1 ? "" : "s"} after the award` : "None"],

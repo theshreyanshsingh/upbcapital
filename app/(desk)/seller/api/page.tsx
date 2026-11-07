@@ -36,7 +36,10 @@ export default async function SellerApiPage({ searchParams }: { searchParams: Pr
       <ul className="mt-8 space-y-3">
         {keys.map((key) => (
           <li key={key.id} className="flex items-center justify-between border border-border px-4 py-3 text-sm rounded-xl">
-            <span className="text-foreground">{key.name} · {key.prefix}…</span>
+            <span className="min-w-0">
+              <span className="block text-foreground">{key.name} · {key.prefix}…</span>
+              <span className="block text-xs text-muted-foreground tabular-nums">{key.lastUsedAt ? `Last used ${stamp(key.lastUsedAt)}` : "Not used yet"}</span>
+            </span>
             <form action={revokeApiKey}>
               <input type="hidden" name="id" value={key.id} />
               <SubmitButton variant="ghost" className="h-8 text-[13px] font-medium">Revoke</SubmitButton>

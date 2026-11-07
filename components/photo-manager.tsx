@@ -41,13 +41,14 @@ export async function ListingPhotos({ listing, viewer, deal }: { listing: Galler
   );
 }
 
-// Where the seller, the filing broker or the desk adds and removes a listing's photos.
-export async function PhotoManager({ listing, desk = false }: { listing: { id: string; status: string; notes: { id: string; streetAddress: string; city: string; state: string }[] }; desk?: boolean }) {
+// Where the seller, the filing broker or the desk adds and removes a listing's photos. readOnly is for a desk role
+// outside sales: it sees the photos without the forms, and the actions refuse it too.
+export async function PhotoManager({ listing, desk = false, readOnly = false }: { listing: { id: string; status: string; notes: { id: string; streetAddress: string; city: string; state: string }[] }; desk?: boolean; readOnly?: boolean }) {
   const photos = await prisma.document.findMany({ where: { listingId: listing.id, type: "PHOTO" }, orderBy: { createdAt: "asc" } });
   const label = new Map(listing.notes.map((note) => [note.id, `${note.streetAddress || "No street"}, ${note.city}, ${note.state}`]));
   const pool = listing.notes.length > 1;
   const full = photos.length >= PHOTO_LIMIT;
-  const addable = photosAddable({ role: desk ? "ADMIN" : "" }, listing.status);
+  const addable = !readOnly && photosAddable({ role: desk ? "ADMIN" : "" }, listing.status);
   if (!addable && !photos.length) return null;
   return (
     <section id="photos" aria-labelledby="photos-manage-heading" className="mt-8 scroll-mt-6 border border-border p-5 rounded-xl">
@@ -57,7 +58,7 @@ export async function PhotoManager({ listing, desk = false }: { listing: { id: s
       </div>
       <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
         Buyers see photos only once they can see the street address, after they sign the confidentiality agreement. Leave out the borrower and anything else personal.
-        {desk ? " The desk can add or remove photos at any stage." : ""}
+        {desk && !readOnly ? " The desk can add or remove photos at any stage." : ""}
       </p>
       {photos.length > 0 && (
         <ul className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
@@ -68,11 +69,13 @@ export async function PhotoManager({ listing, desk = false }: { listing: { id: s
                 <img src={`/api/photos/${photo.id}`} alt={`Photo ${photo.originalName}`} loading="lazy" decoding="async" className="size-full object-cover" />
               </div>
               {pool && photo.noteId && <p className="mt-1 truncate text-xs text-muted-foreground">{label.get(photo.noteId) ?? "Loan not on file"}</p>}
-              <form action={deletePhoto} className="mt-1">
-                <input type="hidden" name="photoId" value={photo.id} />
-                <input type="hidden" name="listingId" value={listing.id} />
-                <SubmitButton variant="ghost" pendingLabel="Removing…" className="h-9 px-0 text-[13px] font-medium text-link">Remove</SubmitButton>
-              </form>
+              {!readOnly && (
+                <form action={deletePhoto} className="mt-1">
+                  <input type="hidden" name="photoId" value={photo.id} />
+                  <input type="hidden" name="listingId" value={listing.id} />
+                  <SubmitButton variant="ghost" pendingLabel="Removing…" className="h-9 px-0 text-[13px] font-medium text-link">Remove</SubmitButton>
+                </form>
+              )}
             </li>
           ))}
         </ul>

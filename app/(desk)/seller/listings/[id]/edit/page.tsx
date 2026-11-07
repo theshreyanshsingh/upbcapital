@@ -1,3 +1,4 @@
+import { feeTerms } from "@/lib/fee-schedule";
 import { notFound } from "next/navigation";
 import { NoteWizard } from "@/components/note-wizard";
 import { PageIntro } from "@/components/page-intro";
@@ -25,6 +26,7 @@ export default async function EditListingPage({ params }: { params: Promise<{ id
         listingId={listing.id}
         premiumBps={settings.buyerPremiumBps}
         commissionBps={settings.sellerCommissionBps}
+        fees={feeTerms(listing, settings)}
         initial={{
           streetAddress: note.streetAddress,
           city: note.city,

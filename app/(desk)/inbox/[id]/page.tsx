@@ -7,6 +7,7 @@ import { threadNamer } from "@/lib/bidder-alias";
 import { q, prettyDate } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 import { messageWasRead } from "@/lib/read-state";
+import { threadWall } from "@/lib/threads";
 
 export const metadata = { title: "Thread" };
 
@@ -30,6 +31,17 @@ export default async function ThreadPage({
   if (!thread) notFound();
   const seated = thread.members.some((member) => member.userId === user.id);
   if (!seated && user.role !== "ADMIN") notFound();
+  // Behind the desk's wall the thread shows its subject and why, and opening it seats nobody, so no notice follows.
+  const wall = await threadWall(user, thread);
+  if (wall) {
+    return (
+      <div className="max-w-3xl">
+        <p className="eyebrow">Thread</p>
+        <h1 className="mt-3 font-semibold tracking-tight text-3xl text-foreground">{thread.subject}</h1>
+        <p role="status" className="mt-6 rounded-xl border border-border bg-card px-4 py-4 text-sm text-muted-foreground">{wall}</p>
+      </div>
+    );
+  }
   await prisma.threadMember.upsert({
     where: { threadId_userId: { threadId: id, userId: user.id } },
     create: { threadId: id, userId: user.id, lastReadAt: new Date() },

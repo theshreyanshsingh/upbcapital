@@ -22,12 +22,15 @@ export function DiscrepancyDesk({
   people,
   listingId,
   listingStatus,
+  readOnly = false,
 }: {
   rows: DiscrepancyRow[];
   loans: Loan[];
   people: Record<string, string>;
   listingId: string;
   listingStatus: string;
+  // A desk role outside sales reads every difference without the answer forms. The action refuses it too.
+  readOnly?: boolean;
 }) {
   const byId = new Map(loans.map((loan) => [loan.id, loan]));
   const open = rows.filter((row) => row.status === "OPEN");
@@ -43,6 +46,7 @@ export function DiscrepancyDesk({
       </p>
       {gate ? <p className="mt-3 text-sm text-foreground">{gate}</p> : rows.length > 0 && <p className="mt-3 text-sm text-good">Every difference has an answer.</p>}
       {rows.length === 0 && <p className="mt-3 text-sm text-muted-foreground">None raised.</p>}
+      {readOnly && open.length > 0 && <p className="mt-1 text-sm text-muted-foreground">Answers are for the sales side of the desk.</p>}
       {open.length > 0 && (
         <ul className="mt-3 space-y-3">
           {open.map((row) => {
@@ -63,7 +67,7 @@ export function DiscrepancyDesk({
                   <div><dt className="text-xs text-muted-foreground">Raised</dt><dd className="tabular-nums text-muted-foreground">{prettyDate(row.createdAt)} · {who(row.raisedById)}</dd></div>
                 </dl>
                 {moved && <p className="mt-1 text-xs text-muted-foreground tabular-nums">The tape now reads {shown(row.field, current)}.</p>}
-                <form action={resolveDifference} className="mt-3 space-y-2">
+                {!readOnly && <form action={resolveDifference} className="mt-3 space-y-2">
                   <input type="hidden" name="discrepancyId" value={row.id} />
                   <label className="block">
                     <span className="text-[13px] text-muted-foreground">Reason, which buyers who can open the loan read</span>
@@ -99,7 +103,7 @@ export function DiscrepancyDesk({
                       Waive
                     </ConfirmSubmit>
                   </div>
-                </form>
+                </form>}
               </li>
             );
           })}

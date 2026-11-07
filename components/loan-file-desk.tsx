@@ -71,6 +71,7 @@ export function LoanFileDesk({
   picker,
   discrepancies = [],
   listedAt = null,
+  readOnly = false,
 }: {
   note: LoanRecord;
   collateral: CollateralRow[];
@@ -84,6 +85,8 @@ export function LoanFileDesk({
   // This loan's tape differences, and when the listing was filed, for the "fixed after listing" caution.
   discrepancies?: DiscrepancyRow[];
   listedAt?: Date | null;
+  // A desk role outside sales reads the whole file without the forms. The actions refuse it too.
+  readOnly?: boolean;
 }) {
   const file = completeness(note, collateral, risks, { holder });
   const lines = collateralLines(note.lienPosition, collateral);
@@ -150,9 +153,13 @@ export function LoanFileDesk({
                   {item.recording && <span className="text-xs text-muted-foreground tabular-nums">{item.recording}{item.recordedAt ? ` · ${prettyDate(item.recordedAt)}` : ""}</span>}
                   <span className="text-xs text-muted-foreground">{who(item.updatedById)} · {prettyDate(item.updatedAt ?? item.createdAt)}</span>
                 </summary>
-                <CollateralForm noteId={note.id} kind={item.kind} item={item} documents={documents} />
+                {readOnly ? (
+                  item.documentId && <p className="mt-2 text-xs"><a className="text-link" href={`/api/documents/${item.documentId}`}>File on record</a></p>
+                ) : (
+                  <CollateralForm noteId={note.id} kind={item.kind} item={item} documents={documents} />
+                )}
                 {item.photoDocumentId && <p className="mt-2 text-xs"><a className="text-link" href={`/api/documents/${item.photoDocumentId}`}>Intake photo</a></p>}
-                <div className="mt-3 flex flex-wrap gap-2">
+                {!readOnly && <div className="mt-3 flex flex-wrap gap-2">
                   {isChainKind(item.kind) && index > 0 && (
                     <form action={moveCollateral}>
                       <input type="hidden" name="noteId" value={note.id} />
@@ -183,15 +190,15 @@ export function LoanFileDesk({
                       Remove
                     </ConfirmSubmit>
                   </form>
-                </div>
+                </div>}
               </details>
             ))}
-            <details className="mt-2">
+            {!readOnly && <details className="mt-2">
               <summary className="cursor-pointer text-[13px] font-medium text-link">
                 {line.chain ? (line.items.length ? "Add the next link" : "Add the first link, or mark it not required") : line.items.length ? "Add another" : "Record this line"}
               </summary>
               <CollateralForm noteId={note.id} kind={line.kind} documents={documents} />
-            </details>
+            </details>}
           </div>
         ))}
       </div>
@@ -226,7 +233,7 @@ export function LoanFileDesk({
           </tbody>
         </table>
       </div>
-      <form action={logRisk} className="mt-4 grid gap-3 rounded-lg border border-border p-4 sm:grid-cols-2">
+      {!readOnly && <form action={logRisk} className="mt-4 grid gap-3 rounded-lg border border-border p-4 sm:grid-cols-2">
         <p className="text-[13px] font-medium text-foreground sm:col-span-2">Log a check</p>
         <input type="hidden" name="noteId" value={note.id} />
         <label className="block">
@@ -261,7 +268,7 @@ export function LoanFileDesk({
         <DocumentSelect documents={documents} />
         <p className="text-xs text-muted-foreground sm:col-span-2">{RISK_KINDS.map((row) => `${row.label}: ${row.hint}`).join(" ")}</p>
         <div className="sm:col-span-2"><SubmitButton className="h-9 text-[13px] font-medium" pendingLabel="Logging…">Log the check</SubmitButton></div>
-      </form>
+      </form>}
       {log.length > 0 && (
         <details className="mt-3">
           <summary className="cursor-pointer text-[13px] font-medium text-link">Every check on this loan ({log.length})</summary>
@@ -276,7 +283,7 @@ export function LoanFileDesk({
       )}
 
       <h3 className="mt-8 text-[13px] font-medium text-foreground">Tape and desk</h3>
-      <p className="mt-1 text-xs text-muted-foreground">Open a field to check it. Leave the value as the tape reads to confirm it, or enter what the document says if it differs.</p>
+      <p className="mt-1 text-xs text-muted-foreground">{readOnly ? "Open a field to see the desk's check. Checks are for the sales side of the desk." : "Open a field to check it. Leave the value as the tape reads to confirm it, or enter what the document says if it differs."}</p>
       <div className="mt-2">
         {LOAN_FIELDS.map((spec) => {
           const tape = tapeValue(note, spec.field);
@@ -293,7 +300,12 @@ export function LoanFileDesk({
                   {entry && <span className="text-xs text-muted-foreground">{who(entry.by)}</span>}
                 </span>
               </summary>
-              <div className="mt-3 flex flex-wrap items-end gap-3">
+              {readOnly && (
+                <p className="mt-2 text-xs text-muted-foreground tabular-nums">
+                  {entry ? `${entry.source} · ${prettyDate(entry.at)}` : "Not checked by the desk yet."}
+                </p>
+              )}
+              {!readOnly && <div className="mt-3 flex flex-wrap items-end gap-3">
                 <form action={verifyField} className="flex flex-wrap items-end gap-3">
                   <input type="hidden" name="noteId" value={note.id} />
                   <input type="hidden" name="field" value={spec.field} />
@@ -316,13 +328,13 @@ export function LoanFileDesk({
                     <SubmitButton variant="outline" className="h-10 text-[13px] font-medium" pendingLabel="Clearing…">{entry.origin ? "Clear the report's badge" : "Clear the check"}</SubmitButton>
                   </form>
                 )}
-              </div>
+              </div>}
             </details>
           );
         })}
       </div>
       <p className="mt-2 text-xs text-muted-foreground">A document that differs from the tape raises a difference the seller fixes or explains. Approval waits until each one has an answer.</p>
-      <DiscrepancyRaise noteId={note.id} />
+      {!readOnly && <DiscrepancyRaise noteId={note.id} />}
 
       <h3 className="mt-8 text-[13px] font-medium text-foreground">Files on this loan</h3>
       {loanDocs.length === 0 ? (
@@ -337,7 +349,7 @@ export function LoanFileDesk({
           ))}
         </ul>
       )}
-      <form action={uploadLoanReport} className="mt-3 grid gap-3 rounded-lg border border-border p-4 sm:grid-cols-2">
+      {!readOnly && <form action={uploadLoanReport} className="mt-3 grid gap-3 rounded-lg border border-border p-4 sm:grid-cols-2">
         <input type="hidden" name="noteId" value={note.id} />
         <label className="block">
           <span className="text-[13px] text-muted-foreground">Kind of file</span>
@@ -351,9 +363,10 @@ export function LoanFileDesk({
         </label>
         <p className="text-xs text-muted-foreground sm:col-span-2">It opens to the desk, the seller, and buyers who can open this loan&apos;s street and borrower. Pro is needed unless the buyer is buying this loan.</p>
         <div className="sm:col-span-2"><SubmitButton className="h-9 text-[13px] font-medium" pendingLabel="Uploading…">Add to this loan</SubmitButton></div>
-      </form>
+      </form>}
 
-      {note.listingId && <ServicerReportPanel listingId={note.listingId} from="desk" loanId={note.id} nested />}
+      {/* The servicer panel is only an upload and the viewer's own staged preview, so a read-only role skips it. */}
+      {note.listingId && !readOnly && <ServicerReportPanel listingId={note.listingId} from="desk" loanId={note.id} nested />}
     </section>
   );
 }

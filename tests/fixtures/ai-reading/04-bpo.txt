@@ -1,0 +1,11 @@
+BROKER PRICE OPINION
+FICTIONAL SAMPLE FOR TESTING ONLY
+Subject Property: 77 Sample Way, Austin, TX 78701
+Inspection type: Exterior only
+Occupancy: Appears owner occupied
+As-Is Value: $410,000
+Repaired value: $455,000
+Estimated days on market: 45
+
+Comparable 1: 81 Sample Way, sold 08/12/2026 for $402,500
+Comparable 2: 102 Sample Way, sold 07/30/2026 for $418,000

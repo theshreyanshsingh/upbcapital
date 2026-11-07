@@ -1,7 +1,9 @@
 import { deskCan, type Staff } from "@/lib/desk-roles";
+import { allInFor, feeTerms, flatTerms, type FeeTerms } from "@/lib/fee-schedule";
 import { ofacBlocks } from "@/lib/ofac";
 import { buyerPrice } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
+import { getSettings } from "@/lib/settings";
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -41,9 +43,11 @@ export type BidRow = BidInput & {
 };
 
 // Highest price first, then the bid most likely to close. Flags say why a lower bid may still be the better award.
-export function rankBids(bids: BidInput[], premiumBps: number, now = new Date()): BidRow[] {
+// fees is the listing's terms, or a flat premium in basis points.
+export function rankBids(bids: BidInput[], fees: number | FeeTerms, now = new Date()): BidRow[] {
+  const terms = typeof fees === "number" ? flatTerms(fees) : fees;
   const rows = bids.map((bid) => {
-    const allIn = bid.amount + (bid.amount * premiumBps) / 10000;
+    const allIn = allInFor(terms, bid.amount);
     const funds = fundsCoverage(allIn, bid.proof, now);
     const flags: string[] = [];
     if (bid.ofacHold) flags.push("OFAC review open");
@@ -138,7 +142,7 @@ export async function bidSheet(listingId: string, premiumBps: number, now = new 
     });
   }
   // The premium the listing went live with, which the closing will charge. premiumBps covers older listings.
-  return rankBids(bids, listing.feeBuyerPremiumBps ?? premiumBps, now);
+  return rankBids(bids, feeTerms(listing, { ...(await getSettings()), buyerPremiumBps: premiumBps }), now);
 }
 
 // The ranked sheet is behind the desk's wall: only staff whose role reads sealed bids see it, whatever the round.

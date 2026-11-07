@@ -5,14 +5,18 @@ import { money, pct, prettyDate } from "@/lib/format";
 import type { SheetRow } from "@/lib/standing-bids";
 
 // The desk's indicative bid sheet: what each buy box with a price rule would pay for this tape. None of it binds
-// until a buyer confirms, and only a live listing can be sent to buyers.
-export function StandingBidSheet({ listingId, status, rows }: { listingId: string; status: string; rows: SheetRow[] }) {
+// until a buyer confirms, and only a live listing can be sent to buyers. A standing price confirms into a bid, so a
+// desk role behind the sealed-bid wall (lib/auction.ts deskWalled) sees who has a rule, not the rule or its price,
+// in an order that ranks nothing. Invites are for the sales side.
+export function StandingBidSheet({ listingId, status, rows, walled = false, canInvite = true }: { listingId: string; status: string; rows: SheetRow[]; walled?: boolean; canInvite?: boolean }) {
+  const shown = walled ? [...rows].sort((a, b) => a.buyerName.localeCompare(b.buyerName)) : rows;
   return (
     <section id="standing-bids" className="mt-8 scroll-mt-6" aria-labelledby="standing-bids-heading">
       <p id="standing-bids-heading" className="eyebrow">Standing bids</p>
       <p className="mt-1 text-sm text-muted-foreground">
         Buy boxes with a price rule priced this tape as it arrived. The figures are indicative, and nothing binds until a buyer confirms one.
-        {status === "APPROVED" ? " Invite a buyer and they get the figure with a link to bid it or pass." : " Invites open once the listing is live."}
+        {!canInvite ? "" : status === "APPROVED" ? " Invite a buyer and they get the figure with a link to bid it or pass." : " Invites open once the listing is live."}
+        {walled && " Your desk role doesn't read sealed bids, so each rule and price stays hidden here."}
       </p>
       {rows.length === 0 ? (
         <p className="mt-3 text-sm text-muted-foreground">No buy box with a price rule fits this listing.</p>
@@ -20,10 +24,21 @@ export function StandingBidSheet({ listingId, status, rows }: { listingId: strin
         <div className="mt-3 relative overflow-x-auto border border-border rounded-xl">
           <table className="min-w-full text-left text-sm">
             <thead className="text-xs font-medium text-muted-foreground">
-              <tr>{["Buyer", "Rule", "Price", "Of UPB", "Of ask", "State"].map((heading) => <th key={heading} className="px-3 py-2 font-normal">{heading}</th>)}</tr>
+              <tr>{(walled ? ["Buyer", "State"] : ["Buyer", "Rule", "Price", "Of UPB", "Of ask", "State"]).map((heading) => <th key={heading} className="px-3 py-2 font-normal">{heading}</th>)}</tr>
             </thead>
             <tbody>
-              {rows.map((row) => (
+              {shown.map((row) => walled ? (
+                <tr key={row.matchId} className="border-t border-border align-top">
+                  <td className="px-3 py-2">
+                    <p className="text-foreground">{row.buyerName}</p>
+                    <p className="text-xs text-muted-foreground">{row.boxName}</p>
+                  </td>
+                  <td className="px-3 py-2">
+                    <RowState row={row} listingId={listingId} canInvite={false} walled />
+                    {row.flags.map((flag) => <p key={flag} className="text-xs text-muted-foreground">{flag}</p>)}
+                  </td>
+                </tr>
+              ) : (
                 <tr key={row.matchId} className="border-t border-border align-top">
                   <td className="px-3 py-2">
                     <p className="text-foreground">{row.buyerName}</p>
@@ -37,7 +52,7 @@ export function StandingBidSheet({ listingId, status, rows }: { listingId: strin
                   <td className="px-3 py-2 text-muted-foreground tabular-nums">{pct(row.ofUpb)}</td>
                   <td className="px-3 py-2 text-muted-foreground tabular-nums">{pct(row.ofAsk)}</td>
                   <td className="px-3 py-2">
-                    <RowState row={row} listingId={listingId} />
+                    <RowState row={row} listingId={listingId} canInvite={canInvite} />
                     {row.flags.map((flag) => <p key={flag} className="text-xs text-muted-foreground">{flag}</p>)}
                   </td>
                 </tr>
@@ -50,7 +65,7 @@ export function StandingBidSheet({ listingId, status, rows }: { listingId: strin
   );
 }
 
-function RowState({ row, listingId }: { row: SheetRow; listingId: string }) {
+function RowState({ row, listingId, canInvite, walled = false }: { row: SheetRow; listingId: string; canInvite: boolean; walled?: boolean }) {
   if (row.inquiryId) {
     return (
       <p className="text-good">
@@ -60,7 +75,7 @@ function RowState({ row, listingId }: { row: SheetRow; listingId: string }) {
   }
   if (row.answeredAt) return <p className="text-muted-foreground">Passed {prettyDate(row.answeredAt)}</p>;
   if (row.invitedAt) return <p className="text-foreground">Invited {prettyDate(row.invitedAt)}</p>;
-  if (row.canInvite) {
+  if (row.canInvite && canInvite) {
     return (
       <form action={inviteStandingBid}>
         <input type="hidden" name="listingId" value={listingId} />
@@ -69,5 +84,7 @@ function RowState({ row, listingId }: { row: SheetRow; listingId: string }) {
       </form>
     );
   }
-  return row.price != null ? <p className="text-xs text-muted-foreground">{row.block}</p> : null;
+  if (walled) return <p className="text-xs text-muted-foreground">Not sent</p>;
+  if (row.price == null) return null;
+  return <p className="text-xs text-muted-foreground">{row.canInvite ? "Not sent. Invites are for the sales side of the desk." : row.block}</p>;
 }

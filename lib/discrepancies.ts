@@ -203,10 +203,11 @@ export async function deskResolveDiscrepancy(actorId: string, input: { id: strin
 }
 
 // The desk raises a question by hand, without signing the field as verified: "the BPO says vacant, explain".
-// `via` says how the question arose, for the audit log and the seller's email: the desk by hand, or a servicer report.
+// `via` says how the question arose, for the audit log and the seller's email: the desk by hand, a servicer report,
+// or the desk's document reader (lib/ai-reading.ts), which raises under its own id rather than an account's.
 export async function raiseDiscrepancy(
   actorId: string,
-  input: { noteId: string; field: string; document: string; source: string; via?: "hand" | "servicer" },
+  input: { noteId: string; field: string; document: string; source: string; via?: "hand" | "servicer" | "reader" },
 ): Promise<Outcome<DiscrepancyRow>> {
   const spec = fieldSpec(input.field);
   if (!spec) return fail("Pick a field.");
@@ -224,7 +225,8 @@ export async function raiseDiscrepancy(
   const row = open
     ? await prisma.fieldDiscrepancy.update({ where: { id: open.id }, data })
     : await prisma.fieldDiscrepancy.create({ data: { noteId: note.id, listingId: note.listingId, field: spec.field, ...data } });
-  await audit(actorId, "DISCREPANCY_RAISED", "note", note.id, `${spec.field} · ${source} · ${input.via === "servicer" ? "from a servicer report" : "by hand"}`);
+  const via = input.via === "servicer" ? "from a servicer report" : input.via === "reader" ? "from the document reader" : "by hand";
+  await audit(input.via === "reader" ? null : actorId, "DISCREPANCY_RAISED", "note", note.id, `${spec.field} · ${source} · ${via}`);
   if (!open) await tellSellerOfDifferences(note.listingId, input.via === "servicer" ? "servicer" : "desk");
   return { ok: true, value: row };
 }

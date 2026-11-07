@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { createSaleEvent } from "@/actions/sale-events";
+import { EventCalendarFields } from "@/components/event-calendar-fields";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { SubmitButton } from "@/components/submit-button";
@@ -17,6 +18,7 @@ import {
   roundText,
   when,
 } from "@/lib/sale-events";
+import { deskCan } from "@/lib/staff";
 
 export const metadata = { title: "Sale events" };
 
@@ -27,7 +29,8 @@ export default async function AdminEventsPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  await requireRole(["ADMIN"]);
+  // Every desk role reads the calendar. Creating an event is sales work, and the action checks the same.
+  const sells = deskCan(await requireRole(["ADMIN"]), "sales");
   const params = await searchParams;
   // A round whose date passed moves before the page shows it. A failure here leaves it for the daily job.
   await advanceSaleEvents().catch(() => null);
@@ -74,7 +77,7 @@ export default async function AdminEventsPage({
         <section aria-labelledby="open-events" className="mt-6">
           <h2 id="open-events" className="eyebrow">Upcoming and live</h2>
           <ul className="mt-3 divide-y divide-border border border-border rounded-xl">
-            {open.length === 0 && <li className="px-5 py-8 text-sm text-muted-foreground">No events on the calendar. Create one to set its dates.</li>}
+            {open.length === 0 && <li className="px-5 py-8 text-sm text-muted-foreground">No events on the calendar.{sells ? " Create one to set its dates." : ""}</li>}
             {open.map(row)}
           </ul>
         </section>
@@ -87,7 +90,8 @@ export default async function AdminEventsPage({
       </div>
 
       <aside>
-        <form action={createSaleEvent} className="space-y-4 border border-border p-5 rounded-xl">
+        {!sells && <p className="text-sm text-muted-foreground">Sale events are run by the sales side of the desk.</p>}
+        {sells && <form action={createSaleEvent} className="space-y-4 border border-border p-5 rounded-xl">
           <h2 className="eyebrow">New event</h2>
           <label className="block">
             <span className="text-[13px] text-muted-foreground">Name</span>
@@ -108,8 +112,9 @@ export default async function AdminEventsPage({
           <p id="final-hint" className="text-xs leading-relaxed text-muted-foreground">
             {FINAL_MIN_DAYS} to {FINAL_MAX_DAYS} days after indications. {FINAL_USUAL_DAYS[0]} to {FINAL_USUAL_DAYS[1]} days is usual. Left blank, it is set {FINAL_DEFAULT_DAYS} days after.
           </p>
+          <EventCalendarFields />
           <SubmitButton className="h-10 w-full text-[13px] font-medium" pendingLabel="Creating…">Create the event</SubmitButton>
-        </form>
+        </form>}
       </aside>
     </div>
   );

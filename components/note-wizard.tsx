@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { chargeFees, effectiveBps, flatTerms, type FeeTerms } from "@/lib/fee-schedule";
 import { money } from "@/lib/format";
 import type { PriceLadder } from "@/lib/indicative";
 import {
@@ -99,8 +100,9 @@ export function NoteWizard({
   mode,
   listingId,
   initial,
-  premiumBps,
-  commissionBps,
+  premiumBps: flatPremiumBps,
+  commissionBps: flatCommissionBps,
+  fees,
   leadId,
 }: {
   mode: "create" | "edit";
@@ -108,6 +110,8 @@ export function NoteWizard({
   initial?: Partial<Draft>;
   premiumBps: number;
   commissionBps: number;
+  // The listing's fee terms, so a graded schedule prices the ask as typed. Missing means the two rates flat.
+  fees?: FeeTerms;
   leadId?: string;
 }) {
   const [step, setStep] = useState(0);
@@ -223,8 +227,12 @@ export function NoteWizard({
   const ask = Number(draft.askingPrice) || 0;
   const upb = Number(draft.upb) || 0;
   const value = Number(draft.estimatedValue) || 0;
-  const premium = (ask * premiumBps) / 10000;
-  const commission = (ask * commissionBps) / 10000;
+  const charged = chargeFees(fees ?? flatTerms(flatPremiumBps, flatCommissionBps), ask);
+  const premium = charged.premiumCents / 100;
+  const commission = charged.commissionCents / 100;
+  // The rates the fees come to at this ask, minimums included, for the fee card's labels.
+  const premiumBps = ask > 0 ? effectiveBps(charged) : charged.premiumBps;
+  const commissionBps = ask > 0 ? effectiveBps(charged, "commission") : charged.commissionBps;
   const payStored = draft.payString.trim() ? parsePayString(draft.payString) : null;
 
   return (

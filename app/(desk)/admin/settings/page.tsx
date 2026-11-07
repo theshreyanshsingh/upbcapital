@@ -16,6 +16,8 @@ import { launchReadiness } from "@/lib/readiness";
 import { strikeLimitOf } from "@/lib/strikes";
 import { decideWires } from "@/actions/wires";
 import { ConfirmSubmit } from "@/components/confirm-submit";
+import { ReaderSettings } from "@/components/document-reader";
+import { FeeScheduleForm } from "@/components/fee-schedule-form";
 import { deskCan } from "@/lib/staff";
 import { pendingWireChanges } from "@/lib/wire-changes";
 
@@ -164,6 +166,7 @@ export default async function SettingsPage({
         {settings.stripePriceId && <p className="text-xs text-muted-foreground">Current Stripe price {settings.stripePriceId}</p>}
         {owns ? <SubmitButton className="h-11 text-[13px] font-medium">Save schedule</SubmitButton> : <p className="text-sm text-muted-foreground">Only an owner changes the fee schedule.</p>}
       </form>
+      <FeeScheduleForm settings={settings} owns={owns} />
       {pendingWires.length > 0 && (
         <section id="wires" aria-labelledby="wires-heading" className="mt-8 scroll-mt-6 space-y-3 rounded-xl border border-warn/40 bg-warn/5 p-6">
           <p id="wires-heading" className="eyebrow">Default wire change waiting for approval</p>
@@ -206,12 +209,12 @@ export default async function SettingsPage({
         <div>
           <p id="market-rates-heading" className="eyebrow">Market rates</p>
           <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-            Spread rules on buy boxes price for the 10-year Treasury yield plus the buyer&apos;s spread. Saving a new rate reprices every open spread match. Past {RATE_STALE_DAYS} days, every spread-based figure shows its rate date in the warn colour.
+            Spread rules on buy boxes price for the 10-year Treasury yield plus the buyer&apos;s spread. Each morning the jobs run reads the 10-year from Treasury&apos;s daily par yield curve. A rate saved here holds over that read until the next business day, so you can correct a bad read. Saving a new rate reprices every open spread match. Past {RATE_STALE_DAYS} days, every spread-based figure shows its rate date in the warn colour.
           </p>
           <p className="mt-2 text-sm tabular-nums">
             {rate && stamp ? (
               <span className={stamp.stale ? "text-warn" : "text-foreground"}>
-                On file: {rate.rate}%, {stamp.text}{stamp.stale ? ", over a week old" : ""}.
+                On file: {rate.rate}%, {stamp.text}{stamp.stale ? ", over a week old" : ""}, {settings.tenYearSource === "TREASURY" ? "read from Treasury's daily par yield curve" : "entered by the desk"}.
               </span>
             ) : (
               <span className="text-warn">No rate on file, so spread rules price nothing yet.</span>
@@ -259,11 +262,13 @@ export default async function SettingsPage({
         </fieldset>
         <label className="block">
           <span className="text-[13px] text-muted-foreground">Strikes before a buyer&apos;s bidding pauses</span>
-          <input name="strikeLimit" inputMode="numeric" required defaultValue={strikeLimitOf(settings.strikeLimit)} className="desk-input mt-2 tabular-nums" />
+          {/* With no save button for other roles, a lone text field would still submit on Enter, so it reads only. */}
+          <input name="strikeLimit" inputMode="numeric" required disabled={!owns} defaultValue={strikeLimitOf(settings.strikeLimit)} className="desk-input mt-2 tabular-nums" />
           <span className="mt-1 block text-xs text-muted-foreground">A strike is recorded when the desk cancels a closing as the buyer&apos;s failure to close. At this many, new bids are refused until the desk clears one on the buyer file.</span>
         </label>
         {owns ? <SubmitButton className="h-11 text-[13px] font-medium" pendingLabel="Saving…">Save settlement</SubmitButton> : <p className="text-sm text-muted-foreground">Only an owner changes settlement days.</p>}
       </form>
+      <ReaderSettings owns={owns} />
     </div>
   );
 }

@@ -1,0 +1,88 @@
+{
+  "about": "Synthetic, fictional loan documents labelled by hand with what each one states. A field missing from a file's entry is one the file does not state, so reading a value for it counts as an error. Money is in dollars, rates in percent, dates as YYYY-MM-DD and liens as FIRST, SECOND or THIRD.",
+  "files": {
+    "01-promissory-note.txt": {
+      "originationDate": "2019-06-15",
+      "borrowerName": "Dana R. Whitfield",
+      "streetAddress": "418 Candela Avenue",
+      "originalBalance": "350000",
+      "interestRate": "5.875",
+      "monthlyPi": "2070.38",
+      "maturityDate": "2049-07-01"
+    },
+    "02-pay-history.txt": {
+      "borrowerName": "Dana R. Whitfield",
+      "streetAddress": "418 Candela Ave",
+      "upb": "312400",
+      "interestRate": "5.875",
+      "monthlyPi": "2070.38",
+      "lastPaidDate": "2026-10-01"
+    },
+    "03-servicer-statement.txt": {
+      "borrowerName": "Luis and Carmen Ortega",
+      "streetAddress": "1502 Harbour Island Blvd",
+      "interestRate": "7.125",
+      "maturityDate": "2051-03-01",
+      "upb": "186212.55",
+      "monthlyPi": "1284.06",
+      "lienPosition": "FIRST",
+      "lastPaidDate": "2026-09-03",
+      "originationDate": "2021-02-14"
+    },
+    "04-bpo.txt": {
+      "streetAddress": "77 Sample Way",
+      "estimatedValue": "410000"
+    },
+    "05-oe-report.txt": {
+      "streetAddress": "6 Silver Springs Road",
+      "lienPosition": "SECOND",
+      "originalBalance": "42000"
+    },
+    "06-deed-of-trust.txt": {
+      "borrowerName": "Priya Natarajan",
+      "streetAddress": "1400 McKinney Avenue",
+      "originalBalance": "367000",
+      "maturityDate": "2048-04-01",
+      "originationDate": "2018-03-01"
+    },
+    "07-loan-summary.csv": {
+      "borrowerName": "Angela Brooks",
+      "streetAddress": "310 Clematis Street",
+      "upb": "228000",
+      "interestRate": "6.5",
+      "monthlyPi": "1610.25",
+      "originationDate": "2017-08-01",
+      "maturityDate": "2047-09-01",
+      "lastPaidDate": "2026-10-05",
+      "lienPosition": "FIRST"
+    },
+    "08-modification.txt": {
+      "borrowerName": "Kevin O'Neil and Sara O'Neil",
+      "originalBalance": "250000",
+      "interestRate": "4",
+      "upb": "241318.07",
+      "maturityDate": "2052-05-01",
+      "monthlyPi": "1152.11"
+    },
+    "09-collection-notes.txt": {
+      "borrowerName": "Teresa Gomez",
+      "lastPaidDate": "2026-10-21",
+      "upb": "96500",
+      "interestRate": "9.5",
+      "lienPosition": "SECOND"
+    },
+    "10-allonge.txt": {
+      "borrowerName": "Dana R. Whitfield",
+      "originationDate": "2019-06-15",
+      "originalBalance": "350000",
+      "streetAddress": "418 Candela Avenue"
+    },
+    "11-seed-coral-note.txt": {
+      "borrowerName": "FICTIONAL BORROWER A"
+    },
+    "12-seed-coral-bpo.txt": {
+      "estimatedValue": "640000"
+    },
+    "13-seed-coral-mortgage.txt": {}
+  }
+}

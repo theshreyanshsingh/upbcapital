@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { accountLocked } from "@/lib/access";
+import { unset } from "@/lib/db-filters";
 import { prisma } from "@/lib/prisma";
 
 export function hashKey(token: string) {
@@ -11,11 +12,21 @@ export function mintKey() {
   return { token, prefix: token.slice(0, 12), hash: hashKey(token) };
 }
 
-export async function userForApiKey(header: string | null) {
+// The key list shows when each key was last used. To the minute is plenty, so a busy key writes once a minute.
+const USE_PRECISION_MS = 60 * 1000;
+
+export async function markKeyUsed(keyId: string, now = new Date()) {
+  await prisma.apiKey.updateMany({
+    where: { id: keyId, OR: [...unset("lastUsedAt").OR, { lastUsedAt: { lt: new Date(now.getTime() - USE_PRECISION_MS) } }] },
+    data: { lastUsedAt: now },
+  });
+}
+
+export async function userForApiKey(header: string | null, now = new Date()) {
   const token = header?.replace(/^Bearer\s+/i, "").trim() ?? "";
   if (!token.startsWith("upb_")) return null;
   const key = await prisma.apiKey.findUnique({ where: { hash: hashKey(token) }, include: { user: true } });
   if (!key || accountLocked(key.user.accountStatus)) return null;
-  await prisma.apiKey.update({ where: { id: key.id }, data: { lastUsedAt: new Date() } });
+  await markKeyUsed(key.id, now);
   return key.user;
 }

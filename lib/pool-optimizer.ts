@@ -1,3 +1,4 @@
+import { allInFor, feeTerms, flatTerms, type FeeTerms } from "@/lib/fee-schedule";
 import { bidExpired, buyerPrice } from "@/lib/offers";
 import { fundsExposure } from "@/lib/inquiry";
 import { standingLoanPrices, type LoanPrices } from "@/lib/loan-prices";
@@ -5,7 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { OFAC_HOLD_MESSAGE, ofacHold } from "@/lib/screening";
 import { getSettings } from "@/lib/settings";
 import { strikeStanding } from "@/lib/strikes";
-import { allInOf, bidTarget, exposureByKey, fundsCredential, headroomFor } from "@/lib/verification";
+import { bidTarget, exposureByKey, fundsCredential, headroomFor } from "@/lib/verification";
 
 // The bid optimiser: after a pool's deadline, the mix of its live bids that brings the seller the most. Whole-pool
 // bids, whole-pool bids priced loan by loan that let the seller take part, and one-loan bids all compete, and each
@@ -73,7 +74,9 @@ function round(amount: number) {
 // offer, the blocks are taken in order of what they add over those values, and a block that overlaps one already
 // taken is skipped. When the blocks are whole-pool bids, which overlap every other block, the greedy pass is exact as
 // well; it can fall short only for blocks that cover part of a pool, where two small blocks may beat one large one.
-export function optimizePool(input: { loans: OptimizerLoan[]; bids: OptimizerBid[]; premiumBps: number; exactLimit?: number }): PoolPlan {
+// fees, when given, is the listing's terms, so a graded premium is checked against funds; else premiumBps is flat.
+export function optimizePool(input: { loans: OptimizerLoan[]; bids: OptimizerBid[]; premiumBps: number; fees?: FeeTerms; exactLimit?: number }): PoolPlan {
+  const terms = input.fees ?? flatTerms(input.premiumBps);
   const limit = input.exactLimit ?? EXACT_LIMIT;
   const free = input.loans.filter((loan) => loan.available).map((loan) => loan.id);
   const freeSet = new Set(free);
@@ -93,7 +96,7 @@ export function optimizePool(input: { loans: OptimizerLoan[]; bids: OptimizerBid
     kind,
     noteIds,
     price: round(price),
-    overFunds: bid.headroom != null && allInOf(price, input.premiumBps) > bid.headroom + CENT,
+    overFunds: bid.headroom != null && allInFor(terms, price) > bid.headroom + CENT,
   });
   for (const bid of input.bids) {
     if (bid.excluded) {
@@ -217,7 +220,8 @@ export async function loadPoolPlan(listingId: string, now = new Date()) {
   });
   if (!listing) return null;
   const settings = await getSettings();
-  const premiumBps = listing.feeBuyerPremiumBps ?? settings.buyerPremiumBps;
+  const fees = feeTerms(listing, settings);
+  const premiumBps = fees.premiumBps;
   const groups = new Map(
     (
       await prisma.groupBuy.findMany({
@@ -284,5 +288,5 @@ export async function loadPoolPlan(listingId: string, now = new Date()) {
     label: `Loan ${index + 1} · ${note.streetAddress ? `${note.streetAddress}, ` : ""}${note.city}, ${note.state}`,
     available: note.tradeStatus === "AVAILABLE",
   }));
-  return { listing, loans, bids, premiumBps, plan: optimizePool({ loans, bids, premiumBps }) };
+  return { listing, loans, bids, premiumBps, plan: optimizePool({ loans, bids, premiumBps, fees }) };
 }

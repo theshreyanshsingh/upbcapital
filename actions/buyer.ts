@@ -154,6 +154,7 @@ export async function submitInquiry(formData: FormData) {
   let passed: Extract<OfferCheck, { error: null }> | null = null;
   let loanPrices: LoanPrices | null = null;
   let allowPartial = false;
+  let buyerEntityId: string | null = null;
   if (type === "OFFER") {
     // The same checks a confirmed standing bid runs, in lib/inquiry.ts.
     amount = Number(String(formData.get("amount") || "").replace(/[$,]/g, ""));
@@ -162,17 +163,18 @@ export async function submitInquiry(formData: FormData) {
     if (priced.error) redirect(`${back}?error=${encodeURIComponent(priced.error)}#offer`);
     loanPrices = priced.prices;
     allowPartial = priced.allowPartial;
-    const check = await checkOffer({ user, listing, noteId, amount, goodUntil: String(formData.get("goodUntil") || ""), loanPrices, allowPartial });
+    const check = await checkOffer({ user, listing, noteId, amount, goodUntil: String(formData.get("goodUntil") || ""), loanPrices, allowPartial, buyerEntityId: String(formData.get("buyerEntityId") || "") });
     if (check.error !== null) redirect(check.verification ? `/buyer/verification?error=${encodeURIComponent(check.error)}` : `${back}?error=${encodeURIComponent(check.error)}`);
     expiresAt = check.expiresAt;
     passed = check;
+    buyerEntityId = check.buyerEntityId;
   } else {
     const blocked = await inquiryBlock(user, listing);
     if (blocked) redirect(`${back}?error=${encodeURIComponent(blocked)}`);
     if (type === "DATA_ROOM" && !isPro(user)) redirect("/buyer/subscription?reason=dataroom");
   }
   if (!listing) redirect(back);
-  const input = { user, listing, type, noteId, amount, message, expiresAt, loanPrices, allowPartial };
+  const input = { user, listing, type, noteId, amount, message, expiresAt, loanPrices, allowPartial, buyerEntityId };
   const inquiry = await writeInquiry(input);
   await announceInquiry(inquiry, input);
   if (passed) await logEligibility(user.id, inquiry.id, passed);

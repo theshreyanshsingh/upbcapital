@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { readInBackground } from "@/lib/ai-reading";
 import { requireDesk } from "@/lib/staff";
 import {
   chainDetail,
@@ -142,5 +143,6 @@ export async function uploadLoanReport(formData: FormData) {
     bytes: Buffer.from(await file.arrayBuffer()),
     mime: file.type,
   });
+  if (outcome.ok) readInBackground(note.listingId);
   back(note, outcome, "The file is on this loan. It opens with the loan's street and borrower.");
 }

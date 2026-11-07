@@ -4,7 +4,8 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireRole } from "@/lib/auth";
 import { guardDesk } from "@/lib/staff";
-import { readReceiptSplit } from "@/lib/portfolio-tax";
+import { emailYearStatement, readReceiptSplit } from "@/lib/portfolio-tax";
+import { consumeRateLimit } from "@/lib/rate-limit";
 import { prisma } from "@/lib/prisma";
 
 function amountOf(formData: FormData) {
@@ -76,4 +77,16 @@ export async function setBuyerHoldingStatus(formData: FormData) {
   if (!holding || (user.role !== "ADMIN" && holding.userId !== user.id)) redirect("/buyer/portfolio");
   await prisma.buyerHolding.update({ where: { id }, data: { status: status as "CURRENT" } });
   redirect("/buyer/portfolio?notice=owned");
+}
+
+// The year-end statement by email, with the PDF attached. A few an hour is plenty for a buyer's own inbox.
+export async function emailStatement(formData: FormData) {
+  const user = await requireRole(["BUYER"]);
+  const year = Number(String(formData.get("year") || ""));
+  if (!(await consumeRateLimit(`statement-mail:${user.id}`, 5, 60 * 60 * 1000))) {
+    redirect("/buyer/portfolio?error=That statement was sent a few times already. Try again in an hour.");
+  }
+  const sent = await emailYearStatement(user, year);
+  if (sent.error !== null) redirect(`/buyer/portfolio?error=${encodeURIComponent(sent.error)}`);
+  redirect(`/buyer/portfolio?notice=${encodeURIComponent(`Your ${year} statement is on its way to your email.`)}`);
 }

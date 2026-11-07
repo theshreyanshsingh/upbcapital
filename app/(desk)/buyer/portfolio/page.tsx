@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { quoteSlice, relistBuyerNote } from "@/actions/assets";
-import { addOwnedNote, logBuyerPayment, setBuyerHoldingStatus } from "@/actions/portfolio";
+import { addOwnedNote, emailStatement, logBuyerPayment, setBuyerHoldingStatus } from "@/actions/portfolio";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { SubmitButton } from "@/components/submit-button";
@@ -57,6 +57,8 @@ export default async function PortfolioPage({
       </label>
       <button type="submit" name="format" value="pdf" className="inline-flex h-11 items-center rounded-lg bg-primary px-4 text-[13px] font-medium text-primary-foreground">Download PDF</button>
       <button type="submit" name="format" value="csv" className="inline-flex h-11 items-center rounded-lg border border-border px-4 text-[13px] font-medium text-foreground">Download CSV</button>
+      {/* The same year, sent to the buyer's own email with the PDF attached. */}
+      <button type="submit" formAction={emailStatement} className="inline-flex h-11 items-center rounded-lg border border-border px-4 text-[13px] font-medium text-foreground">Email me the PDF</button>
     </form>
   );
   const statementHelp = "Interest, principal, fees and escrow received on each note, its cost, and any resale. Where you logged a total only, the split is estimated from the note rate and marked as such.";

@@ -1,6 +1,7 @@
 import { decideInquiry } from "@/actions/admin";
 import { deadlinePassed, deskWalled } from "@/lib/auction";
-import { awaitingSeller, sellerAgreed } from "@/lib/awards";
+import { askedPriceStands, awaitingSeller, sellerAgreed } from "@/lib/awards";
+import { bidEntityNames } from "@/lib/buyer-entities";
 import { notifyClosedAuctions } from "@/lib/listing-intel";
 import { ConfirmRows, ConfirmSubmit } from "@/components/confirm-submit";
 import { Notice } from "@/components/notice";
@@ -9,7 +10,7 @@ import { PageIntro } from "@/components/page-intro";
 import { SubmitButton } from "@/components/submit-button";
 import { requireRole } from "@/lib/auth";
 import { money, num, prettyDate, q } from "@/lib/format";
-import { bpsToPercent } from "@/lib/money";
+import { feeTerms, feesFor, rateText } from "@/lib/fee-schedule";
 import { bidExpired, buyerPrice, canCounter, counterFrom, openCounter } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
 import { getSettings } from "@/lib/settings";
@@ -39,10 +40,12 @@ export default async function AdminOffersPage({
   ]);
   const closings = await prisma.closing.findMany({ where: { inquiryId: { in: inquiries.map((item) => item.id) } } });
   const closingFor = new Map(closings.map((closing) => [closing.inquiryId, closing.id]));
-  const premium = bpsToPercent(settings.buyerPremiumBps);
+  // The buying entity each bid is for, when the buyer chose one beyond their main file.
+  const entityOf = await bidEntityNames(inquiries.map((item) => item.buyerEntityId));
+  const premium = rateText(feeTerms(null, settings), "premium");
   return (
     <div>
-      <PageIntro eyebrow="Offers" title="Bids and counters." lede={`A bid goes to the seller for approval unless their reserve covers it. Approval opens a closing. If it trades at the working price, the buyer also pays ${premium.toFixed(2)}% on top. Loan bids do not take the rest of the pool off the book.`} />
+      <PageIntro eyebrow="Offers" title="Bids and counters." lede={`A bid goes to the seller for approval unless their reserve covers it. Approval opens a closing. If it trades at the working price, the buyer also pays ${premium} on top. Loan bids do not take the rest of the pool off the book.`} />
       <Notice notice={q(params, "notice")} error={q(params, "error")} />
       <OwnerFilter base="/admin/offers" mine={mine} />
       {!deskCan(user, "sealedBids") && <p className="mt-3 text-sm text-muted-foreground">Your desk role doesn&apos;t read sealed bids, so sealed and best-and-final amounts stay hidden until the deadline{deskCan(user, "deskBook") ? ", and until the listing leaves the market, since you bid for the desk book" : ""}.</p>}
@@ -58,7 +61,7 @@ export default async function AdminOffersPage({
           // The award price is what the buyer agreed to. A desk counter waits for the buyer to accept it.
           const amount = buyerPrice(inquiry.amount ? num(inquiry.amount) : null, messages, inquiry.buyerId);
           // The premium the closing will charge: the listing's own, fixed when it went live.
-          const premiumBps = inquiry.listing.feeBuyerPremiumBps ?? settings.buyerPremiumBps;
+          const fees = amount != null ? feesFor(inquiry.listing, settings, amount) : null;
           const counter = openCounter(messages, inquiry.buyerId);
           const walled = inquiry.type === "OFFER" && deskWalled(inquiry.listing, user);
           const closingId = closingFor.get(inquiry.id);
@@ -102,7 +105,7 @@ export default async function AdminOffersPage({
               {walled && <p className="mt-3 text-sm text-muted-foreground">Amount sealed until the deadline.</p>}
               {amount != null && !walled && (
                 <p className="mt-3 text-sm text-muted-foreground">
-                  Buyer&apos;s price {money(amount)} · premium {money((amount * premiumBps) / 10000)} · all-in {money(amount + (amount * premiumBps) / 10000)}
+                  Buyer&apos;s price {money(amount)} · premium {money((fees?.premiumCents ?? 0) / 100)} · all-in {money((fees?.buyerTotalCents ?? 0) / 100)}
                 </p>
               )}
               {live && counter != null && !walled && (
@@ -117,6 +120,18 @@ export default async function AdminOffersPage({
               )}
               {inquiry.status === "WITHDRAWN" && <p className="mt-2 text-[13px] text-muted-foreground">Withdrawn by the buyer{inquiry.withdrawnAt ? ` ${prettyDate(inquiry.withdrawnAt)}` : ""}</p>}
               {live && !walled && <p className={`mt-2 text-[13px] ${agreed ? "text-good" : "text-muted-foreground"}`}>{sellerLine}</p>}
+              {/* The seller's own pick, behind the same wall as the amount it agreed to. */}
+              {live && !walled && inquiry.sellerRequestedAt && (
+                <p className="mt-2 text-[13px] font-medium text-foreground">
+                  Seller asked to award this bid · {prettyDate(inquiry.sellerRequestedAt)}
+                  {askedPriceStands(inquiry.sellerApprovedAmount, amount) ? "" : " · the bid has changed since, so ask the seller again"}
+                </p>
+              )}
+              {inquiry.buyerEntityId && entityOf.get(inquiry.buyerEntityId) && (
+                <p className="mt-2 text-[13px] text-muted-foreground">
+                  For {entityOf.get(inquiry.buyerEntityId)!.name} · {entityOf.get(inquiry.buyerEntityId)!.kind}
+                </p>
+              )}
               {inquiry.message && !walled && <p className="mt-2 text-sm text-foreground/85">{inquiry.message}</p>}
               {closingId && <Link href={`/closings/${closingId}`} className="mt-3 inline-block text-[13px] font-medium text-link">Open closing</Link>}
               {inquiry.type === "OFFER" && !closingId && deskCan(user, "sealedBids") && <Link href={`/admin/listings/${inquiry.listingId}#bids`} className="mt-3 inline-block text-[13px] font-medium text-link">Compare on the bid sheet</Link>}
@@ -124,6 +139,7 @@ export default async function AdminOffersPage({
                 <OfferThread
                   inquiryId={inquiry.id}
                   canCounter={sells && canCounter(inquiry.status)}
+                  readOnly={!sells}
                   messages={inquiry.messages.map((message) => ({
                     id: message.id,
                     kind: message.kind,
@@ -155,8 +171,8 @@ export default async function AdminOffersPage({
                             <ConfirmRows
                               rows={[
                                 ["Buyer's price", money(amount)],
-                                ["Buyer premium", money((amount * premiumBps) / 10000)],
-                                ["Buyer all-in", money(amount + (amount * premiumBps) / 10000)],
+                                ["Buyer premium", money((fees?.premiumCents ?? 0) / 100)],
+                                ["Buyer all-in", money((fees?.buyerTotalCents ?? 0) / 100)],
                               ]}
                             />
                           }

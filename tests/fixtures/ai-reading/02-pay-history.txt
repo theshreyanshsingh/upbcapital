@@ -1,0 +1,18 @@
+LOAN PAYMENT HISTORY
+FICTIONAL SAMPLE FOR TESTING ONLY
+Servicer: Sample Loan Servicing LLC        Loan #: 7700012345
+Borrower: Dana R. Whitfield
+Property: 418 Candela Ave, Coral Gables, FL 33134
+
+Unpaid Principal Balance as of 10/01/2026: $312,400.00
+Interest Rate: 5.875%
+Principal & Interest: $2,070.38
+Escrow: $612.44
+Total Monthly Payment (includes escrow): $2,682.82
+Last Payment Received: 10/01/2026
+Next Due Date: 11/01/2026
+
+Due Date     Received     Principal    Interest    Escrow    Balance After
+10/01/2026   10/01/2026   540.12       1,530.26    612.44    312,400.00
+09/01/2026   09/02/2026   537.48       1,532.90    612.44    312,940.12
+08/01/2026   08/01/2026   534.86       1,535.52    612.44    313,477.60

@@ -399,8 +399,9 @@ export type LoaderListing = { id: string; status: string; notes: LoaderNote[] };
 
 // Indicative ranges for many listings at once, with one read of settings, trades and standing prices. A listing
 // prices the loans still for sale. Standing prices count only while nobody has answered them: a pass is no demand,
-// and a confirmed one is a bid, not an indicative. Nothing read here names a buyer or a box.
-export async function loadIndicatives(listings: LoaderListing[], now = new Date()): Promise<Map<string, IndicativeResult>> {
+// and a confirmed one is a bid, not an indicative. Nothing read here names a buyer or a box. `standing: false` leaves
+// standing prices out, for a desk role behind the sealed-bid wall (lib/auction.ts deskWalled).
+export async function loadIndicatives(listings: LoaderListing[], now = new Date(), options: { standing?: boolean } = {}): Promise<Map<string, IndicativeResult>> {
   const result = new Map<string, IndicativeResult>();
   if (!listings.length) return result;
   const [{ prisma }, { getSettings }, { loadClosedTrades, compsFor, COMP_WINDOW_MONTHS }, { showableAvm }, { unset }, { loansForSale }] = await Promise.all([
@@ -414,10 +415,12 @@ export async function loadIndicatives(listings: LoaderListing[], now = new Date(
   const [settings, trades, matches] = await Promise.all([
     getSettings(),
     loadClosedTrades(now).catch(() => []),
-    prisma.listingMatch.findMany({
-      where: { listingId: { in: listings.map((listing) => listing.id) }, indicativePrice: { not: null }, ...unset("answeredAt") },
-      select: { listingId: true, indicativePrice: true, indicativeAt: true, rateAsOf: true },
-    }),
+    options.standing === false
+      ? Promise.resolve([])
+      : prisma.listingMatch.findMany({
+          where: { listingId: { in: listings.map((listing) => listing.id) }, indicativePrice: { not: null }, ...unset("answeredAt") },
+          select: { listingId: true, indicativePrice: true, indicativeAt: true, rateAsOf: true },
+        }),
   ]);
   const standing = new Map<string, StandingPoint[]>();
   for (const match of matches) {
@@ -457,9 +460,9 @@ export async function loadIndicatives(listings: LoaderListing[], now = new Date(
 }
 
 // One listing's range, for its page.
-export async function loadIndicative(listingId: string, now = new Date()): Promise<IndicativeResult | null> {
+export async function loadIndicative(listingId: string, now = new Date(), options: { standing?: boolean } = {}): Promise<IndicativeResult | null> {
   const { prisma } = await import("@/lib/prisma");
   const listing = await prisma.listing.findUnique({ where: { id: listingId }, select: { id: true, status: true, notes: true } });
   if (!listing) return null;
-  return (await loadIndicatives([listing], now)).get(listing.id) ?? null;
+  return (await loadIndicatives([listing], now, options)).get(listing.id) ?? null;
 }

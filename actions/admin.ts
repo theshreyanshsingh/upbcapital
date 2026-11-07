@@ -15,14 +15,15 @@ import { onGroupDeclined } from "@/lib/group-events";
 import { approvalFields, launchTime, readLaunchAt } from "@/lib/launch-rules";
 import { rescoreListing } from "@/lib/matching";
 import { postRevenueOnce } from "@/lib/ledger";
-import { feeBreakdown, percentToBps } from "@/lib/money";
+import { percentToBps } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
 import { OFAC_DOWN_MESSAGE, OFAC_HOLD_MESSAGE, ofacHold, screenInBackground, screenListing, screenUser } from "@/lib/screening";
 import { clearSettingsCache, getSettings } from "@/lib/settings";
 import { cancelBuyerSubscription } from "@/lib/stripe-billing";
 import { syncProPrice } from "@/lib/stripe-sync";
 import { deskDecisionAllowed } from "@/lib/listing-status";
-import { feesAtApproval, listingFeeBps } from "@/lib/desk-fees";
+import { feesAtApproval } from "@/lib/desk-fees";
+import { feesFor } from "@/lib/fee-schedule";
 import { settleByEdit } from "@/lib/discrepancies";
 import { watchReprice } from "@/lib/watchers";
 import { requireDesk, type DeskCapability } from "@/lib/staff";
@@ -91,7 +92,7 @@ export async function reviewListing(formData: FormData) {
       redirect(`/admin/listings/${listingId}?error=${encodeURIComponent(OFAC_HOLD_MESSAGE)}`);
     }
     // The fees in force now go on the listing, so bids and the closing use them whatever the settings say later.
-    // A listing approved again after changes takes the fees of the new approval.
+    // A graded schedule goes on with them. A listing approved again after changes takes the fees of the new approval.
     await moveTo({ status: "APPROVED", ...approvalFields(launch.at), ...feesAtApproval(await getSettings()) });
     if (launch.at) {
       const opens = launchTime(launch.at);
@@ -163,9 +164,7 @@ export async function reviewListing(formData: FormData) {
     if (consent.length < 3) {
       redirect(`/admin/listings/${listingId}?error=${encodeURIComponent("Record how the seller agreed to this price, such as the email and its date.")}`);
     }
-    const settings = await getSettings();
-    const listed = listingFeeBps(listing, settings);
-    const fees = feeBreakdown(salePrice, listed.premiumBps, listed.commissionBps);
+    const fees = feesFor(listing, await getSettings(), salePrice);
     await moveTo({
       status: "SOLD",
       soldAt: new Date(),

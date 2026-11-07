@@ -10,6 +10,8 @@ export function applyBps(amountCents: number, bps: number) {
   return Math.round((amountCents * bps) / 10000);
 }
 
+// Flat rates on a price. A sale is charged through chargeFees or feesFor in lib/fee-schedule.ts, which use this for
+// flat terms and add the tiers and minimums of a graded schedule.
 export function feeBreakdown(salePriceDollars: number, premiumBps: number, commissionBps: number) {
   const saleCents = dollarsToCents(salePriceDollars);
   const premiumCents = applyBps(saleCents, premiumBps);

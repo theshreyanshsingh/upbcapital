@@ -13,6 +13,7 @@
     "db:reset": "prisma db seed",
     "test": "node --import tsx --test tests/*.test.ts",
     "jobs": "tsx scripts/jobs.ts",
+    "ai:eval": "tsx scripts/ai-eval.ts",
     "postinstall": "prisma generate"
   },
   "prisma": {
