@@ -2,22 +2,30 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { requireRole, requireUser } from "@/lib/auth";
+import { requireUser } from "@/lib/auth";
 import { openClosing, tradeConflict } from "@/lib/closing-service";
 import { notify, notifyDesk } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import { claimLoan, declineLosingBids, deskBidNotAcceptable, sellerPage } from "@/lib/awards";
 import { OFAC_HOLD_MESSAGE, ofacHold } from "@/lib/screening";
+import { DESK_ROLE_LABELS, deskRoleOf, requireDesk } from "@/lib/staff";
+
+// Who on the desk placed or decided a book bid, for the audit log: the book's buyer is a named person.
+function staffLine(user: { id: string; name: string; role: string; deskRole?: string | null }) {
+  return `${user.name} (staff ${user.id}, ${DESK_ROLE_LABELS[deskRoleOf(user) ?? "OWNER"]})`;
+}
 
 function amountOf(formData: FormData, key = "amount") {
   const value = Number(String(formData.get(key) || "").replace(/[$,\s]/g, ""));
   return Number.isFinite(value) ? value : NaN;
 }
 
+// The trader bidding here never sees a sealed amount: the desk's wall in lib/auction.ts hides them from any role
+// without the sealedBids capability, and the bid sheet with them.
 export async function placeDeskBid(formData: FormData) {
-  const user = await requireRole(["ADMIN"]);
   const listingId = String(formData.get("listingId") || "");
+  const user = await requireDesk("deskBook", `/admin/listings/${listingId}`);
   const listing = await prisma.listing.findUnique({ where: { id: listingId }, include: { notes: true, seller: true } });
   if (!listing || !["APPROVED", "SUBMITTED", "UNDER_REVIEW", "PENDING"].includes(listing.status)) {
     redirect(`/admin/listings/${listingId}?error=That listing is not open for a desk bid.`);
@@ -31,7 +39,7 @@ export async function placeDeskBid(formData: FormData) {
   await prisma.deskBid.create({
     data: { listingId, noteId: note?.id, amount, message },
   });
-  await audit(user.id, "DESK_BID", "listing", listingId, `Desk bid $${amount.toLocaleString("en-US")}`);
+  await audit(user.id, "DESK_BID", "listing", listingId, `Desk bid $${amount.toLocaleString("en-US")}${note ? " for one loan" : ""} by ${staffLine(user)}`);
   await notify(
     listing.seller.email,
     `The desk bid on ${listing.title}`,
@@ -69,7 +77,7 @@ async function acceptDeskBid(bid: OpenDeskBid) {
 
 // The desk is the buyer on its own bid, so taking it stands in for the seller only with a recorded agreement.
 export async function decideDeskBid(formData: FormData) {
-  const user = await requireRole(["ADMIN"]);
+  const user = await requireDesk("deskBook", "/admin/book");
   const id = String(formData.get("id") || "");
   const decision = String(formData.get("decision") || "");
   const consent = String(formData.get("consent") || "").trim().slice(0, 300);
@@ -78,7 +86,7 @@ export async function decideDeskBid(formData: FormData) {
   if (decision === "DECLINED" || decision === "WITHDRAWN") {
     const passed = await prisma.deskBid.updateMany({ where: { id, status: "OPEN" }, data: { status: decision } });
     if (passed.count !== 1) redirect("/admin/book?error=That bid is already decided.");
-    await audit(user.id, "DESK_BID_PASSED", "listing", bid.listingId, `$${Number(bid.amount).toLocaleString("en-US")}`);
+    await audit(user.id, "DESK_BID_PASSED", "listing", bid.listingId, `$${Number(bid.amount).toLocaleString("en-US")} by ${staffLine(user)}`);
     await notify(bid.listing.seller.email, `Desk bid withdrawn · ${bid.listing.title}`, "The desk withdrew its bid on this listing.");
     redirect("/admin/book?notice=bid");
   }
@@ -94,7 +102,7 @@ export async function decideDeskBid(formData: FormData) {
     redirect(`/admin/book?error=${encodeURIComponent(reason === "loan" ? "That loan went into contract a moment ago. Check its open closing." : "That bid is already decided.")}`);
   }
   const price = `$${Number(bid.amount).toLocaleString("en-US")}`;
-  await audit(user.id, "DESK_BID_ACCEPTED", "listing", bid.listingId, `Closing ${closing.id} at ${price}. Seller agreement: ${consent}`);
+  await audit(user.id, "DESK_BID_ACCEPTED", "listing", bid.listingId, `Closing ${closing.id} at ${price}. Taken by ${staffLine(user)}. Seller agreement: ${consent}`);
   await notify(
     bid.listing.seller.email,
     `Desk purchase · ${bid.listing.title}`,
@@ -141,7 +149,7 @@ export async function answerDeskBid(formData: FormData) {
 }
 
 export async function logDeskPayment(formData: FormData) {
-  const user = await requireRole(["ADMIN"]);
+  const user = await requireDesk("deskBook", "/admin/book");
   const holdingId = String(formData.get("holdingId") || "");
   const amount = amountOf(formData);
   const paidOn = String(formData.get("paidOn") || "");
@@ -158,7 +166,7 @@ export async function logDeskPayment(formData: FormData) {
 }
 
 export async function setDeskHoldingStatus(formData: FormData) {
-  const user = await requireRole(["ADMIN"]);
+  const user = await requireDesk("deskBook", "/admin/book");
   const id = String(formData.get("id") || "");
   const status = String(formData.get("status") || "");
   if (!["CURRENT", "WATCH", "RESOLVED"].includes(status)) redirect("/admin/book?error=Unknown status.");

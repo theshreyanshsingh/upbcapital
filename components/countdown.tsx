@@ -32,9 +32,11 @@ export function Countdown({ deadline, mode }: { deadline: string; mode: string }
     <div>
       <p className="font-semibold tracking-tight text-3xl text-foreground" role="timer" aria-live="off" aria-label={`${label} closes ${new Date(deadline).toISOString().slice(0, 16).replace("T", " ")} UTC`}>
         <span className="mb-1 block text-xs font-medium text-link">{label}</span>
-        {days}d {hours}h {minutes}m {seconds}s
+        {/* The server rendered a moment earlier than the browser hydrates, so the seconds differ by design. The
+            first tick puts the browser's own time in. */}
+        <span suppressHydrationWarning>{`${days}d ${hours}h ${minutes}m ${seconds}s`}</span>
       </p>
-      <p className="sr-only" role="status">{heard ? `${label}: ${heard}.` : ""}</p>
+      <p className="sr-only" role="status" suppressHydrationWarning>{heard ? `${label}: ${heard}.` : ""}</p>
     </div>
   );
 }

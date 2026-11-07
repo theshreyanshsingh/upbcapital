@@ -1,5 +1,5 @@
 import { decideInquiry } from "@/actions/admin";
-import { deadlinePassed } from "@/lib/auction";
+import { deadlinePassed, deskWalled } from "@/lib/auction";
 import { awaitingSeller, sellerAgreed } from "@/lib/awards";
 import { notifyClosedAuctions } from "@/lib/listing-intel";
 import { ConfirmRows, ConfirmSubmit } from "@/components/confirm-submit";
@@ -13,6 +13,7 @@ import { bpsToPercent } from "@/lib/money";
 import { bidExpired, buyerPrice, canCounter, counterFrom, openCounter } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
 import { getSettings } from "@/lib/settings";
+import { deskCan } from "@/lib/staff";
 import Link from "next/link";
 
 export const metadata = { title: "Offers" };
@@ -22,11 +23,15 @@ export default async function AdminOffersPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  await requireRole(["ADMIN"]);
+  const user = await requireRole(["ADMIN"]);
   await notifyClosedAuctions();
   const params = await searchParams;
+  // Mine: offers on the listings this desk member owns.
+  const mine = q(params, "mine") === "1";
+  const sells = deskCan(user, "sales");
   const [inquiries, settings] = await Promise.all([
     prisma.inquiry.findMany({
+      where: mine ? { listing: { deskOwnerId: user.id } } : undefined,
       include: { buyer: { include: { referredBy: true } }, listing: { include: { broker: true } }, note: true, messages: { include: { author: true }, orderBy: { createdAt: "asc" } } },
       orderBy: { createdAt: "desc" },
     }),
@@ -39,7 +44,10 @@ export default async function AdminOffersPage({
     <div>
       <PageIntro eyebrow="Offers" title="Bids and counters." lede={`A bid goes to the seller for approval unless their reserve covers it. Approval opens a closing. If it trades at the working price, the buyer also pays ${premium.toFixed(2)}% on top. Loan bids do not take the rest of the pool off the book.`} />
       <Notice notice={q(params, "notice")} error={q(params, "error")} />
-      <ul className="mt-8 space-y-3">
+      <OwnerFilter base="/admin/offers" mine={mine} />
+      {!deskCan(user, "sealedBids") && <p className="mt-3 text-sm text-muted-foreground">Your desk role doesn&apos;t read sealed bids, so sealed and best-and-final amounts stay hidden until the deadline{deskCan(user, "deskBook") ? ", and until the listing leaves the market, since you bid for the desk book" : ""}.</p>}
+      <ul className="mt-6 space-y-3">
+        {inquiries.length === 0 && <li className="text-sm text-muted-foreground">{mine ? "No offers on listings you own." : "No offers yet."}</li>}
         {inquiries.map((inquiry) => {
           const messages = inquiry.messages.map((message) => ({
             kind: message.kind,
@@ -49,7 +57,10 @@ export default async function AdminOffersPage({
           }));
           // The award price is what the buyer agreed to. A desk counter waits for the buyer to accept it.
           const amount = buyerPrice(inquiry.amount ? num(inquiry.amount) : null, messages, inquiry.buyerId);
+          // The premium the closing will charge: the listing's own, fixed when it went live.
+          const premiumBps = inquiry.listing.feeBuyerPremiumBps ?? settings.buyerPremiumBps;
           const counter = openCounter(messages, inquiry.buyerId);
+          const walled = inquiry.type === "OFFER" && deskWalled(inquiry.listing, user);
           const closingId = closingFor.get(inquiry.id);
           const agreed = amount
             ? sellerAgreed({ price: amount, reserve: inquiry.listing.reservePrice, approvedAmount: inquiry.sellerApprovedAmount, buyNow: { bid: inquiry.buyNow, price: inquiry.listing.buyNowPrice } })
@@ -88,12 +99,13 @@ export default async function AdminOffersPage({
                   {inquiry.buyNow ? "buy it now" : inquiry.type.replaceAll("_", " ").toLowerCase()} · {inquiry.status.toLowerCase()}
                 </p>
               </div>
-              {amount != null && (
+              {walled && <p className="mt-3 text-sm text-muted-foreground">Amount sealed until the deadline.</p>}
+              {amount != null && !walled && (
                 <p className="mt-3 text-sm text-muted-foreground">
-                  Buyer&apos;s price {money(amount)} · premium {money((amount * settings.buyerPremiumBps) / 10000)} · all-in {money(amount + (amount * settings.buyerPremiumBps) / 10000)}
+                  Buyer&apos;s price {money(amount)} · premium {money((amount * premiumBps) / 10000)} · all-in {money(amount + (amount * premiumBps) / 10000)}
                 </p>
               )}
-              {live && counter != null && (
+              {live && counter != null && !walled && (
                 <p className="mt-2 text-[13px] text-muted-foreground">
                   {counterBy === "seller" ? `Seller counter ${money(counter)}, already approved by the seller` : `Desk counter ${money(counter)}`} · waiting on the buyer to accept
                 </p>
@@ -104,14 +116,14 @@ export default async function AdminOffersPage({
                 </p>
               )}
               {inquiry.status === "WITHDRAWN" && <p className="mt-2 text-[13px] text-muted-foreground">Withdrawn by the buyer{inquiry.withdrawnAt ? ` ${prettyDate(inquiry.withdrawnAt)}` : ""}</p>}
-              {live && <p className={`mt-2 text-[13px] ${agreed ? "text-good" : "text-muted-foreground"}`}>{sellerLine}</p>}
-              {inquiry.message && <p className="mt-2 text-sm text-foreground/85">{inquiry.message}</p>}
+              {live && !walled && <p className={`mt-2 text-[13px] ${agreed ? "text-good" : "text-muted-foreground"}`}>{sellerLine}</p>}
+              {inquiry.message && !walled && <p className="mt-2 text-sm text-foreground/85">{inquiry.message}</p>}
               {closingId && <Link href={`/closings/${closingId}`} className="mt-3 inline-block text-[13px] font-medium text-link">Open closing</Link>}
-              {inquiry.type === "OFFER" && !closingId && <Link href={`/admin/listings/${inquiry.listingId}#bids`} className="mt-3 inline-block text-[13px] font-medium text-link">Compare on the bid sheet</Link>}
-              {inquiry.type === "OFFER" && (
+              {inquiry.type === "OFFER" && !closingId && deskCan(user, "sealedBids") && <Link href={`/admin/listings/${inquiry.listingId}#bids`} className="mt-3 inline-block text-[13px] font-medium text-link">Compare on the bid sheet</Link>}
+              {inquiry.type === "OFFER" && !walled && (
                 <OfferThread
                   inquiryId={inquiry.id}
-                  canCounter={canCounter(inquiry.status)}
+                  canCounter={sells && canCounter(inquiry.status)}
                   messages={inquiry.messages.map((message) => ({
                     id: message.id,
                     kind: message.kind,
@@ -122,7 +134,7 @@ export default async function AdminOffersPage({
                   }))}
                 />
               )}
-              {(inquiry.status === "OPEN" || inquiry.status === "REVIEWED") && (
+              {sells && (inquiry.status === "OPEN" || inquiry.status === "REVIEWED") && (
                 <div className="mt-4 flex flex-wrap items-center gap-2">
                   {inquiry.type === "OFFER" && inquiry.listing.status === "APPROVED" && inquiry.listing.bidMode !== "NONE" && !deadlinePassed(inquiry.listing.bidDeadline) && (
                     <p className="text-sm text-muted-foreground">Award opens after the deadline.</p>
@@ -143,8 +155,8 @@ export default async function AdminOffersPage({
                             <ConfirmRows
                               rows={[
                                 ["Buyer's price", money(amount)],
-                                ["Buyer premium", money((amount * settings.buyerPremiumBps) / 10000)],
-                                ["Buyer all-in", money(amount + (amount * settings.buyerPremiumBps) / 10000)],
+                                ["Buyer premium", money((amount * premiumBps) / 10000)],
+                                ["Buyer all-in", money(amount + (amount * premiumBps) / 10000)],
                               ]}
                             />
                           }
@@ -182,5 +194,17 @@ export default async function AdminOffersPage({
         })}
       </ul>
     </div>
+  );
+}
+
+// All offers, or only those on listings this desk member owns.
+function OwnerFilter({ base, mine }: { base: string; mine: boolean }) {
+  const pill = (active: boolean) =>
+    `inline-flex min-h-9 items-center rounded-full border px-3.5 text-[13px] font-medium ${active ? "border-link/50 bg-link/10 text-link" : "border-border bg-card text-muted-foreground hover:text-foreground"}`;
+  return (
+    <nav aria-label="Whose offers" className="mt-6 flex gap-2">
+      <Link href={base} aria-current={!mine ? "page" : undefined} className={pill(!mine)}>All</Link>
+      <Link href={`${base}?mine=1`} aria-current={mine ? "page" : undefined} className={pill(mine)}>Mine</Link>
+    </nav>
   );
 }

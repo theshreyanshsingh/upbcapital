@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { audit } from "@/lib/audit";
-import { requireRole } from "@/lib/auth";
+import { requireDesk } from "@/lib/staff";
 import { cleanRetention } from "@/lib/jobs";
 import { prisma } from "@/lib/prisma";
 import { ofacOpen } from "@/lib/ofac";
@@ -12,7 +12,7 @@ import { clearSettingsCache } from "@/lib/settings";
 import { US_STATES } from "@/lib/labels";
 
 export async function saveDisclosure(formData: FormData) {
-  await requireRole(["ADMIN"]);
+  await requireDesk("compliance", "/admin/compliance");
   const state = String(formData.get("state") || "").trim().toUpperCase();
   const license = String(formData.get("license") || "").trim().slice(0, 500);
   const body = String(formData.get("body") || "").trim();
@@ -28,7 +28,7 @@ export async function saveDisclosure(formData: FormData) {
 }
 
 export async function saveRetention(formData: FormData) {
-  await requireRole(["ADMIN"]);
+  await requireDesk("compliance", "/admin/compliance");
   const years = Number(formData.get("retentionYears") || 7);
   if (!Number.isFinite(years) || years < 1 || years > 25) redirect("/admin/compliance?error=Keep retention between 1 and 25 years.");
   await prisma.platformSettings.update({ where: { id: "default" }, data: { retentionYears: Math.round(years) } });
@@ -37,13 +37,13 @@ export async function saveRetention(formData: FormData) {
 }
 
 export async function runRetention() {
-  await requireRole(["ADMIN"]);
+  await requireDesk("compliance", "/admin/compliance");
   const summary = await cleanRetention();
   redirect(`/admin/compliance?notice=${encodeURIComponent(summary)}`);
 }
 
 export async function screenName(formData: FormData) {
-  const user = await requireRole(["ADMIN"]);
+  const user = await requireDesk("compliance", "/admin/compliance");
   const name = String(formData.get("name") || "").trim();
   if (name.length < 2) redirect("/admin/compliance?error=Enter a name to screen.");
   const { screen, check } = await screenAndRecord(name, { context: "Manual screen" });
@@ -54,7 +54,7 @@ export async function screenName(formData: FormData) {
 
 // A decision applies to every row for this name and list entry, so one person is not asked twice.
 export async function decideOfacReview(formData: FormData) {
-  const user = await requireRole(["ADMIN"]);
+  const user = await requireDesk("compliance", "/admin/compliance");
   const id = String(formData.get("checkId") || "");
   const decision = String(formData.get("decision") || "");
   const note = String(formData.get("note") || "").trim().slice(0, 500);
@@ -80,7 +80,7 @@ export async function decideOfacReview(formData: FormData) {
 // For a mis-click, or a decision that new facts undo. The party's rows go back to open, so every hold applies
 // again until someone decides. The audit log keeps the decision it replaced.
 export async function reopenOfacReview(formData: FormData) {
-  const user = await requireRole(["ADMIN"]);
+  const user = await requireDesk("compliance", "/admin/compliance");
   const id = String(formData.get("checkId") || "");
   const note = String(formData.get("note") || "").trim().slice(0, 500);
   if (note.length < 3) redirect(`/admin/compliance?error=${encodeURIComponent("Write why it needs another look.")}`);

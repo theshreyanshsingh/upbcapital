@@ -8,6 +8,7 @@ import { requireUser } from "@/lib/auth";
 import { q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 import { pushPublicKey } from "@/lib/push";
+import { REPORT_ROLES } from "@/lib/seller-report";
 
 export const metadata = { title: "Notices" };
 
@@ -21,7 +22,7 @@ export default async function NotificationPrefsPage({
   const [prefs, devices] = await Promise.all([
     prisma.user.findUnique({
       where: { id: user.id },
-      select: { notifyEmail: true, notifyInApp: true, digest: true, dealAlerts: true, marketDispatch: true, role: true },
+      select: { notifyEmail: true, notifyInApp: true, digest: true, dealAlerts: true, marketDispatch: true, watchAlerts: true, sellerReport: true, role: true },
     }),
     prisma.pushSubscription.count({ where: { userId: user.id } }),
   ]);
@@ -46,6 +47,21 @@ export default async function NotificationPrefsPage({
           <label className="flex items-start gap-3 text-sm text-foreground">
             <input type="checkbox" name="dealAlerts" value="on" defaultChecked={prefs.dealAlerts !== false} className="mt-1" />
             <span>Desk picks: listings and bid deadlines the desk sends you because they fit a buy box</span>
+          </label>
+        )}
+        {prefs?.role === "BUYER" && (
+          <label className="flex items-start gap-3 text-sm text-foreground">
+            <input type="checkbox" name="watchAlerts" value="on" defaultChecked={prefs.watchAlerts !== false} className="mt-1" />
+            <span>Saved listings: a new price, new files, a sale event or a bid deadline on a listing you saved</span>
+          </label>
+        )}
+        {prefs && (REPORT_ROLES as readonly string[]).includes(prefs.role) && (
+          <label className="flex items-start gap-3 text-sm text-foreground">
+            <input type="checkbox" name="sellerReport" value="on" defaultChecked={prefs.sellerReport !== false} className="mt-1" />
+            <span>
+              Weekly report: opens, saves, NDAs, downloads, questions and bids on each of your live listings
+              <span className="mt-1 block text-xs text-muted-foreground">Counts only. It follows the email setting above.</span>
+            </span>
           </label>
         )}
         <div>

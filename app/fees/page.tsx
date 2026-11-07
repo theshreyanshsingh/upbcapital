@@ -1,13 +1,21 @@
-import { PageIntro } from "@/components/page-intro";
-import { requireUser } from "@/lib/auth";
+import type { Metadata } from "next";
+import Link from "next/link";
+import { PublicPage } from "@/components/public-page";
+import { getCurrentUser } from "@/lib/auth";
 import { feeFromPool, type FeeTerms } from "@/lib/broker-fees";
 import { depositCents, depositTerms } from "@/lib/closing-clock";
 import { diligenceDays } from "@/lib/closing-service";
 import { money } from "@/lib/format";
+import { homeFor } from "@/lib/labels";
 import { feeBreakdown } from "@/lib/money";
 import { getSettings } from "@/lib/settings";
 
-export const metadata = { title: "Fee schedule" };
+// Public, so a buyer or seller can read the costs before asking for an account. The desk navigation links here too.
+export const metadata: Metadata = {
+  title: "Fee schedule",
+  description: "What a trade costs on UPB Capital: the buyer premium, the seller commission, deposits, and broker fees.",
+};
+export const dynamic = "force-dynamic";
 
 const EXAMPLE_PRICE = 100_000;
 
@@ -21,8 +29,7 @@ function share(terms: FeeTerms) {
 }
 
 export default async function FeeSchedulePage() {
-  await requireUser();
-  const settings = await getSettings();
+  const [settings, user] = await Promise.all([getSettings(), getCurrentUser()]);
   const deposit = depositTerms(settings);
   const diligence = diligenceDays(settings.diligenceDays);
   const broker: FeeTerms = { basis: settings.brokerFeeBasis, bps: settings.brokerFeeBps, cents: settings.brokerFeeCents };
@@ -54,12 +61,16 @@ export default async function FeeSchedulePage() {
     ["Of that, to an affiliate who referred the seller", money(affiliateCut / 100)],
   ];
   return (
-    <div className="max-w-3xl">
-      <PageIntro
-        eyebrow="Fees"
-        title="What a trade costs on UPB."
-        lede="The rates in force today, as the desk sets them. Every bid is placed against this schedule, and a closing keeps the rates it opened with."
-      />
+    <PublicPage
+      title="What a trade costs on UPB."
+      lede="The rates in force today, as the desk sets them. A listing keeps the rates in force when the desk approved it, and a closing keeps the rates it opened with."
+      authed={Boolean(user)}
+    >
+      {user && (
+        <p className="text-sm text-muted-foreground">
+          <Link href={homeFor(user.role)} className="text-link">Back to the desk</Link>
+        </p>
+      )}
       <section className="glass p-5 md:p-6" aria-labelledby="schedule-heading">
         <h2 id="schedule-heading" className="eyebrow">The schedule</h2>
         <dl className="mt-4 divide-y divide-border">
@@ -71,7 +82,7 @@ export default async function FeeSchedulePage() {
           ))}
         </dl>
       </section>
-      <section className="glass mt-8 p-5 md:p-6" aria-labelledby="example-heading">
+      <section className="glass p-5 md:p-6" aria-labelledby="example-heading">
         <h2 id="example-heading" className="eyebrow">On a {money(EXAMPLE_PRICE)} note</h2>
         <p className="mt-2 text-sm text-muted-foreground">A note that trades at {money(EXAMPLE_PRICE)}, under today&apos;s schedule.</p>
         <dl className="mt-4 space-y-2 text-sm">
@@ -86,6 +97,9 @@ export default async function FeeSchedulePage() {
           A broker or affiliate fee comes out of UPB&apos;s fees and only applies when one brought the deal. Third-party costs, such as recording or a servicer&apos;s boarding fee, are not UPB fees and are not shown.
         </p>
       </section>
-    </div>
+      <p className="text-sm text-muted-foreground">
+        Fees are charged under the <Link href="/terms" className="text-link">terms of use</Link>. Questions about a particular trade go to the desk.
+      </p>
+    </PublicPage>
   );
 }

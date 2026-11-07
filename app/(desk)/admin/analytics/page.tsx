@@ -4,6 +4,7 @@ import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { SubmitButton } from "@/components/submit-button";
 import { requireRole } from "@/lib/auth";
+import { deskWalled } from "@/lib/auction";
 import { average, daysBetween, funnelSteps } from "@/lib/analytics";
 import { q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
@@ -15,7 +16,7 @@ export default async function AnalyticsPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  await requireRole(["ADMIN"]);
+  const user = await requireRole(["ADMIN"]);
   const params = await searchParams;
   const [visits, signups, verified, offers, closings, closed, sold, buyers, listings] = await Promise.all([
     prisma.pageHit.count(),
@@ -27,7 +28,7 @@ export default async function AnalyticsPage({
     prisma.listing.findMany({ where: { status: "SOLD", soldAt: { not: null } }, select: { submittedAt: true, soldAt: true, title: true } }),
     prisma.inquiry.findMany({
       where: { type: "OFFER" },
-      include: { buyer: true },
+      include: { buyer: true, listing: { select: { bidMode: true, bidDeadline: true, status: true } } },
     }),
     prisma.listing.findMany({
       where: { status: { in: ["APPROVED", "PENDING", "SOLD"] } },
@@ -43,7 +44,8 @@ export default async function AnalyticsPage({
   for (const offer of buyers) {
     const row = byBuyer.get(offer.buyerId) ?? { name: offer.buyer.name, offers: 0, volume: 0 };
     row.offers += 1;
-    row.volume += Number(offer.amount || 0);
+    // A sealed bid's amount stays out of the total for a desk role behind the wall.
+    if (!deskWalled(offer.listing, user)) row.volume += Number(offer.amount || 0);
     byBuyer.set(offer.buyerId, row);
   }
   const top = [...byBuyer.values()].sort((a, b) => b.volume - a.volume).slice(0, 5);

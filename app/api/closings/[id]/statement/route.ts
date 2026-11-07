@@ -1,7 +1,7 @@
 import { canReadClosingFile } from "@/lib/acl";
 import { getApiUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { buildStatementPdf, statementLines, statementSide } from "@/lib/settlement";
+import { buildStatementPdf, statementLines, statementScope, statementSide } from "@/lib/settlement";
 import { namesOnTitle } from "@/lib/vesting";
 
 export const runtime = "nodejs";
@@ -10,7 +10,10 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   const { id } = await context.params;
   const user = await getApiUser();
   if (!user) return new Response("Sign in required.", { status: 401 });
-  const closing = await prisma.closing.findUnique({ where: { id }, include: { listing: { include: { seller: true } }, funders: true, brokerFees: true } });
+  const closing = await prisma.closing.findUnique({
+    where: { id },
+    include: { listing: { include: { seller: true, notes: true } }, funders: true, brokerFees: true, kickouts: { orderBy: { createdAt: "asc" } } },
+  });
   if (!closing) return new Response("Not found.", { status: 404 });
   const inquiry = closing.inquiryId ? await prisma.inquiry.findUnique({ where: { id: closing.inquiryId }, include: { buyer: true } }) : null;
   const funderIds = closing.funders.map((funder) => funder.userId);
@@ -25,11 +28,13 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   const names = await namesOnTitle(closing, inquiry?.buyerId ?? null, closing.funders);
   const buyer = closing.deskBidId ? "UPB Capital desk" : funderIds.length > 1 ? "A buying group" : names.buyer || "Buyer";
   const record = { ...closing, salePrice: Number(closing.salePrice) };
+  // The loans the closing covers now, and any the desk took out before settlement.
+  const { loans, kickouts } = statementScope(closing, closing.listing.notes);
   const pdf = await buildStatementPdf({
     title: closing.listing.title,
-    parties: `Seller ${seller}  -  Buyer ${buyer}`,
+    parties: `Seller ${seller}  -  Buyer ${buyer}  -  ${loans.length} loan${loans.length === 1 ? "" : "s"}`,
     closing: record,
-    sections: statementLines(record, side, side === "desk" ? brokerCents : 0, share),
+    sections: statementLines(record, side, side === "desk" ? brokerCents : 0, share, kickouts),
   });
   return new Response(Buffer.from(pdf), {
     headers: {

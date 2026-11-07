@@ -1,9 +1,9 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { requireRole } from "@/lib/auth";
+import { requireDesk } from "@/lib/staff";
 import { prisma } from "@/lib/prisma";
-import { screenAndRecord, screenInBackground } from "@/lib/screening";
+import { investorAllocationBlock, screenInBackground, screenInvestor } from "@/lib/screening";
 
 function money(raw: FormDataEntryValue | null) {
   const value = Number(String(raw || "").replace(/[$,\s]/g, ""));
@@ -11,20 +11,19 @@ function money(raw: FormDataEntryValue | null) {
 }
 
 export async function addInvestor(formData: FormData) {
-  await requireRole(["ADMIN"]);
+  await requireDesk("deskBook", "/admin/capital");
   const name = String(formData.get("name") || "").trim();
   const email = String(formData.get("email") || "").trim().toLowerCase();
   const entity = String(formData.get("entity") || "").trim();
   if (name.length < 2 || !email.includes("@")) redirect("/admin/capital?error=Name and email are required.");
   await prisma.investor.create({ data: { name, email, entity } });
-  screenInBackground(async () => {
-    for (const party of new Set([name, entity].filter(Boolean))) await screenAndRecord(party, { context: "Investor" });
-  });
+  // Tied to this investor, so a match holds their allocations. Each allocation screens again before money moves.
+  screenInBackground(() => screenInvestor({ name, email, entity }));
   redirect("/admin/capital?notice=capital");
 }
 
 export async function addCommitment(formData: FormData) {
-  await requireRole(["ADMIN"]);
+  await requireDesk("deskBook", "/admin/capital");
   const investorId = String(formData.get("investorId") || "");
   const amount = money(formData.get("amount"));
   const note = String(formData.get("note") || "").trim().slice(0, 300);
@@ -34,7 +33,7 @@ export async function addCommitment(formData: FormData) {
 }
 
 export async function allocateCapital(formData: FormData) {
-  await requireRole(["ADMIN"]);
+  await requireDesk("deskBook", "/admin/capital");
   const investorId = String(formData.get("investorId") || "");
   const holdingId = String(formData.get("holdingId") || "");
   const amount = money(formData.get("amount"));
@@ -49,6 +48,8 @@ export async function allocateCapital(formData: FormData) {
   const assigned = holding.allocations.reduce((sum, row) => sum + Number(row.amount), 0);
   if (called + amount > committed + 0.01) redirect("/admin/capital?error=That call is larger than the open commitment.");
   if (assigned + amount > Number(holding.costBasis) + 0.01) redirect("/admin/capital?error=Allocations cannot exceed the cost of the note.");
+  const blocked = await investorAllocationBlock(investor);
+  if (blocked) redirect(`/admin/capital?error=${encodeURIComponent(blocked)}`);
   await prisma.capitalAllocation.create({ data: { investorId, holdingId, amount } });
   redirect("/admin/capital?notice=capital");
 }

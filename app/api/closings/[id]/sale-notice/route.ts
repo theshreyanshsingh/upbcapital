@@ -1,5 +1,6 @@
 import { getApiUser } from "@/lib/auth";
 import { loansInScope, type PaymentPolicy, transferDate } from "@/lib/borrower-notices";
+import { closingLoans } from "@/lib/closing";
 import { prisma } from "@/lib/prisma";
 import { buildSaleNoticePdf } from "@/lib/sale-notice";
 import { namesOnTitle } from "@/lib/vesting";
@@ -20,7 +21,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   const buyerSide = user.id === inquiry?.buyerId || closing.funders.some((funder) => funder.userId === user.id);
   if (user.role !== "ADMIN" && !buyerSide) return new Response("Only the new owner and the desk can draft this notice.", { status: 403 });
   if (closing.status === "CANCELED") return new Response("This closing was canceled.", { status: 409 });
-  const notes = closing.noteId ? closing.listing.notes.filter((note) => note.id === closing.noteId) : closing.listing.notes;
+  const notes = closingLoans(closing, closing.listing.notes);
   const loans = loansInScope(notes, closing.loanPurpose);
   if (!loans.length) return new Response("No loan on this closing looks in scope for the sale notice.", { status: 409 });
   // The notice names the owner of record, the vetted entity that takes title.

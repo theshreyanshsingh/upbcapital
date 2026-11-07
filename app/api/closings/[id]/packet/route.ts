@@ -3,6 +3,7 @@ import { getApiUser } from "@/lib/auth";
 import { closingLoans } from "@/lib/closing";
 import { buildClosingPdf, fillTemplate, type TemplateKey } from "@/lib/closing-docs";
 import { money } from "@/lib/format";
+import { pricesFor } from "@/lib/loan-prices";
 import { prisma } from "@/lib/prisma";
 import { isTemplateKey, loadTemplate } from "@/lib/templates";
 import { sendForSignature } from "@/lib/vendors";
@@ -36,6 +37,8 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
   // Every loan the closing covers, not just the first one on the listing.
   const loans = closingLoans(closing, closing.listing.notes);
   const pool = loans.length > 1;
+  // A bid priced loan by loan names each loan's price on its own papers, while those prices add up to the sale.
+  const loanPrices = pool ? pricesFor(inquiry?.loanPrices, loans.map((note) => note.id), Number(closing.salePrice)) : null;
   const template = await loadTemplate(kind as TemplateKey);
   const price = money(Number(closing.salePrice));
   // The papers name who takes title, the vetted entity, not the person who holds the login.
@@ -58,8 +61,11 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     street: note?.streetAddress || "Withheld",
     borrower: note?.borrowerName || "Withheld",
     upb: note ? money(Number(note.upb)) : "",
-    // A pool sells for one price. Splitting it across loans is the parties' call, so each page says so.
-    price: pool ? `${price} for the ${loans.length}-loan pool` : price,
+    // A pool sells for one price. Splitting it across loans is the parties' call, so each page says so, unless the
+    // buyer priced each loan.
+    price: pool
+      ? note && loanPrices ? `${money(loanPrices[note.id])}, part of ${price} for the ${loans.length}-loan pool` : `${price} for the ${loans.length}-loan pool`
+      : price,
   });
   const vars = pool
     ? {
@@ -73,7 +79,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       }
     : forLoan(loans[0]);
   const loanSchedule = pool
-    ? `\n\nLoan schedule\n${loans.map((note, index) => `${index + 1}. ${note.streetAddress}, ${note.city}, ${note.state} ${note.zip}. Borrower ${note.borrowerName || "not named"}. Unpaid principal ${money(Number(note.upb))}.`).join("\n")}`
+    ? `\n\nLoan schedule\n${loans.map((note, index) => `${index + 1}. ${note.streetAddress}, ${note.city}, ${note.state} ${note.zip}. Borrower ${note.borrowerName || "not named"}. Unpaid principal ${money(Number(note.upb))}.${loanPrices ? ` Price ${money(loanPrices[note.id])}.` : ""}`).join("\n")}`
     : "";
   const schedule = funders.length
     ? `\n\nCo-ownership schedule\n${funders.map((funder) => `${names.funder(funder) || funder.user.name}: ${Number(funder.percent).toFixed(2)}% of the price ($${Number(funder.amount).toLocaleString("en-US")}), premium $${(funder.premiumCents / 100).toLocaleString("en-US")}.`).join("\n")}\nThe buyers take title together, each for the percentage above.`

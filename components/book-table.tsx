@@ -19,7 +19,7 @@ export type BookTableRow = {
   deadline: string | null;
   hold: "early" | "limit" | null;
   // Null when this viewer sees the figures veiled, exactly as on the card.
-  figures: { upb: number; asking: number; priceToUpb: number | null; yield: number | null; value: number } | null;
+  figures: { upb: number; asking: number; priceToUpb: number | null; yield: number | null; value: number; ltv?: number | null } | null;
   // The desk's indicative range in whole percent of UPB, from loadIndicatives(). Null when veiled or unpriced.
   indicative?: { low: number; high: number; rate?: RateStamp | null } | null;
 };
@@ -36,6 +36,7 @@ const COLUMNS: Column[] = [
   { label: "Price / UPB", sort: "discount", figure: true, numeric: true },
   { label: "Yield", sort: "yield", figure: true, numeric: true },
   { label: "Value", sort: "value", figure: true, numeric: true },
+  { label: "LTV", sort: "ltv", figure: true, numeric: true },
   { label: "Indicative", figure: true, numeric: true },
   { label: "Status" },
   { label: "Deadline", sort: "deadline" },
@@ -58,7 +59,7 @@ export function BookTable({
       <table className="min-w-full text-left text-sm">
         <caption className="px-4 pt-4 pb-2 text-left text-xs leading-relaxed text-muted-foreground">
           {pro
-            ? "Yield is current yield at the ask: the tape's annual P&I over the price, gross before servicing and closing costs, on performing loans only. Value is the seller's estimate. Indicative is the desk's estimate as of today, as a percent of UPB, from its model, closed-trade comps and the top standing bid. It is not an appraisal or advice. A pool shows the totals of the loans still for sale."
+            ? "Yield is current yield at the ask: the tape's annual P&I over the price, gross before servicing and closing costs, on performing loans only. Value is the seller's estimate, and LTV is UPB over that value. Indicative is the desk's estimate as of today, as a percent of UPB, from its model, closed-trade comps and the top standing bid. It is not an appraisal or advice. A pool shows the totals of the loans still for sale."
             : "Balances, prices, ratios, yields and values are on Pro, so they show as a dash here and can't be sorted."}
         </caption>
         <thead className="text-xs font-medium text-muted-foreground">
@@ -107,6 +108,7 @@ export function BookTable({
               <Figure value={row.figures ? pct(row.figures.priceToUpb) : null} />
               <Figure value={row.figures ? (row.figures.yield == null ? "None" : pct(row.figures.yield)) : null} />
               <Figure value={row.figures ? (row.figures.value ? money(row.figures.value) : "—") : null} />
+              <Figure value={row.figures ? (row.figures.ltv == null ? "—" : pct(row.figures.ltv, 0)) : null} />
               <td className="px-3 py-3 text-right whitespace-nowrap tabular-nums">
                 {!row.figures ? (
                   <span className="text-muted-foreground">

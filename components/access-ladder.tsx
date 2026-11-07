@@ -17,6 +17,7 @@ export function AccessLadder({
   canSign,
   closingParty,
   ndaSigned,
+  waiting,
 }: {
   listingId: string;
   listingTitle: string;
@@ -29,6 +30,8 @@ export function AccessLadder({
   canSign: boolean;
   closingParty: boolean;
   ndaSigned: string | null;
+  // Set when the NDA is signed but the seller, who approves each bidder, hasn't opened the room to this buyer.
+  waiting?: string | null;
 }) {
   const rungs: Rung[] = [
     { title: "Summary", open: true, detail: "Place, lien, performance, the seller's narrative and the desk's file checks." },
@@ -57,7 +60,9 @@ export function AccessLadder({
           : "Street and borrower are open. The files also need Pro."
         : roomClosed
           ? "Closed. The listing went to contract, so only the deal's buyer can open it."
-          : `Sign the NDA to open the street and borrower.${pro ? "" : " The files also need Pro."}`,
+          : waiting
+            ? waiting
+            : `Sign the NDA to open the street and borrower.${pro ? "" : " The files also need Pro."}`,
       action: canSign ? <NdaDialog listingId={listingId} listingTitle={listingTitle} /> : undefined,
     },
   ];

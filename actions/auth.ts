@@ -3,12 +3,14 @@
 import bcrypt from "bcryptjs";
 import { redirect } from "next/navigation";
 import { z } from "zod";
+import { deletedAccountRefusal } from "@/lib/account-deletion";
 import { audit } from "@/lib/audit";
 import { clearSession, getCurrentUser, setPending, setSession } from "@/lib/auth";
 import { demoAddress, isReleaseBuild } from "@/lib/deploy";
 import { notifyDesk } from "@/lib/email";
 import { screenInBackground, screenUser } from "@/lib/screening";
 import { homeFor } from "@/lib/labels";
+import { signupConsent } from "@/lib/legal";
 import { deliverable } from "@/lib/mail-config";
 import { prisma } from "@/lib/prisma";
 import { consumeRateLimit } from "@/lib/rate-limit";
@@ -62,6 +64,9 @@ export async function signup(_prev: { error: string; field?: string }, formData:
   if (data.role === "INSTITUTIONAL_SELLER" && !data.companyName) {
     return { error: "Institutional accounts need a company name.", field: "companyName" };
   }
+  // The box is required in the form too. The account records the version agreed to, so a later change can ask again.
+  const consent = await signupConsent(formData.get("terms"));
+  if (consent.error !== null) return { error: consent.error, field: "terms" };
   // The demo domain belongs to the seeded seats. A release mails codes, resets and alerts, so the address has to take
   // mail. Whether the signer owns it is not confirmed yet.
   if (demoAddress(data.email)) return { error: "That address is for the demo desk. Sign up with your own email.", field: "email" };
@@ -94,6 +99,7 @@ export async function signup(_prev: { error: string; field?: string }, formData:
       companyType: data.companyType ? data.companyType : null,
       referralCode: await uniqueReferralCode(data.name),
       referredById: referrer?.id,
+      ...consent.data,
     },
   });
 
@@ -141,6 +147,8 @@ export async function login(_prev: { error: string }, formData: FormData) {
     if (user) await audit(user.id, "LOGIN_FAILED", "user", user.id, meta.ipAddress);
     return { error: "Those credentials are not on the desk." };
   }
+  const deleted = deletedAccountRefusal(user);
+  if (deleted) return { error: deleted };
   if (user.accountStatus === "REJECTED") {
     return { error: "This account was declined. Write the desk if that is a mistake." };
   }

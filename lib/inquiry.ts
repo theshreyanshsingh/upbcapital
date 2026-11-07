@@ -3,11 +3,14 @@ import { canOpenListing, openableListingIds } from "@/lib/access";
 import { canSubmitBid, sealedFromSeller } from "@/lib/auction";
 import { audit } from "@/lib/audit";
 import { awardOffer } from "@/lib/awards";
+import { bidderAlias } from "@/lib/bidder-alias";
 import { buyNowOffer, samePrice } from "@/lib/buy-now";
 import { unset } from "@/lib/db-filters";
 import { ACKNOWLEDGE_FIRST, acknowledgementMissing, eligibilityFor, eligibilityLog, type Eligibility } from "@/lib/eligibility";
 import { notify, notifyDesk } from "@/lib/email";
 import { money } from "@/lib/format";
+import { loanPriceProblem, type LoanPrices } from "@/lib/loan-prices";
+import { launchBlock } from "@/lib/launch-rules";
 import { bidExpired, buyerPrice, readGoodUntil } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
 import { getSettings, isPro } from "@/lib/settings";
@@ -27,7 +30,8 @@ import {
 } from "@/lib/verification";
 
 type Buyer = Pick<User, "id" | "name" | "email" | "role" | "accountStatus" | "subscriptionTier" | "subscriptionStatus" | "subscriptionCurrentPeriodEnd">;
-type OpenListing = Pick<Listing, "id" | "status" | "approvedAt" | "sellerId" | "brokerId">;
+// launchAt is optional so a caller's narrower select still type-checks; the selects here all read it.
+type OpenListing = Pick<Listing, "id" | "status" | "approvedAt" | "sellerId" | "brokerId"> & { launchAt?: Date | null };
 type BidListing = OpenListing & Pick<Listing, "kind" | "bidMode" | "bidDeadline">;
 
 // The listing page refuses early-access listings and those outside the free slice. Every action on a listing holds
@@ -46,12 +50,15 @@ export async function buyerCanOpen(user: Buyer, listing: OpenListing) {
     listingId: listing.id,
     sellerId: listing.sellerId,
     brokerId: listing.brokerId,
+    launchAt: listing.launchAt,
   }).ok;
 }
 
 // Why this buyer can't send an inquiry of any kind on this listing, or null when they can.
 export async function inquiryBlock(user: Buyer, listing: OpenListing | null) {
   if (!listing || listing.status !== "APPROVED") return "This listing is not taking new inquiries.";
+  const coming = launchBlock(listing, "inquiry");
+  if (coming) return coming;
   if (!(await buyerCanOpen(user, listing))) return "This listing isn't open on your membership yet.";
   return null;
 }
@@ -68,7 +75,7 @@ export async function roadAcknowledgedAt(userId: string, listingId: string) {
 // The buyer acknowledges the notice for this listing, once, before any of their bids on it. Their own statement
 // of homes controlled goes into the log with it.
 export async function acknowledgeRoad(user: Buyer, listingId: string) {
-  const listing = await prisma.listing.findUnique({ where: { id: listingId }, select: { id: true, status: true, approvedAt: true, sellerId: true, brokerId: true } });
+  const listing = await prisma.listing.findUnique({ where: { id: listingId }, select: { id: true, status: true, approvedAt: true, sellerId: true, brokerId: true, launchAt: true } });
   if (!listing || !(await buyerCanOpen(user, listing))) return { error: "This listing isn't open on your membership yet." } as const;
   const profile = await prisma.buyerProfile.findUnique({ where: { userId: user.id }, select: { homesControlled: true, reoStrategy: true } });
   await audit(user.id, ROAD_ACK, "listing", listingId, `${profile?.homesControlled ?? "No"} homes stated · ${profile?.reoStrategy ?? "no REO strategy"}`);
@@ -90,6 +97,7 @@ const HELD = ["OPEN", "REVIEWED", "ACCEPTED"] as const;
 // Group seats are out of scope. A group's one bid sits on its lead's account at the whole group's price, though
 // each seat funds only its share, so it isn't held against the lead's ceiling; and a seat is a pledge made on the
 // group page, not a bid of the buyer's own. Holding seats to the ceiling belongs with the seat flow.
+// premiumBps is the settings' premium, for a listing approved before its own fees were kept.
 export async function fundsExposure(userId: string, premiumBps: number, now = new Date()): Promise<Exposure[]> {
   const bids = await prisma.inquiry.findMany({
     where: { buyerId: userId, type: "OFFER", status: { in: [...HELD] } },
@@ -97,10 +105,13 @@ export async function fundsExposure(userId: string, premiumBps: number, now = ne
   });
   if (!bids.length) return [];
   const ids = bids.map((bid) => bid.id);
-  const [groups, closings] = await Promise.all([
+  const [groups, closings, listings] = await Promise.all([
     prisma.groupBuy.findMany({ where: { inquiryId: { in: ids } }, select: { inquiryId: true } }),
     prisma.closing.findMany({ where: { inquiryId: { in: ids } }, select: { id: true, inquiryId: true, status: true, buyerTotalCents: true } }),
+    prisma.listing.findMany({ where: { id: { in: [...new Set(bids.map((bid) => bid.listingId))] } }, select: { id: true, feeBuyerPremiumBps: true } }),
   ]);
+  // Each bid at the premium its listing went live with, the one its closing would charge.
+  const premiumOf = new Map(listings.map((listing) => [listing.id, listing.feeBuyerPremiumBps ?? premiumBps]));
   const grouped = new Set(groups.map((group) => group.inquiryId));
   const closingOf = new Map(closings.map((closing) => [closing.inquiryId, closing]));
   const held: Exposure[] = [];
@@ -114,7 +125,7 @@ export async function fundsExposure(userId: string, premiumBps: number, now = ne
     // An accepted bid with no closing is waiting on the seller or the desk, so it still holds its price.
     if (bid.status !== "ACCEPTED" && bidExpired(bid.expiresAt, now)) continue;
     const price = buyerPrice(bid.amount, bid.messages, userId);
-    if (price && price > 0) held.push({ key: bidTarget(bid.listingId, bid.noteId), allIn: allInOf(price, premiumBps) });
+    if (price && price > 0) held.push({ key: bidTarget(bid.listingId, bid.noteId), allIn: allInOf(price, premiumOf.get(bid.listingId) ?? premiumBps) });
   }
   return held;
 }
@@ -142,16 +153,30 @@ export async function fundsLimitBlock(input: { userId: string; listingId: string
   const profile = await prisma.buyerProfile.findUnique({ where: { userId: input.userId }, select: { proofAmount: true, proofExpiresAt: true, proofVerifiedAt: true } });
   const credential = fundsCredential(profile, now);
   if (!credential) return { error: null, headroomAfter: null } as const;
-  const settings = await getSettings();
+  const [settings, listing] = await Promise.all([
+    getSettings(),
+    prisma.listing.findUnique({ where: { id: input.listingId }, select: { feeBuyerPremiumBps: true } }),
+  ]);
   const byKey = exposureByKey(await fundsExposure(input.userId, settings.buyerPremiumBps, now));
-  const limit = bidLimit({ credential, byKey, key: bidTarget(input.listingId, input.noteId), allIn: allInOf(input.amount, settings.buyerPremiumBps), now });
+  const premiumBps = listing?.feeBuyerPremiumBps ?? settings.buyerPremiumBps;
+  const limit = bidLimit({ credential, byKey, key: bidTarget(input.listingId, input.noteId), allIn: allInOf(input.amount, premiumBps), now });
   if (!limit.ok) return { error: limit.message, verification: limit.reason === "expired" } as const;
   return { error: null, headroomAfter: limit.headroomAfter } as const;
 }
 
 // Every check a bid passes before it is written, for the bid form, buy it now and a confirmed standing bid alike.
 // A verification failure is flagged, so the caller can send the buyer to their file instead of the listing.
-export async function checkOffer(input: { user: Buyer; listing: BidListing | null; noteId: string; amount: number; goodUntil: string; now?: Date }): Promise<OfferCheck> {
+// A whole-pool bid may price each loan, and with prices may let the seller take part of the pool at them.
+export async function checkOffer(input: {
+  user: Buyer;
+  listing: BidListing | null;
+  noteId: string;
+  amount: number;
+  goodUntil: string;
+  loanPrices?: LoanPrices | null;
+  allowPartial?: boolean;
+  now?: Date;
+}): Promise<OfferCheck> {
   const { user, listing, noteId } = input;
   const now = input.now ?? new Date();
   const blocked = await inquiryBlock(user, listing);
@@ -178,6 +203,12 @@ export async function checkOffer(input: { user: Buyer; listing: BidListing | nul
   } else if (listing.kind === "POOL" && loans.some((loan) => loan.tradeStatus !== "AVAILABLE")) {
     // A whole-pool bid on a pool with traded loans could never be awarded.
     return { error: "Some loans in this pool have traded, so it can't be bid whole. Bid the loans still for sale.", verification: false };
+  }
+  if (input.loanPrices || input.allowPartial) {
+    if (noteId || listing.kind !== "POOL") return { error: "Loan prices go with a bid on a whole pool.", verification: false };
+    if (!input.loanPrices) return { error: "Price each loan to let the seller take part of the pool.", verification: false };
+    const priced = loanPriceProblem({ prices: input.loanPrices, loanIds: loans.map((loan) => loan.id), amount: input.amount });
+    if (priced) return { error: priced, verification: false };
   }
   const goodUntil = readGoodUntil(input.goodUntil, listing, now);
   if (goodUntil.error) return { error: goodUntil.error, verification: false };
@@ -224,6 +255,9 @@ type InquiryInput = {
   expiresAt: Date | null;
   // Placed at the seller's buy-it-now price. The award follows at once, and it sends the notices.
   buyNow?: boolean;
+  // A whole-pool bid's price for each loan, already checked against the bid, and whether part may be taken.
+  loanPrices?: LoanPrices | null;
+  allowPartial?: boolean;
 };
 
 // The row and the opening bid message. Callers that claim something first write this, link it, then announce it.
@@ -239,6 +273,7 @@ export async function writeInquiry(input: InquiryInput) {
       message: input.message,
       ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
       ...(offer && input.buyNow ? { buyNow: true } : {}),
+      ...(offer && !input.noteId && input.loanPrices ? { loanPrices: input.loanPrices, allowPartial: Boolean(input.allowPartial) } : {}),
     },
   });
   if (offer && input.amount != null) {
@@ -258,12 +293,14 @@ export async function announceInquiry(inquiry: { id: string; status: string }, i
   const until = expiresAt ? ` Good until ${expiresAt.toISOString().slice(0, 10)}.` : "";
   const sealed = type === "OFFER" && sealedFromSeller(listing);
   if (!input.buyNow) {
+    // The seller hears the bidder's letter, not who they are, until an award. The desk's notice names them.
+    const alias = await bidderAlias(listing.id, user.id);
     if (sealed) {
-      await notify(listing.seller.email, `Sealed bid · ${listing.title}`, `${user.name} (${user.email}) placed a sealed bid. The amount opens at the deadline.`);
+      await notify(listing.seller.email, `Sealed bid · ${listing.title}`, `${alias} placed a sealed bid. The amount opens at the deadline.`);
     } else {
-      await notify(listing.seller.email, `${label} · ${listing.title}`, `${user.name} (${user.email}) wrote: ${message || "No message."}`);
+      await notify(listing.seller.email, `${label} · ${listing.title}`, `${alias} wrote: ${message || "No message."}`);
     }
-    await notifyDesk(`${label} · ${listing.title}`, `From ${user.name} (${user.email}).${until} ${message || ""}`);
+    await notifyDesk(`${label} · ${listing.title}`, `From ${user.name} (${user.email}).${until} ${message || ""}`, { capability: "sealedBids" });
   }
   if (type === "OFFER") {
     const { emitWebhook } = await import("@/lib/webhooks");
@@ -294,7 +331,7 @@ export async function placeBuyNow(input: { user: Buyer; listingId: string; price
   const listing = await prisma.listing.findUnique({ where: { id: input.listingId }, include: { seller: true } });
   if (!listing) return { error: "This listing is not taking new inquiries.", verification: false };
   const traded = listing.kind === "POOL" ? await prisma.note.count({ where: { listingId: listing.id, tradeStatus: { not: "AVAILABLE" } } }) : 0;
-  const offer = buyNowOffer(listing, traded === 0);
+  const offer = buyNowOffer(listing, traded === 0, now);
   if (offer.price === null) return { error: offer.reason, verification: false };
   // The buyer binds to the figure they saw. A change since the page loaded asks them to look again.
   if (!samePrice(input.price, offer.price)) return { error: "The buy-it-now price changed. Check the new figure and confirm again.", verification: false };

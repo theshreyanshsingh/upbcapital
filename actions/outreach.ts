@@ -3,11 +3,11 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { audit } from "@/lib/audit";
-import { requireRole } from "@/lib/auth";
+import { requireDesk } from "@/lib/staff";
 import { sendListing, type SendKind } from "@/lib/outreach";
 
 export async function sendToBuyers(formData: FormData) {
-  const user = await requireRole(["ADMIN"]);
+  const user = await requireDesk("sales", `/admin/listings/${String(formData.get("listingId") || "")}`);
   const listingId = String(formData.get("listingId") || "");
   const kind = String(formData.get("kind") || "LISTING") as SendKind;
   const back = `/admin/listings/${listingId}`;

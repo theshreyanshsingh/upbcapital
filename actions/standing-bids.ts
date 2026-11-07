@@ -2,7 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { requireRole, requireUser } from "@/lib/auth";
+import { requireUser } from "@/lib/auth";
+import { requireDesk } from "@/lib/staff";
 import { confirmStanding, inviteToConfirm, passStanding } from "@/lib/standing-bids";
 
 async function requireBuyer() {
@@ -14,8 +15,8 @@ async function requireBuyer() {
 
 // The desk sends one standing price to its buyer to confirm. The lib checks the match is on this listing.
 export async function inviteStandingBid(formData: FormData) {
-  const user = await requireRole(["ADMIN"]);
   const listingId = String(formData.get("listingId") || "");
+  const user = await requireDesk("sales", `/admin/listings/${listingId}`);
   const matchId = String(formData.get("matchId") || "");
   const back = `/admin/listings/${listingId}`;
   const result = await inviteToConfirm(matchId, listingId, user.id);

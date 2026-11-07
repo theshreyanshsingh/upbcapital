@@ -254,14 +254,14 @@ test("a new closing is dated, and the reminder job tells each side once a day", 
     await prisma.closingStep.update({ where: { id: deposit.id }, data: { dueAt: new Date(Date.now() - DAY) } });
     await prisma.closingStep.updateMany({ where: { closingId: closing.id, id: { not: deposit.id } }, data: { dueAt: new Date(Date.now() + 20 * DAY) } });
     const before = await prisma.notification.count({ where: { toEmail: deal.buyer.email } });
-    await remindClosingSteps();
+    await remindClosingSteps(new Date(), { closingIds: [closing.id] });
     const buyerMail = await prisma.notification.findMany({ where: { toEmail: deal.buyer.email, subject: { startsWith: "Closing dates" } } });
     assert.equal(buyerMail.length, 1);
     assert.match(buyerMail[0].body, /Buyer deposit: late, was due/);
     assert.equal(await prisma.notification.count({ where: { toEmail: deal.seller.email, subject: { startsWith: "Closing dates" } } }), 0);
     assert.ok((await prisma.closingStep.findUniqueOrThrow({ where: { id: deposit.id } })).remindedAt);
     assert.equal((await prisma.closingStep.findUniqueOrThrow({ where: { id: transfer.id } })).remindedAt, null);
-    await remindClosingSteps();
+    await remindClosingSteps(new Date(), { closingIds: [closing.id] });
     assert.equal(await prisma.notification.count({ where: { toEmail: deal.buyer.email } }), before + 1);
   } finally {
     await prisma.auditEvent.deleteMany({ where: { entityId: deal.listing.id } });

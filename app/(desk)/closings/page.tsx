@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { PageIntro } from "@/components/page-intro";
 import { requireUser } from "@/lib/auth";
+import { q } from "@/lib/format";
 import { closingClock, targetDays } from "@/lib/closing-clock";
 import { getSettings } from "@/lib/settings";
 import { money, prettyDate } from "@/lib/format";
@@ -8,15 +9,17 @@ import { prisma } from "@/lib/prisma";
 
 export const metadata = { title: "Closings" };
 
-export default async function ClosingsPage() {
+export default async function ClosingsPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const user = await requireUser();
+  // The desk can narrow the list to the closings it runs.
+  const mine = user.role === "ADMIN" && q(await searchParams, "mine") === "1";
   const referredInquiryIds = user.role === "BROKER" && user.accountStatus === "APPROVED"
     ? (await prisma.inquiry.findMany({ where: { buyer: { referredById: user.id } }, select: { id: true } })).map((item) => item.id)
     : [];
   const closings = await prisma.closing.findMany({
     where:
       user.role === "ADMIN"
-        ? {}
+        ? mine ? { deskOwnerId: user.id } : {}
         : user.role === "BUYER"
           ? {
               OR: [
@@ -55,8 +58,22 @@ export default async function ClosingsPage() {
   return (
     <div>
       <PageIntro eyebrow="Closing" title="Files in motion." lede="Each accepted offer has a checklist. The buyer’s all-in includes the premium. The seller’s net is after commission." />
+      {user.role === "ADMIN" && (
+        <nav aria-label="Whose closings" className="mb-4 flex gap-2">
+          {[{ label: "All", on: !mine, href: "/closings" }, { label: "Mine", on: mine, href: "/closings?mine=1" }].map((item) => (
+            <Link
+              key={item.label}
+              href={item.href}
+              aria-current={item.on ? "page" : undefined}
+              className={`inline-flex min-h-9 items-center rounded-full border px-3.5 text-[13px] font-medium ${item.on ? "border-link/50 bg-link/10 text-link" : "border-border bg-card text-muted-foreground hover:text-foreground"}`}
+            >
+              {item.label}
+            </Link>
+          ))}
+        </nav>
+      )}
       <ul className="divide-y divide-border border border-border rounded-xl">
-        {closings.length === 0 && <li className="px-5 py-8 text-sm text-muted-foreground">No closings yet.</li>}
+        {closings.length === 0 && <li className="px-5 py-8 text-sm text-muted-foreground">{mine ? "You don't own any closings yet." : "No closings yet."}</li>}
         {closings.map((closing) => {
           const done = closing.steps.filter((step) => step.status === "COMPLETE").length;
           const clock = closingClock(closing, closing.steps, days);

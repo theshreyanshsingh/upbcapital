@@ -6,13 +6,17 @@ import { audit } from "@/lib/audit";
 import { requireUser } from "@/lib/auth";
 import { notify } from "@/lib/email";
 import { acknowledgeRoad, announceInquiry, buyerCanOpen, checkOffer, inquiryBlock, logEligibility, writeInquiry, type OfferCheck } from "@/lib/inquiry";
+import { launchBlock } from "@/lib/launch-rules";
+import { loanPricesFromForm, type LoanPrices } from "@/lib/loan-prices";
 import { buildNdaPdf, pngFromDataUrl } from "@/lib/nda-pdf";
 import { isPro } from "@/lib/settings";
 import { prisma } from "@/lib/prisma";
 import { requestMeta } from "@/lib/request-meta";
+import { announceNda, ndaOnSign } from "@/lib/room-access";
 import { putBytes } from "@/lib/storage";
 import { sendForSignature } from "@/lib/vendors";
 import { parseFilters } from "@/lib/filters";
+import { cadenceOf, readCadence } from "@/lib/search-alerts";
 import { withdrawBid } from "@/lib/awards";
 
 async function requireBuyer() {
@@ -54,7 +58,12 @@ export async function signNda(formData: FormData) {
   // Only a live listing takes NDAs. Anything else would tell a buyer, and email the seller, about a file
   // the desk hasn't released, or reopen one that has gone to contract.
   if (listing.status !== "APPROVED") redirect(`${back}?error=${encodeURIComponent("This listing isn't open for diligence.")}`);
+  const coming = launchBlock(listing, "nda");
+  if (coming) redirect(`${back}?error=${encodeURIComponent(coming)}`);
   if (!(await buyerCanOpen(user, listing))) redirect(`${back}?error=${encodeURIComponent("This listing isn't open on your membership yet.")}`);
+  // A seller who approves each bidder holds a first signature until they decide. Signing again can't reset that.
+  const access = ndaOnSign(listing, await prisma.ndaAcknowledgment.findUnique({ where: { userId_listingId: { userId: user.id, listingId } }, select: { accessStatus: true } }));
+  if (access.block) redirect(`${back}?error=${encodeURIComponent(access.block)}`);
   const meta = await requestMeta();
   const signedAt = new Date();
   const signatureKey = drawn ? `signatures/${user.id}/${listingId}.png` : "";
@@ -116,13 +125,20 @@ export async function signNda(formData: FormData) {
       documentId: document.id,
       signatureProvider: signed.provider,
       signatureRef: signed.id,
+      ...(access.create ? { accessStatus: access.create } : {}),
     },
   });
+  const pending = access.create === "PENDING";
   await audit(user.id, "NDA", "listing", listingId, signerName);
-  await notify(listing.seller.email, `NDA signed · ${listing.title}`, `${signerName} signed confidentiality on ${listing.title}. The PDF is in the data room.`);
-  await notify(user.email, `Your signed NDA · ${listing.title}`, `Signed ${signedAt.toISOString()} from ${meta.ipAddress}. A copy is in the data room.`);
+  // The seller hears which bidder letter signed, not who; the desk's log keeps the name.
+  await announceNda(listing, user.id, pending);
+  await notify(
+    user.email,
+    `Your signed NDA · ${listing.title}`,
+    `Signed ${signedAt.toISOString()} from ${meta.ipAddress}. A copy is in the data room.${pending ? " The seller approves each bidder on this listing, so the room opens once they do. You'll hear when they decide." : ""}`,
+  );
   revalidatePath(back);
-  redirect(`${back}?notice=nda`);
+  redirect(pending ? `${back}?notice=${encodeURIComponent("The agreement is signed. The seller approves each bidder here, so the room opens once they do.")}` : `${back}?notice=nda`);
 }
 
 export async function submitInquiry(formData: FormData) {
@@ -136,10 +152,17 @@ export async function submitInquiry(formData: FormData) {
   let amount: number | null = null;
   let expiresAt: Date | null = null;
   let passed: Extract<OfferCheck, { error: null }> | null = null;
+  let loanPrices: LoanPrices | null = null;
+  let allowPartial = false;
   if (type === "OFFER") {
     // The same checks a confirmed standing bid runs, in lib/inquiry.ts.
     amount = Number(String(formData.get("amount") || "").replace(/[$,]/g, ""));
-    const check = await checkOffer({ user, listing, noteId, amount, goodUntil: String(formData.get("goodUntil") || "") });
+    // A whole-pool bid may price each loan. The check holds the prices to the bid.
+    const priced = loanPricesFromForm(formData);
+    if (priced.error) redirect(`${back}?error=${encodeURIComponent(priced.error)}#offer`);
+    loanPrices = priced.prices;
+    allowPartial = priced.allowPartial;
+    const check = await checkOffer({ user, listing, noteId, amount, goodUntil: String(formData.get("goodUntil") || ""), loanPrices, allowPartial });
     if (check.error !== null) redirect(check.verification ? `/buyer/verification?error=${encodeURIComponent(check.error)}` : `${back}?error=${encodeURIComponent(check.error)}`);
     expiresAt = check.expiresAt;
     passed = check;
@@ -149,7 +172,7 @@ export async function submitInquiry(formData: FormData) {
     if (type === "DATA_ROOM" && !isPro(user)) redirect("/buyer/subscription?reason=dataroom");
   }
   if (!listing) redirect(back);
-  const input = { user, listing, type, noteId, amount, message, expiresAt };
+  const input = { user, listing, type, noteId, amount, message, expiresAt, loanPrices, allowPartial };
   const inquiry = await writeInquiry(input);
   await announceInquiry(inquiry, input);
   if (passed) await logEligibility(user.id, inquiry.id, passed);
@@ -197,7 +220,9 @@ export async function saveSearch(formData: FormData) {
     redirect("/marketplace?error=Set the filters again, then save.");
   }
   const filters = parseFilters(Object.fromEntries(Object.entries(raw).map(([key, value]) => [key, value == null ? undefined : String(value)])));
-  await prisma.savedSearch.create({ data: { userId: user.id, name, filters } });
+  // A form without a cadence alerts as each listing goes live, as before.
+  const cadence = readCadence(formData.get("cadence")) ?? "INSTANT";
+  await prisma.savedSearch.create({ data: { userId: user.id, name, filters, cadence } });
   redirect("/buyer/alerts?notice=saved");
 }
 
@@ -206,8 +231,23 @@ export async function toggleSearchAlert(formData: FormData) {
   const id = String(formData.get("id") || "");
   const search = await prisma.savedSearch.findUnique({ where: { id } });
   if (!search || search.userId !== user.id) return;
-  await prisma.savedSearch.update({ where: { id }, data: { alertEnabled: !search.alertEnabled } });
+  // A resumed search starts its roundup window now, so it doesn't send what went live while it was paused.
+  await prisma.savedSearch.update({ where: { id }, data: { alertEnabled: !search.alertEnabled, ...(search.alertEnabled ? {} : { lastAlertAt: new Date() }) } });
   revalidatePath("/buyer/alerts");
+}
+
+export async function setSearchCadence(formData: FormData) {
+  const user = await requireBuyer();
+  const id = String(formData.get("id") || "");
+  const cadence = readCadence(formData.get("cadence"));
+  const search = await prisma.savedSearch.findUnique({ where: { id } });
+  if (!search || search.userId !== user.id) return;
+  if (!cadence) redirect(`/buyer/alerts?error=${encodeURIComponent("Choose how often this search alerts.")}`);
+  // Instant alerts already covered everything up to now, so a first roundup starts from here.
+  const fromNow = cadenceOf(search) === "INSTANT" && cadence !== "INSTANT";
+  await prisma.savedSearch.update({ where: { id }, data: { cadence, ...(fromNow ? { lastAlertAt: new Date() } : {}) } });
+  revalidatePath("/buyer/alerts");
+  redirect(`/buyer/alerts?notice=${encodeURIComponent(cadence === "INSTANT" ? "That search now alerts as each listing goes live." : `That search now sends a ${cadence === "DAILY" ? "daily" : "weekly"} roundup.`)}`);
 }
 
 export async function deleteSearch(formData: FormData) {

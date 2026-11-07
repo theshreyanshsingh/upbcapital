@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { PageIntro } from "@/components/page-intro";
 import { requireUser } from "@/lib/auth";
+import { threadNamer } from "@/lib/bidder-alias";
 import { prettyDate } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 import { syncThreadsFor } from "@/lib/threads";
@@ -19,6 +20,8 @@ export default async function InboxPage() {
     orderBy: { updatedAt: "desc" },
     take: 50,
   });
+  // Bidders on the viewer's own listings show by letter until an award.
+  const shown = await threadNamer(user, threads.map((thread) => thread.listingId));
   return (
     <div>
       <PageIntro eyebrow="Inbox" title="One place for the file." lede="Offers, questions, and closings share a thread. Opening a thread marks it read. A reply can carry a file." />
@@ -38,7 +41,7 @@ export default async function InboxPage() {
                     <span className={`line-clamp-2 text-[15px] leading-5 ${unread ? "font-semibold text-foreground" : "font-medium text-foreground/90"}`}>{thread.subject}</span>
                     {latest && <span className="figure shrink-0 text-xs text-muted-foreground">{prettyDate(latest.createdAt)}</span>}
                   </span>
-                  {latest && <span className="mt-1 block truncate text-sm text-muted-foreground">{latest.author.name}: {latest.body}</span>}
+                  {latest && <span className="mt-1 block truncate text-sm text-muted-foreground">{shown(thread.listingId, latest.author)}: {latest.body}</span>}
                   {unread && <span className="sr-only">Unread.</span>}
                 </span>
               </Link>

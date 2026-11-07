@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { audit } from "@/lib/audit";
-import { requireRole } from "@/lib/auth";
+import { requireDesk } from "@/lib/staff";
 import { settlementLabel, settlementSetting } from "@/lib/closing-clock";
 import { prisma } from "@/lib/prisma";
 import { clearSettingsCache, getSettings } from "@/lib/settings";
@@ -16,7 +16,7 @@ function back(message: string, kind: "notice" | "error"): never {
 // The weekdays closings settle on, and the strikes before a buyer's bidding pauses. New closings take the
 // weekdays; open closings keep their dates.
 export async function saveSettlementSettings(formData: FormData) {
-  const actor = await requireRole(["ADMIN"]);
+  const actor = await requireDesk("admin", "/admin/settings");
   const chosen = formData.getAll("settlementDays").map((value) => String(value).toUpperCase());
   const limitText = String(formData.get("strikeLimit") || "").trim();
   const limit = Number(limitText);

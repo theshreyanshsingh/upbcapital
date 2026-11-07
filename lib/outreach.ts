@@ -39,16 +39,25 @@ export function sendBody(input: {
 
 // Approved buyers whose buy box matches, best score first, with when the desk last sent them this listing.
 export async function sendAudience(listingId: string) {
-  const [matches, sends, views, offers] = await Promise.all([
-    prisma.listingMatch.findMany({
-      where: { listingId },
-      include: { buyBox: { select: { name: true, user: { select: { id: true, name: true, companyName: true, email: true, role: true, accountStatus: true, dealAlerts: true } } } } },
-      orderBy: { score: "desc" },
-    }),
+  const [matchRows, sends, views, offers] = await Promise.all([
+    prisma.listingMatch.findMany({ where: { listingId }, orderBy: { score: "desc" } }),
     prisma.listingSend.findMany({ where: { listingId }, orderBy: { createdAt: "desc" } }),
     prisma.listingView.findMany({ where: { listingId, userId: { not: null } }, select: { userId: true } }),
     prisma.inquiry.findMany({ where: { listingId }, select: { buyerId: true, type: true } }),
   ]);
+  // Boxes are read apart from their matches: deleting a box removes its matches a moment later on MongoDB, and a
+  // required include on a match whose box is gone fails the whole read.
+  const boxes = matchRows.length
+    ? await prisma.buyBox.findMany({
+        where: { id: { in: [...new Set(matchRows.map((row) => row.buyBoxId))] } },
+        select: { id: true, name: true, user: { select: { id: true, name: true, companyName: true, email: true, role: true, accountStatus: true, dealAlerts: true } } },
+      })
+    : [];
+  const boxById = new Map(boxes.map((box) => [box.id, box]));
+  const matches = matchRows.flatMap((row) => {
+    const buyBox = boxById.get(row.buyBoxId);
+    return buyBox ? [{ ...row, buyBox }] : [];
+  });
   const seen = new Set<string>();
   const viewed = new Set(views.map((view) => view.userId));
   const offered = new Set(offers.filter((inquiry) => inquiry.type === "OFFER").map((inquiry) => inquiry.buyerId));
@@ -100,7 +109,7 @@ export async function sendListing(input: { listingId: string; userIds: string[];
   });
   const subject = input.kind === "DEADLINE" ? `Bid deadline · ${listing.title}` : `Desk pick · ${listing.title}`;
   for (const user of users) {
-    await notify(user.email, subject, body);
+    await notify(user.email, subject, body, { category: "deals", userId: user.id });
     await prisma.listingSend.create({ data: { listingId: listing.id, userId: user.id, sentById: input.actorId, kind: input.kind, createdAt: now } });
   }
   return { sent: users.length, skipped: input.userIds.length - users.length, problem: "" };

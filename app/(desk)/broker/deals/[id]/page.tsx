@@ -4,13 +4,23 @@ import { answerDeskBid } from "@/actions/desk-book";
 import { resubmitBrokerDeal } from "@/actions/broker";
 import { ConfirmSubmit } from "@/components/confirm-submit";
 import { DiscrepancyAnswers } from "@/components/discrepancy-answers";
+import { QuestionQueue } from "@/components/listing-questions";
+import { RoomAccessPanel } from "@/components/room-access";
+import { RoomFiles } from "@/components/room-files";
 import { SubmitButton } from "@/components/submit-button";
 import { SaleApproval, WithdrawListing } from "@/components/sale-approval";
 import { Notice } from "@/components/notice";
+import { PhotoManager } from "@/components/photo-manager";
+import { ResultConsent } from "@/components/result-consent";
+import { accessLog } from "@/lib/access-log";
 import { requireRole } from "@/lib/auth";
+import { bidderNamer } from "@/lib/bidder-alias";
 import { brokerRoleLabel } from "@/lib/broker-fees";
 import { money, num, prettyDate, q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
+import { questionQueue } from "@/lib/questions";
+import { roomRequests } from "@/lib/room-access";
+import { deskContact } from "@/lib/staff";
 import { deskBidNotAcceptable } from "@/lib/awards";
 import { reviewLabel } from "@/lib/listing-status";
 
@@ -70,6 +80,16 @@ export default async function BrokerDealPage({
   // The desk's decisions and notes, newest first. The broker's own filing note and resubmits show too, for the thread.
   const reviews = listing.reviews;
   const changeRequest = listing.status === "CHANGES_REQUESTED" ? reviews.find((review) => review.action === "REQUEST_CHANGES") : undefined;
+  // The room: bidder questions, access requests and the log, with bidders by letter until an award.
+  const [nameOf, questions, requests, log] = await Promise.all([
+    bidderNamer(listing.id, user),
+    questionQueue(listing.id),
+    roomRequests(listing.id),
+    accessLog(listing.id, user),
+  ]);
+  const loanOptions = listing.notes.map((note, index) => ({ id: note.id, label: `Loan ${index + 1} · ${note.streetAddress ? `${note.streetAddress}, ` : ""}${note.city}, ${note.state}` }));
+  const roomOpenStatus = ["SUBMITTED", "UNDER_REVIEW", "CHANGES_REQUESTED", "APPROVED"].includes(listing.status);
+  const contact = await deskContact(listing.deskOwnerId);
 
   return (
     <div className="mx-auto max-w-3xl">
@@ -82,6 +102,11 @@ export default async function BrokerDealPage({
       <p className="mt-4 max-w-xl text-sm leading-relaxed text-muted-foreground">
         For {listing.clientSellerName}. {listing.clientRelationship}
       </p>
+      {contact && (
+        <p className="mt-2 text-sm text-muted-foreground">
+          Your desk contact: {contact.name} · <a className="text-link" href={`mailto:${contact.email}`}>{contact.email}</a>
+        </p>
+      )}
       <dl className="mt-6 grid gap-3 sm:grid-cols-3">
         <Stat k="Asking" v={money(ask)} />
         <Stat k="Loans" v={String(listing.notes.length)} />
@@ -109,12 +134,31 @@ export default async function BrokerDealPage({
               <span className="text-[13px] text-muted-foreground">What you changed, for the desk</span>
               <textarea name="changes" required minLength={3} className="desk-input mt-2 min-h-20" />
             </label>
-            <p className="text-xs text-muted-foreground">Loan figures and documents can&apos;t be edited here yet. If the desk asked for those, say so above and write the desk with the corrected file.</p>
+            <p className="text-xs text-muted-foreground">
+              {listing.kind === "POOL"
+                ? "Loan figures can't be edited here yet. Add documents with Add files below. If the desk asked for new figures, say so above and write the desk with the corrected tape."
+                : "Loan figures and documents can't be edited here yet. If the desk asked for those, say so above and write the desk with the corrected file."}
+            </p>
             <SubmitButton className="h-11 text-[13px] font-medium" pendingLabel="Resubmitting…">Save and resubmit</SubmitButton>
           </form>
         </section>
       )}
+      {listing.kind === "POOL" && roomOpenStatus && <RoomFiles listingId={listing.id} from="broker" live={listing.status === "APPROVED"} loans={loanOptions} />}
       {listing.status !== "REJECTED" && listing.status !== "WITHDRAWN" && <SaleApproval listing={listing} offers={listing.inquiries} canAnswer={listing.sellerId === user.id} />}
+      <QuestionQueue
+        rows={questions.map((row) => ({ ...row, asker: nameOf(row.asker) }))}
+        from="broker"
+        live={listing.status === "APPROVED"}
+        loans={listing.kind === "POOL" ? loanOptions : []}
+      />
+      <RoomAccessPanel
+        listingId={listing.id}
+        from="broker"
+        roomApproval={Boolean(listing.roomApproval)}
+        editable={roomOpenStatus}
+        requests={requests.map((request) => ({ ...request, bidder: nameOf(request.user) }))}
+        engagement={log.status === 200 ? log.engagement : []}
+      />
       {listing.deskBids.map((bid) => (
         <div key={bid.id} className="mt-6 border border-link/30 bg-link/5 p-4 rounded-xl">
           <p className="eyebrow">The desk bid on this</p>
@@ -175,7 +219,9 @@ export default async function BrokerDealPage({
         </section>
       )}
 
-      <section className="glass p-5 md:p-6">
+      <PhotoManager listing={listing} />
+      <ResultConsent listing={listing} client={listing.clientSellerName || undefined} />
+      <section className="mt-8 glass p-5 md:p-6">
         <p className="eyebrow">Fee</p>
         {fees.length === 0 && <p className="mt-3 text-sm leading-relaxed text-muted-foreground">Nothing is owed yet. The fee is calculated from the desk’s premium and commission when this file closes.</p>}
         <ul className="mt-3 space-y-3">

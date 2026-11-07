@@ -3,15 +3,20 @@ import { withdrawListing } from "@/actions/seller-controls";
 import { ConfirmRows, ConfirmSubmit } from "@/components/confirm-submit";
 import { SubmitButton } from "@/components/submit-button";
 import { sealedFromSeller } from "@/lib/auction";
-import { askedPriceStands, awaitingSeller, rivalBids } from "@/lib/awards";
+import { askedPartPrice, askedPriceStands, awaitingSeller, partAsked, rivalBids } from "@/lib/awards";
+import { bidderNamer } from "@/lib/bidder-alias";
 import { BUY_NOW_STATUSES, buyNowClearBlock, buyNowConsent, buyNowSellerNext, buyNowSellerSummary, buyNowSetBlock } from "@/lib/buy-now";
 import { depositTerms } from "@/lib/closing-clock";
 import { diligenceDays } from "@/lib/closing-service";
+import { launchPending } from "@/lib/launch-rules";
 import { listingWithdrawBlock } from "@/lib/listing-status";
 import { money, prettyDate } from "@/lib/format";
 import { bpsToPercent } from "@/lib/money";
 import { bidExpired, buyerPrice, type OfferMoney } from "@/lib/offers";
+import { listingFeeBps } from "@/lib/desk-fees";
 import { getSettings } from "@/lib/settings";
+import { prisma } from "@/lib/prisma";
+import { standingLoanPrices } from "@/lib/loan-prices";
 
 type Offer = {
   id: string;
@@ -30,6 +35,8 @@ type Offer = {
   createdAt?: Date;
   buyer: { name: string; companyName: string };
   messages: OfferMoney[];
+  // A pool bid's price for each loan, which a question about part of the pool is priced from.
+  loanPrices?: unknown;
 };
 
 type Listing = {
@@ -43,27 +50,46 @@ type Listing = {
   buyNowPrice?: number | null;
   buyNowSetAt?: Date | null;
   notes?: { askingPrice: number; tradeStatus: string }[];
+  // The fees fixed when the listing went live, which the sale is charged at.
+  feeBuyerPremiumBps?: number | null;
+  feeSellerCommissionBps?: number | null;
+  launchAt?: Date | null;
 };
 
 const live = (offer: Offer) => offer.type === "OFFER" && (offer.status === "OPEN" || offer.status === "REVIEWED");
 
 // The seller's side of every sale: bids the desk recommends, the standing reserve that spares a question, and the
-// buy-it-now price that sells to the first verified buyer who confirms it.
-export async function SaleApproval({ listing, offers, canAnswer }: { listing: Listing; offers: Offer[]; canAnswer: boolean }) {
-  const settings = await getSettings();
+// buy-it-now price that sells to the first verified buyer who confirms it. Bidders show by letter until an award;
+// the desk, opening a seller's page, passes revealNames and sees who they are.
+export async function SaleApproval({ listing, offers, canAnswer, revealNames = false }: { listing: Listing; offers: Offer[]; canAnswer: boolean; revealNames?: boolean }) {
+  const [settings, nameOf] = await Promise.all([getSettings(), bidderNamer(listing.id, { role: revealNames ? "ADMIN" : "SELLER" })]);
+  const who = (offer: Offer) => nameOf({ id: offer.buyerId, name: offer.buyer.name, companyName: offer.buyer.companyName });
   const waiting = offers.filter((offer) => live(offer) && awaitingSeller(offer));
   // A counter stands as the seller's approval of that price until the bid is awarded or closed.
   const countered = offers.filter((offer) => live(offer) && !awaitingSeller(offer) && offer.sellerCounterAmount != null && offer.sellerCounteredAt);
   const sealed = sealedFromSeller(listing);
+  // A question about part of a pool names its loans, and the seller sees each one at the buyer's loan price.
+  const parts = new Map(await Promise.all(waiting.map(async (offer) => [offer.id, await partAsked(offer)] as const)));
+  const partIds = [...parts.values()].flatMap((ids) => ids ?? []);
+  const [placed, poolSize] = partIds.length
+    ? await Promise.all([
+        prisma.note.findMany({ where: { id: { in: partIds } }, select: { id: true, streetAddress: true, city: true, state: true } }),
+        prisma.note.count({ where: { listingId: listing.id } }),
+      ])
+    : [[], 0];
+  const placeOf = new Map(placed.map((note) => [note.id, `${note.streetAddress ? `${note.streetAddress}, ` : ""}${note.city}, ${note.state}`]));
   return (
     <section className="mt-10 border border-border p-5 rounded-xl" aria-labelledby="approval-heading">
       <p id="approval-heading" className="eyebrow">Sale approval</p>
       <p className="mt-2 text-sm text-muted-foreground">Nothing sells without your word on the price. Approve each sale the desk recommends or counter it with your own price, or set a reserve and the desk may accept any bid at or above it. A buy-it-now price sells to the first verified buyer who takes it.</p>
       {waiting.map((offer) => {
         const rest = rivalBids(offer, offers);
+        const part = parts.get(offer.id) ?? null;
+        const partPrices = part ? standingLoanPrices(offer.loanPrices, buyerPrice(offer.amount, offer.messages, offer.buyerId)) : null;
         // The buyer can reprice after the desk asks, and then this answer can't sell at the old figure.
-        const current = buyerPrice(offer.amount, offer.messages, offer.buyerId);
+        const current = part ? askedPartPrice(offer, part) : buyerPrice(offer.amount, offer.messages, offer.buyerId);
         const moved = !askedPriceStands(offer.sellerAskedAmount, current);
+        const scope = part ? `${part.length} of the ${poolSize} loans in the pool` : offer.noteId ? "one loan" : "the whole listing";
         const notLive = listing.status !== "APPROVED";
         const lapsed = bidExpired(offer.expiresAt);
         return (
@@ -71,11 +97,21 @@ export async function SaleApproval({ listing, offers, canAnswer }: { listing: Li
             <p className="text-[13px] text-muted-foreground">The desk recommends · {prettyDate(offer.sellerAskedAt)}</p>
             <p className="mt-1 font-semibold tracking-tight text-2xl">{money(Number(offer.sellerAskedAmount))}</p>
             <p className="mt-1 text-sm text-muted-foreground">
-              {offer.buyer.companyName || offer.buyer.name} · {offer.noteId ? "one loan" : "the whole listing"}
-              {rest.count ? ` · ${rest.count} other open bid${rest.count === 1 ? "" : "s"} for it${rest.best && !sealed ? `, highest ${money(rest.best)}` : ""}` : " · no other open bids for it"}
+              {who(offer)} · {scope}
+              {part ? " · the other loans stay on the book" : rest.count ? ` · ${rest.count} other open bid${rest.count === 1 ? "" : "s"} for it${rest.best && !sealed ? `, highest ${money(rest.best)}` : ""}` : " · no other open bids for it"}
             </p>
+            {part && (
+              <ul className="mt-2 space-y-0.5 text-sm text-muted-foreground tabular-nums">
+                {part.map((noteId) => (
+                  <li key={noteId} className="flex justify-between gap-3">
+                    <span>{placeOf.get(noteId) ?? "A loan"}</span>
+                    <span className="text-foreground">{partPrices?.[noteId] != null ? money(partPrices[noteId], 2) : "Not priced"}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
             {moved && current != null && (
-              <p className="mt-2 text-sm text-foreground">The buyer has since changed their bid to {money(current)}, so this figure can no longer be approved.</p>
+              <p className="mt-2 text-sm text-foreground">The buyer has since changed their bid{part ? " for these loans" : ""} to {money(current)}, so this figure can no longer be approved.</p>
             )}
             {notLive && <p className="mt-2 text-sm text-foreground">This listing isn&apos;t live right now, so the sale can&apos;t be approved.</p>}
             {offer.expiresAt && (
@@ -92,8 +128,8 @@ export async function SaleApproval({ listing, offers, canAnswer }: { listing: Li
                     name="answer"
                     value="APPROVE"
                     title={`Sell at ${money(Number(offer.sellerAskedAmount))}?`}
-                    consequence={`Approving binds you to sell ${offer.noteId ? "this loan" : "the whole listing"} at this price. The desk opens the closing, and the commission comes off the price at closing.`}
-                    details={<ConfirmRows rows={[["Buyer", offer.buyer.companyName || offer.buyer.name], ["Sale price", money(Number(offer.sellerAskedAmount))]]} />}
+                    consequence={`Approving binds you to sell ${part ? `these ${part.length} loans` : offer.noteId ? "this loan" : "the whole listing"} at this price.${part ? " The other loans stay on the book for other buyers." : ""} The desk opens the closing, and the commission comes off the price at closing.`}
+                    details={<ConfirmRows rows={[["Buyer", who(offer)], ["Sale price", money(Number(offer.sellerAskedAmount))], ...(part ? ([["Loans", `${part.length} of ${poolSize}`]] as [string, string][]) : [])]} />}
                     confirmLabel="Approve the sale"
                     pendingLabel="Approving…"
                     className="h-9 px-3 text-[13px] font-medium"
@@ -106,7 +142,8 @@ export async function SaleApproval({ listing, offers, canAnswer }: { listing: Li
                 </SubmitButton>
               </form>
             )}
-            {canAnswer && !lapsed && !notLive && (
+            {/* A counter is a price for the whole bid, so a question about part of the pool is approved or declined. */}
+            {canAnswer && !lapsed && !notLive && !part && (
               <form action={answerSaleApproval} className="mt-3 flex flex-wrap items-end gap-2">
                 <input type="hidden" name="inquiryId" value={offer.id} />
                 <label className="block">
@@ -138,7 +175,7 @@ export async function SaleApproval({ listing, offers, canAnswer }: { listing: Li
             <p className="text-[13px] text-muted-foreground">You countered · {prettyDate(offer.sellerCounteredAt)}</p>
             <p className="mt-1 font-semibold tracking-tight text-2xl">{money(Number(offer.sellerCounterAmount))}</p>
             <p className="mt-1 text-sm text-muted-foreground">
-              {offer.buyer.companyName || offer.buyer.name} · {offer.noteId ? "one loan" : "the whole listing"} ·{" "}
+              {who(offer)} · {offer.noteId ? "one loan" : "the whole listing"} ·{" "}
               {taken ? "the buyer accepted it. The desk awards it next." : "waiting on the buyer. If they accept, the desk can award it at this price."}
             </p>
           </div>
@@ -155,7 +192,7 @@ export async function SaleApproval({ listing, offers, canAnswer }: { listing: Li
           <p className="w-full text-xs text-muted-foreground">Buyers never see it. Leave it blank and the desk asks you before every sale.</p>
         </form>
       )}
-      <BuyNow listing={listing} offers={offers} canAnswer={canAnswer} settings={settings} />
+      <BuyNow listing={listing} offers={offers} canAnswer={canAnswer} settings={settings} who={who} />
     </section>
   );
 }
@@ -167,10 +204,12 @@ function BuyNow({
   offers,
   canAnswer,
   settings,
+  who,
 }: {
   listing: Listing;
   offers: Offer[];
   canAnswer: boolean;
+  who: (offer: Offer) => string;
   settings: { buyerPremiumBps: number; sellerCommissionBps: number; depositBps?: number | null; depositDays?: number | null; diligenceDays?: number | null };
 }) {
   // A page that didn't load the field has nothing to show here.
@@ -188,6 +227,7 @@ function BuyNow({
   if (price == null && !editable) return null;
   const terms = depositTerms(settings);
   const diligence = diligenceDays(settings.diligenceDays);
+  const fees = listingFeeBps(listing, settings);
   const paused = price != null && listing.status === "APPROVED" && listing.bidMode !== "NONE";
   return (
     <div id="buy-now" className="mt-6 scroll-mt-6 border-t border-border pt-5">
@@ -206,7 +246,7 @@ function BuyNow({
       {paused && <p className="mt-2 text-sm text-foreground">Paused while the sealed or best-and-final round runs. Buyers see it again if the listing goes back to open offers.</p>}
       {open.map((offer) => (
         <p key={offer.id} className="mt-2 text-sm text-foreground">
-          {offer.buyer.companyName || offer.buyer.name} confirmed it{offer.createdAt ? ` on ${prettyDate(offer.createdAt)}` : ""}. The desk is clearing the award, so the price stays until it decides.
+          {who(offer)} confirmed it{offer.createdAt ? ` on ${prettyDate(offer.createdAt)}` : ""}. The desk is clearing the award, so the price stays until it decides.
         </p>
       ))}
       {editable && setBlock && open.length === 0 && !paused && <p className="mt-2 text-sm text-foreground">{setBlock}</p>}
@@ -225,14 +265,14 @@ function BuyNow({
           </label>
           <ConfirmSubmit
             title={price != null ? "Change your buy-it-now price?" : "Commit to a buy-it-now price?"}
-            consequence={`${buyNowConsent({ pool })} ${buyNowSellerNext({ deposit: terms.bps > 0 ? [terms.bps / 100, terms.days] : undefined, diligenceDays: diligence || undefined, live: listing.status === "APPROVED" })}`}
+            consequence={`${buyNowConsent({ pool })} ${buyNowSellerNext({ deposit: terms.bps > 0 ? [terms.bps / 100, terms.days] : undefined, diligenceDays: diligence || undefined, live: listing.status === "APPROVED" && !launchPending(listing) })}`}
             typed={[["Buy-it-now price", "buyNowPrice", "money"]]}
             details={
               <ConfirmRows
                 rows={[
                   ...(ask > 0 ? ([["Asking price", money(ask)]] as [string, string][]) : []),
-                  ["Buyer premium, paid by the buyer", `${bpsToPercent(settings.buyerPremiumBps).toFixed(2)}%`],
-                  ["Seller commission, off the price", `${bpsToPercent(settings.sellerCommissionBps).toFixed(2)}%`],
+                  ["Buyer premium, paid by the buyer", `${bpsToPercent(fees.premiumBps).toFixed(2)}%`],
+                  ["Seller commission, off the price", `${bpsToPercent(fees.commissionBps).toFixed(2)}%`],
                   ["Buyer deposit", terms.bps > 0 ? `${terms.bps / 100}% within ${terms.days} day${terms.days === 1 ? "" : "s"}` : "None"],
                   ["Buyer's diligence window", diligence ? `${diligence} day${diligence === 1 ? "" : "s"}` : "None"],
                 ]}

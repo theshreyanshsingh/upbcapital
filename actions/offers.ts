@@ -2,12 +2,16 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { counterLoanPrices } from "@/lib/awards";
 import { onGroupCounter } from "@/lib/group-events";
 import { deadlinePassed, sealedFromSeller } from "@/lib/auction";
 import { audit } from "@/lib/audit";
+import { bidderAlias } from "@/lib/bidder-alias";
 import { requireUser } from "@/lib/auth";
+import { guardDesk } from "@/lib/staff";
 import { notify, notifyDesk } from "@/lib/email";
 import { fundsLimitBlock } from "@/lib/inquiry";
+import { loanPricesFromForm } from "@/lib/loan-prices";
 import { bidExpired, canCounter, counterFrom, openCounter } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
 import { emitWebhook } from "@/lib/webhooks";
@@ -30,6 +34,8 @@ export async function postOfferMessage(formData: FormData) {
   const desk = user.role === "ADMIN";
   const buyer = user.id === inquiry.buyerId;
   if (!desk && !buyer) redirect("/");
+  // A desk counter is a sales decision, and a desk reply quotes the bid, so both sit behind the sales role.
+  guardDesk(user, "sales", "/admin/offers");
   const back = desk ? `/admin/offers?notice=message` : `/buyer/offers?notice=message`;
   if (amount != null && (!Number.isFinite(amount) || amount <= 0)) {
     redirect(`${back.split("?")[0]}?error=${encodeURIComponent("Enter a counter amount.")}`);
@@ -67,6 +73,13 @@ export async function postOfferMessage(formData: FormData) {
     const limit = await fundsLimitBlock({ userId: user.id, listingId: inquiry.listingId, noteId: inquiry.noteId, amount });
     if (limit.error) redirect(`${limit.verification ? "/buyer/verification" : back.split("?")[0]}?error=${encodeURIComponent(limit.error)}`);
   }
+  // A counter is a price for the whole bid, so loan prices under the old total clear, unless the buyer prices each
+  // loan again with their own price.
+  const typed = buyer ? loanPricesFromForm(formData) : { prices: null, allowPartial: false, error: null };
+  if (typed.error) redirect(`${back.split("?")[0]}?error=${encodeURIComponent(typed.error)}`);
+  if (typed.prices && amount == null) redirect(`${back.split("?")[0]}?error=${encodeURIComponent("Loan prices go with a new price. Enter the price they add up to.")}`);
+  const repriced = amount != null ? await counterLoanPrices({ inquiry, amount, prices: typed.prices, allowPartial: typed.allowPartial }) : null;
+  if (repriced?.error) redirect(`${back.split("?")[0]}?error=${encodeURIComponent(repriced.error)}`);
   await prisma.offerMessage.create({
     data: {
       inquiryId,
@@ -79,6 +92,7 @@ export async function postOfferMessage(formData: FormData) {
   if (inquiry.status === "OPEN" && desk) {
     await prisma.inquiry.update({ where: { id: inquiryId }, data: { status: "REVIEWED" } });
   }
+  if (repriced?.data) await prisma.inquiry.update({ where: { id: inquiryId }, data: repriced.data });
   if (amount != null) await audit(user.id, "OFFER_COUNTER", "inquiry", inquiryId, `${money(amount)} on ${inquiry.listing.title}`);
   const sealed = sealedFromSeller(inquiry.listing);
   if (desk && amount != null) {
@@ -92,13 +106,15 @@ export async function postOfferMessage(formData: FormData) {
   }
   const subject = amount != null ? `Counter · ${inquiry.listing.title}` : `Note on ${inquiry.listing.title}`;
   const text = `${user.name}: ${body || money(amount || 0)}`;
-  if (desk) await notify(inquiry.buyer.email, subject, text);
+  if (desk) await notify(inquiry.buyer.email, subject, repriced?.cleared ? `${text} Your loan prices were cleared with the counter, so price each loan again when you answer if the seller may take part of the pool.` : text);
   else if (sellerCounter) {
     await notify(inquiry.listing.seller.email, `Counter accepted · ${inquiry.listing.title}`, `The buyer accepted your counter at ${money(amount!)}. The desk awards it next.`);
-    await notifyDesk(`Seller counter accepted · ${inquiry.listing.title}`, `${user.name} accepted the seller's counter at ${money(amount!)}. The seller already agreed to that price, so it can be awarded from the offer book.`);
+    await notifyDesk(`Seller counter accepted · ${inquiry.listing.title}`, `${user.name} accepted the seller's counter at ${money(amount!)}. The seller already agreed to that price, so it can be awarded from the offer book.`, { capability: "sealedBids" });
   } else {
-    await notify(inquiry.listing.seller.email, subject, sealed ? `${user.name} wrote on a sealed bid. It opens at the deadline.` : text);
-    await notifyDesk(subject, text);
+    // The seller reads the bidder's letter until an award, the desk the name.
+    const alias = inquiry.status === "ACCEPTED" ? user.companyName || user.name : await bidderAlias(inquiry.listingId, user.id);
+    await notify(inquiry.listing.seller.email, subject, sealed ? `${alias} wrote on a sealed bid. It opens at the deadline.` : `${alias}: ${body || money(amount || 0)}`);
+    await notifyDesk(subject, text, { capability: "sealedBids" });
   }
   revalidatePath("/admin/offers");
   revalidatePath("/buyer/offers");

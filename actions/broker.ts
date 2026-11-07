@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import type { BrokerDealRole, DocType, FeeBasis } from "@prisma/client";
 import { payoutNoteProblem, splitStates } from "@/lib/broker-fees";
 import { endSessions, requireRole } from "@/lib/auth";
+import { requireDesk } from "@/lib/staff";
 import { notify, notifyDesk } from "@/lib/email";
 import { flagDuplicates } from "@/lib/duplicates";
 import { rescoreListing } from "@/lib/matching";
@@ -332,7 +333,7 @@ function readBasis(raw: string): FeeBasis | null {
 }
 
 export async function saveBrokerFeeOverride(formData: FormData) {
-  await requireRole(["ADMIN"]);
+  await requireDesk("admin", "/admin/brokers");
   const userId = String(formData.get("userId") || "");
   const brokerBasis = readBasis(String(formData.get("brokerFeeBasis") || ""));
   const affiliateBasis = readBasis(String(formData.get("affiliateFeeBasis") || ""));
@@ -359,7 +360,7 @@ export async function saveBrokerFeeOverride(formData: FormData) {
 }
 
 export async function setBrokerStatus(formData: FormData) {
-  const admin = await requireRole(["ADMIN"]);
+  const admin = await requireDesk("compliance", "/admin/brokers");
   const userId = String(formData.get("userId") || "");
   const status = String(formData.get("status") || "");
   if (status !== "APPROVED" && status !== "REJECTED" && status !== "PENDING") {
@@ -383,7 +384,7 @@ export async function setBrokerStatus(formData: FormData) {
 }
 
 export async function markBrokerFeePaid(formData: FormData) {
-  const admin = await requireRole(["ADMIN"]);
+  const admin = await requireDesk("closings", "/admin/payouts");
   const feeId = String(formData.get("feeId") || "");
   const fee = await prisma.brokerFee.findUnique({ where: { id: feeId }, include: { broker: true, closing: { include: { listing: true } } } });
   if (!fee || fee.status !== "OWED") redirect("/admin/payouts?error=That fee is not waiting.");

@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { audit } from "@/lib/audit";
 import { requireUser } from "@/lib/auth";
+import { guardDesk } from "@/lib/staff";
 import { PAYMENT_POLICIES } from "@/lib/borrower-notices";
 import { prisma } from "@/lib/prisma";
 
@@ -27,6 +28,7 @@ export async function saveBorrowerNotices(formData: FormData) {
   const inquiry = closing.inquiryId ? await prisma.inquiry.findUnique({ where: { id: closing.inquiryId }, select: { buyerId: true } }) : null;
   const buyerSide = user.id === inquiry?.buyerId || closing.funders.some((funder) => funder.userId === user.id);
   if (user.role !== "ADMIN" && !buyerSide) fail("The new owner or the desk keeps the sale notice.");
+  if (!buyerSide) guardDesk(user, "closings", back);
   if (closing.status === "CANCELED") fail("This closing was canceled.");
 
   const transferAt = dateField(formData, "transferAt");

@@ -49,6 +49,7 @@ export default async function ComparePage({
       listingId: listing.id,
       sellerId: listing.sellerId,
       brokerId: listing.brokerId,
+      launchAt: listing.launchAt,
     });
     return [compareColumn({
       id: listing.id,

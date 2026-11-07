@@ -1,11 +1,16 @@
 import { NextResponse } from "next/server";
-import { userForApiKey } from "@/lib/api-keys";
+import { apiCaller } from "@/lib/api-limit";
 import { sealedFromSeller } from "@/lib/auction";
+import { bidderNamer } from "@/lib/bidder-alias";
 import { prisma } from "@/lib/prisma";
+import { DESK_DENIED, deskCan } from "@/lib/staff";
 
 export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
-  const user = await userForApiKey(request.headers.get("authorization"));
-  if (!user) return NextResponse.json({ error: "Unknown API key." }, { status: 401 });
+  const caller = await apiCaller(request);
+  if (caller.response) return caller.response;
+  const user = caller.user;
+  // A desk key reads bids only when its desk role may see sealed ones.
+  if (user.role === "ADMIN" && !deskCan(user, "sealedBids")) return NextResponse.json({ error: DESK_DENIED }, { status: 403 });
   const { id } = await context.params;
   const offer = await prisma.inquiry.findFirst({
     where: { id, type: "OFFER", listing: { sellerId: user.id } },
@@ -20,7 +25,8 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     sealed,
     listingId: offer.listingId,
     listing: offer.listing.title,
-    buyer: offer.buyer.name,
+    // By letter until an award, as on the seller's pages.
+    buyer: (await bidderNamer(offer.listingId, user))(offer.buyer),
     messages: (sealed ? [] : offer.messages).map((message) => ({
       kind: message.kind,
       amount: message.amount ? Number(message.amount) : null,

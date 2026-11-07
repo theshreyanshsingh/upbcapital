@@ -1,6 +1,6 @@
 import * as XLSX from "xlsx";
 import { listingIsPublic } from "@/lib/access";
-import { loanOpenTo } from "@/lib/acl";
+import { loanOpenTo, ndaOpensRoom } from "@/lib/acl";
 import { audit } from "@/lib/audit";
 import { getApiUser } from "@/lib/auth";
 import { toCsv } from "@/lib/csv";
@@ -31,7 +31,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
   // Streets follow the same rule as the data room: closed to losing bidders once a loan or listing is in contract.
   const deal = owner || desk ? null : await dealAccess(listing.id, user.id);
   const open = (note: { id: string; tradeStatus: string }) =>
-    !deal || loanOpenTo({ tradeStatus: note.tradeStatus, listingStatus: listing.status, signedNda: listing.ndas.length > 0, wholeParty: deal.whole, loanParty: deal.loans.has(note.id) });
+    !deal || loanOpenTo({ tradeStatus: note.tradeStatus, listingStatus: listing.status, signedNda: ndaOpensRoom(listing.ndas[0]), wholeParty: deal.whole, loanParty: deal.loans.has(note.id) });
   const format = new URL(request.url).searchParams.get("format") === "xlsx" ? "xlsx" : "csv";
   const yesNo = (flag: boolean | null) => (flag == null ? "" : flag ? "yes" : "no");
   const loans = listing.notes.map((note) => {

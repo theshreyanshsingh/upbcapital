@@ -5,10 +5,11 @@ import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { SubmitButton } from "@/components/submit-button";
 import { requireRole } from "@/lib/auth";
-import { money, q } from "@/lib/format";
-import { bookReturn } from "@/lib/holdings";
+import { money, pct, prettyDate, q } from "@/lib/format";
 import { partialShare, participationsOpen, PARTICIPATIONS_PAUSED } from "@/lib/participation";
 import { ensureBuyerHolding } from "@/lib/portfolio";
+import { gapLine, holdingReturn, MIN_RECEIPTS, NOT_ENOUGH, portfolioReturn, type HoldingReturn } from "@/lib/portfolio-returns";
+import { ESTIMATED, loadStatementHoldings, statementSeason, statementYears, type SplitReceipt } from "@/lib/portfolio-tax";
 import { prisma } from "@/lib/prisma";
 
 export const metadata = { title: "Portfolio" };
@@ -33,8 +34,9 @@ export default async function PortfolioPage({
   for (const closing of closings) await ensureBuyerHolding(closing.id);
   // Notes this buyer relisted. They answer the desk's sale recommendations from each resale page.
   const resales = await prisma.listing.findMany({ where: { sellerId: user.id }, select: { id: true, title: true, status: true }, orderBy: { createdAt: "desc" } });
+  // Each holding with its receipts split, logged or estimated, and any resale proceeds.
   const [holdings, open] = await Promise.all([
-    prisma.buyerHolding.findMany({ where: { userId: user.id }, include: { payments: { orderBy: { paidOn: "desc" } } }, orderBy: { acquiredAt: "desc" } }),
+    loadStatementHoldings(user.id),
     prisma.closing.findMany({
       where: { status: "OPEN", OR: [{ inquiryId: { in: inquiryIds } }, { funders: { some: { userId: user.id } } }] },
       include: { listing: true },
@@ -42,6 +44,22 @@ export default async function PortfolioPage({
     }),
   ]);
   const now = new Date();
+  const total = portfolioReturn(holdings, now);
+  const season = statementSeason(now);
+  const years = statementYears(holdings, now);
+  const statementForm = (
+    <form method="get" action="/api/portfolio/statement" className="mt-3 flex flex-wrap items-end gap-2">
+      <label className="block">
+        <span className="text-[13px] text-muted-foreground">Tax year</span>
+        <select name="year" defaultValue={String(years.includes(season.year) ? season.year : years[0])} className="desk-input mt-2 w-32">
+          {years.map((year) => <option key={year} value={year}>{year}</option>)}
+        </select>
+      </label>
+      <button type="submit" name="format" value="pdf" className="inline-flex h-11 items-center rounded-lg bg-primary px-4 text-[13px] font-medium text-primary-foreground">Download PDF</button>
+      <button type="submit" name="format" value="csv" className="inline-flex h-11 items-center rounded-lg border border-border px-4 text-[13px] font-medium text-foreground">Download CSV</button>
+    </form>
+  );
+  const statementHelp = "Interest, principal, fees and escrow received on each note, its cost, and any resale. Where you logged a total only, the split is estimated from the note rate and marked as such.";
   return (
     <div>
       <PageIntro eyebrow="Portfolio" title="Notes you hold." lede="Closed trades land here. Log what the servicer sends and compare it with the yield you underwrote. A note bought before this desk can be added by hand." />
@@ -49,31 +67,50 @@ export default async function PortfolioPage({
       {(q(params, "buyerIrr") || q(params, "sellerIrr")) && (
         <p className="mt-4 text-sm text-foreground">Split model · buyer IRR {q(params, "buyerIrr") || "—"}% · you keep {q(params, "sellerIrr") || "—"}%.</p>
       )}
-      <a className="text-[13px] font-medium text-link" href="/api/portfolio/statement">Download statement</a>
-      <section className="mt-8 space-y-4">
+
+      {holdings.length > 0 && (
+        <section aria-labelledby="returns-heading" className="mt-6 border border-border p-5 rounded-xl">
+          <h2 id="returns-heading" className="eyebrow">Returns so far</h2>
+          <ReturnFigures result={total} />
+          <p className="mt-3 text-xs text-muted-foreground">
+            Money back counts receipts and resale proceeds. The IRR uses the dates each dollar moved. A note you still hold counts the balance still owed at your cost, and a payment counts as missed once a month passes without it.
+          </p>
+        </section>
+      )}
+
+      {/* Prepared from January to April, when returns are filed. The year can be picked at any time. */}
+      {holdings.length > 0 && season.season ? (
+        <section aria-labelledby="statement-heading" className="mt-6 border border-link/30 bg-link/5 p-5 rounded-xl">
+          <h2 id="statement-heading" className="text-[15px] font-semibold text-foreground">Your {season.year} year-end statement is ready.</h2>
+          <p className="mt-1 text-sm text-muted-foreground">{statementHelp}</p>
+          {statementForm}
+        </section>
+      ) : holdings.length > 0 ? (
+        <details className="mt-6 border border-border p-5 rounded-xl">
+          <summary className="cursor-pointer text-[13px] font-medium text-foreground">Year-end statement</summary>
+          <p className="mt-2 text-sm text-muted-foreground">{statementHelp}</p>
+          {statementForm}
+        </details>
+      ) : null}
+      <a className="mt-4 inline-block text-[13px] font-medium text-link" href="/api/portfolio/statement">Download the full payment ledger</a>
+
+      <section className="mt-6 space-y-4">
         {holdings.length === 0 && <p className="border border-dashed border-link/30 px-5 py-8 text-sm text-muted-foreground rounded-xl">No owned notes yet. A completed closing, or the form below, starts the ledger.</p>}
         {holdings.map((holding) => {
-          const received = holding.payments.reduce((sum, payment) => sum + Number(payment.amount), 0);
-          const stats = bookReturn({
-            cost: Number(holding.costBasis),
-            received,
-            acquiredAt: holding.acquiredAt,
-            now,
-            underwrittenYield: holding.underwrittenYield == null ? null : Number(holding.underwrittenYield),
-          });
+          const result = holdingReturn(holding, now);
           return (
             <article key={holding.id} className="glass p-5">
               <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
+                <div className="min-w-0">
                   <h2 className="font-semibold tracking-tight text-lg text-foreground">{holding.title}</h2>
-                  {holding.sharePercent != null && Number(holding.sharePercent) < 99.9 && (
-                    <p className="mt-1 text-[13px] font-medium text-link">Your position · {Number(holding.sharePercent).toFixed(1)}%</p>
+                  {holding.sharePercent != null && holding.sharePercent < 99.9 && (
+                    <p className="mt-1 text-[13px] font-medium text-link">Your position · {holding.sharePercent.toFixed(1)}%</p>
                   )}
                   <p className="mt-2 text-sm text-muted-foreground">
-                    Cost {money(Number(holding.costBasis))} · UPB {money(Number(holding.upb))} · received {money(received)}
-                    {holding.underwrittenYield != null ? ` · underwritten ${Number(holding.underwrittenYield).toFixed(1)}%` : ""}
-                    {stats.variance != null ? ` · ${stats.variance >= 0 ? "ahead" : "behind"} ${money(Math.abs(stats.variance))}` : ""}
+                    Cost {money(holding.costBasis)} · UPB {money(holding.upb)} · bought {prettyDate(holding.acquiredAt)}
+                    {holding.underwrittenYield != null ? ` · underwritten ${holding.underwrittenYield.toFixed(1)}%` : ""}
                   </p>
+                  <ReturnLine result={result} />
                   {/* The loan record, collateral, chain and payments as one PDF, for a note-on-note lender. */}
                   <a href={`/api/holdings/${holding.id}/lender-pack`} className="mt-2 inline-block text-[13px] font-medium text-link">
                     Download the lender pack<span className="sr-only"> for {holding.title}</span>
@@ -89,15 +126,30 @@ export default async function PortfolioPage({
                   <SubmitButton variant="outline" className="h-10 text-[13px] font-medium">Save</SubmitButton>
                 </form>
               </div>
-              <form action={logBuyerPayment} className="mt-4 grid gap-3 sm:grid-cols-4">
+              {holding.receipts.length > 0 && <Receipts title={holding.title} receipts={holding.receipts} rateKnown={holding.annualRate != null} />}
+              <form action={logBuyerPayment} className="mt-4">
                 <input type="hidden" name="holdingId" value={holding.id} />
-                <input name="amount" inputMode="decimal" className="desk-input" aria-label={`Payment for ${holding.title}`} placeholder="Amount" />
-                <input name="paidOn" type="date" className="desk-input" aria-label="Payment date" />
-                <input name="memo" className="desk-input" aria-label="Payment memo" placeholder="Memo" />
-                <SubmitButton className="h-11 text-[13px] font-medium">Log payment</SubmitButton>
+                <div className="grid gap-3 sm:grid-cols-4">
+                  <input name="amount" inputMode="decimal" className="desk-input" aria-label={`Payment for ${holding.title}`} placeholder="Amount" />
+                  <input name="paidOn" type="date" className="desk-input" aria-label="Payment date" />
+                  <input name="memo" className="desk-input" aria-label="Payment memo" placeholder="Memo" />
+                  <SubmitButton className="h-11 text-[13px] font-medium">Log payment</SubmitButton>
+                </div>
+                <details className="mt-2">
+                  <summary className="cursor-pointer text-[13px] text-muted-foreground">Add the split from the servicer&apos;s statement</summary>
+                  <div className="mt-2 grid gap-3 sm:grid-cols-4">
+                    {(["principal", "interest", "fees", "escrow"] as const).map((part) => (
+                      <label key={part} className="block">
+                        <span className="text-[13px] text-muted-foreground capitalize">{part}</span>
+                        <input name={part} inputMode="decimal" className="desk-input mt-1" aria-label={`${part} for ${holding.title}`} />
+                      </label>
+                    ))}
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">The parts must add up to the amount. Leave them blank and the statement estimates them from the note rate.</p>
+                </details>
               </form>
               <div className="mt-4 grid gap-4 border-t border-border pt-4 lg:grid-cols-2">
-                {partialShare(holding.sharePercent == null ? null : Number(holding.sharePercent)) && !participationsOpen() ? (
+                {partialShare(holding.sharePercent) && !participationsOpen() ? (
                   <p className="text-sm text-muted-foreground">{PARTICIPATIONS_PAUSED}</p>
                 ) : (
                   <form action={relistBuyerNote} className="flex flex-wrap items-center gap-2">
@@ -158,5 +210,70 @@ export default async function PortfolioPage({
         </div>
       </form>
     </div>
+  );
+}
+
+function irrText(result: HoldingReturn) {
+  if (!result.enoughHistory) return NOT_ENOUGH;
+  return result.irrPct == null ? "Can't be worked out yet" : pct(result.irrPct);
+}
+
+// The book's totals, side by side.
+function ReturnFigures({ result }: { result: HoldingReturn }) {
+  const cells: [string, string][] = [
+    ["Money in", money(result.moneyIn)],
+    ["Money back", money(result.moneyBack)],
+    ["Net gain so far", `${result.netGain < 0 ? "−" : ""}${money(Math.abs(result.netGain))}`],
+    ["Realised IRR", irrText(result)],
+  ];
+  const gap = result.enoughHistory ? gapLine(result) : null;
+  return (
+    <>
+      <dl className="mt-3 grid grid-cols-2 gap-4 tabular-nums sm:grid-cols-4">
+        {cells.map(([label, value]) => (
+          <div key={label}>
+            <dt className="text-[13px] text-muted-foreground">{label}</dt>
+            <dd className="mt-1 text-lg font-semibold tracking-tight text-foreground">{value}</dd>
+          </div>
+        ))}
+      </dl>
+      {gap && <p className="mt-2 text-sm text-foreground">{gap}.</p>}
+      {!result.enoughHistory && <p className="mt-2 text-sm text-muted-foreground">The IRR shows once {MIN_RECEIPTS - result.receiptCount} more payment{MIN_RECEIPTS - result.receiptCount === 1 ? " is" : "s are"} logged.</p>}
+    </>
+  );
+}
+
+// One holding's figures in a line.
+function ReturnLine({ result }: { result: HoldingReturn }) {
+  const gap = result.enoughHistory ? gapLine(result) : null;
+  return (
+    <p className="mt-1 text-sm text-foreground tabular-nums">
+      In {money(result.moneyIn)} · back {money(result.moneyBack)} · net {result.netGain < 0 ? "−" : ""}{money(Math.abs(result.netGain))} · IRR {irrText(result)}
+      {gap ? ` · ${gap}` : ""}
+    </p>
+  );
+}
+
+// The receipts, newest first, with how each was split.
+function Receipts({ title, receipts, rateKnown }: { title: string; receipts: SplitReceipt[]; rateKnown: boolean }) {
+  const rows = [...receipts].reverse();
+  return (
+    <details className="mt-3">
+      <summary className="cursor-pointer text-[13px] font-medium text-foreground">
+        {receipts.length} payment{receipts.length === 1 ? "" : "s"} logged<span className="sr-only"> for {title}</span>
+      </summary>
+      <ul className="mt-2 divide-y divide-border text-sm tabular-nums">
+        {rows.map((receipt, index) => (
+          <li key={receipt.id ?? index} className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 py-2">
+            <span className="text-foreground">{prettyDate(receipt.paidOn)} · {money(receipt.amount, 2)}{receipt.memo ? ` · ${receipt.memo}` : ""}</span>
+            <span className="text-[13px] text-muted-foreground">
+              {receipt.split
+                ? `${receipt.estimated ? `${ESTIMATED}: ` : ""}interest ${money(receipt.split.interest, 2)} · principal ${money(receipt.split.principal, 2)}${receipt.split.fees ? ` · fees ${money(receipt.split.fees, 2)}` : ""}${receipt.split.escrow ? ` · escrow ${money(receipt.split.escrow, 2)}` : ""}`
+                : rateKnown ? "Not split" : "Not split · no note rate on file"}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }

@@ -1,6 +1,6 @@
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from "pdf-lib";
 import { audit } from "@/lib/audit";
-import { stepLabel } from "@/lib/closing";
+import { closingLoans, stepLabel } from "@/lib/closing";
 import { isReleaseBuild } from "@/lib/deploy";
 import { money, prettyDate } from "@/lib/format";
 import { labelOf } from "@/lib/labels";
@@ -278,14 +278,15 @@ export function packFooter(pack: Pick<PackInput, "generatedAt" | "demo">) {
 type Opened = { ok: true; role: "holder" | "desk"; pack: PackInput } | { ok: false; status: 404 };
 
 // A loan-level closing or desk holding covers one loan of the listing; otherwise the holding is the whole listing.
-async function loanFile(listingId: string | null, only: string | null) {
+// The loans a holding covers, as its closing names them: one loan, part of a pool, or all of it.
+async function loanFile(listingId: string | null, scope: { noteId: string | null; noteIds: string[] } | null) {
   if (!listingId) return { listing: null, loans: [] as PackInput["loans"] };
   const listing = await prisma.listing.findUnique({
     where: { id: listingId },
     select: { submittedAt: true, clientSellerName: true, seller: { select: { name: true, companyName: true } }, notes: true },
   });
   if (!listing) return { listing: null, loans: [] as PackInput["loans"] };
-  const notes = only ? listing.notes.filter((note) => note.id === only) : listing.notes;
+  const notes = scope ? closingLoans(scope, listing.notes) : listing.notes;
   const noteIds = notes.map((note) => note.id);
   const [items, risks] = await Promise.all([
     prisma.collateralItem.findMany({ where: { noteId: { in: noteIds } } }),
@@ -303,7 +304,7 @@ async function closingRecord(closingId: string | null) {
   if (!closingId) return null;
   return prisma.closing.findUnique({
     where: { id: closingId },
-    select: { listingId: true, noteId: true, status: true, closedAt: true, steps: { select: { key: true, files: { select: { originalName: true, createdAt: true } } } } },
+    select: { listingId: true, noteId: true, noteIds: true, status: true, closedAt: true, steps: { select: { key: true, files: { select: { originalName: true, createdAt: true } } } } },
   });
 }
 
@@ -325,7 +326,7 @@ async function buyerPack(id: string, now: Date): Promise<PackInput | null> {
   });
   if (!holding) return null;
   const closing = await closingRecord(holding.closingId);
-  const { listing, loans } = await loanFile(closing?.listingId ?? holding.listingId, closing?.noteId ?? null);
+  const { listing, loans } = await loanFile(closing?.listingId ?? holding.listingId, closing);
   return {
     kind: "buyer",
     title: holding.title,
@@ -349,7 +350,7 @@ async function deskPack(id: string, now: Date): Promise<PackInput | null> {
   const holding = await prisma.deskHolding.findUnique({ where: { id }, include: { payments: { orderBy: { paidOn: "desc" } } } });
   if (!holding) return null;
   const closing = await closingRecord(holding.closingId);
-  const { listing, loans } = await loanFile(holding.listingId, holding.noteId ?? closing?.noteId ?? null);
+  const { listing, loans } = await loanFile(holding.listingId, holding.noteId ? { noteId: holding.noteId, noteIds: [] } : closing);
   return {
     kind: "desk",
     title: holding.title,

@@ -3,12 +3,12 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { audit } from "@/lib/audit";
-import { requireRole } from "@/lib/auth";
+import { requireDesk } from "@/lib/staff";
 import { isTemplateKey } from "@/lib/templates";
 import { prisma } from "@/lib/prisma";
 
 export async function saveTemplate(formData: FormData) {
-  const user = await requireRole(["ADMIN"]);
+  const user = await requireDesk("admin", "/admin/templates");
   const key = String(formData.get("key") || "");
   const title = String(formData.get("title") || "").trim();
   const body = String(formData.get("body") || "").trim();

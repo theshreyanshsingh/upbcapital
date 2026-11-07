@@ -1,13 +1,16 @@
 import { NextResponse } from "next/server";
-import { userForApiKey } from "@/lib/api-keys";
+import { apiCaller } from "@/lib/api-limit";
 import { ingestTape } from "@/lib/ingest";
+import { DESK_DENIED, deskCan } from "@/lib/staff";
 
 export async function POST(request: Request) {
-  const user = await userForApiKey(request.headers.get("authorization"));
-  if (!user) return NextResponse.json({ error: "Unknown API key." }, { status: 401 });
+  const caller = await apiCaller(request);
+  if (caller.response) return caller.response;
+  const user = caller.user;
   if (user.role !== "INSTITUTIONAL_SELLER" && user.role !== "ADMIN") {
     return NextResponse.json({ error: "This key cannot push a tape." }, { status: 403 });
   }
+  if (user.role === "ADMIN" && !deskCan(user, "sales")) return NextResponse.json({ error: DESK_DENIED }, { status: 403 });
   if (user.role !== "ADMIN" && user.accountStatus !== "APPROVED") {
     return NextResponse.json({ error: "The account is still in review." }, { status: 403 });
   }

@@ -2,6 +2,7 @@
 
 import { postOfferMessage } from "@/actions/offers";
 import { ConfirmSubmit } from "@/components/confirm-submit";
+import { LoanPriceFields, type PricedLoan } from "@/components/loan-price-fields";
 import { SubmitButton } from "@/components/submit-button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -13,6 +14,7 @@ export function OfferThread({
   messages,
   acceptAmount,
   acceptFrom = "desk",
+  loans = [],
 }: {
   inquiryId: string;
   canCounter: boolean;
@@ -21,6 +23,8 @@ export function OfferThread({
   acceptAmount?: number | null;
   // Whose counter it is. The seller's own counter is already their approval, so accepting it needs no second ask.
   acceptFrom?: "desk" | "seller";
+  // A buyer's whole-pool bid: the pool's loans, so a new price can carry a price for each loan. A counter clears them.
+  loans?: PricedLoan[];
 }) {
   const seller = acceptFrom === "seller";
   return (
@@ -47,6 +51,7 @@ export function OfferThread({
               ? `The seller countered at ${money(acceptAmount)}. The seller has already agreed to this price. Nothing is awarded until you accept it.`
               : `The desk countered at ${money(acceptAmount)}. Nothing is awarded until you accept a price.`}
           </p>
+          {loans.length > 1 && <div className="w-full"><LoanPriceFields loans={loans} total={acceptAmount} /></div>}
           <ConfirmSubmit
             title={`Accept the ${seller ? "seller" : "desk"}'s ${money(acceptAmount)}?`}
             consequence={
@@ -74,6 +79,7 @@ export function OfferThread({
             <Input name="amount" inputMode="decimal" className="mt-1 h-11 bg-card" />
           </label>
         )}
+        {canCounter && loans.length > 1 && <LoanPriceFields loans={loans} total={null} />}
         <SubmitButton variant="outline" className="h-9 text-[13px] font-medium" pendingLabel="Sending…">
           {canCounter ? "Send note or counter" : "Send note"}
         </SubmitButton>

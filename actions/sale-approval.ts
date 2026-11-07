@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { audit } from "@/lib/audit";
 import { requireUser } from "@/lib/auth";
-import { askedPriceStands, awaitingSeller, awardOffer, recordSellerCounter, sameQuestion, sellerPage, setBuyNow } from "@/lib/awards";
+import { askedPartPrice, askedPriceStands, awaitingSeller, awardOffer, awardPartial, partAsked, recordSellerCounter, sameQuestion, sellerPage, setBuyNow } from "@/lib/awards";
 import { notifyDesk } from "@/lib/email";
 import { bidExpired, buyerPrice } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
@@ -37,29 +37,32 @@ export async function answerSaleApproval(formData: FormData) {
     const declined = await prisma.inquiry.updateMany({ where: sameQuestion(offer), data: { sellerAnsweredAt: new Date(), sellerDeclined: true } });
     if (declined.count !== 1) redirect(`${back}?error=${encodeURIComponent("This bid was answered a moment ago.")}`);
     await audit(user.id, "SELLER_DECLINED", "inquiry", offer.id, `${offer.listing.title} · ${price}`);
-    await notifyDesk(`Seller declined · ${offer.listing.title}`, `${user.name} declined the sale at ${price}. The bid stays open for the desk to counter or decline.`);
+    await notifyDesk(`Seller declined · ${offer.listing.title}`, `${user.name} declined the sale at ${price}. The bid stays open for the desk to counter or decline.`, { capability: "sealedBids" });
     revalidatePath(back);
     redirect(`${back}?notice=seller_declined`);
   }
   if (answer !== "APPROVE") redirect(`${back}?error=${encodeURIComponent("Approve, decline or counter the sale.")}`);
   // An approval only counts for the listing and the bid as they stand, so a stale page can't record one.
   if (offer.listing.status !== "APPROVED") redirect(`${back}?error=${encodeURIComponent("This listing isn't live right now, so the sale can't be approved.")}`);
-  const current = buyerPrice(offer.amount, offer.messages.map((message) => ({ kind: message.kind, amount: message.amount, createdAt: message.createdAt, authorId: message.authorId })), offer.buyerId);
+  // A question about part of a pool is priced at the buyer's loan prices for those loans, as they stand now.
+  const part = await partAsked(offer);
+  const priced = offer.messages.map((message) => ({ kind: message.kind, amount: message.amount, createdAt: message.createdAt, authorId: message.authorId }));
+  const current = part ? askedPartPrice({ ...offer, messages: priced }, part) : buyerPrice(offer.amount, priced, offer.buyerId);
   if (!askedPriceStands(amount, current)) {
-    await notifyDesk(`Bid changed before approval · ${offer.listing.title}`, `${user.name} tried to approve the sale at ${price}, but the buyer's bid is now $${Number(current ?? 0).toLocaleString("en-US")}. Ask the seller again at the new price.`);
+    await notifyDesk(`Bid changed before approval · ${offer.listing.title}`, `${user.name} tried to approve the sale at ${price}, but the buyer's bid is now $${Number(current ?? 0).toLocaleString("en-US")}. Ask the seller again at the new price.`, { capability: "sealedBids" });
     redirect(`${back}?error=${encodeURIComponent("The buyer changed their bid since the desk asked, so this figure can no longer be approved.")}`);
   }
   const approved = await prisma.inquiry.updateMany({ where: sameQuestion(offer), data: { sellerApprovedAmount: amount, sellerAnsweredAt: new Date(), sellerDeclined: false } });
   if (approved.count !== 1) redirect(`${back}?error=${encodeURIComponent("This bid was answered a moment ago.")}`);
-  await audit(user.id, "SELLER_APPROVED", "inquiry", offer.id, `${offer.listing.title} · ${price}`);
-  const result = await awardOffer(offer.id, user.id);
+  await audit(user.id, "SELLER_APPROVED", "inquiry", offer.id, `${offer.listing.title} · ${price}${part ? ` for ${part.length} loan${part.length === 1 ? "" : "s"}` : ""}`);
+  const result = part ? await awardPartial(offer.id, part, user.id) : await awardOffer(offer.id, user.id);
   if (result.error !== null) {
     // The approval stands. The desk finishes the award once whatever stopped it is cleared.
-    await notifyDesk(`Seller approved · ${offer.listing.title}`, `${user.name} approved the sale at ${price}, but the award didn't finish: ${result.error}`);
+    await notifyDesk(`Seller approved · ${offer.listing.title}`, `${user.name} approved the sale at ${price}, but the award didn't finish: ${result.error}`, { capability: "sealedBids" });
     revalidatePath(back);
     redirect(`${back}?notice=approved_pending`);
   }
-  await notifyDesk(`Seller approved · ${offer.listing.title}`, `${user.name} approved the sale at ${price}. The closing is open.`);
+  await notifyDesk(`Seller approved · ${offer.listing.title}`, `${user.name} approved the sale at ${price}. The closing is open.`, { capability: "sealedBids" });
   redirect(`/closings/${result.closingId}?notice=approved`);
 }
 

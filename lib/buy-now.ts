@@ -1,4 +1,5 @@
 import { money } from "@/lib/format";
+import { launchBlock } from "@/lib/launch-rules";
 
 // Buy it now: a price the seller commits to in advance, taken by the first verified buyer who confirms it. These
 // rules are pure, so the seller's page, the buyer's panel and the award all read the same ones.
@@ -33,13 +34,15 @@ export function buyNowClearBlock(input: { status: string; buyNowPrice: number | 
   return null;
 }
 
-type OfferListing = { status: string; bidMode: string; buyNowPrice: number | null | undefined };
+type OfferListing = { status: string; bidMode: string; buyNowPrice: number | null | undefined; launchAt?: Date | null };
 
 // The price a buyer can take right now, or why not. Open offers only, and a pool only whole, while every loan in
-// it is still for sale.
-export function buyNowOffer(listing: OfferListing, wholeOpen: boolean): { price: number; reason: null } | { price: null; reason: string } {
+// it is still for sale. A coming-soon listing waits for its launch like every other bid.
+export function buyNowOffer(listing: OfferListing, wholeOpen: boolean, now = new Date()): { price: number; reason: null } | { price: null; reason: string } {
   if (listing.buyNowPrice == null || !(listing.buyNowPrice > 0)) return { price: null, reason: "This listing has no buy-it-now price." };
   if (listing.status !== "APPROVED") return { price: null, reason: "This listing isn't taking bids right now." };
+  const coming = launchBlock(listing, "buyNow", now);
+  if (coming) return { price: null, reason: coming };
   if (listing.bidMode !== "NONE") return { price: null, reason: "Buy it now is paused while a sealed or best-and-final round runs." };
   if (!wholeOpen) return { price: null, reason: "Some loans in this pool have traded, so it can't be bought whole." };
   return { price: listing.buyNowPrice, reason: null };

@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { bpsToPercent } from "@/lib/money";
 import { ConfirmRows, ConfirmSubmit } from "@/components/confirm-submit";
+import { LoanPriceFields, type LoanPriceSummary, type PricedLoan } from "@/components/loan-price-fields";
 import { BUY_NOW_BUYER_SUMMARY, buyNowTerms } from "@/lib/buy-now";
 import { ACKNOWLEDGE_FIRST } from "@/lib/eligibility";
 import { money } from "@/lib/format";
@@ -30,6 +31,7 @@ export function OfferPanel({
   notices = [],
   acknowledgeFirst = false,
   standing = null,
+  loans = [],
 }: {
   listingId: string;
   premiumBps: number;
@@ -52,8 +54,11 @@ export function OfferPanel({
   // The buyer's verified-funds credential and any strike pause, from bidStanding in lib/inquiry. The server checks
   // both on every bid; this shows them before the buyer types a figure.
   standing?: BidStanding | null;
+  // A whole pool's loans, so the buyer can price each one. Empty for a single note or a one-loan bid.
+  loans?: PricedLoan[];
 }) {
   const [amount, setAmount] = useState("");
+  const [priced, setPriced] = useState<LoanPriceSummary>({ priced: 0, sum: 0, allowPartial: false });
   const [goodUntil, setGoodUntil] = useState("");
   const offer = Number(amount.replace(/[$,]/g, ""));
   const premium = Number.isFinite(offer) ? (offer * premiumBps) / 10000 : 0;
@@ -64,6 +69,14 @@ export function OfferPanel({
   const bidding = canOffer && verified && !acknowledgeFirst && !stopped;
   const key = bidTarget(listingId, noteId);
   const room = offer > 0 ? headroomAfter(credential, key, offer + premium) : null;
+  const pricedPool = !noteId && loans.length > 1;
+  const partial = pricedPool && priced.priced > 0 && priced.allowPartial;
+  const loanRows: [string, string][] = pricedPool
+    ? [
+        ["Loan prices", priced.priced ? `${priced.priced} loans, ${money(priced.sum, 2)} in all` : "None"],
+        ["Part of the pool", partial ? "The seller may take part at your loan prices" : "Whole pool only"],
+      ]
+    : [];
   return (
     <div className="glass p-5">
       <p className="eyebrow">Make a bid</p>
@@ -119,6 +132,7 @@ export function OfferPanel({
               {room != null && room < 0 && <p className="text-xs text-bad">This all-in is over your verified funds, so the desk will refuse it. Bid less, or withdraw another bid.</p>}
             </div>
           )}
+          {pricedPool && <LoanPriceFields loans={loans} total={offer > 0 ? offer : null} onSummary={setPriced} />}
           {/* Optional terms fold away, so the panel fits beside the page and the bid button stays in view. */}
           <details className="rounded-lg border border-border px-3 py-2">
             <summary className="cursor-pointer text-[13px] font-medium text-foreground">Good-until date or a note (optional)</summary>
@@ -136,8 +150,8 @@ export function OfferPanel({
           </details>
           <ConfirmSubmit
             title={`Bid ${money(offer)}?`}
-            consequence={`If the desk accepts it, you're committed to buy at this price plus the buyer premium${deposit ? `, and a ${deposit[0]}% deposit is due within ${deposit[1]} day${deposit[1] === 1 ? "" : "s"}` : ""}.${bidTerms(diligenceDays)}${notice}`}
-            details={<ConfirmRows rows={[["Your bid", money(offer)], ["Buyer premium", money(premium)], ["All-in", money(offer + premium)], ...credentialRows(credential?.line ?? null, room), goodUntilRow(goodUntil)]} />}
+            consequence={`If the desk accepts it, you're committed to buy ${partial ? "the whole pool, or the part of it the desk awards at your loan prices," : "at this price"} plus the buyer premium${deposit ? `, and a ${deposit[0]}% deposit is due within ${deposit[1]} day${deposit[1] === 1 ? "" : "s"}` : ""}.${bidTerms(diligenceDays)}${notice}`}
+            details={<ConfirmRows rows={[["Your bid", money(offer)], ["Buyer premium", money(premium)], ["All-in", money(offer + premium)], ...loanRows, ...credentialRows(credential?.line ?? null, room), goodUntilRow(goodUntil)]} />}
             confirmLabel="Place the bid"
             pendingLabel="Sending…"
             className="h-11 w-full text-[13px] font-medium"

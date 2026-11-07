@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BellRing, ChevronsUpDown, Lock, LogOut, Search, type LucideIcon } from "lucide-react";
+import { BellRing, ChevronsUpDown, Lock, LogOut, ScrollText, Search, type LucideIcon } from "lucide-react";
 import { logout } from "@/actions/auth";
 import { OnboardingTour } from "@/components/tour";
 import { Logo } from "@/components/logo";
@@ -16,7 +16,8 @@ import { cn } from "@/lib/utils";
 
 export type { ShellUser };
 
-export function AppShell({ user, children }: { user: ShellUser; children: React.ReactNode }) {
+// termsDue: the account hasn't accepted the current terms and privacy policy. A slim line asks, and blocks nothing.
+export function AppShell({ user, termsDue = false, children }: { user: ShellUser; termsDue?: boolean; children: React.ReactNode }) {
   const items = navFor(user);
   return (
     <div className="min-h-screen">
@@ -51,6 +52,13 @@ export function AppShell({ user, children }: { user: ShellUser; children: React.
           id="desk"
           className="min-w-0 pt-5 pr-(--gutter-r) pb-[calc(var(--dock,0px)+2.5rem)] pl-(--gutter-l) [--gutter-l:max(1rem,env(safe-area-inset-left))] [--gutter-r:max(1rem,env(safe-area-inset-right))] md:pt-7 md:[--gutter-l:max(2rem,env(safe-area-inset-left))] md:[--gutter-r:max(2rem,env(safe-area-inset-right))] lg:pb-12 print:pb-0"
         >
+          {termsDue && (
+            <p role="status" className="mb-5 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-link/25 bg-link/5 px-3.5 py-2 text-[13px] text-foreground print:hidden">
+              <ScrollText aria-hidden className="size-4 shrink-0 text-link" />
+              <span>The terms of use and privacy policy need your acceptance.</span>
+              <Link href="/terms#accept" className="font-medium text-link">Read and accept</Link>
+            </p>
+          )}
           {children}
         </main>
         <MobileDock user={user} items={items} />

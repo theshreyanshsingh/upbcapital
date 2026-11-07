@@ -2,7 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { requireRole, requireUser } from "@/lib/auth";
+import { requireUser } from "@/lib/auth";
+import { requireDesk } from "@/lib/staff";
 import { sellerPage } from "@/lib/awards";
 import { answerDiscrepancy, canAnswer, deskResolveDiscrepancy, raiseDiscrepancy, type Answered } from "@/lib/discrepancies";
 import { flagDuplicates } from "@/lib/duplicates";
@@ -61,7 +62,7 @@ function deskBack(listingId: string, noteId: string | null, notice: { ok: boolea
 
 // The desk applies the document's value to the tape, or waives the question, with a reason buyers can read.
 export async function resolveDifference(formData: FormData) {
-  const user = await requireRole(["ADMIN"]);
+  const user = await requireDesk("sales", "/admin/queue");
   const id = text(formData, "discrepancyId");
   const row = id ? await prisma.fieldDiscrepancy.findUnique({ where: { id }, select: { listingId: true, noteId: true } }) : null;
   if (!row) redirect(`/admin/queue?error=${encodeURIComponent("That difference isn't on file.")}`);
@@ -74,7 +75,7 @@ export async function resolveDifference(formData: FormData) {
 
 // The desk raises a question by hand, without marking the field verified.
 export async function raiseDifference(formData: FormData) {
-  const user = await requireRole(["ADMIN"]);
+  const user = await requireDesk("sales", "/admin/queue");
   const noteId = text(formData, "noteId");
   const note = noteId ? await prisma.note.findUnique({ where: { id: noteId }, select: { id: true, listingId: true } }) : null;
   if (!note) redirect(`/admin/queue?error=${encodeURIComponent("That loan isn't on file.")}`);

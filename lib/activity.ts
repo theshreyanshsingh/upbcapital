@@ -7,7 +7,7 @@ type Viewer = { id: string; name: string; companyName: string; role: string };
 
 // Buyer interest in one listing. Views from the seller and the desk are left out, because neither is a bidder.
 export async function listingActivity(listingId: string, sellerId: string, now = new Date()) {
-  const [views, ndas, favorites, inquiries, sends, matches, downloads] = await Promise.all([
+  const [views, ndas, favorites, inquiries, sends, matches, downloads, asked] = await Promise.all([
     prisma.listingView.findMany({ where: { listingId }, include: { user: { select: { id: true, name: true, companyName: true, role: true } } }, orderBy: { createdAt: "desc" } }),
     prisma.ndaAcknowledgment.findMany({ where: { listingId }, include: { user: { select: { id: true, name: true, companyName: true, role: true } } }, orderBy: { acknowledgedAt: "desc" } }),
     prisma.favorite.findMany({ where: { listingId }, include: { user: { select: { id: true, name: true, companyName: true, role: true } } } }),
@@ -15,6 +15,7 @@ export async function listingActivity(listingId: string, sellerId: string, now =
     prisma.listingSend.findMany({ where: { listingId }, select: { userId: true, createdAt: true, kind: true } }),
     prisma.listingMatch.findMany({ where: { listingId }, select: { userId: true } }),
     prisma.auditEvent.findMany({ where: { entityId: listingId, action: { in: ["DOCUMENT_DOWNLOAD", "TAPE_EXPORT", "MEMO_DOWNLOAD"] } }, include: { actor: { select: { id: true, name: true, companyName: true, role: true } } }, orderBy: { createdAt: "desc" } }),
+    prisma.listingQuestion.findMany({ where: { listingId, askerId: { not: sellerId } }, select: { createdAt: true } }),
   ]);
   const buyer = (user: Viewer | null): user is Viewer => Boolean(user && user.id !== sellerId && user.role !== "ADMIN");
   const buyerViews = views.filter((view) => buyer(view.user));
@@ -27,6 +28,10 @@ export async function listingActivity(listingId: string, sellerId: string, now =
   }
   const offers = inquiries.filter((inquiry) => inquiry.type === "OFFER");
   return {
+    // When each thing happened, for the weekly report's week-on-week figures. Dates only, never who.
+    viewDates: buyerViews.map((view) => view.createdAt),
+    offerDates: offers.map((offer) => offer.createdAt),
+    questionDates: [...inquiries.filter((inquiry) => inquiry.type === "INFO_REQUEST").map((inquiry) => inquiry.createdAt), ...asked.map((row) => row.createdAt)],
     views: buyerViews.length,
     viewsThisWeek: buyerViews.filter((view) => now.getTime() - view.createdAt.getTime() < 7 * DAY).length,
     viewers: [...byViewer.values()],
@@ -60,3 +65,26 @@ export function sellerReport(activity: ListingActivity) {
     { label: "Bidders", value: activity.bidders },
   ];
 }
+
+const WEEK = 7 * DAY;
+
+// The weekly report's figures: each count in all, in the last 7 days, and in the 7 days before. Counts only, as the
+// seller page shows them. Nothing names a buyer or carries a bid amount.
+export function activityWeek(activity: ListingActivity, now = new Date()) {
+  const at = now.getTime();
+  const tally = (dates: Date[]) => ({
+    total: dates.length,
+    week: dates.filter((date) => at - date.getTime() < WEEK && date.getTime() <= at).length,
+    prior: dates.filter((date) => at - date.getTime() >= WEEK && at - date.getTime() < 2 * WEEK).length,
+  });
+  return {
+    views: tally(activity.viewDates),
+    saves: tally(activity.favorites.map((favorite) => favorite.createdAt)),
+    ndas: tally(activity.ndas.map((nda) => nda.acknowledgedAt)),
+    downloads: tally(activity.downloads.map((row) => row.createdAt)),
+    questions: tally(activity.questionDates),
+    bids: tally(activity.offerDates),
+  };
+}
+
+export type ActivityWeek = ReturnType<typeof activityWeek>;

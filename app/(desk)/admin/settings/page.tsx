@@ -6,7 +6,7 @@ import { PageIntro } from "@/components/page-intro";
 import { SubmitButton } from "@/components/submit-button";
 import { requireRole } from "@/lib/auth";
 import { simulatedCheckout, stripeConfigured } from "@/lib/billing";
-import { isoDate, q } from "@/lib/format";
+import { isoDate, prettyDate, q } from "@/lib/format";
 import { DEFAULT_INDICATIVE_YIELD, indicativeTarget, marketRate, RATE_STALE_DAYS, rateStamp } from "@/lib/indicative";
 import { bpsToPercent } from "@/lib/money";
 import { getSettings } from "@/lib/settings";
@@ -14,6 +14,10 @@ import { SETTLEMENT_WEEKDAYS, depositTerms, settlementLabel, settlementWeekdays,
 import { diligenceDays } from "@/lib/closing-service";
 import { launchReadiness } from "@/lib/readiness";
 import { strikeLimitOf } from "@/lib/strikes";
+import { decideWires } from "@/actions/wires";
+import { ConfirmSubmit } from "@/components/confirm-submit";
+import { deskCan } from "@/lib/staff";
+import { pendingWireChanges } from "@/lib/wire-changes";
 
 export const metadata = { title: "Fee schedule" };
 
@@ -22,9 +26,12 @@ export default async function SettingsPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  await requireRole(["ADMIN"]);
+  const user = await requireRole(["ADMIN"]);
   const params = await searchParams;
   const settings = await getSettings();
+  // Every desk role reads the schedule. Only an owner saves it, and a wire change also waits for a second person.
+  const owns = deskCan(user, "admin");
+  const pendingWires = await pendingWireChanges(null);
   const readiness = await launchReadiness(settings);
   const rate = marketRate(settings);
   const stamp = rate ? rateStamp(rate.asOf) : null;
@@ -152,10 +159,49 @@ export default async function SettingsPage({
         <label className="block">
           <span className="text-[13px] text-muted-foreground">Default wire instructions</span>
           <textarea name="wireInstructions" defaultValue={settings.wireInstructions} className="desk-input mt-2 min-h-28" />
+          <span className="mt-1 block text-xs text-muted-foreground">New closings start with these. A change waits until a second desk member who approves wires approves it.</span>
         </label>
         {settings.stripePriceId && <p className="text-xs text-muted-foreground">Current Stripe price {settings.stripePriceId}</p>}
-        <SubmitButton className="h-11 text-[13px] font-medium">Save schedule</SubmitButton>
+        {owns ? <SubmitButton className="h-11 text-[13px] font-medium">Save schedule</SubmitButton> : <p className="text-sm text-muted-foreground">Only an owner changes the fee schedule.</p>}
       </form>
+      {pendingWires.length > 0 && (
+        <section id="wires" aria-labelledby="wires-heading" className="mt-8 scroll-mt-6 space-y-3 rounded-xl border border-warn/40 bg-warn/5 p-6">
+          <p id="wires-heading" className="eyebrow">Default wire change waiting for approval</p>
+          {pendingWires.map((change) => (
+            <div key={change.id} className="space-y-2">
+              <p className="text-xs text-muted-foreground">Proposed by {change.proposedBy} on {prettyDate(change.createdAt)}. Open closings keep their own instructions.</p>
+              <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed text-foreground/85">{change.instructions || "No instructions. Approving clears the default."}</pre>
+              {deskCan(user, "approveWires") ? (
+                <div className="flex flex-wrap gap-2">
+                  {change.proposedById !== user.id && (
+                    <form action={decideWires}>
+                      <input type="hidden" name="changeId" value={change.id} />
+                      <input type="hidden" name="decision" value="APPROVED" />
+                      <ConfirmSubmit
+                        title="Approve the new default wire instructions?"
+                        consequence="Every closing opened from now on starts with them. Open closings keep the instructions they have."
+                        confirmLabel="Approve"
+                        pendingLabel="Approving…"
+                        className="h-9 text-[13px] font-medium"
+                      >
+                        Approve
+                      </ConfirmSubmit>
+                    </form>
+                  )}
+                  <form action={decideWires}>
+                    <input type="hidden" name="changeId" value={change.id} />
+                    <input type="hidden" name="decision" value="REJECTED" />
+                    <SubmitButton variant="outline" className="h-9 text-[13px] font-medium" pendingLabel="Saving…">{change.proposedById === user.id ? "Withdraw" : "Reject"}</SubmitButton>
+                  </form>
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground">A desk member who approves wires decides it.</p>
+              )}
+              {change.proposedById === user.id && <p className="text-xs text-muted-foreground">You proposed this, so someone else approves it.</p>}
+            </div>
+          ))}
+        </section>
+      )}
       <form id="market-rates" action={saveMarketRates} className="mt-8 scroll-mt-6 space-y-5 glass p-6" aria-labelledby="market-rates-heading">
         <div>
           <p id="market-rates-heading" className="eyebrow">Market rates</p>
@@ -190,7 +236,7 @@ export default async function SettingsPage({
             The desk model prices every listing&apos;s indicative range for this IRR, one point either side. Now {target.label}. Blank keeps the default.
           </span>
         </label>
-        <SubmitButton className="h-11 text-[13px] font-medium" pendingLabel="Repricing…">Save rates</SubmitButton>
+        {owns ? <SubmitButton className="h-11 text-[13px] font-medium" pendingLabel="Repricing…">Save rates</SubmitButton> : <p className="text-sm text-muted-foreground">Only an owner changes market rates.</p>}
       </form>
       <form id="settlement" action={saveSettlementSettings} className="mt-8 scroll-mt-6 space-y-5 glass p-6" aria-labelledby="settlement-heading">
         <div>
@@ -216,7 +262,7 @@ export default async function SettingsPage({
           <input name="strikeLimit" inputMode="numeric" required defaultValue={strikeLimitOf(settings.strikeLimit)} className="desk-input mt-2 tabular-nums" />
           <span className="mt-1 block text-xs text-muted-foreground">A strike is recorded when the desk cancels a closing as the buyer&apos;s failure to close. At this many, new bids are refused until the desk clears one on the buyer file.</span>
         </label>
-        <SubmitButton className="h-11 text-[13px] font-medium" pendingLabel="Saving…">Save settlement</SubmitButton>
+        {owns ? <SubmitButton className="h-11 text-[13px] font-medium" pendingLabel="Saving…">Save settlement</SubmitButton> : <p className="text-sm text-muted-foreground">Only an owner changes settlement days.</p>}
       </form>
     </div>
   );

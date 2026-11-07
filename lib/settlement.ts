@@ -1,4 +1,5 @@
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import { closingLoans } from "@/lib/closing";
 
 export type Variance = { state: "none" | "match" | "short" | "over"; diffCents: number };
 
@@ -163,12 +164,54 @@ export function economicsRows(
   return [];
 }
 
+// A loan taken out before settlement, with the price and deposit it took with it.
+export type StatementKickout = { loan: string; priceCents: number; depositCents: number; reason: string; at: Date };
+
+type PlacedNote = { id: string; streetAddress: string; city: string; state: string };
+
+function place(note: PlacedNote | undefined) {
+  return note ? `${note.streetAddress ? `${note.streetAddress}, ` : ""}${note.city}, ${note.state}` : "A loan";
+}
+
+// The loans a statement covers now, through closingLoans like every other reader, and the kick-outs it lists.
+export function statementScope(
+  closing: { noteId: string | null; noteIds: string[]; kickouts: { noteId: string; priceCents: number; depositCents: number; reason: string; createdAt: Date }[] },
+  notes: PlacedNote[],
+) {
+  return {
+    loans: closingLoans(closing, notes).map(place),
+    kickouts: closing.kickouts.map((kickout) => ({
+      loan: place(notes.find((note) => note.id === kickout.noteId)),
+      priceCents: kickout.priceCents,
+      depositCents: kickout.depositCents,
+      reason: kickout.reason,
+      at: kickout.createdAt,
+    })),
+  };
+}
+
+// The loans that came out, after the side's own figures. The deposit each took is the buyer's figure.
+function kickoutSection(kickouts: StatementKickout[], side: StatementSide) {
+  if (!kickouts.length) return [];
+  return [
+    {
+      heading: "Loans taken out before settlement",
+      lines: kickouts.map((kickout) => ({
+        label: `${kickout.loan}, price removed`,
+        cents: kickout.priceCents,
+        detail: `${kickout.at.toISOString().slice(0, 10)} · ${kickout.reason}${side !== "seller" && kickout.depositCents ? ` · deposit down ${dollars(kickout.depositCents)}` : ""}`,
+      })),
+    },
+  ];
+}
+
 // Each party sees its own side only. The desk sees both. A group seat holder sees their own share.
 export function statementLines(
   closing: StatementClosing,
   side: StatementSide,
   brokerFeeCents = 0,
   share: FunderShare | null = null,
+  kickouts: StatementKickout[] = [],
 ): { heading: string; lines: StatementLine[] }[] {
   if (side === "buyer" && share) return [shareSection(share)];
   const price = Math.round(closing.salePrice * 100);
@@ -201,8 +244,8 @@ export function statementLines(
       { label: "Proceeds sent", cents: closing.proceedsSentCents, detail: wireDetail(closing.proceedsSentAt, closing.proceedsReference, variance(closing.netToSellerCents, closing.proceedsSentCents)) },
     ],
   };
-  if (side === "buyer") return [buyer];
-  if (side === "seller") return [seller];
+  if (side === "buyer") return [buyer, ...kickoutSection(kickouts, side)];
+  if (side === "seller") return [seller, ...kickoutSection(kickouts, side)];
   const desk = {
     heading: "Desk",
     lines: [
@@ -212,7 +255,7 @@ export function statementLines(
       { label: "Desk revenue", cents: closing.buyerPremiumCents + closing.sellerCommissionCents - brokerFeeCents },
     ],
   };
-  return [buyer, seller, desk];
+  return [buyer, seller, desk, ...kickoutSection(kickouts, side)];
 }
 
 function dollars(cents: number | null) {

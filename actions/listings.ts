@@ -9,8 +9,10 @@ import { flagDuplicates } from "@/lib/duplicates";
 import { notifyDesk } from "@/lib/email";
 import { typedNumber } from "@/lib/money";
 import { rescoreListing } from "@/lib/matching";
+import { addPoolFiles } from "@/lib/room-files";
 import { screenInBackground, screenListing } from "@/lib/screening";
 import { prisma } from "@/lib/prisma";
+import { DESK_DENIED, deskDenied } from "@/lib/staff";
 import { extensionOf, mimeFor, putBytes, safeBasename } from "@/lib/storage";
 import { deleteTapeDraft, readTapeDraft } from "@/lib/tape-draft";
 import { uploadProblem } from "@/lib/uploads";
@@ -264,11 +266,31 @@ export async function updateOwnListingMeta(formData: FormData) {
   redirect(`/seller/listings/${listing.id}?notice=resubmitted`);
 }
 
+// A pool's seller or filing broker adds files after filing, in review and while live, to the whole pool or to one
+// loan. Unlike an edit, this doesn't send the listing back to review: the desk is told, and so are watchers once live.
+export async function addPoolDocuments(formData: FormData) {
+  const user = await requireUser();
+  const listingId = String(formData.get("listingId") || "");
+  const page = formData.get("from") === "broker" ? `/broker/deals/${listingId}` : `/seller/listings/${listingId}`;
+  const files = [];
+  for (const file of formData.getAll("documents")) {
+    if (file instanceof File && file.size > 0) files.push({ name: file.name, bytes: Buffer.from(await file.arrayBuffer()), mime: file.type, type: String(formData.get("documentType") || "OTHER") });
+  }
+  if (!files.length) redirect(`${page}?error=${encodeURIComponent("Choose a file to add.")}#room-files`);
+  const result = await addPoolFiles(user, { listingId, noteId: String(formData.get("noteId") || "") || null, files });
+  if (result.error) redirect(`${page}?error=${encodeURIComponent(result.error)}#room-files`);
+  for (const path of [page, `/marketplace/${listingId}`, `/admin/listings/${listingId}`]) revalidatePath(path);
+  const added = result.added ? `notice=${encodeURIComponent(`${result.added} file${result.added === 1 ? " is" : "s are"} in the data room.`)}` : "";
+  redirect(`${page}?${added}${skippedNotice(result.skipped)}#room-files`);
+}
+
 export async function createPoolListing(formData: FormData) {
   const user = await requireUser();
   if (user.role !== "INSTITUTIONAL_SELLER" && user.role !== "ADMIN") {
     return { error: "Tape uploads are for institutional accounts." };
   }
+  // The desk lists a tape of its own as the seller, so only a role that runs sales does.
+  if (deskDenied(user, "sales")) return { error: DESK_DENIED };
   if (user.role === "INSTITUTIONAL_SELLER" && user.accountStatus !== "APPROVED") {
     return { error: "Your institutional account is still in review." };
   }

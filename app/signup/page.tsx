@@ -29,6 +29,13 @@ export default async function SignupPage({
       <p className="mt-8 text-sm text-muted-foreground">
         Already known here? <Link href="/login" className="text-link">Sign in</Link>
       </p>
+      <p className="mt-3 text-xs text-muted-foreground">
+        <Link href="/terms" className="text-link">Terms of use</Link>
+        {" · "}
+        <Link href="/privacy" className="text-link">Privacy policy</Link>
+        {" · "}
+        <Link href="/fees" className="text-link">Fee schedule</Link>
+      </p>
     </main>
   );
 }

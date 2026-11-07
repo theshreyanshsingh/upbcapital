@@ -1,11 +1,13 @@
 import Link from "next/link";
 import { withdrawInquiry } from "@/actions/buyer";
 import { ConfirmSubmit } from "@/components/confirm-submit";
+import { DestructionRequests } from "@/components/destruction-requests";
 import { OfferThread } from "@/components/offer-thread";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { requireRole } from "@/lib/auth";
 import { money, num, prettyDate, q } from "@/lib/format";
+import { standingLoanPrices } from "@/lib/loan-prices";
 import { bidExpired, buyerPrice, canCounter, counterFrom, openCounter, withdrawBlock } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
 
@@ -20,7 +22,7 @@ export default async function OffersPage({
   const user = await requireRole(["BUYER"]);
   const inquiries = await prisma.inquiry.findMany({
     where: { buyerId: user.id },
-    include: { listing: true, note: true, messages: { include: { author: true }, orderBy: { createdAt: "asc" } } },
+    include: { listing: { include: { notes: { select: { id: true, city: true, state: true }, orderBy: { createdAt: "asc" } } } }, note: true, messages: { include: { author: true }, orderBy: { createdAt: "asc" } } },
     orderBy: { createdAt: "desc" },
   });
   const closings = await prisma.closing.findMany({ where: { inquiryId: { in: inquiries.map((item) => item.id) } } });
@@ -31,6 +33,7 @@ export default async function OffersPage({
     <div>
       <PageIntro eyebrow="Inquiries" title="What you have asked for." />
       <Notice notice={q(params, "notice")} error={q(params, "error")} />
+      <DestructionRequests userId={user.id} />
       <ul className="mt-8 space-y-3">
         {inquiries.length === 0 && <li className="text-sm text-muted-foreground">No offers or requests yet.</li>}
         {inquiries.map((inquiry) => {
@@ -41,6 +44,9 @@ export default async function OffersPage({
           const groupId = groupFor.get(inquiry.id);
           const live = inquiry.type === "OFFER" && canCounter(inquiry.status);
           const lapsed = live && bidExpired(inquiry.expiresAt);
+          // A whole-pool bid can carry a price for each loan, and can name new ones with a new price.
+          const poolBid = inquiry.type === "OFFER" && !inquiry.noteId && inquiry.listing.kind === "POOL" && !groupId;
+          const loanPrices = poolBid ? standingLoanPrices(inquiry.loanPrices, amount) : null;
           const withdrawProblem = withdrawBlock({ type: inquiry.type, status: inquiry.status, bidMode: inquiry.listing.bidMode, bidDeadline: inquiry.listing.bidDeadline, group: Boolean(groupId) });
           return (
             <li key={inquiry.id} className="glass p-5">
@@ -55,6 +61,11 @@ export default async function OffersPage({
                 {inquiry.type === "OFFER" && inquiry.expiresAt ? ` · ${inquiry.status === "EXPIRED" || lapsed ? "lapsed" : "good until"} ${prettyDate(inquiry.expiresAt)}` : ""}
                 {inquiry.status === "WITHDRAWN" && inquiry.withdrawnAt ? ` · withdrawn ${prettyDate(inquiry.withdrawnAt)}` : ""}
               </p>
+              {loanPrices && (
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Priced loan by loan · {inquiry.allowPartial ? "the seller may take part of the pool at your loan prices" : "whole pool only"}
+                </p>
+              )}
               {closingId && <Link href={`/closings/${closingId}`} className="mt-3 inline-block text-[13px] font-medium text-link">Closing checklist</Link>}
               {live && !lapsed && groupId && (
                 <p className="mt-3 text-sm text-muted-foreground">
@@ -85,6 +96,7 @@ export default async function OffersPage({
                   canCounter={canCounter(inquiry.status) && !lapsed}
                   acceptAmount={groupId ? null : counter}
                   acceptFrom={counterFrom(priced, inquiry.buyerId, inquiry.listing.sellerId) ?? "desk"}
+                  loans={poolBid ? inquiry.listing.notes.map((note, index) => ({ id: note.id, label: `Loan ${index + 1} · ${note.city}, ${note.state}`, ask: null })) : []}
                   messages={inquiry.messages.map((message) => ({
                     id: message.id,
                     kind: message.kind,

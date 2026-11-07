@@ -6,16 +6,19 @@ import { isPrivateDocument } from "@/lib/acl";
 import { deadlinePassed, eventSetsTerms } from "@/lib/auction";
 import { audit } from "@/lib/audit";
 import { requireUser } from "@/lib/auth";
+import { guardDesk } from "@/lib/staff";
 import { unset } from "@/lib/db-filters";
 import { notifyDesk } from "@/lib/email";
 import { sendAudience, sendListing } from "@/lib/outreach";
 import { prisma } from "@/lib/prisma";
+import { watchReprice } from "@/lib/watchers";
 
 async function ownerOrDesk(listingId: string) {
   const user = await requireUser();
   const listing = await prisma.listing.findUnique({ where: { id: listingId }, include: { notes: true, documents: true } });
   if (!listing) redirect("/seller");
   if (listing.sellerId !== user.id && user.role !== "ADMIN") redirect("/");
+  if (listing.sellerId !== user.id) guardDesk(user, "sales", `/admin/listings/${listingId}`);
   return { user, listing };
 }
 
@@ -58,8 +61,8 @@ export async function setAuction(formData: FormData) {
       bidMode,
       bidDeadline: bidMode === "NONE" ? null : deadline,
       auctionNotifiedAt: null,
-      // A new deadline gets its own 24-hour reminder.
-      ...((listing.bidDeadline?.getTime() ?? null) !== (bidMode === "NONE" ? null : deadline?.getTime() ?? null) ? { bidReminderAt: null } : {}),
+      // A new deadline gets its own 24-hour reminder, to bidders and to watchers.
+      ...((listing.bidDeadline?.getTime() ?? null) !== (bidMode === "NONE" ? null : deadline?.getTime() ?? null) ? { bidReminderAt: null, watchReminderAt: null } : {}),
     },
   });
   if (saved.count !== 1) redirect(`${terms}?error=${encodeURIComponent("The listing changed a moment ago. Check its terms and try again.")}`);
@@ -156,18 +159,21 @@ export async function bulkReprice(formData: FormData) {
   }
   // Loans already in contract or sold keep the price they trade at.
   const open = listing.notes.filter((note) => note.tradeStatus === "AVAILABLE");
-  await prisma.$transaction(
-    open.map((note) =>
-      prisma.note.update({
-        where: { id: note.id },
-        data: { askingPrice: Math.round(Number(note.upb) * percent) / 100 },
-      }),
-    ),
-  );
+  const priced = open.map((note) => ({ note, price: Math.round(Number(note.upb) * percent) / 100 }));
+  await prisma.$transaction(priced.map(({ note, price }) => prisma.note.update({ where: { id: note.id }, data: { askingPrice: price } })));
   await audit(user.id, "REPRICE", "listing", listingId, `${percent}% of UPB on ${open.length} loan${open.length === 1 ? "" : "s"}`);
   if (listing.status === "APPROVED" && user.role !== "ADMIN") {
     await notifyDesk(`Live tape repriced · ${listing.title}`, `${user.name} repriced ${open.length} live loan${open.length === 1 ? "" : "s"} to ${percent}% of UPB.`);
   }
+  // Buyers who saved it hear too, whoever repriced it. Only the loans whose price moved count.
+  const moved = priced.filter(({ note, price }) => Math.round(Number(note.askingPrice) * 100) !== Math.round(price * 100));
+  await watchReprice({
+    listingId,
+    before: moved.reduce((sum, { note }) => sum + Number(note.askingPrice), 0),
+    after: moved.reduce((sum, { price }) => sum + price, 0),
+    loans: moved.length,
+    actorId: user.id,
+  });
   revalidatePath(`/seller/listings/${listingId}`);
   revalidatePath(`/marketplace/${listingId}`);
   redirect(`/seller/listings/${listingId}?notice=repriced`);

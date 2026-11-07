@@ -4,26 +4,39 @@ import { bulkReprice, duplicateListing } from "@/actions/desk";
 import { answerDeskBid } from "@/actions/desk-book";
 import { ConfirmSubmit } from "@/components/confirm-submit";
 import { SaleApproval, WithdrawListing } from "@/components/sale-approval";
+import { BidLoanPrices } from "@/components/bid-loan-prices";
 import { updateOwnListingMeta } from "@/actions/listings";
 import { AuctionForm } from "@/components/auction-form";
 import { ComplianceNote } from "@/components/compliance-note";
 import { Countdown } from "@/components/countdown";
 import { DiscrepancyAnswers } from "@/components/discrepancy-answers";
+import { QuestionQueue } from "@/components/listing-questions";
+import { RoomAccessPanel } from "@/components/room-access";
+import { RoomFiles } from "@/components/room-files";
 import { ServicerReportPanel } from "@/components/loan-file-desk";
 import { Notice } from "@/components/notice";
+import { PhotoManager } from "@/components/photo-manager";
+import { ResultConsent } from "@/components/result-consent";
 import { StatusPill } from "@/components/status-pill";
 import { SubmitButton } from "@/components/submit-button";
+import { accessLog } from "@/lib/access-log";
 import { listingActivity, sellerReport } from "@/lib/activity";
+import { bidderNamer } from "@/lib/bidder-alias";
+import { questionQueue } from "@/lib/questions";
+import { roomRequests } from "@/lib/room-access";
 import { answerable } from "@/lib/discrepancies";
 import { requireRole } from "@/lib/auth";
-import { hideCompetingBids } from "@/lib/auction";
+import { deskWalled, hideCompetingBids } from "@/lib/auction";
+import { deskCan, deskContact } from "@/lib/staff";
 import { docLabel } from "@/lib/labels";
 import { money, num, prettyDate, q } from "@/lib/format";
+import { launchPending, launchTime } from "@/lib/launch-rules";
 import { buyerPrice } from "@/lib/offers";
 import { bpsToPercent } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
 import { deskBidNotAcceptable } from "@/lib/awards";
 import { reviewLabel } from "@/lib/listing-status";
+import { listingFeeBps } from "@/lib/desk-fees";
 import { getSettings } from "@/lib/settings";
 
 export const metadata = { title: "Your listing" };
@@ -40,7 +53,8 @@ export default async function SellerListingPage({
   const query = await searchParams;
   const listing = await prisma.listing.findUnique({
     where: { id },
-    include: { notes: true, documents: true, seller: true, inquiries: { include: { buyer: true, messages: { select: { kind: true, amount: true, createdAt: true, authorId: true } } } }, deskBids: { where: { status: "OPEN" }, orderBy: { createdAt: "desc" } }, reviews: { include: { author: true }, orderBy: { createdAt: "desc" } } },
+    // Photos are managed in their own panel and are not listed with the files.
+    include: { notes: true, documents: { where: { type: { not: "PHOTO" } } }, seller: true, inquiries: { include: { buyer: true, messages: { select: { kind: true, amount: true, createdAt: true, authorId: true } } } }, deskBids: { where: { status: "OPEN" }, orderBy: { createdAt: "desc" } }, reviews: { include: { author: true }, orderBy: { createdAt: "desc" } } },
   });
   if (!listing || (listing.sellerId !== user.id && user.role !== "ADMIN")) notFound();
   const settings = await getSettings();
@@ -50,15 +64,27 @@ export default async function SellerListingPage({
   ]);
   const deskBidBlock = deskBidNotAcceptable(listing);
   const ask = listing.notes.reduce((sum, note) => sum + num(note.askingPrice), 0);
-  const commission = listing.sellerCommissionCents != null ? listing.sellerCommissionCents / 100 : (ask * settings.sellerCommissionBps) / 10000;
+  const fees = listingFeeBps(listing, settings);
+  const commission = listing.sellerCommissionCents != null ? listing.sellerCommissionCents / 100 : (ask * fees.commissionBps) / 10000;
   const net = listing.netToSellerCents != null ? listing.netToSellerCents / 100 : ask - commission;
   const editable = listing.status === "SUBMITTED" || listing.status === "CHANGES_REQUESTED";
-  const sealed = hideCompetingBids({ bidMode: listing.bidMode, deadline: listing.bidDeadline, isDesk: user.role === "ADMIN" });
+  // The desk itself as the seller still stands behind its own wall when its role doesn't read sealed bids.
+  const sealed = hideCompetingBids({ bidMode: listing.bidMode, deadline: listing.bidDeadline, isDesk: deskCan(user, "sealedBids") }) || deskWalled(listing, user);
+  const contact = user.role === "ADMIN" ? null : await deskContact(listing.deskOwnerId);
   // The buyer's own latest price, not the opening bid, which goes stale once they reprice.
   const latest = (inquiry: (typeof listing.inquiries)[number]) => buyerPrice(inquiry.amount, inquiry.messages, inquiry.buyerId);
   const report = listing.status === "SUBMITTED" || listing.status === "UNDER_REVIEW" || listing.status === "CHANGES_REQUESTED"
     ? null
     : sellerReport(await listingActivity(listing.id, listing.sellerId));
+  // The room: bidder questions, access requests and the log. Bidders show by letter until an award; the desk sees names.
+  const [nameOf, questions, requests, log] = await Promise.all([
+    bidderNamer(listing.id, user),
+    questionQueue(listing.id),
+    roomRequests(listing.id),
+    accessLog(listing.id, user),
+  ]);
+  const loanOptions = listing.notes.map((note, index) => ({ id: note.id, label: `Loan ${index + 1} · ${note.streetAddress ? `${note.streetAddress}, ` : ""}${note.city}, ${note.state}` }));
+  const roomOpenStatus = ["SUBMITTED", "UNDER_REVIEW", "CHANGES_REQUESTED", "APPROVED"].includes(listing.status);
 
   return (
     <div className="grid grid-cols-[minmax(0,1fr)] gap-8 lg:grid-cols-[minmax(0,1fr)_300px]">
@@ -69,6 +95,16 @@ export default async function SellerListingPage({
           <span className="text-[13px] font-medium text-muted-foreground">{listing.kind === "POOL" ? `${listing.notes.length} loans` : "Single note"}</span>
         </div>
         <h1 className="mt-4 font-semibold tracking-tight text-[28px] text-foreground">{listing.title}</h1>
+        {contact && (
+          <p className="mt-2 text-sm text-muted-foreground">
+            Your desk contact: {contact.name} · <a className="text-link" href={`mailto:${contact.email}`}>{contact.email}</a>
+          </p>
+        )}
+        {listing.status === "APPROVED" && launchPending(listing) && listing.launchAt && (
+          <p role="status" className="mt-3 max-w-2xl border border-link/30 bg-link/5 px-3 py-2 text-sm leading-relaxed text-foreground rounded-lg tabular-nums">
+            Coming soon. It goes live to approved buyers on {launchTime(listing.launchAt)}. Until then buyers see a teaser with no price or address, and can save it to hear when it opens.
+          </p>
+        )}
         <p className="mt-4 max-w-2xl text-sm leading-relaxed text-muted-foreground">{listing.summary}</p>
         <ComplianceNote states={listing.notes.map((note) => note.state)} sellerFinanced={listing.sellerFinanced} sellerRole={listing.seller.role} />
         <DiscrepancyAnswers
@@ -95,8 +131,25 @@ export default async function SellerListingPage({
             <SubmitButton className="h-11 text-[13px] font-medium">Save and resubmit</SubmitButton>
           </form>
         )}
-        {listing.status !== "WITHDRAWN" && <SaleApproval listing={listing} offers={listing.inquiries} canAnswer={listing.sellerId === user.id} />}
+        {listing.kind === "POOL" && roomOpenStatus && listing.sellerId === user.id && (
+          <RoomFiles listingId={listing.id} from="seller" live={listing.status === "APPROVED"} loans={loanOptions} />
+        )}
+        {listing.status !== "WITHDRAWN" && <SaleApproval listing={listing} offers={listing.inquiries} canAnswer={listing.sellerId === user.id} revealNames={user.role === "ADMIN"} />}
         <WithdrawListing listing={listing} offers={listing.inquiries} ask={ask} openClosings={openClosings} canWithdraw={listing.sellerId === user.id} />
+        <QuestionQueue
+          rows={questions.map((row) => ({ ...row, asker: nameOf(row.asker) }))}
+          from="seller"
+          live={listing.status === "APPROVED"}
+          loans={listing.kind === "POOL" ? loanOptions : []}
+        />
+        <RoomAccessPanel
+          listingId={listing.id}
+          from="seller"
+          roomApproval={Boolean(listing.roomApproval)}
+          editable={roomOpenStatus}
+          requests={requests.map((request) => ({ ...request, bidder: nameOf(request.user) }))}
+          engagement={log.status === 200 ? log.engagement : []}
+        />
         <section className="mt-10">
           {listing.deskBids.map((bid) => (
             <div key={bid.id} className="mb-6 border border-link/30 bg-link/5 p-4 rounded-xl">
@@ -132,14 +185,19 @@ export default async function SellerListingPage({
             {listing.inquiries.length === 0 && <li className="px-4 py-4 text-sm text-muted-foreground">No inquiries yet.</li>}
             {listing.inquiries.map((inquiry) => (
               <li key={inquiry.id} className="px-4 py-4">
-                <p className="text-sm text-foreground">{inquiry.buyer.name} · {inquiry.type.replaceAll("_", " ").toLowerCase()} · {inquiry.status.toLowerCase()}</p>
+                <p className="text-sm text-foreground">{nameOf(inquiry.buyer)} · {inquiry.type.replaceAll("_", " ").toLowerCase()} · {inquiry.status.toLowerCase()}</p>
                 {latest(inquiry) && !sealed && <p className="mt-1 font-semibold tracking-tight text-2xl">{money(num(latest(inquiry)))}</p>}
+                {/* A pool bid's loan prices, under the bidder's letter like the rest of the bid. */}
+                {!sealed && inquiry.type === "OFFER" && !inquiry.noteId && listing.kind === "POOL" && (
+                  <BidLoanPrices loanPrices={inquiry.loanPrices} allowPartial={inquiry.allowPartial} price={latest(inquiry)} loans={listing.notes.map((note, index) => ({ id: note.id, label: `Loan ${index + 1} · ${note.city}, ${note.state}` }))} />
+                )}
                 {latest(inquiry) && sealed && <p className="mt-1 text-sm text-muted-foreground">Amount sealed until the deadline.</p>}
                 {!(sealed && inquiry.type === "OFFER") && <p className="mt-1 text-sm text-muted-foreground">{inquiry.message}</p>}
               </li>
             ))}
           </ul>
         </section>
+        <PhotoManager listing={listing} desk={user.role === "ADMIN"} />
         <section className="mt-8">
           <p className="eyebrow">Desk notes</p>
           <ul className="mt-4 space-y-3">
@@ -157,7 +215,7 @@ export default async function SellerListingPage({
         <p className="mt-3 font-semibold tracking-tight text-3xl text-foreground">{money(listing.salePrice ? num(listing.salePrice) : ask)}</p>
         <p className="text-[13px] font-medium text-muted-foreground">{listing.salePrice ? "Sale price" : "Asking price"}</p>
         <dl className="mt-5 space-y-2 text-sm">
-          <div className="flex justify-between"><dt className="text-muted-foreground">Commission {bpsToPercent(settings.sellerCommissionBps).toFixed(2)}%</dt><dd>{money(commission)}</dd></div>
+          <div className="flex justify-between"><dt className="text-muted-foreground">Commission {bpsToPercent(fees.commissionBps).toFixed(2)}%</dt><dd>{money(commission)}</dd></div>
           <div className="flex justify-between border-t border-border pt-2"><dt>Estimated net</dt><dd className="font-semibold tracking-tight text-xl">{money(net)}</dd></div>
         </dl>
         {report ? (
@@ -199,6 +257,7 @@ export default async function SellerListingPage({
             <SubmitButton variant="outline" className="h-10 text-[13px] font-medium">Reprice the tape</SubmitButton>
           </form>
         )}
+        <ResultConsent listing={listing} desk={user.role === "ADMIN"} />
         <form action={duplicateListing} className="mt-4">
           <input type="hidden" name="listingId" value={listing.id} />
           <SubmitButton variant="ghost" className="h-10 px-0 text-[13px] font-medium text-link">Duplicate listing</SubmitButton>

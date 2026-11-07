@@ -3,7 +3,8 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { audit } from "@/lib/audit";
-import { requireRole, requireUser } from "@/lib/auth";
+import { requireUser } from "@/lib/auth";
+import { requireDesk } from "@/lib/staff";
 import { compsFor, loadClosedTrades } from "@/lib/comps";
 import { prettyDate } from "@/lib/format";
 import { compSubjectOf, indicativeTarget, modelBand, priceLadder, type IndicativeNote, type PriceLadder } from "@/lib/indicative";
@@ -24,7 +25,7 @@ function back(message: string, kind: "notice" | "error"): never {
 // The desk enters the 10-year Treasury rate and the day it was read, and the yield the book's indicative price
 // solves for. A new rate reprices every spread rule's open matches at once.
 export async function saveMarketRates(formData: FormData) {
-  const actor = await requireRole(["ADMIN"]);
+  const actor = await requireDesk("admin", "/admin/settings");
   const rateText = String(formData.get("tenYearRate") || "").trim();
   const dateText = String(formData.get("tenYearAsOf") || "").trim();
   const targetText = String(formData.get("indicativeTargetYield") || "").trim();

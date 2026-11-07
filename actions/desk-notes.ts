@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { requireRole } from "@/lib/auth";
+import { requireDeskWriter } from "@/lib/staff";
 import { prisma } from "@/lib/prisma";
 
 const SUBJECTS = new Set(["listing", "closing", "user"]);
@@ -12,7 +12,7 @@ function backTo(raw: string) {
 }
 
 export async function addDeskNote(formData: FormData) {
-  const user = await requireRole(["ADMIN"]);
+  const user = await requireDeskWriter(backTo(String(formData.get("back") || "")));
   const subjectType = String(formData.get("subjectType") || "");
   const subjectId = String(formData.get("subjectId") || "");
   const body = String(formData.get("body") || "").trim().slice(0, 2000);
@@ -25,7 +25,7 @@ export async function addDeskNote(formData: FormData) {
 }
 
 export async function removeDeskNote(formData: FormData) {
-  const user = await requireRole(["ADMIN"]);
+  const user = await requireDeskWriter(backTo(String(formData.get("back") || "")));
   const noteId = String(formData.get("noteId") || "");
   const back = backTo(String(formData.get("back") || ""));
   const note = await prisma.deskNote.findUnique({ where: { id: noteId } });

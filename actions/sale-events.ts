@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { requireRole } from "@/lib/auth";
+import { requireDesk } from "@/lib/staff";
 import { cancelEvent, createEvent, editEvent, enterEvent, leaveEvent } from "@/lib/sale-events";
 
 // Every action here is the desk's. Each one checks the role itself, since a server action is a public endpoint.
@@ -30,7 +30,7 @@ function backTo(formData: FormData, eventId: string, listingId: string) {
 }
 
 export async function createSaleEvent(formData: FormData) {
-  const user = await requireRole(["ADMIN"]);
+  const user = await requireDesk("sales", "/admin/events");
   const result = await createEvent({
     name: field(formData, "name"),
     summary: field(formData, "summary"),
@@ -44,7 +44,7 @@ export async function createSaleEvent(formData: FormData) {
 }
 
 export async function editSaleEvent(formData: FormData) {
-  const user = await requireRole(["ADMIN"]);
+  const user = await requireDesk("sales", "/admin/events");
   const eventId = field(formData, "eventId");
   const result = await editEvent({
     eventId,
@@ -60,7 +60,7 @@ export async function editSaleEvent(formData: FormData) {
 }
 
 export async function addEventListing(formData: FormData) {
-  const user = await requireRole(["ADMIN"]);
+  const user = await requireDesk("sales", "/admin/events");
   const eventId = field(formData, "eventId");
   const listingId = field(formData, "listingId");
   const back = backTo(formData, eventId, listingId);
@@ -72,7 +72,7 @@ export async function addEventListing(formData: FormData) {
 }
 
 export async function removeEventListing(formData: FormData) {
-  const user = await requireRole(["ADMIN"]);
+  const user = await requireDesk("sales", "/admin/events");
   const eventId = field(formData, "eventId");
   const listingId = field(formData, "listingId");
   const back = backTo(formData, eventId, listingId);
@@ -83,7 +83,7 @@ export async function removeEventListing(formData: FormData) {
 }
 
 export async function cancelSaleEvent(formData: FormData) {
-  const user = await requireRole(["ADMIN"]);
+  const user = await requireDesk("sales", "/admin/events");
   const eventId = field(formData, "eventId");
   const result = await cancelEvent({ eventId, actorId: user.id });
   if (result.error !== null) to(`/admin/events/${eventId}`, "error", result.error);

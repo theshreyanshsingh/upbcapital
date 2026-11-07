@@ -113,6 +113,8 @@ enum DocType {
   ASSIGNMENT
   OE_REPORT
   RISK_SEARCH
+  // A property photo the seller adds, shown on the listing to whoever may see the street address.
+  PHOTO
 }
 
 enum NdaMethod {
@@ -311,6 +313,23 @@ model User {
   pushEnabled                  Boolean?
   // Listings the desk sends by hand. Missing counts as on, so older accounts keep receiving them.
   dealAlerts                   Boolean?
+  // Notices about listings the user saved: a new price, buy it now, a deadline, a withdrawal, new files, Q&A.
+  // Missing counts as on.
+  watchAlerts                  Boolean?
+  // The weekly activity report a seller or broker gets on their live listings. Missing counts as on.
+  sellerReport                 Boolean?
+  lastSellerReportAt           DateTime?
+  // The version of the terms of use and privacy policy the user accepted, and when. Missing means not yet.
+  termsVersion                 String?
+  termsAcceptedAt              DateTime?
+  // For desk staff (role ADMIN): OWNER, SALES, CLOSINGS, COMPLIANCE, TRADER or ANALYST. Missing means OWNER, so
+  // accounts from before roles keep every power. lib/staff.ts says what each may do.
+  deskRole                     String?
+  // Set when the account was deleted at the holder's request. Personal fields are cleared; deal records stay.
+  deletedAt                    DateTime?
+  // The desk member who created this account by invitation, and when.
+  invitedById                  String?
+  invitedAt                    DateTime?
   lastDigestAt                 DateTime?
   createdAt                    DateTime           @default(now())
   sessions                     ServerSession[]
@@ -342,6 +361,8 @@ model User {
   brokerFees                   BrokerFee[]
   listingSends                 ListingSend[]
   deskNotes                    DeskNote[]
+  questionsAsked               ListingQuestion[] @relation("QuestionAsker")
+  deletionRequests             DeletionRequest[]
 }
 
 model PlatformSettings {
@@ -382,6 +403,9 @@ model PlatformSettings {
   strikeLimit          Int?
   // Two-step sign-in for every account that can see borrower data. Missing means on.
   requireTwoStep       Boolean?
+  // The version of the terms of use and privacy policy every account must have accepted. The desk raises it when it
+  // publishes a change that needs fresh consent. Missing means the version built into lib/legal.ts.
+  legalVersion         String?
   updatedAt            DateTime @updatedAt
 }
 
@@ -467,6 +491,22 @@ model Listing {
   buyNowConsent        String?
   // The dated sale event this listing trades in, if any. The event sets its rounds.
   saleEventId          String?
+  // The desk's fees as they stood when the listing went live, so a later change in settings doesn't reprice a
+  // deal already marketed. Missing means the settings at award, for listings approved before this was kept.
+  feeBuyerPremiumBps   Int?
+  feeSellerCommissionBps Int?
+  // The seller approves each bidder's data-room access after the NDA. Missing means the NDA alone opens it.
+  roomApproval         Boolean?
+  // The seller agreed to show this sale's anonymised result on the public results page.
+  publishResult        Boolean?
+  // When watchers were reminded of the bid deadline, so they hear once.
+  watchReminderAt      DateTime?
+  // The desk member who owns this deal, named to the seller as their contact.
+  deskOwnerId          String?
+  // An approved listing with a launch date shows on the book as coming soon until then: buyers can save it, but
+  // the room, bids and alerts wait for the date. launchNotifiedAt is set once watchers hear it went live.
+  launchAt             DateTime?
+  launchNotifiedAt     DateTime?
   notes                Note[]
   documents            Document[]
   inquiries            Inquiry[]
@@ -480,6 +520,7 @@ model Listing {
   deskBids             DeskBid[]
   deskHoldings         DeskHolding[]
   sends                ListingSend[]
+  questions            ListingQuestion[]
   createdAt            DateTime      @default(now())
   updatedAt            DateTime      @updatedAt
 
@@ -616,6 +657,10 @@ model Inquiry {
   withdrawnAt          DateTime?
   // Placed at the seller's buy-it-now price, which the seller agreed to in advance.
   buyNow               Boolean?
+  // A pool bid's price for each loan, as { noteId: dollars }, summing to the bid. Lets the desk take part of the
+  // pool when allowPartial is set, and sizes a kick-out.
+  loanPrices           Json?
+  allowPartial         Boolean?
 
   @@index([listingId])
   @@index([buyerId])
@@ -764,6 +809,78 @@ model RiskCheck {
   @@index([noteId])
 }
 
+// A bidder's question about a listing. The seller or the desk answers, and a published answer goes to every bidder
+// with data-room access, without the asker's name.
+model ListingQuestion {
+  id           String    @id @default(cuid()) @map("_id")
+  listingId    String
+  listing      Listing   @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  askerId      String
+  asker        User      @relation("QuestionAsker", fields: [askerId], references: [id], onDelete: Cascade)
+  noteId       String?
+  question     String
+  answer       String    @default("")
+  // OPEN, ANSWERED (published to every bidder) or DECLINED (answered privately or not at all).
+  status       String    @default("OPEN")
+  answeredById String?
+  answeredAt   DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([listingId])
+  @@index([askerId])
+}
+
+// A change to wire instructions, proposed by one desk member and approved by another before it takes effect.
+// closingId empty means the desk's default instructions in settings.
+model WireChange {
+  id           String    @id @default(cuid()) @map("_id")
+  closingId    String?
+  closing      Closing?  @relation(fields: [closingId], references: [id], onDelete: Cascade)
+  proposedById String
+  instructions String
+  reason       String    @default("")
+  // PENDING, APPROVED or REJECTED.
+  status       String    @default("PENDING")
+  decidedById  String?
+  decidedAt    DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([closingId])
+  @@index([status])
+}
+
+// A loan taken out of a closing before settlement, with the price and deposit it took with it.
+model ClosingKickout {
+  id                String   @id @default(cuid()) @map("_id")
+  closingId         String
+  closing           Closing  @relation(fields: [closingId], references: [id], onDelete: Cascade)
+  noteId            String
+  priceCents        Int
+  depositCents      Int      @default(0)
+  reason            String
+  actorId           String
+  createdAt         DateTime @default(now())
+
+  @@index([closingId])
+}
+
+// A holder's request to delete their account. The desk completes it once nothing open depends on the account.
+model DeletionRequest {
+  id          String    @id @default(cuid()) @map("_id")
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reason      String    @default("")
+  // REQUESTED, COMPLETED or REFUSED.
+  status      String    @default("REQUESTED")
+  requestedAt DateTime  @default(now())
+  decidedAt   DateTime?
+  decidedById String?
+  note        String    @default("")
+
+  @@index([status])
+  @@index([userId])
+}
+
 model Favorite {
   id        String   @id @default(cuid()) @map("_id")
   userId    String
@@ -791,6 +908,14 @@ model NdaAcknowledgment {
   documentId     String    @default("")
   signatureProvider String @default("")
   signatureRef   String    @default("")
+  // On a listing whose seller approves each bidder: PENDING until they decide, then APPROVED or DECLINED.
+  // Missing means approved, for rooms that open on the NDA alone.
+  accessStatus   String?
+  accessDecidedAt DateTime?
+  accessDecidedById String?
+  // After the sale goes to someone else, the bidder is asked to certify they destroyed the room's files.
+  destroyRequestedAt DateTime?
+  destroyedAt    DateTime?
 
   @@unique([userId, listingId])
 }
@@ -882,6 +1007,11 @@ model Closing {
   // The name the buyer takes title in: the investing entity on the buyer file the desk vetted, fixed at award so
   // the papers don't change if the buyer refiles mid-closing. Null for a desk purchase.
   buyerEntity           String?
+  // The desk member who runs this closing. Starts as the listing's deal owner.
+  deskOwnerId           String?
+  // The loans a closing covers when it is part of a pool, or a pool after a kick-out. Empty means noteId alone,
+  // or the whole listing when noteId is empty too. lib/closing.ts closingLoans reads it.
+  noteIds               String[]      @default([])
   openedAt              DateTime      @default(now())
   closedAt              DateTime?
   canceledAt            DateTime?
@@ -919,6 +1049,8 @@ model Closing {
 
   @@index([listingId])
   @@index([status])
+  kickouts              ClosingKickout[]
+  wireChanges           WireChange[]
 }
 
 model ClosingStep {
@@ -1030,6 +1162,9 @@ model SavedSearch {
   name         String
   filters      Json
   alertEnabled Boolean  @default(true)
+  // INSTANT, DAILY or WEEKLY. Missing means instant, as before. A daily or weekly search sends one roundup.
+  cadence      String?
+  lastAlertAt  DateTime?
   createdAt    DateTime @default(now())
 }
 
@@ -1106,6 +1241,9 @@ model BuyBox {
   priceMax      Float?
   maxPriceToUpb Float?
   targetYield   Float?
+  // The highest loan-to-value the buyer takes, as a percent, and the fewest months since origination.
+  maxLtv        Float?
+  minSeasoningMonths Int?
   // A standing price rule: every new tape that fits this box gets an indicative bid at once, which the desk
   // reviews and the buyer confirms before it is a bid. Basis UPB prices at bidPercent of UPB; basis YIELD solves
   // for the price that returns targetYield.
@@ -1729,9 +1867,16 @@ model WebhookDelivery {
   event      String
   status     Int             @default(0)
   detail     String          @default("")
+  // The signed body, kept so a failed delivery can be retried as sent.
+  payload    String          @default("")
+  attempts   Int             @default(1)
+  // When the next retry is due. Missing once it was delivered or gave up.
+  nextAttemptAt DateTime?
+  deliveredAt DateTime?
   createdAt  DateTime        @default(now())
 
   @@index([endpointId])
+  @@index([nextAttemptAt])
 }
 
 model TapeDraft {

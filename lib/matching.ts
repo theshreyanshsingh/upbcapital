@@ -1,7 +1,8 @@
 import type { Prisma } from "@prisma/client";
-import { parseList, scoreAgainstBox, type BoxCriteria, type ScoreNote } from "@/lib/buy-box";
+import { parseList, scoreAgainstBox, seasoningMonths, type BoxCriteria, type ScoreNote } from "@/lib/buy-box";
 import { unset } from "@/lib/db-filters";
 import { notify, notifyDesk } from "@/lib/email";
+import { launchPending } from "@/lib/launch-rules";
 import { prisma } from "@/lib/prisma";
 import { marketRate, type MarketRate, type StandingPoint } from "@/lib/indicative";
 import { getSettings } from "@/lib/settings";
@@ -34,6 +35,8 @@ export function criteriaFrom(box: {
   priceMax: { toString(): string } | null;
   maxPriceToUpb: { toString(): string } | null;
   targetYield: { toString(): string } | null;
+  maxLtv?: { toString(): string } | null;
+  minSeasoningMonths?: number | null;
 }): BoxCriteria {
   return {
     states: parseList(box.states),
@@ -45,10 +48,19 @@ export function criteriaFrom(box: {
     priceMax: num(box.priceMax),
     maxPriceToUpb: num(box.maxPriceToUpb),
     targetYield: num(box.targetYield),
+    maxLtv: num(box.maxLtv ?? null),
+    minSeasoningMonths: box.minSeasoningMonths ?? null,
   };
 }
 
-type ScoredLoan = Pick<StandingNote, "upb" | "askingPrice" | "monthlyPi" | "interestRate" | "maturityDate" | "paymentStatus"> & { state: string; lienPosition: string };
+// A draft at upload may not carry a value or an origination date. Without them a box's LTV or seasoning limit
+// can't be met, so it doesn't count the draft.
+type ScoredLoan = Pick<StandingNote, "upb" | "askingPrice" | "monthlyPi" | "interestRate" | "maturityDate" | "paymentStatus"> & {
+  state: string;
+  lienPosition: string;
+  estimatedValue?: number;
+  originationDate?: Date | null;
+};
 
 function notesOf(notes: ScoredLoan[], now: Date): ScoreNote[] {
   return notes.map((note) => ({
@@ -60,6 +72,8 @@ function notesOf(notes: ScoredLoan[], now: Date): ScoreNote[] {
     monthlyPi: Number(note.monthlyPi),
     interestRate: Number(note.interestRate),
     termMonths: remainingTerm(note.maturityDate, now),
+    estimatedValue: note.estimatedValue === undefined ? undefined : Number(note.estimatedValue),
+    seasoningMonths: seasoningMonths(note.originationDate, now),
   }));
 }
 
@@ -141,11 +155,26 @@ async function tellDeskOfStandingBids(listing: ListingRow, bids: { userId: strin
   );
 }
 
-export async function rescoreListing(listingId: string, alert: boolean) {
+// Active boxes with their owners, read apart: deleting an account removes its boxes a moment later on MongoDB, and a
+// required include on a box whose owner is gone fails the whole read. A box without its owner is skipped.
+async function boxesWithOwners(where: Prisma.BuyBoxWhereInput, owners: Prisma.UserWhereInput = {}) {
+  const boxes = await prisma.buyBox.findMany({ where });
+  if (!boxes.length) return [];
+  const users = await prisma.user.findMany({ where: { ...owners, id: { in: [...new Set(boxes.map((box) => box.userId))] } } });
+  const byId = new Map(users.map((user) => [user.id, user]));
+  return boxes.flatMap((box) => {
+    const user = byId.get(box.userId);
+    return user ? [{ ...box, user }] : [];
+  });
+}
+
+export async function rescoreListing(listingId: string, alert: boolean, now = new Date()) {
   const listing = await prisma.listing.findUnique({ where: { id: listingId }, include: { notes: true } });
   if (!listing || listing.status === "REJECTED") return;
-  const boxes = await prisma.buyBox.findMany({ where: { active: true }, include: { user: true } });
-  const now = new Date();
+  // A coming-soon listing is scored quietly. Its buyers hear, and the desk's standing-bid notice goes, at the launch.
+  const coming = launchPending(listing, now);
+  const mail = alert && !coming;
+  const boxes = await boxesWithOwners({ active: true });
   // Yield and spread rules hold on what the buyer pays, premium included. Spread rules price on the desk's rate.
   const settings = await getSettings();
   const premiumBps = settings.buyerPremiumBps;
@@ -157,7 +186,7 @@ export async function rescoreListing(listingId: string, alert: boolean) {
   for (const box of boxes) {
     const result = await writeMatch(listing, box, notes, now, premiumBps, rate);
     if (result?.price != null) standing.push({ userId: box.userId, ofUpb: upb > 0 ? (result.price / upb) * 100 : null });
-    if (!result || !alert || listing.status !== "APPROVED") continue;
+    if (!result || !mail || listing.status !== "APPROVED") continue;
     if (box.user.role !== "BUYER" || box.user.accountStatus !== "APPROVED") continue;
     const prior = mailed.get(box.userId);
     if (!prior || result.score > prior.score) mailed.set(box.userId, { email: box.user.email, score: result.score, name: box.name });
@@ -169,7 +198,7 @@ export async function rescoreListing(listingId: string, alert: boolean) {
       `${listing.title} is live and scores ${hit.score} against “${hit.name}”. ${hit.score >= 80 ? "It sits close to the box." : "Open the book to underwrite it."}`,
     );
   }
-  await tellDeskOfStandingBids(listing, standing, now);
+  if (!coming) await tellDeskOfStandingBids(listing, standing, now);
 }
 
 // Scores the box against every open listing, which also reprices its open matches when its rule changes. A rule
@@ -189,7 +218,7 @@ export async function rescoreBox(boxId: string, options: { quiet?: boolean } = {
   let live = 0;
   for (const listing of listings) {
     const result = await writeMatch(listing, box, notesOf(listing.notes, now), now, premiumBps, rate);
-    if (result && listing.status === "APPROVED") live += 1;
+    if (result && listing.status === "APPROVED" && !launchPending(listing, now)) live += 1;
   }
   if (!options.quiet && live > 0 && box.active && box.user.role === "BUYER") {
     await notify(box.user.email, `Buy box · ${box.name}`, `${live} live listing${live === 1 ? "" : "s"} currently fit this box.`);
@@ -218,7 +247,7 @@ export type StandingDemand = {
 export async function standingDemand(kind: string, loans: DraftLoan[], now = new Date()): Promise<StandingDemand> {
   if (!loans.length) return { standing: [], fits: 0 };
   const [boxes, settings] = await Promise.all([
-    prisma.buyBox.findMany({ where: { active: true, user: { role: "BUYER", accountStatus: "APPROVED" } }, include: { user: true } }),
+    boxesWithOwners({ active: true }, { role: "BUYER", accountStatus: "APPROVED" }),
     getSettings(),
   ]);
   const rate = marketRate(settings);

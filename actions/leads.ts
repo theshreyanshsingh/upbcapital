@@ -1,7 +1,7 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { requireRole } from "@/lib/auth";
+import { requireDesk } from "@/lib/staff";
 import { indicativeQuote } from "@/lib/quote";
 import { prisma } from "@/lib/prisma";
 import { consumeRateLimit } from "@/lib/rate-limit";
@@ -71,7 +71,7 @@ export async function quoteLead(formData: FormData) {
 }
 
 export async function setLeadStatus(formData: FormData) {
-  await requireRole(["ADMIN"]);
+  await requireDesk("sales", "/admin/leads");
   const id = String(formData.get("id") || "");
   const status = String(formData.get("status") || "");
   if (!["NEW", "CONTACTED", "LISTING", "PASSED"].includes(status)) redirect("/admin/leads?error=Unknown status.");

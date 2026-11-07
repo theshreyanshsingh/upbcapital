@@ -83,6 +83,11 @@ export function MarketingFooter() {
         <div className="flex flex-wrap gap-x-8 gap-y-3 text-sm font-medium text-muted-foreground">
           <Link href="/login" className="transition-colors hover:text-foreground">Sign in</Link>
           <Link href="/signup" className="transition-colors hover:text-foreground">Request access</Link>
+          <Link href="/results" className="transition-colors hover:text-foreground">Results</Link>
+          <Link href="/fees" className="transition-colors hover:text-foreground">Fees</Link>
+          <Link href="/terms" className="transition-colors hover:text-foreground">Terms</Link>
+          <Link href="/privacy" className="transition-colors hover:text-foreground">Privacy</Link>
+          <Link href="/security" className="transition-colors hover:text-foreground">Security</Link>
           {desk && <a href={`mailto:${desk}`} className="transition-colors hover:text-foreground">{desk}</a>}
         </div>
       </div>

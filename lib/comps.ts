@@ -209,7 +209,7 @@ export async function loadClosedTrades(now = new Date(), windowMonths = COMP_WIN
   const [closings, sold] = await Promise.all([
     prisma.closing.findMany({
       where: { status: "COMPLETE" },
-      select: { listingId: true, noteId: true, salePrice: true, closedAt: true, openedAt: true, listing: { select: { notes: { select: loanFields } } } },
+      select: { listingId: true, noteId: true, noteIds: true, salePrice: true, closedAt: true, openedAt: true, listing: { select: { notes: { select: loanFields } } } },
       orderBy: { openedAt: "desc" },
       take: 5000,
     }),

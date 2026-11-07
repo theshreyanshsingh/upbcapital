@@ -2,14 +2,14 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { requireRole } from "@/lib/auth";
+import { requireDesk } from "@/lib/staff";
 import { clearStrike } from "@/lib/strikes";
 
 // The pages a clear can come from. Anything else goes back to the buyer files.
 const BACK = ["/admin/verification", "/admin/users"] as const;
 
 export async function clearBuyerStrike(formData: FormData) {
-  const actor = await requireRole(["ADMIN"]);
+  const actor = await requireDesk("compliance", "/admin/verification");
   const strikeId = String(formData.get("strikeId") || "");
   const note = String(formData.get("note") || "");
   const asked = String(formData.get("back") || "");

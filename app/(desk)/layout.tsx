@@ -8,6 +8,8 @@ import { getCurrentUser } from "@/lib/auth";
 import { paletteCommands } from "@/lib/command-search";
 import { prisma } from "@/lib/prisma";
 import { unset } from "@/lib/db-filters";
+import { currentLegalVersion, legalDue } from "@/lib/legal";
+import { deskPowers } from "@/lib/desk-roles";
 
 export const dynamic = "force-dynamic";
 
@@ -33,15 +35,18 @@ export default async function DeskLayout({ children }: { children: React.ReactNo
   });
   // Pages and actions for this role. Records are searched through /api/command, scoped the same way.
   const palette = paletteCommands(user);
+  const termsDue = legalDue(user, await currentLegalVersion());
   return (
     <>
       <AppShell
+        termsDue={termsDue}
         user={{
           name: user.name,
           email: user.email,
           role: user.role,
           tier: user.subscriptionTier,
           unread,
+          ...(user.role === "ADMIN" ? { can: deskPowers(user) } : {}),
         }}
       >
         {children}

@@ -5,6 +5,7 @@ import { ComplianceNote } from "@/components/compliance-note";
 import { MarketingFooter, MarketingHeader } from "@/components/marketing";
 import { getCurrentUser } from "@/lib/auth";
 import { labelOf } from "@/lib/labels";
+import { launchPending } from "@/lib/launch-rules";
 import { prisma } from "@/lib/prisma";
 import { upbBucket } from "@/lib/strata";
 
@@ -41,7 +42,7 @@ export default async function OpenListingPage({ params }: { params: Promise<{ id
     <div>
       <MarketingHeader authed={Boolean(user)} />
       <main id="desk" className="mx-auto max-w-3xl px-5 pb-24 pt-32">
-        <p className="eyebrow">{listing.kind === "POOL" ? "Pool" : "Note"} · {listing.status === "PENDING" ? "In contract" : "Live"}</p>
+        <p className="eyebrow">{listing.kind === "POOL" ? "Pool" : "Note"} · {listing.status === "PENDING" ? "In contract" : launchPending(listing) ? "Coming soon" : "Live"}</p>
         <h1 className="mt-4 font-semibold tracking-tight text-5xl text-foreground md:text-6xl">{note.city}, {note.state}</h1>
         <p className="mt-6 text-lg leading-relaxed text-muted-foreground">
           {listing.kind === "POOL"

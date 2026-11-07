@@ -150,7 +150,10 @@ const bid = (deal: Deal, buyerId: string, amount: number, extra: Record<string, 
   prisma.inquiry.create({ data: { listingId: deal.listing.id, buyerId, type: "OFFER", status: "OPEN", amount, ...extra } });
 
 const statusOf = async (id: string) => (await prisma.inquiry.findUniqueOrThrow({ where: { id } })).status;
-const mail = (toEmail: string, subject: string) => prisma.notification.count({ where: { toEmail, subject: { contains: subject } } });
+// Desk notices reach every approved admin, so the deal's desk also hears other files' deals. Each subject names its
+// listing, so this counts only the deal's own.
+const mail = (deal: Deal, toEmail: string, subject: string) =>
+  prisma.notification.count({ where: { toEmail, subject: `${subject} · ${deal.listing.title}` } });
 
 test("a bid past its good-until date can't be awarded, and the job marks it expired and tells the buyer once", async () => {
   const deal = await makeDeal({ reserve: 1000 });
@@ -163,12 +166,13 @@ test("a bid past its good-until date can't be awarded, and the job marks it expi
     assert.match((await awardOffer(lapsed.id, deal.desk.id)).error ?? "", /good-until date/);
     assert.equal(await prisma.closing.count({ where: { listingId: deal.listing.id } }), 0);
 
-    const runs = await Promise.all([expireBids(), expireBids()]);
+    const own = { inquiryIds: [lapsed.id, standing.id, open.id] };
+    const runs = await Promise.all([expireBids(new Date(), own), expireBids(new Date(), own)]);
     assert.ok(runs.every((tally) => tally.failed === 0));
     assert.equal(await statusOf(lapsed.id), "EXPIRED");
     assert.equal(await statusOf(standing.id), "OPEN");
     assert.equal(await statusOf(open.id), "OPEN");
-    assert.equal(await mail(deal.buyer.email, "Bid expired"), 1);
+    assert.equal(await mail(deal, deal.buyer.email, "Bid expired"), 1);
     assert.match((await checkAward(lapsed.id)).error ?? "", /good-until date/);
   } finally {
     await cleanDeal(deal);
@@ -187,8 +191,8 @@ test("a buyer withdraws an open bid, the desk and an asked seller hear, and a se
     const row = await prisma.inquiry.findUniqueOrThrow({ where: { id: offer.id } });
     assert.equal(row.status, "WITHDRAWN");
     assert.ok(row.withdrawnAt);
-    assert.equal(await mail(deal.desk.email, "Bid withdrawn"), 1);
-    assert.equal(await mail(deal.seller.email, "Bid withdrawn"), 1);
+    assert.equal(await mail(deal, deal.desk.email, "Bid withdrawn"), 1);
+    assert.equal(await mail(deal, deal.seller.email, "Bid withdrawn"), 1);
     assert.equal(await prisma.auditEvent.count({ where: { entityId: offer.id, action: "BID_WITHDRAWN" } }), 1);
     assert.match((await withdrawBid(offer.id, deal.buyer.id)).error ?? "", /already closed/);
     assert.equal((await checkAward(offer.id)).error, "The buyer withdrew that bid.");
@@ -196,7 +200,7 @@ test("a buyer withdraws an open bid, the desk and an asked seller hear, and a se
     // A bid the seller was never asked about doesn't reach the seller.
     const quiet = await bid(deal, deal.second.id, 70000);
     assert.equal((await withdrawBid(quiet.id, deal.second.id)).error, null);
-    assert.equal(await mail(deal.seller.email, "Bid withdrawn"), 1);
+    assert.equal(await mail(deal, deal.seller.email, "Bid withdrawn"), 1);
 
     // A group's bid comes back through the group, with a pointer to it.
     const lead = await bid(deal, deal.second.id, 80000);
@@ -257,8 +261,8 @@ test("a seller's counter is their approval at that price, and the buyer acceptin
     const priced = row.messages.map((message) => ({ kind: message.kind, amount: message.amount, createdAt: message.createdAt, authorId: message.authorId }));
     assert.equal(openCounter(priced, deal.buyer.id), 100000);
     assert.equal(counterFrom(priced, deal.buyer.id, deal.seller.id), "seller");
-    assert.equal(await mail(deal.buyer.email, "Seller counter"), 1);
-    assert.equal(await mail(deal.desk.email, "Seller countered"), 1);
+    assert.equal(await mail(deal, deal.buyer.email, "Seller counter"), 1);
+    assert.equal(await mail(deal, deal.desk.email, "Seller countered"), 1);
 
     // Until the buyer takes it, their own price stands and the seller hasn't agreed to that.
     assert.equal((await awardOffer(offer.id, deal.desk.id)).error, "The seller hasn't approved this price.");
@@ -299,11 +303,11 @@ test("withdrawing a listing declines its bids, ends desk bids, dissolves groups,
     assert.equal(await statusOf(two.id), "DECLINED");
     assert.equal((await prisma.deskBid.findUniqueOrThrow({ where: { id: deskBid.id } })).status, "WITHDRAWN");
     assert.equal((await prisma.groupBuy.findUniqueOrThrow({ where: { id: gathering.id } })).status, "DISSOLVED");
-    assert.equal(await mail(deal.buyer.email, "Listing withdrawn"), 1);
-    assert.equal(await mail(deal.second.email, "Listing withdrawn"), 1);
-    assert.equal(await mail(deal.second.email, "Group closed"), 1);
-    assert.equal(await mail(deal.seller.email, "Listing withdrawn"), 1);
-    assert.equal(await mail(deal.desk.email, "Listing withdrawn"), 1);
+    assert.equal(await mail(deal, deal.buyer.email, "Listing withdrawn"), 1);
+    assert.equal(await mail(deal, deal.second.email, "Listing withdrawn"), 1);
+    assert.equal(await mail(deal, deal.second.email, "Group closed"), 1);
+    assert.equal(await mail(deal, deal.seller.email, "Listing withdrawn"), 1);
+    assert.equal(await mail(deal, deal.desk.email, "Listing withdrawn"), 1);
     assert.equal(await prisma.reviewComment.count({ where: { listingId, action: "WITHDRAW" } }), 1);
     assert.equal(await prisma.auditEvent.count({ where: { entityId: listingId, action: "LISTING_WITHDRAWN" } }), 1);
     assert.match((await withdrawListing(listingId, deal.seller.id)).error ?? "", /already withdrawn/);
@@ -349,9 +353,9 @@ test("a buyer walks away inside the diligence window, and the closing cancels wi
     assert.match(after.cancelReason ?? "", /second lien/);
     assert.equal(await statusOf(offer.id), "WITHDRAWN");
     assert.equal((await prisma.listing.findUniqueOrThrow({ where: { id: deal.listing.id } })).status, "APPROVED");
-    assert.equal(await mail(deal.seller.email, "Buyer walked away"), 1);
-    assert.equal(await mail(deal.buyer.email, "Buyer walked away"), 1);
-    assert.equal(await mail(deal.desk.email, "Buyer walked away"), 1);
+    assert.equal(await mail(deal, deal.seller.email, "Buyer walked away"), 1);
+    assert.equal(await mail(deal, deal.buyer.email, "Buyer walked away"), 1);
+    assert.equal(await mail(deal, deal.desk.email, "Buyer walked away"), 1);
     assert.equal(await prisma.auditEvent.count({ where: { entityId: closing.id, action: "DILIGENCE_WALK_AWAY" } }), 1);
     assert.match((await walkAwayFromClosing(closing.id, deal.buyer.id, "Title search shows a second lien.")).error ?? "", /already finished/);
 

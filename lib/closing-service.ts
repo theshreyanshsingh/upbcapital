@@ -1,8 +1,8 @@
 import type { ClosingStepKey } from "@prisma/client";
 import { audit } from "@/lib/audit";
-import { CLOSING_STEPS, canCompleteStep, closingTotals, stepLabel } from "@/lib/closing";
+import { CLOSING_STEPS, canCompleteStep, closingCovers, closingIsWhole, closingLoans, closingTotals, stepLabel } from "@/lib/closing";
 import { STEP_OWNER, closingSchedule, depositCents, depositTerms, effectiveDue, settlementWeekdays, stepClock, targetDays } from "@/lib/closing-clock";
-import { deskFeeBps } from "@/lib/desk-fees";
+import { deskFeeBps, listingFeeBps } from "@/lib/desk-fees";
 import { notify, notifyDesk } from "@/lib/email";
 import { getEscrowProvider } from "@/lib/escrow";
 import { money, prettyDate } from "@/lib/format";
@@ -39,7 +39,7 @@ export function diligenceOpen(closing: { status: string; diligenceEndsAt: Date |
 export async function tradeConflict(listingId: string, noteId: string | null) {
   const [listing, open] = await Promise.all([
     prisma.listing.findUnique({ where: { id: listingId }, select: { status: true, notes: { select: { id: true, tradeStatus: true } } } }),
-    prisma.closing.findMany({ where: { listingId, status: "OPEN" }, select: { noteId: true } }),
+    prisma.closing.findMany({ where: { listingId, status: "OPEN" }, select: { noteId: true, noteIds: true } }),
   ]);
   if (!listing) return "That listing no longer exists.";
   if (listing.status === "SOLD") return "This listing is already sold.";
@@ -47,11 +47,30 @@ export async function tradeConflict(listingId: string, noteId: string | null) {
     const note = listing.notes.find((item) => item.id === noteId);
     if (!note) return "That loan is not on this listing.";
     if (note.tradeStatus !== "AVAILABLE") return `That loan is already ${note.tradeStatus === "SOLD" ? "sold" : "in contract"}.`;
-    if (open.some((closing) => closing.noteId === null || closing.noteId === noteId)) return "An open closing already covers that loan. Finish or cancel it first.";
+    if (open.some((closing) => closingCovers(closing, noteId))) return "An open closing already covers that loan. Finish or cancel it first.";
     return null;
   }
   if (open.length) return "This listing already has an open closing. Finish or cancel it first.";
   if (listing.notes.some((note) => note.tradeStatus !== "AVAILABLE")) return "Some loans on this listing are in contract or sold, so the whole listing can't be awarded.";
+  return null;
+}
+
+// Part of a pool: every loan named must be free, and no open closing may cover any of them. The rest of the pool
+// stays on the book. Returns why the award can't go ahead, or null.
+export async function partConflict(listingId: string, noteIds: string[]) {
+  const [listing, open] = await Promise.all([
+    prisma.listing.findUnique({ where: { id: listingId }, select: { status: true, notes: { select: { id: true, tradeStatus: true } } } }),
+    prisma.closing.findMany({ where: { listingId, status: "OPEN" }, select: { noteId: true, noteIds: true } }),
+  ]);
+  if (!listing) return "That listing no longer exists.";
+  if (listing.status === "SOLD") return "This listing is already sold.";
+  if (!noteIds.length) return "Choose at least one loan.";
+  for (const noteId of noteIds) {
+    const note = listing.notes.find((item) => item.id === noteId);
+    if (!note) return "A loan in that part is not on this listing.";
+    if (note.tradeStatus !== "AVAILABLE") return `A loan in that part is already ${note.tradeStatus === "SOLD" ? "sold" : "in contract"}.`;
+  }
+  if (open.some((closing) => noteIds.some((noteId) => closingCovers(closing, noteId)))) return "An open closing already covers a loan in that part. Finish or cancel it first.";
   return null;
 }
 
@@ -60,6 +79,8 @@ export async function openClosing(input: {
   inquiryId?: string | null;
   deskBidId?: string | null;
   noteId: string | null;
+  // The loans of a part-pool award. Empty or missing means noteId alone, or the whole listing.
+  noteIds?: string[];
   salePrice: number;
   title: string;
 }) {
@@ -71,10 +92,14 @@ export async function openClosing(input: {
     const existing = await prisma.closing.findUnique({ where: { deskBidId: input.deskBidId } });
     if (existing) return existing;
   }
-  const settings = await getSettings();
-  const bps = input.deskBidId
-    ? deskFeeBps(settings.chargeDeskFees, settings.sellerCommissionBps)
-    : { premiumBps: settings.buyerPremiumBps, commissionBps: settings.sellerCommissionBps };
+  const [settings, listingFees] = await Promise.all([
+    getSettings(),
+    prisma.listing.findUnique({ where: { id: input.listingId }, select: { feeBuyerPremiumBps: true, feeSellerCommissionBps: true, deskOwnerId: true } }),
+  ]);
+  // The fees fixed when the desk approved the listing. The desk buying for its own book pays no premium, and the
+  // seller's commission is still the one the listing went live with.
+  const listed = listingFeeBps(listingFees, settings);
+  const bps = input.deskBidId ? deskFeeBps(settings.chargeDeskFees, listed.commissionBps) : listed;
   const fees = closingTotals(input.salePrice, bps.premiumBps, bps.commissionBps);
   const provider = getEscrowProvider();
   const preview = await provider.open({
@@ -100,6 +125,7 @@ export async function openClosing(input: {
       inquiryId: input.inquiryId || null,
       deskBidId: input.deskBidId || null,
       noteId: input.noteId,
+      ...(input.noteIds?.length ? { noteIds: input.noteIds } : {}),
       salePrice: input.salePrice,
       buyerPremiumCents: fees.premiumCents,
       sellerCommissionCents: fees.commissionCents,
@@ -109,6 +135,8 @@ export async function openClosing(input: {
       providerRef: preview.providerRef,
       wireInstructions: preview.instructions,
       ...(buyerEntity ? { buyerEntity } : {}),
+      // The deal owner carries over, so the seller keeps one named contact from listing to close.
+      ...(listingFees?.deskOwnerId ? { deskOwnerId: listingFees.deskOwnerId } : {}),
       targetCloseAt: schedule.targetCloseAt,
       ...(depositDue ? { depositCents: depositCents(input.salePrice, deposit.bps), depositDueAt: depositDue } : {}),
       ...(diligenceEndsAt ? { diligenceEndsAt } : {}),
@@ -158,14 +186,15 @@ export async function finalizeClosing(closingId: string) {
       data: { status: "COMPLETE", closedAt: new Date() },
     });
     if (claimed.count !== 1) return prisma.closing.findUnique({ where: { id: closingId } });
-    if (closing.noteId) {
-      await prisma.note.update({ where: { id: closing.noteId }, data: { tradeStatus: "SOLD" } });
-    } else {
+    const whole = closingIsWhole(closing);
+    if (whole) {
       await prisma.note.updateMany({ where: { listingId: closing.listingId }, data: { tradeStatus: "SOLD" } });
+    } else {
+      await prisma.note.updateMany({ where: { id: { in: closingLoans(closing, closing.listing.notes).map((note) => note.id) } }, data: { tradeStatus: "SOLD" } });
     }
     const notes = await prisma.note.findMany({ where: { listingId: closing.listingId } });
     const entireBookSold = notes.every((note) => note.tradeStatus === "SOLD");
-    if (!closing.noteId || entireBookSold) {
+    if (whole || entireBookSold) {
       const closings = await prisma.closing.findMany({ where: { listingId: closing.listingId, status: "COMPLETE" } });
       const salePrice = closings.reduce((sum, item) => sum + Number(item.salePrice), 0);
       const premium = closings.reduce((sum, item) => sum + item.buyerPremiumCents, 0);
@@ -188,7 +217,7 @@ export async function finalizeClosing(closingId: string) {
   }
   await ensureBuyerHolding(closing.id);
   if (closing.deskBidId) {
-    const notes = closing.noteId ? closing.listing.notes.filter((note) => note.id === closing.noteId) : closing.listing.notes;
+    const notes = closingLoans(closing, closing.listing.notes);
     const upb = notes.reduce((sum, note) => sum + Number(note.upb), 0);
     const existing = await prisma.deskHolding.findFirst({
       // A whole-listing holding may have no noteId field at all, which `noteId: null` alone would miss.
@@ -249,7 +278,9 @@ export async function cancelOpenClosing(closingId: string, reason: string, optio
     data: { status: "CANCELED", canceledAt: new Date(), cancelReason: reason, ...(fault ? { cancelFault: fault } : {}) },
   });
   if (claimed.count !== 1) return null;
-  if (closing.noteId) await prisma.note.update({ where: { id: closing.noteId }, data: { tradeStatus: "AVAILABLE" } });
+  // A whole-listing closing never took its loans one by one, so only a closing that names its loans hands them back.
+  if (closing.noteIds.length) await prisma.note.updateMany({ where: { id: { in: closing.noteIds }, tradeStatus: "IN_CONTRACT" }, data: { tradeStatus: "AVAILABLE" } });
+  else if (closing.noteId) await prisma.note.update({ where: { id: closing.noteId }, data: { tradeStatus: "AVAILABLE" } });
   if (closing.inquiryId) {
     const bid = await prisma.inquiry.update({
       where: { id: closing.inquiryId },
@@ -364,6 +395,8 @@ export type TimelineInput = {
   audits: { id: string; action: string; actorId: string | null; detail: string; createdAt: Date }[];
   posts: { id: string; authorId: string; body: string; createdAt: Date }[];
   people: Record<string, TimelinePerson>;
+  // Loans the desk took out before settlement, each with the price and deposit it took with it.
+  kickouts?: { id: string; at: Date; loan: string; reason: string; priceCents: number; depositCents: number; actorId: string }[];
   sellerId: string;
   // The lead buyer and every group seat.
   buyerIds: string[];
@@ -484,6 +517,13 @@ export function dealTimeline(input: TimelineInput, side: TimelineSide): { entrie
     if (event.action === "CLOSING_OVERRIDE" && desk) entries.push({ ...base, title: "Step marked without the wire on record", detail: readable(event.detail), owner: "desk" });
     if (event.action === "DILIGENCE_WALK_AWAY") entries.push({ ...base, title: "The buyer walked away in diligence", detail: event.detail, owner: "buyer" });
   }
+  for (const kickout of input.kickouts ?? []) {
+    // A broker watching the deal sees that the closing changed, not the figures.
+    const detail = party
+      ? [`${kickout.loan} came out of the closing. Reason: ${kickout.reason}`, `The price came down ${money(kickout.priceCents / 100, 2)}.`, buyerSide && kickout.depositCents ? `The deposit came down ${money(kickout.depositCents / 100, 2)}.` : ""].filter(Boolean).join(" ")
+      : "A loan came out of the closing before settlement.";
+    entries.push({ id: `kickout:${kickout.id}`, at: kickout.at, title: "Loan taken out", detail, owner: "desk", who: whoOf(kickout.actorId) });
+  }
   // Wires recorded before the desk logged them still belong on the record.
   if (buyerSide && closing.depositReceivedAt && closing.depositReceivedCents != null && !seen.has("DEPOSIT_RECEIVED")) {
     entries.push({ id: "wire:deposit", at: closing.depositReceivedAt, title: "Buyer deposit recorded", detail: wireFallback(closing.depositReceivedCents, closing.depositReceivedAt), owner: "buyer", who: "The desk" });
@@ -524,7 +564,12 @@ export function dealTimeline(input: TimelineInput, side: TimelineSide): { entrie
 export async function loadDealTimeline(closingId: string, side: TimelineSide, now = new Date()) {
   const closing = await prisma.closing.findUnique({
     where: { id: closingId },
-    include: { steps: { include: { files: true } }, funders: { select: { userId: true } }, listing: { select: { sellerId: true } } },
+    include: {
+      steps: { include: { files: true } },
+      funders: { select: { userId: true } },
+      listing: { select: { sellerId: true, notes: { select: { id: true, streetAddress: true, city: true, state: true } } } },
+      kickouts: { orderBy: { createdAt: "asc" } },
+    },
   });
   if (!closing) return null;
   const [inquiry, audits, thread, settings] = await Promise.all([
@@ -541,6 +586,8 @@ export async function loadDealTimeline(closingId: string, side: TimelineSide, no
   for (const event of audits) if (event.actorId) ids.add(event.actorId);
   for (const post of posts) ids.add(post.authorId);
   for (const step of closing.steps) for (const file of step.files) if (file.uploadedById) ids.add(file.uploadedById);
+  for (const kickout of closing.kickouts) ids.add(kickout.actorId);
+  const loanNames = new Map(closing.listing.notes.map((note) => [note.id, `${note.streetAddress ? `${note.streetAddress}, ` : ""}${note.city}, ${note.state}`]));
   const users = await prisma.user.findMany({ where: { id: { in: [...ids] } }, select: { id: true, name: true, companyName: true, role: true } });
   return dealTimeline(
     {
@@ -549,6 +596,15 @@ export async function loadDealTimeline(closingId: string, side: TimelineSide, no
       audits,
       posts,
       people: Object.fromEntries(users.map((user) => [user.id, user])),
+      kickouts: closing.kickouts.map((kickout) => ({
+        id: kickout.id,
+        at: kickout.createdAt,
+        loan: loanNames.get(kickout.noteId) ?? "A loan",
+        reason: kickout.reason,
+        priceCents: kickout.priceCents,
+        depositCents: kickout.depositCents,
+        actorId: kickout.actorId,
+      })),
       sellerId: closing.listing.sellerId,
       buyerIds,
       days: targetDays(settings.closingTargetDays),

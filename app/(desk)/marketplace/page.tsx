@@ -6,6 +6,7 @@ import { BookFilterSheet } from "@/components/book-filter-sheet";
 import { BookFiltersForm } from "@/components/book-filters";
 import { BookTable } from "@/components/book-table";
 import { CompareBar } from "@/components/compare-picker";
+import { ComingSoonSection } from "@/components/coming-soon-card";
 import { ListingCard } from "@/components/listing-card";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
@@ -42,6 +43,7 @@ import { foreclosureFor } from "@/lib/foreclosure";
 import { money, num, pct, q } from "@/lib/format";
 import { loadIndicatives } from "@/lib/indicative";
 import { labelOf, LIEN_POSITIONS, PAYMENT_STATUSES, US_STATES } from "@/lib/labels";
+import { comingSoonCard, launchPending } from "@/lib/launch-rules";
 import { bookVeil, common, listingFigures, loansForSale } from "@/lib/metrics";
 import { prisma } from "@/lib/prisma";
 import { advanceSaleEvents, openEvents, roundText, when } from "@/lib/sale-events";
@@ -69,7 +71,7 @@ export default async function MarketplacePage({
   const view = VIEWS.find((option) => option.value === q(params, "view"))?.value ?? "cards";
   // A sale event whose date passed moves first, so the book shows each listing on its current round's terms.
   await advanceSaleEvents().catch(() => null);
-  const [settings, listings, saved, events] = await Promise.all([
+  const [settings, everything, saved, events] = await Promise.all([
     getSettings(),
     prisma.listing.findMany({
       where: { status: { in: ["APPROVED", "PENDING", "SOLD"] } },
@@ -79,6 +81,9 @@ export default async function MarketplacePage({
     user.role === "BUYER" && pro ? prisma.savedSearch.findMany({ where: { userId: user.id }, orderBy: { createdAt: "desc" }, take: 8 }) : Promise.resolve([]),
     openEvents().catch(() => []),
   ]);
+  // Coming-soon listings show as teasers above the book, outside its counts, filters and free slice until they launch.
+  const teasers = everything.filter((listing) => launchPending(listing));
+  const listings = everything.filter((listing) => !launchPending(listing));
   // The event filter narrows the book to one open sale event's listings. An unknown or finished event is ignored.
   const eventId = events.find((event) => event.id === q(params, "event"))?.id;
   const inEvent = (listing: { saleEventId?: string | null }) => !eventId || listing.saleEventId === eventId;
@@ -172,12 +177,19 @@ export default async function MarketplacePage({
     return { label, count: facetCount(book, applied, key, value), on, href: href({ filters: { ...applied, [key]: on ? undefined : value } }) };
   };
   const shownChip = (item: Chip) => item.on || item.count > 0;
+  // LTV is a figure, so its one-tap caps are on Pro, like the filter. Picking one replaces any LTV range.
+  const ltvChip = (max: number): Chip => {
+    const on = applied.ltvMax === max && applied.ltvMin == null;
+    const probe: BookFilters = { ...applied, ltvMin: undefined, ltvMax: max };
+    return { label: `${max}% or less`, count: book.filter((row) => bookMatches(row.listing, probe, row.held)).length, on, href: href({ filters: { ...applied, ltvMin: undefined, ltvMax: on ? undefined : max } }) };
+  };
   const groups = [
     { label: "Performance", chips: PAYMENT_STATUSES.map((status) => chip("paymentStatus", status.value, status.label)).filter(shownChip) },
     { label: "Lien", chips: LIEN_POSITIONS.map((lien) => chip("lienPosition", lien.value, lien.label)).filter(shownChip) },
     { label: "Type", chips: KINDS.map((kind) => single("kind", kind.value, kind.label)).filter(shownChip) },
     { label: "Bid style", chips: BID_MODES.map((mode) => chip("bidMode", mode.value, mode.label)).filter(shownChip) },
     { label: "Deadline", chips: [single("deadline", "yes", "Dated deadline")].filter(shownChip) },
+    { label: "LTV", chips: pro ? [ltvChip(80), ltvChip(60)].filter(shownChip) : [] },
     {
       label: "Sale event",
       chips: events.map((event) => ({
@@ -286,6 +298,11 @@ export default async function MarketplacePage({
         !pro && <p className="mt-4 text-sm text-muted-foreground">Saved views with alerts are part of Pro.</p>
       )}
 
+      <ComingSoonSection
+        cards={teasers.map((listing) => comingSoonCard({ ...listing, launchAt: listing.launchAt ?? new Date() }))}
+        saved={new Set(teasers.filter((listing) => listing.favorites.length > 0).map((listing) => listing.id))}
+        canFavorite={user.role === "BUYER"}
+      />
       <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-foreground tabular-nums">
           {live.length} listing{live.length === 1 ? "" : "s"} match{live.length === 1 ? "es" : ""}

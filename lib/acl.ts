@@ -47,6 +47,19 @@ export function loanFileAccess(input: {
   };
 }
 
+// The seller of record, the filing broker and the desk run a listing's room: its questions, its approvals, its log.
+export function canManageRoom(viewer: { id: string; role: string }, listing: { sellerId: string; brokerId?: string | null }) {
+  return viewer.role === "ADMIN" || viewer.id === listing.sellerId || (Boolean(listing.brokerId) && viewer.id === listing.brokerId);
+}
+
+// Whether a buyer's NDA opens the room. A seller who approves each bidder holds it PENDING until they decide, and a
+// DECLINED one stays shut. A missing status is an NDA from a room that opens on the signature alone, so it opens.
+// Every `signedNda` passed to the rules below comes through here.
+export function ndaOpensRoom(nda: { accessStatus?: string | null } | null | undefined) {
+  if (!nda) return false;
+  return nda.accessStatus == null || nda.accessStatus === "APPROVED";
+}
+
 // Before an award, a buyer who signed the NDA may work the file. Once the listing is in contract or sold, only
 // the deal's own buyers may. Reg P limits a bidder's use of borrower data to the sale (12 CFR 1016.11), and a
 // losing bidder has no sale left. A canceled closing puts the listing back on the book and reopens the room.
@@ -71,6 +84,7 @@ export function canReadDocument(input: {
   ownNda: boolean;
   privateFile: boolean;
   proBuyer: boolean;
+  // An NDA that opens the room, from ndaOpensRoom: one still waiting on the seller, or declined, doesn't count.
   signedNda: boolean;
   listingStatus: string;
   closingParty: boolean;

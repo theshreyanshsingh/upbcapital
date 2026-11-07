@@ -1,3 +1,4 @@
+import { deskCan, type Staff } from "@/lib/desk-roles";
 import { ofacBlocks } from "@/lib/ofac";
 import { buyerPrice } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
@@ -136,7 +137,15 @@ export async function bidSheet(listingId: string, premiumBps: number, now = new 
       ofacHold: held.has(inquiry.buyerId),
     });
   }
-  return rankBids(bids, premiumBps, now);
+  // The premium the listing went live with, which the closing will charge. premiumBps covers older listings.
+  return rankBids(bids, listing.feeBuyerPremiumBps ?? premiumBps, now);
+}
+
+// The ranked sheet is behind the desk's wall: only staff whose role reads sealed bids see it, whatever the round.
+// Anyone else gets null, and the page says why.
+export async function bidSheetFor(viewer: Staff, listingId: string, premiumBps: number, now = new Date()) {
+  if (!deskCan(viewer, "sealedBids")) return null;
+  return bidSheet(listingId, premiumBps, now);
 }
 
 export function proofExpiry(raw: string, approvedAt: Date) {

@@ -5,7 +5,7 @@ import { prisma } from "@/lib/prisma";
 export async function dealAccess(listingId: string, userId: string) {
   const closings = await prisma.closing.findMany({
     where: { listingId, status: { in: ["OPEN", "COMPLETE"] } },
-    select: { id: true, inquiryId: true, noteId: true },
+    select: { id: true, inquiryId: true, noteId: true, noteIds: true },
   });
   const access = { whole: false, loans: new Set<string>() };
   if (!closings.length) return access;
@@ -17,7 +17,9 @@ export async function dealAccess(listingId: string, userId: string) {
   const mine = new Set([...bought.map((row) => row.id), ...funded.map((row) => row.closingId)]);
   for (const closing of closings) {
     if (!mine.has(closing.id) && !(closing.inquiryId && mine.has(closing.inquiryId))) continue;
-    if (closing.noteId) access.loans.add(closing.noteId);
+    // A part-pool closing, or a pool after a kick-out, names its loans.
+    if (closing.noteIds.length) closing.noteIds.forEach((noteId) => access.loans.add(noteId));
+    else if (closing.noteId) access.loans.add(closing.noteId);
     else access.whole = true;
   }
   return access;

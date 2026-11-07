@@ -34,6 +34,11 @@ export default async function LoginPage({
         <p className="mt-2 text-sm text-muted-foreground">
           No account yet? <Link href="/signup" className="text-link">Request access</Link>
         </p>
+        <p className="mt-6 text-xs text-muted-foreground">
+          <Link href="/terms" className="text-link">Terms of use</Link>
+          {" · "}
+          <Link href="/privacy" className="text-link">Privacy policy</Link>
+        </p>
       </div>
     </main>
   );

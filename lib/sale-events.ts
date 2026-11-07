@@ -4,8 +4,10 @@ import { audit } from "@/lib/audit";
 import { unset } from "@/lib/db-filters";
 import { notify, notifyDesk } from "@/lib/email";
 import { prettyDate } from "@/lib/format";
+import { launchBlock } from "@/lib/launch-rules";
 import { notifyIfAuctionClosed } from "@/lib/listing-intel";
 import { prisma } from "@/lib/prisma";
+import { notifyWatchers } from "@/lib/watchers";
 
 // A dated sale event, on an advisor's cadence: sealed indications by one date, then one best-and-final bid each by
 // a second date 7 to 30 days later. Listings from several sellers trade on the same two dates, so thin demand
@@ -137,7 +139,7 @@ export function splitIndications(bids: HeldBid[], window: { since: Date; indicat
 // their end first, as a running round's rules hold in setAuction. Terms with no bids are simply replaced.
 export function joinBlock(input: {
   event: { id: string; status: string; indicationsAt: Date };
-  listing: { status: string; saleEventId?: string | null };
+  listing: { status: string; saleEventId?: string | null; launchAt?: Date | null };
   currentEventStatus: string | null;
   liveBids: number;
   consent: string;
@@ -147,6 +149,8 @@ export function joinBlock(input: {
   if (input.event.status !== "PLANNED" && input.event.status !== "INDICATIONS") return "This event is no longer taking listings.";
   if (input.event.indicationsAt.getTime() <= now.getTime()) return "Indications are already due, so a listing can't join now.";
   if (input.listing.status !== "APPROVED") return "Only a live listing can join a sale event.";
+  const coming = launchBlock(input.listing, "event", now);
+  if (coming) return coming;
   if (input.listing.saleEventId && eventSetsTerms(input.currentEventStatus)) {
     return input.listing.saleEventId === input.event.id ? "This listing is already in this event." : "This listing is already in another open event.";
   }
@@ -174,7 +178,7 @@ function liveBidCount(listingIds: string[]) {
 async function releaseListing(listingId: string, eventId: string) {
   const done = await prisma.listing.updateMany({
     where: { id: listingId, saleEventId: eventId },
-    data: { saleEventId: null, bidMode: "NONE", bidDeadline: null, auctionNotifiedAt: null, bidReminderAt: null },
+    data: { saleEventId: null, bidMode: "NONE", bidDeadline: null, auctionNotifiedAt: null, bidReminderAt: null, watchReminderAt: null },
   });
   return done.count === 1;
 }
@@ -217,7 +221,7 @@ export async function editEvent(input: { eventId: string; name: string; summary:
     if (claimed.count !== 1) return { error: "The event changed a moment ago. Check it and try again." } as const;
     await prisma.listing.updateMany({
       where: { saleEventId: event.id, bidMode: "SEALED", bidDeadline: event.bestFinalAt },
-      data: { bidDeadline: dates.bestFinalAt, bidReminderAt: null, auctionNotifiedAt: null },
+      data: { bidDeadline: dates.bestFinalAt, bidReminderAt: null, watchReminderAt: null, auctionNotifiedAt: null },
     });
     await audit(input.actorId, "SALE_EVENT_DATES", "saleEvent", event.id, `Indications ${when(dates.indicationsAt)} · best and final ${when(dates.bestFinalAt)}`);
     for (const listing of listings) {
@@ -226,6 +230,13 @@ export async function editEvent(input: { eventId: string; name: string; summary:
         `Sale event dates moved · ${listing.title}`,
         `${name} has new dates. Indications are due ${when(dates.indicationsAt)}. Best and final is due ${when(dates.bestFinalAt)}.`,
       );
+      await notifyWatchers({
+        listingId: listing.id,
+        event: "SALE_EVENT",
+        subject: `New sale dates · ${listing.title}`,
+        body: `${listing.title}, a listing you saved, has new dates in the sale event ${name}. Sealed indications are due ${when(dates.indicationsAt)}. Best and final, one bid each, is due ${when(dates.bestFinalAt)}.`,
+        except: [input.actorId],
+      });
     }
     return { error: null, moved: true } as const;
   }
@@ -258,7 +269,7 @@ export async function enterEvent(input: { eventId: string; listingId: string; co
         listing.bidDeadline ? { bidDeadline: listing.bidDeadline } : unset("bidDeadline"),
       ],
     },
-    data: { saleEventId: event.id, ...eventTerms("INDICATIONS", event.bestFinalAt), auctionNotifiedAt: null, bidReminderAt: null },
+    data: { saleEventId: event.id, ...eventTerms("INDICATIONS", event.bestFinalAt), auctionNotifiedAt: null, bidReminderAt: null, watchReminderAt: null },
   });
   if (claimed.count !== 1) return { error: "The listing changed a moment ago. Check it and try again." } as const;
   await prisma.saleEvent.updateMany({ where: { id: event.id, status: "PLANNED" }, data: { status: "INDICATIONS" } });
@@ -275,6 +286,14 @@ export async function enterEvent(input: { eventId: string; listingId: string; co
     `Sale event · ${listing.title}`,
     `The desk entered ${listing.title} in ${event.name}, on your agreement (${consent}). Sealed indications are due ${when(event.indicationsAt)}. Best and final, one bid per buyer, is due ${when(event.bestFinalAt)}. Awards wait for that date, and your approval works as usual.${paused} If you did not agree, write the desk now.`,
   );
+  // Buyers who saved it hear the event's two dates, since its bid terms are now the event's.
+  await notifyWatchers({
+    listingId: listing.id,
+    event: "SALE_EVENT",
+    subject: `In a sale event · ${listing.title}`,
+    body: `${listing.title}, a listing you saved, is in the sale event ${event.name}. Sealed indications are due ${when(event.indicationsAt)}. Best and final, one bid each, is due ${when(event.bestFinalAt)}. Awards wait for that date.`,
+    except: [input.actorId],
+  });
   return { error: null } as const;
 }
 

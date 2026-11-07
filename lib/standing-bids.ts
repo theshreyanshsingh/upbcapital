@@ -6,6 +6,7 @@ import { notify } from "@/lib/email";
 import { money, prettyDate } from "@/lib/format";
 import { articleFor, marketRate, rateStale, type MarketRate } from "@/lib/indicative";
 import { announceInquiry, checkOffer, logEligibility, writeInquiry } from "@/lib/inquiry";
+import { launchBlock } from "@/lib/launch-rules";
 import { ofacBlocks } from "@/lib/ofac";
 import { prisma } from "@/lib/prisma";
 import { OFAC_HOLD_MESSAGE, ofacHold } from "@/lib/screening";
@@ -307,9 +308,16 @@ type SheetListing = Pick<Listing, "id" | "kind" | "status" | "bidMode" | "bidDea
 
 // Every box with a rule that fits the listing, best price first, with what the desk should know before inviting.
 export async function standingSheet(listing: SheetListing, now = new Date()): Promise<SheetRow[]> {
-  const matches = await prisma.listingMatch.findMany({
-    where: { listingId: listing.id },
-    include: { buyBox: { include: { user: { include: { buyerProfile: true } } } } },
+  // Boxes are read apart from their matches: deleting a box removes its matches a moment later on MongoDB, and a
+  // required include on a match whose box is gone fails the whole read.
+  const matchRows = await prisma.listingMatch.findMany({ where: { listingId: listing.id } });
+  const boxes = matchRows.length
+    ? await prisma.buyBox.findMany({ where: { id: { in: [...new Set(matchRows.map((row) => row.buyBoxId))] } }, include: { user: { include: { buyerProfile: true } } } })
+    : [];
+  const boxById = new Map(boxes.map((box) => [box.id, box]));
+  const matches = matchRows.flatMap((row) => {
+    const buyBox = boxById.get(row.buyBoxId);
+    return buyBox ? [{ ...row, buyBox }] : [];
   });
   const shown = matches.filter((match) => ruleOf(match.buyBox) || match.indicativePrice != null || match.invitedAt || match.answeredAt);
   if (!shown.length) return [];
@@ -395,6 +403,9 @@ export async function inviteToConfirm(matchId: string, listingId: string, actorI
     now,
   });
   if (block || price == null) return { error: block ?? "There is no standing price to send." } as const;
+  // A buyer couldn't confirm before the launch, so the invite waits for it.
+  const coming = launchBlock(match.listing, "invite", now);
+  if (coming) return { error: coming } as const;
   // Claimed at the price the desk saw, so a reprice landing at the same moment wins and no stale figure goes out.
   const claimed = await prisma.listingMatch.updateMany({
     where: { id: match.id, indicativePrice: price, AND: [unset("invitedAt"), unset("answeredAt")] },

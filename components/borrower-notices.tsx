@@ -32,9 +32,9 @@ async function loansBought(buyerId: string, now: Date) {
   if (!won.length) return 0;
   const closings = await prisma.closing.findMany({
     where: { inquiryId: { in: won.map((row) => row.id) }, status: "COMPLETE", closedAt: { gte: new Date(now.getTime() - 365 * DAY) } },
-    select: { noteId: true, listing: { select: { _count: { select: { notes: true } } } } },
+    select: { noteId: true, noteIds: true, listing: { select: { _count: { select: { notes: true } } } } },
   });
-  return closings.reduce((sum, closing) => sum + (closing.noteId ? 1 : closing.listing._count.notes), 0);
+  return closings.reduce((sum, closing) => sum + (closing.noteIds.length || (closing.noteId ? 1 : closing.listing._count.notes)), 0);
 }
 
 function chip(state: NoticeState, due: Date | null, sent: Date | null | undefined, waiting: string, now: Date) {

@@ -8,6 +8,7 @@ import { prisma } from "@/lib/prisma";
 import { extensionOf, mimeFor, putBytes, safeBasename } from "@/lib/storage";
 import { CREDIT_SCORE_TYPES, LOSS_MIT_STAGES } from "@/lib/tape-fields";
 import { uploadProblem } from "@/lib/uploads";
+import { watchNewFiles } from "@/lib/watchers";
 
 // The verified loan file: the desk checks the paper once, before the price, and every bidder sees the same
 // record. Everything here is descriptive. There is no score: a buyer reads what is on file and what is not.
@@ -1022,5 +1023,7 @@ export async function fileLoanDocument(actorId: string, input: { noteId: string;
     data: { listingId: loan.listingId, noteId: loan.id, type: input.type as DocType, originalName: input.name.slice(0, 180), storedName, mime, size: input.bytes.length },
   });
   await audit(actorId, "LOAN_DOCUMENT", "note", loan.id, `${document.type} · ${document.id}`);
+  // Buyers who saved a live listing hear that its data room grew.
+  await watchNewFiles({ listingId: loan.listingId, types: [document.type], actorId });
   return { ok: true as const, value: document };
 }

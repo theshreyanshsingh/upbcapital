@@ -144,5 +144,58 @@ export async function ofacHold(target: { userIds?: (string | null | undefined)[]
   return rows.find(ofacBlocks) ?? null;
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Investors in the desk's own capital have no account, and a screen row has no investor field, so their screens carry
+// the investor's address in the context. Screens recorded before that read "Investor" alone and match on the name.
+
+type InvestorParty = { name: string; email: string; entity: string };
+
+export const LEGACY_INVESTOR_CONTEXT = "Investor";
+
+export function investorContext(investor: Pick<InvestorParty, "email">) {
+  return `Investor ${investor.email.trim().toLowerCase()}`;
+}
+
+function investorNames(investor: InvestorParty) {
+  return [...new Set([investor.name, investor.entity].map((name) => name.trim()).filter(Boolean))];
+}
+
+function investorScreens(investor: InvestorParty, where: Prisma.OfacCheckWhereInput = {}) {
+  return prisma.ofacCheck.findMany({
+    where: { ...where, name: { in: investorNames(investor) }, context: { in: [investorContext(investor), LEGACY_INVESTOR_CONTEXT] } },
+    orderBy: { createdAt: "desc" },
+  });
+}
+
+export async function screenInvestor(investor: InvestorParty) {
+  let unavailable = false;
+  for (const name of investorNames(investor)) unavailable = (await screenAndRecord(name, { context: investorContext(investor) })).unavailable || unavailable;
+  return { unavailable };
+}
+
+// Any open or confirmed match on this investor holds every allocation to them, until the desk clears it.
+export async function investorHold(investor: InvestorParty) {
+  if (!investorNames(investor).length) return null;
+  const rows = await investorScreens(investor, { result: "REVIEW" });
+  return rows.find(ofacBlocks) ?? null;
+}
+
+// Why money can't be allocated from this investor, or null. Like an approval, it screens again and waits, since the
+// screen when the investor was added ran in the background. A desk decision on the same name and list entry stands,
+// and a new entry asks again.
+export async function investorAllocationBlock(investor: InvestorParty) {
+  const reviews = await investorScreens(investor, { result: "REVIEW" });
+  if (reviews.some(ofacBlocks)) return INVESTOR_HOLD_MESSAGE;
+  for (const name of investorNames(investor)) {
+    const screen = await screenParty(name);
+    if (screen.unavailable) return OFAC_DOWN_MESSAGE;
+    // Every review left on file here was cleared, or the check above would have stopped.
+    if (screen.result === "REVIEW" && reviews.some((row) => row.name === name && (row.matched ?? "") === (screen.matched ?? ""))) continue;
+    if ((await screenAndRecord(name, { context: investorContext(investor) })).blocked) return INVESTOR_HOLD_MESSAGE;
+  }
+  return null;
+}
+
+export const INVESTOR_HOLD_MESSAGE = "An OFAC match on this investor is open or confirmed. Check it under Compliance before allocating.";
 export const OFAC_HOLD_MESSAGE = "An OFAC match on this deal is open or confirmed. Check it under Compliance first.";
 export const OFAC_DOWN_MESSAGE = "The sanctions list could not be read just now, so this cannot be approved yet. Try again in a few minutes.";

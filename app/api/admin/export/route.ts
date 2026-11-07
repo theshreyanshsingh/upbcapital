@@ -1,6 +1,8 @@
 import { getApiUser } from "@/lib/auth";
 import { toCsv } from "@/lib/csv";
+import { deskWalled } from "@/lib/auction";
 import { prisma } from "@/lib/prisma";
+import { DESK_DENIED, deskCan } from "@/lib/staff";
 
 export const runtime = "nodejs";
 
@@ -8,6 +10,8 @@ export async function GET(request: Request) {
   const user = await getApiUser();
   if (!user || user.role !== "ADMIN") return new Response("The desk only.", { status: 403 });
   const kind = new URL(request.url).searchParams.get("kind") || "listings";
+  // Account lists are compliance records; bids and the book are sales.
+  if (!deskCan(user, kind === "users" ? "compliance" : "sales")) return new Response(DESK_DENIED, { status: 403 });
   let rows: Record<string, string | number | null>[] = [];
   if (kind === "users") {
     const users = await prisma.user.findMany({ orderBy: { createdAt: "desc" } });
@@ -32,7 +36,8 @@ export async function GET(request: Request) {
       buyer: row.buyer.email,
       type: row.type,
       status: row.status,
-      amount: row.amount == null ? "" : Number(row.amount),
+      // Behind the desk's wall until the deadline, for a role that doesn't read sealed bids.
+      amount: row.amount == null ? "" : deskWalled(row.listing, user) ? "sealed" : Number(row.amount),
       createdAt: row.createdAt.toISOString(),
     }));
   } else if (kind === "notes") {

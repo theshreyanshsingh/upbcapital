@@ -574,7 +574,7 @@ export async function sendMarketDispatch(now = new Date(), scope: DispatchScope 
   // A claimed month that fails for one reader is logged and not retried, so nobody gets it twice.
   for (const user of recipients) {
     try {
-      await notify(user.email, subject, body);
+      await notify(user.email, subject, body, { category: "dispatch", userId: user.id });
       tally.sent += 1;
     } catch (error) {
       tally.failed += 1;

@@ -42,7 +42,7 @@ export default async function BuyBoxPage({
   return (
     <div className="grid gap-10 xl:grid-cols-[minmax(0,1fr)_360px]">
       <div>
-        <PageIntro eyebrow="Buy box" title="Paper that fits." lede="States, lien, performance, balance, price, a ceiling as a percent of UPB, and a target IRR from the deal analyzer. New listings are scored against every active box. A match on the live book sends a notice. On Pro, a box can carry a standing price too, an indicative figure for every new tape that fits." />
+        <PageIntro eyebrow="Buy box" title="Paper that fits." lede="States, lien, performance, balance, price, a ceiling as a percent of UPB, a target IRR from the deal analyzer, the highest LTV and the fewest months of seasoning. New listings are scored against every active box. A match on the live book sends a notice. On Pro, a box can carry a standing price too, an indicative figure for every new tape that fits." />
         <Notice notice={q(params, "notice")} error={q(params, "error")} />
         {invitations.length > 0 && (
           <section id="invitations" className="mt-8 scroll-mt-6" aria-labelledby="invitations-heading">
@@ -88,6 +88,8 @@ export default async function BuyBoxPage({
                     {[box.states || "Any state", box.liens || "Any lien", box.statuses || "Any status"].join(" · ")}
                     {box.maxPriceToUpb != null ? ` · max ${Number(box.maxPriceToUpb)}% of UPB` : ""}
                     {box.targetYield != null ? ` · IRR ${Number(box.targetYield)}%` : ""}
+                    {box.maxLtv != null ? ` · LTV up to ${Number(box.maxLtv)}%` : ""}
+                    {box.minSeasoningMonths != null ? ` · seasoned ${box.minSeasoningMonths}+ months` : ""}
                   </p>
                 </div>
                 <form action={retireBuyBox}>
@@ -99,7 +101,10 @@ export default async function BuyBoxPage({
                 {box.matches.length === 0 && <li className="text-muted-foreground">Nothing on the current book fits.</li>}
                 {box.matches.map((match) => (
                   <li key={match.id} className="flex flex-wrap items-baseline justify-between gap-2">
-                    <Link href={`/marketplace/${match.listingId}`} className="text-foreground hover:text-link">{match.listing.title}</Link>
+                    <span className="min-w-0">
+                      <Link href={`/marketplace/${match.listingId}`} className="text-foreground hover:text-link">{match.listing.title}</Link>
+                      {match.reasons && <span className="block text-xs text-muted-foreground">{match.reasons}</span>}
+                    </span>
                     <span className="tabular-nums">
                       {match.indicativePrice != null && <span className="text-muted-foreground">indicative {money(match.indicativePrice)} · </span>}
                       <span className="text-link">{match.score}</span>
@@ -141,6 +146,11 @@ export default async function BuyBoxPage({
         </div>
         <label className="block"><span className="text-[13px] text-muted-foreground">Max % of UPB</span><input name="maxPriceToUpb" className="desk-input mt-2" aria-label="Maximum percent of UPB" /></label>
         <label className="block"><span className="text-[13px] text-muted-foreground">Target IRR %</span><input name="targetYield" className="desk-input mt-2" aria-label="Target IRR" /></label>
+        <div className="grid grid-cols-2 gap-3">
+          <label className="block"><span className="text-[13px] text-muted-foreground">Highest LTV %</span><input name="maxLtv" inputMode="decimal" className="desk-input mt-2" aria-label="Highest loan to value, percent" /></label>
+          <label className="block"><span className="text-[13px] text-muted-foreground">Seasoned at least, months</span><input name="minSeasoningMonths" inputMode="numeric" className="desk-input mt-2" aria-label="Fewest months since origination" /></label>
+        </div>
+        <p className="text-xs leading-relaxed text-muted-foreground">LTV is UPB over the seller&apos;s estimated value. Seasoning counts months since the origination date, so a loan with no date on its tape doesn&apos;t fit a seasoning limit.</p>
         <SubmitButton className="h-11 text-[13px] font-medium">Score the book</SubmitButton>
       </form>
     </div>

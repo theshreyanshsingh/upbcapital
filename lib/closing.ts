@@ -28,7 +28,27 @@ export function closingIsComplete(steps: { status: string }[]) {
   return steps.length > 0 && steps.every((step) => step.status === "COMPLETE");
 }
 
-// The loans a closing covers: its one loan, or every loan on the listing for a whole-listing sale.
-export function closingLoans<T extends { id: string }>(closing: { noteId: string | null }, notes: T[]) {
+// noteIds is optional so a caller that selected only noteId still reads the same way it always did. Select it
+// wherever a closing's loans are read, or a part-pool closing reads as the whole listing.
+type ClosingScope = { noteId: string | null; noteIds?: string[] };
+
+// The loans a closing covers: the loans it names when it is part of a pool or a pool after a kick-out, else its
+// one loan, else every loan on the listing for a whole-listing sale.
+export function closingLoans<T extends { id: string }>(closing: ClosingScope, notes: T[]) {
+  if (closing.noteIds?.length) {
+    const named = new Set(closing.noteIds);
+    return notes.filter((note) => named.has(note.id));
+  }
   return closing.noteId ? notes.filter((note) => note.id === closing.noteId) : notes;
+}
+
+// Whether a closing covers this loan, without loading the listing's loans.
+export function closingCovers(closing: ClosingScope, noteId: string) {
+  if (closing.noteIds?.length) return closing.noteIds.includes(noteId);
+  return closing.noteId === null || closing.noteId === noteId;
+}
+
+// A closing that covers the whole listing, which no other closing can share.
+export function closingIsWhole(closing: ClosingScope) {
+  return !closing.noteIds?.length && !closing.noteId;
 }

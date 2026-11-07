@@ -1,3 +1,5 @@
+import { deskCan } from "@/lib/desk-roles";
+
 export function deadlinePassed(deadline: Date | null, now = new Date()) {
   return Boolean(deadline && deadline.getTime() <= now.getTime());
 }
@@ -19,6 +21,23 @@ export function hideCompetingBids(input: { bidMode: string; deadline: Date | nul
 // What the seller may learn about a bid on this listing right now: the bidder, not the amount or the note.
 export function sealedFromSeller(listing: { bidMode: string; bidDeadline: Date | null }, now = new Date()) {
   return hideCompetingBids({ bidMode: listing.bidMode, deadline: listing.bidDeadline, isDesk: false, now });
+}
+
+// Listing statuses the desk book can still bid on, so a trader stays behind the wall through them.
+const BOOK_CAN_BID = ["SUBMITTED", "UNDER_REVIEW", "APPROVED"];
+
+// The desk's wall. On a sealed or best-and-final listing, a bid's amount before the deadline is only for staff
+// whose role reads sealed bids. Staff who buy for UPB's own book stay behind it after the deadline too, until the
+// listing leaves the market, so the book never bids knowing what the seller's own bidders offered.
+export function deskWalled(
+  listing: { bidMode: string; bidDeadline: Date | null; status?: string },
+  viewer: { role: string; deskRole?: string | null },
+  now = new Date(),
+) {
+  if (viewer.role !== "ADMIN" || deskCan(viewer, "sealedBids")) return false;
+  if (listing.bidMode !== "SEALED" && listing.bidMode !== "BEST_AND_FINAL") return false;
+  if (!deadlinePassed(listing.bidDeadline, now)) return true;
+  return deskCan(viewer, "deskBook") && BOOK_CAN_BID.includes(listing.status ?? "APPROVED");
 }
 
 // A dated sale event runs a listing's rounds from the event's two dates: sealed indications, then one best-and-final

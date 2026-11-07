@@ -10,6 +10,7 @@ import { flagDuplicates } from "@/lib/duplicates";
 import { notifyDesk } from "@/lib/email";
 import { rescoreListing } from "@/lib/matching";
 import { prisma } from "@/lib/prisma";
+import { guardDesk } from "@/lib/staff";
 import {
   applyServicerReport as applyReport,
   canImport,
@@ -54,6 +55,7 @@ async function listingFor(formData: FormData) {
   if (!listing || !canImport(user, listing)) {
     redirect(`${user.role === "ADMIN" ? "/admin/queue" : "/seller"}?error=${encodeURIComponent("That listing isn't yours.")}`);
   }
+  if (listing.sellerId !== user.id) guardDesk(user, "sales", `/admin/listings/${listing.id}`);
   return { user, listing, page: pageFor(listing.id, user.role, formData) };
 }
 

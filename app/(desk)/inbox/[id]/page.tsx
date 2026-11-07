@@ -3,6 +3,7 @@ import { postThread } from "@/actions/inbox";
 import { Notice } from "@/components/notice";
 import { SubmitButton } from "@/components/submit-button";
 import { requireUser } from "@/lib/auth";
+import { threadNamer } from "@/lib/bidder-alias";
 import { q, prettyDate } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 import { messageWasRead } from "@/lib/read-state";
@@ -35,11 +36,13 @@ export default async function ThreadPage({
     update: { lastReadAt: new Date() },
   });
   const others = thread.members.filter((member) => member.userId !== user.id).map((member) => member.lastReadAt);
+  // A seller reads the bidder on their own listing's thread by letter until an award, as on the listing page.
+  const shown = await threadNamer(user, [thread.listingId]);
   return (
     <div className="max-w-3xl">
       <p className="eyebrow">Thread</p>
       <h1 className="mt-3 font-semibold tracking-tight text-3xl text-foreground">{thread.subject}</h1>
-      <p className="mt-2 text-sm text-muted-foreground">{thread.members.map((member) => member.user.name).join(" · ")}</p>
+      <p className="mt-2 text-sm text-muted-foreground">{thread.members.map((member) => shown(thread.listingId, member.user)).join(" · ")}</p>
       <Notice notice={q(query, "notice")} error={q(query, "error")} />
       {/* A conversation: your posts on the right, everyone else's on the left. The list links here at #latest. */}
       <ol className="mt-8 space-y-4">
@@ -47,7 +50,7 @@ export default async function ThreadPage({
           const own = post.authorId === user.id;
           return (
             <li key={post.id} id={index === thread.posts.length - 1 ? "latest" : undefined} className={`flex scroll-mt-20 flex-col ${own ? "items-end" : "items-start"}`}>
-              <p className="px-1 text-xs font-medium text-muted-foreground">{own ? "You" : post.author.name} · {prettyDate(post.createdAt)}</p>
+              <p className="px-1 text-xs font-medium text-muted-foreground">{own ? "You" : shown(thread.listingId, post.author)} · {prettyDate(post.createdAt)}</p>
               <div className={`mt-1 max-w-[88%] rounded-2xl px-3.5 py-2.5 sm:max-w-[80%] ${own ? "rounded-br-md bg-link/10 ring-1 ring-link/25" : "rounded-bl-md bg-card ring-1 ring-border"}`}>
                 <p className="text-[15px] leading-6 whitespace-pre-wrap text-foreground sm:text-sm">{post.body}</p>
                 {post.files.map((file) => (

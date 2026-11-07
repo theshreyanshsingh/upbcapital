@@ -80,31 +80,158 @@ function post(url: string, headers: Record<string, string>, body: string) {
   });
 }
 
-export async function emitWebhook(userId: string, event: string, payload: Record<string, unknown>) {
+// The sender is a parameter so tests can answer for the receiving server. Everything else uses post.
+export type WebhookSender = typeof post;
+
+// The events emitWebhook sends, for each endpoint's picker. A new emitWebhook event belongs here too.
+export const WEBHOOK_EVENTS = [
+  { event: "offer.created", label: "A bid arrives" },
+  { event: "offer.countered", label: "The desk counters a bid" },
+  { event: "offer.accepted", label: "A bid is awarded" },
+  { event: "offer.declined", label: "A bid is declined, withdrawn or loses" },
+] as const;
+
+export function endpointEvents(events: string) {
+  return events.split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+export function wantsEvent(endpoint: { events: string }, event: string) {
+  return endpointEvents(endpoint.events).includes(event);
+}
+
+// Only events the desk sends, in a fixed order, so a forged form can't store anything else.
+export function cleanEvents(picked: unknown[]) {
+  const chosen = new Set(picked.map(String));
+  return WEBHOOK_EVENTS.map((item) => item.event).filter((event) => chosen.has(event)).join(",");
+}
+
+const MINUTE = 60 * 1000;
+
+// The wait after each failed try. Five retries follow the first try, then the delivery stops until the owner sends
+// it again.
+export const RETRY_DELAYS_MS = [MINUTE, 10 * MINUTE, 60 * MINUTE, 6 * 60 * MINUTE, 24 * 60 * MINUTE] as const;
+
+// When the next try is due once `attempts` tries have failed, or null when the retries are spent.
+export function nextRetryAt(attempts: number, from: Date) {
+  const wait = RETRY_DELAYS_MS[attempts - 1];
+  return wait == null ? null : new Date(from.getTime() + wait);
+}
+
+const delivered = (status: number) => status >= 200 && status < 300;
+
+type Endpoint = { url: string; secret: string };
+type Stored = { id: string; event: string; payload: string };
+
+// One try. Each is signed again with the endpoint's secret over the stored body, and says which try it is, so a
+// receiver can drop a repeat by the delivery id.
+async function attempt(endpoint: Endpoint, delivery: Stored, tries: number, send: WebhookSender) {
+  const problem = webhookUrlProblem(endpoint.url);
+  // An address that breaks the rules won't heal by waiting, so it isn't retried.
+  if (problem) return { status: 0, detail: problem, retry: false };
+  try {
+    const result = await send(
+      endpoint.url,
+      {
+        "content-type": "application/json",
+        "x-upb-event": delivery.event,
+        "x-upb-delivery": delivery.id,
+        "x-upb-attempt": String(tries),
+        "x-upb-signature": signWebhook(endpoint.secret, delivery.payload),
+      },
+      delivery.payload,
+    );
+    return { ...result, retry: true };
+  } catch (error) {
+    return { status: 0, detail: error instanceof Error ? error.message : "Delivery failed.", retry: true };
+  }
+}
+
+// Sends try number `tries` and records it: delivered, booked for the next retry, or stopped. The write is keyed on
+// the try, so a later try that overtook this one keeps its own result.
+async function settle(endpoint: Endpoint, delivery: Stored, tries: number, send: WebhookSender) {
+  const result = await attempt(endpoint, delivery, tries, send);
+  const now = new Date();
+  const ok = delivered(result.status);
+  const next = ok || !result.retry ? null : nextRetryAt(tries, now);
+  await prisma.webhookDelivery.updateMany({
+    where: { id: delivery.id, attempts: tries },
+    data: { status: result.status, detail: result.detail.slice(0, 300), nextAttemptAt: next, ...(ok ? { deliveredAt: now } : {}) },
+  });
+  if (next && send === post) retrySoon(delivery.id, tries, next);
+  return ok;
+}
+
+// The job is the retry that survives a restart, but the cron may run only daily, which would turn a one-minute wait
+// into a day. A long-running server also makes the short waits itself; the claim on the try count stops a double
+// send when the job gets there first. Tests pass their own sender and get no timers.
+function retrySoon(id: string, attempts: number, at: Date) {
+  const wait = at.getTime() - Date.now();
+  if (wait > 10 * MINUTE) return;
+  const timer = setTimeout(() => {
+    retryDelivery({ id, attempts }).catch((error) => console.error("[upb-webhooks] retry failed:", error instanceof Error ? error.message : error));
+  }, Math.max(0, wait) + 1000);
+  timer.unref?.();
+}
+
+export async function emitWebhook(userId: string, event: string, payload: Record<string, unknown>, send: WebhookSender = post) {
   const endpoints = await prisma.webhookEndpoint.findMany({ where: { userId } });
   const body = JSON.stringify({ event, sentAt: new Date().toISOString(), ...payload });
   for (const endpoint of endpoints) {
-    const allowed = endpoint.events.split(",").map((item) => item.trim());
-    if (!allowed.includes(event)) continue;
-    let status = 0;
-    let detail = webhookUrlProblem(endpoint.url) ?? "";
-    if (!detail) {
-      try {
-        ({ status, detail } = await post(
-          endpoint.url,
-          {
-            "content-type": "application/json",
-            "x-upb-event": event,
-            "x-upb-signature": signWebhook(endpoint.secret, body),
-          },
-          body,
-        ));
-      } catch (error) {
-        detail = error instanceof Error ? error.message : "Delivery failed.";
-      }
-    }
-    await prisma.webhookDelivery.create({
-      data: { endpointId: endpoint.id, event, status, detail },
+    if (!wantsEvent(endpoint, event)) continue;
+    // Stored before the first try with a retry already booked, so a server that stops mid-send still retries it.
+    const delivery = await prisma.webhookDelivery.create({
+      data: { endpointId: endpoint.id, event, payload: body, attempts: 1, nextAttemptAt: nextRetryAt(1, new Date()) },
     });
+    await settle(endpoint, delivery, 1, send);
   }
+}
+
+// Prisma on MongoDB compares a stored null as earlier than any date, so a plain lte would also match every delivery
+// that was delivered or stopped. The lower bound keeps those out.
+const dueBy = (now: Date) => ({ gt: new Date(0), lte: now });
+
+export async function dueDeliveries(now = new Date(), options: { endpointIds?: string[] } = {}) {
+  return prisma.webhookDelivery.findMany({
+    where: { nextAttemptAt: dueBy(now), ...(options.endpointIds ? { endpointId: { in: options.endpointIds } } : {}) },
+    select: { id: true, attempts: true },
+    orderBy: { nextAttemptAt: "asc" },
+    // Each try can wait five seconds, so one run takes a bounded batch and the next run takes the rest.
+    take: 50,
+  });
+}
+
+// Retries one due delivery. The claim moves the try count on with a conditional write, so two overlapping runs
+// send it once. The claim books the following retry too, in case this try never reports back.
+export async function retryDelivery(delivery: { id: string; attempts: number }, now = new Date(), send: WebhookSender = post) {
+  const tries = delivery.attempts + 1;
+  const claim = await prisma.webhookDelivery.updateMany({
+    where: { id: delivery.id, attempts: delivery.attempts, nextAttemptAt: dueBy(now) },
+    data: { attempts: tries, nextAttemptAt: nextRetryAt(tries, now) },
+  });
+  if (claim.count !== 1) return false;
+  const row = await prisma.webhookDelivery.findUnique({ where: { id: delivery.id }, include: { endpoint: true } });
+  if (!row) return false;
+  await settle(row.endpoint, row, tries, send);
+  return true;
+}
+
+// The owner sends one delivery again now, whatever its state. It counts as another try, and if it fails the
+// schedule goes on from there.
+export async function redeliver(deliveryId: string, ownerId: string, send: WebhookSender = post) {
+  const delivery = await prisma.webhookDelivery.findFirst({ where: { id: deliveryId, endpoint: { userId: ownerId } }, include: { endpoint: true } });
+  if (!delivery) return { error: "That delivery isn't on this account." } as const;
+  if (!delivery.payload) return { error: "That delivery was sent before bodies were kept, so it can't be sent again." } as const;
+  const tries = delivery.attempts + 1;
+  const claim = await prisma.webhookDelivery.updateMany({ where: { id: delivery.id, attempts: delivery.attempts }, data: { attempts: tries } });
+  if (claim.count !== 1) return { error: "That delivery is being sent right now. Look again in a minute." } as const;
+  return { delivered: await settle(delivery.endpoint, delivery, tries, send) } as const;
+}
+
+// How one delivery reads in the log. Rows from before retries have no deliveredAt, so a 2xx status counts.
+export function deliveryState(delivery: { status: number; attempts: number; nextAttemptAt: Date | null; deliveredAt: Date | null }) {
+  const tries = `${delivery.attempts} ${delivery.attempts === 1 ? "try" : "tries"}`;
+  const answer = delivery.status ? `answered ${delivery.status}` : "no answer";
+  if (delivery.deliveredAt || delivered(delivery.status)) return { tone: "good" as const, label: `Delivered, ${answer} · ${tries}` };
+  if (delivery.nextAttemptAt) return { tone: "waiting" as const, label: `Failed, ${answer} · ${tries} · retrying` };
+  return { tone: "bad" as const, label: `Stopped, ${answer} · ${tries}` };
 }

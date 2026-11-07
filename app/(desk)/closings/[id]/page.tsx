@@ -5,6 +5,7 @@ import { saveBoarding } from "@/actions/boarding";
 import { cancelClosing, completeClosingStep, recordSettlement, saveWireInstructions, setClosingDates, uploadClosingFile, walkAway } from "@/actions/closing";
 import { BorrowerNotices } from "@/components/borrower-notices";
 import { DealTimeline } from "@/components/deal-timeline";
+import { KickoutForm } from "@/components/kickout-form";
 import { ComplianceNote } from "@/components/compliance-note";
 import { DeskNotes } from "@/components/desk-notes";
 import { ConfirmRows, ConfirmSubmit } from "@/components/confirm-submit";
@@ -13,7 +14,7 @@ import { SubmitButton } from "@/components/submit-button";
 import { Textarea } from "@/components/ui/textarea";
 import { closingAccess } from "@/lib/acl";
 import { requireUser } from "@/lib/auth";
-import { stepLabel } from "@/lib/closing";
+import { closingLoans, stepLabel } from "@/lib/closing";
 import { STEP_OWNER, closingClock, effectiveDue, nextSettlementDay, settlementWeekdays, settlesOn, stepClock, targetDays } from "@/lib/closing-clock";
 import { closingBrokerView } from "@/lib/broker-pay";
 import { diligenceOpen, loadDealTimeline, timelineView } from "@/lib/closing-service";
@@ -23,6 +24,10 @@ import { prisma } from "@/lib/prisma";
 import { balanceDueCents, buyerFundsCheck, economicsRows, moneyGate, proceedsGate, statementSide, variance, varianceNote, type Variance } from "@/lib/settlement";
 import { getSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
+import { dealOwners, deskCan, deskContact } from "@/lib/staff";
+import { pendingWireChanges } from "@/lib/wire-changes";
+import { saveDealOwner } from "@/actions/staff";
+import { decideWires } from "@/actions/wires";
 import { faultLabel, strikeLimitOf } from "@/lib/strikes";
 
 export const metadata = { title: "Closing" };
@@ -69,6 +74,8 @@ export default async function ClosingPage({
   const closeDue = closedStep && closing.status === "OPEN" ? effectiveDue(closedStep, closing, days) : null;
   const settles = closeDue ? nextSettlementDay(closeDue, settlementWeekdays(settings.settlementDays)) : null;
   const isAdmin = user.role === "ADMIN";
+  // The desk's forms here are for the closings side. Any other desk role reads the file.
+  const runs = isAdmin && deskCan(user, "closings");
   const isSeller = user.id === closing.listing.sellerId;
   const isBuyer = user.id === inquiry?.buyerId || closing.funders.some((funder) => funder.userId === user.id);
   // Each side sees its own figures, the same ones its statement shows. A broker who isn't a party sees only their fee.
@@ -92,6 +99,12 @@ export default async function ClosingPage({
   const timeline = loaded ? timelineView(loaded) : { entries: [], upcoming: [] };
   // A group's closing is the seats' money, so the desk ends it on their word rather than one seat walking away.
   const canWalkAway = inDiligence && !isAdmin && closing.funders.length <= 1 && (user.id === inquiry?.buyerId || closing.funders.some((funder) => funder.userId === user.id));
+  // The named desk contact, and wire changes waiting for a second desk member's approval.
+  const [owner, owners, pendingWires] = await Promise.all([
+    deskContact(closing.deskOwnerId),
+    runs ? dealOwners() : Promise.resolve([]),
+    isAdmin ? pendingWireChanges(closing.id) : Promise.resolve([]),
+  ]);
   return (
     <div className="grid grid-cols-[minmax(0,1fr)] gap-10 lg:grid-cols-[minmax(0,1fr)_320px]">
       <div>
@@ -102,8 +115,28 @@ export default async function ClosingPage({
           {closing.deskBidId
             ? `UPB Capital buying from ${closing.listing.seller.companyName || closing.listing.seller.name}`
             : `${inquiry?.buyer.name ?? "Buyer"} buying from ${closing.listing.seller.companyName || closing.listing.seller.name}`}
-          {inquiry?.note ? ` · ${inquiry.note.city}, ${inquiry.note.state}` : " · whole listing"}
+          {closing.noteIds.length
+            ? ` · ${closing.noteIds.length} of ${closing.listing.notes.length} loans`
+            : inquiry?.note ? ` · ${inquiry.note.city}, ${inquiry.note.state}` : " · whole listing"}
         </p>
+        {(owner || runs) && (
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            <p className="text-sm text-foreground">
+              {isAdmin ? "Deal owner" : "Your desk contact"}: {owner ? `${owner.name} · ${owner.email}` : "no one named yet"}
+            </p>
+            {runs && (
+              <form action={saveDealOwner} className="flex flex-wrap items-center gap-2">
+                <input type="hidden" name="kind" value="closing" />
+                <input type="hidden" name="id" value={closing.id} />
+                <select name="ownerId" defaultValue={closing.deskOwnerId ?? ""} aria-label="Deal owner" className="desk-input h-9 w-48">
+                  <option value="">No owner</option>
+                  {owners.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}
+                </select>
+                <SubmitButton variant="outline" className="h-9 text-[13px] font-medium" pendingLabel="Saving…">Save owner</SubmitButton>
+              </form>
+            )}
+          </div>
+        )}
         {closing.status === "OPEN" && (
           <p className={`mt-4 text-sm ${clock.late || clock.overdue ? "text-bad" : "text-muted-foreground"}`}>
             Target close {prettyDate(clock.target)} · day {clock.daysOpen}
@@ -148,7 +181,7 @@ export default async function ClosingPage({
                   </div>
                   {funder.status === "FUNDED" ? (
                     <p className="text-[13px] font-medium text-link">Funded</p>
-                  ) : isAdmin && closing.status === "OPEN" ? (
+                  ) : runs && closing.status === "OPEN" ? (
                     <form action={markShareFunded} className="flex flex-wrap items-center gap-2">
                       <input type="hidden" name="closingId" value={closing.id} />
                       <input type="hidden" name="userId" value={funder.userId} />
@@ -169,7 +202,7 @@ export default async function ClosingPage({
           {steps.map((step, index) => {
             const done = step.status === "COMPLETE";
             const next = !done && clock.next?.key === step.key;
-            const forms = (party || user.role === "ADMIN") && closing.status === "OPEN";
+            const forms = (party || user.role === "ADMIN") && closing.status === "OPEN" && (!isAdmin || runs);
             return (
               <li key={step.id} className={cn("glass p-4 sm:p-5", next && "border-link/45")}>
                 <div className="flex items-start gap-3">
@@ -281,8 +314,8 @@ export default async function ClosingPage({
           <BorrowerNotices
             closing={closing}
             boarding={closing.boarding}
-            notes={closing.noteId ? closing.listing.notes.filter((note) => note.id === closing.noteId) : closing.listing.notes}
-            canEdit={isAdmin || isBuyer}
+            notes={closingLoans(closing, closing.listing.notes)}
+            canEdit={runs || isBuyer}
             owner={
               closing.deskBidId
                 ? { kind: "desk", buyerId: null, label: "UPB Capital" }
@@ -292,7 +325,7 @@ export default async function ClosingPage({
             }
           />
         )}
-        {party && (closing.status === "COMPLETE" || user.role === "ADMIN") && (
+        {party && (!isAdmin || runs) && (closing.status === "COMPLETE" || user.role === "ADMIN") && (
           <section className="mt-6 glass p-6">
             <p className="eyebrow">Servicer boarding</p>
             <form action={saveBoarding} className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -397,7 +430,7 @@ export default async function ClosingPage({
               )}
             </dl>
             <a className="mt-4 inline-block text-[13px] font-medium text-link" href={`/api/closings/${closing.id}/statement`}>Settlement statement (PDF)</a>
-            {isAdmin && closing.status !== "CANCELED" && (
+            {runs && closing.status !== "CANCELED" && (
               <div className="mt-5 space-y-5 border-t border-border pt-4">
                 {closing.depositCents != null && (
                   <SettlementForm closingId={closing.id} side="deposit" title="Record buyer deposit" amount={closing.depositReceivedCents ?? closing.depositCents} at={closing.depositReceivedAt} reference={closing.depositReference} />
@@ -408,7 +441,7 @@ export default async function ClosingPage({
             )}
           </div>
         )}
-        {isAdmin && closing.status === "OPEN" && (
+        {runs && closing.status === "OPEN" && (
           <form action={setClosingDates} className="glass space-y-3 p-6">
             <input type="hidden" name="closingId" value={closing.id} />
             <p className="eyebrow">Dates</p>
@@ -429,7 +462,49 @@ export default async function ClosingPage({
         <div className="glass p-6">
           <p className="eyebrow">Escrow · {closing.provider}</p>
           {closing.providerRef && <p className="mt-2 text-xs text-muted-foreground">Reference {closing.providerRef}</p>}
-          {user.role === "ADMIN" && closing.status === "OPEN" ? (
+          {isAdmin && pendingWires.length > 0 && (
+            <div id="wires" className="mt-4 scroll-mt-6 space-y-3 rounded-lg border border-warn/40 bg-warn/5 p-3">
+              <p className="text-[13px] font-medium text-foreground">Wire change waiting for approval</p>
+              {pendingWires.map((change) => (
+                <div key={change.id} className="space-y-2">
+                  <p className="text-xs text-muted-foreground">
+                    Proposed by {change.proposedBy} on {prettyDate(change.createdAt)}{change.reason ? ` · ${change.reason.replace(/[.\s]+$/, "")}` : ""}. The instructions on file stand until a second desk member approves.
+                  </p>
+                  <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed text-foreground/85">{change.instructions || "No instructions. Approving clears them."}</pre>
+                  {deskCan(user, "approveWires") ? (
+                    <div className="flex flex-wrap gap-2">
+                      {change.proposedById !== user.id && (
+                        <form action={decideWires}>
+                          <input type="hidden" name="closingId" value={closing.id} />
+                          <input type="hidden" name="changeId" value={change.id} />
+                          <input type="hidden" name="decision" value="APPROVED" />
+                          <ConfirmSubmit
+                            title="Approve these wire instructions?"
+                            consequence="They replace the instructions on file now. The buyer, every group funder and the seller are emailed that the instructions changed and told to confirm them by phone before sending money."
+                            confirmLabel="Approve and notify both sides"
+                            pendingLabel="Approving…"
+                            className="h-9 text-[13px] font-medium"
+                          >
+                            Approve
+                          </ConfirmSubmit>
+                        </form>
+                      )}
+                      <form action={decideWires}>
+                        <input type="hidden" name="closingId" value={closing.id} />
+                        <input type="hidden" name="changeId" value={change.id} />
+                        <input type="hidden" name="decision" value="REJECTED" />
+                        <SubmitButton variant="outline" className="h-9 text-[13px] font-medium" pendingLabel="Saving…">{change.proposedById === user.id ? "Withdraw" : "Reject"}</SubmitButton>
+                      </form>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">A desk member who approves wires decides it.</p>
+                  )}
+                  {change.proposedById === user.id && <p className="text-xs text-muted-foreground">You proposed this, so someone else approves it.</p>}
+                </div>
+              ))}
+            </div>
+          )}
+          {runs && closing.status === "OPEN" ? (
             <form action={saveWireInstructions} className="mt-4 space-y-3">
               <input type="hidden" name="closingId" value={closing.id} />
               <label className="block text-[13px] text-muted-foreground">
@@ -437,14 +512,18 @@ export default async function ClosingPage({
                 <Textarea name="wireInstructions" defaultValue={closing.wireInstructions} className="mt-1 min-h-36 bg-card" />
               </label>
               <label className="block text-[13px] text-muted-foreground">
+                Why they are changing (optional)
+                <input name="reason" maxLength={300} className="desk-input mt-1" />
+              </label>
+              <label className="block text-[13px] text-muted-foreground">
                 Provider reference (optional)
                 <input name="providerRef" defaultValue={closing.providerRef} className="desk-input mt-1" />
               </label>
-              {/* Changed wire instructions are how wire fraud starts, so saving them asks first and warns both sides. */}
+              {/* Changed wire instructions are how wire fraud starts, so a change waits for a second desk member. */}
               <ConfirmSubmit
-                title="Save these wire instructions?"
-                consequence="The buyer, every group funder and the seller are emailed that the instructions changed and told to confirm them by phone before sending money."
-                confirmLabel="Save and notify both sides"
+                title="Propose these wire instructions?"
+                consequence="Nothing changes yet. Another desk member who approves wires has to approve them. Then the buyer, every group funder and the seller are emailed that the instructions changed and told to confirm them by phone before sending money."
+                confirmLabel="Send for approval"
                 pendingLabel="Saving…"
                 className="h-9 text-[13px] font-medium"
               >
@@ -485,7 +564,15 @@ export default async function ClosingPage({
         {inDiligence && !isAdmin && isBuyer && closing.funders.length > 1 && (
           <p className="glass p-6 text-sm text-muted-foreground">The diligence window runs until {prettyDate(closing.diligenceEndsAt)}. A group closing is ended by the desk, so every seat is heard. Write the desk on the closing thread.</p>
         )}
-        {user.role === "ADMIN" && closing.status === "OPEN" && (
+        {runs && closing.status === "OPEN" && (
+          <KickoutForm
+            closing={{ ...closing, salePrice: Number(closing.salePrice) }}
+            loans={closingLoans(closing, closing.listing.notes).map((note) => ({ ...note, askingPrice: Number(note.askingPrice) }))}
+            loanPrices={inquiry?.loanPrices ?? null}
+            grouped={closing.funders.length > 0}
+          />
+        )}
+        {runs && closing.status === "OPEN" && (
           <form action={cancelClosing} className="glass space-y-3 p-6">
             <input type="hidden" name="closingId" value={closing.id} />
             <p className="eyebrow">Cancel this closing</p>

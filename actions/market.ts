@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { audit } from "@/lib/audit";
-import { requireRole } from "@/lib/auth";
+import { requireDesk } from "@/lib/staff";
 import { coverBidLabel, readAgencySale, saleLabel } from "@/lib/dispatch";
 import { prisma } from "@/lib/prisma";
 
@@ -17,7 +17,7 @@ function fieldsOf(formData: FormData) {
 
 // The desk enters a published agency or HUD sale, or corrects one. Results go in as cover bids.
 export async function saveAgencySale(formData: FormData) {
-  const actor = await requireRole(["ADMIN"]);
+  const actor = await requireDesk("content", "/admin/market");
   const read = readAgencySale(fieldsOf(formData));
   if (!read.ok) back(read.error, "error", "#add-sale");
   const sale = read.value;
@@ -35,7 +35,7 @@ export async function saveAgencySale(formData: FormData) {
 }
 
 export async function removeAgencySale(formData: FormData) {
-  const actor = await requireRole(["ADMIN"]);
+  const actor = await requireDesk("content", "/admin/market");
   const id = String(formData.get("id") || "").trim();
   const existing = id ? await prisma.agencySale.findUnique({ where: { id } }) : null;
   if (!existing) back("That sale is no longer on file.", "error");

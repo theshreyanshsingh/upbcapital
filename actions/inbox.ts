@@ -2,14 +2,16 @@
 
 import { redirect } from "next/navigation";
 import { requireUser } from "@/lib/auth";
+import { deskWrites } from "@/lib/staff";
 import { prisma } from "@/lib/prisma";
 import { notifyThread } from "@/lib/threads";
 import { putBytes } from "@/lib/storage";
 import { uploadProblem } from "@/lib/uploads";
 import crypto from "crypto";
 
-async function canPost(userId: string, role: string, threadId: string) {
-  if (role === "ADMIN") return true;
+async function canPost(userId: string, role: string, threadId: string, deskRole?: string | null) {
+  // A read-only desk account reads every thread and posts in none.
+  if (role === "ADMIN") return deskWrites({ role, deskRole });
   const seat = await prisma.threadMember.findUnique({ where: { threadId_userId: { threadId, userId } } });
   return Boolean(seat);
 }
@@ -18,7 +20,7 @@ export async function postThread(formData: FormData) {
   const user = await requireUser();
   const threadId = String(formData.get("threadId") || "");
   const body = String(formData.get("body") || "").trim();
-  if (!(await canPost(user.id, user.role, threadId))) redirect("/inbox?error=That thread is closed to this account.");
+  if (!(await canPost(user.id, user.role, threadId, user.deskRole))) redirect("/inbox?error=That thread is closed to this account.");
   const file = formData.get("file");
   const hasFile = file instanceof File && file.size > 0;
   if (body.length < 1 && !hasFile) redirect(`/inbox/${threadId}?error=Write a note or attach a file.`);

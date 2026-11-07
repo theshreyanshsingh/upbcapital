@@ -10,6 +10,7 @@ import { money, prettyDate, q } from "@/lib/format";
 import { bookReturn } from "@/lib/holdings";
 import { prisma } from "@/lib/prisma";
 import { unset } from "@/lib/db-filters";
+import { deskCan } from "@/lib/staff";
 
 export const metadata = { title: "Desk book" };
 
@@ -18,7 +19,8 @@ export default async function DeskBookPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  await requireRole(["ADMIN"]);
+  // Every desk role reads the book. Only a role that buys for it takes bids, sets status or logs payments.
+  const books = deskCan(await requireRole(["ADMIN"]), "deskBook");
   const params = await searchParams;
   await ensureAcceptedDeskClosings();
   const [bids, holdings, closings, tasks] = await Promise.all([
@@ -50,7 +52,7 @@ export default async function DeskBookPage({
                 <Link href={`/admin/listings/${bid.listingId}`} className="font-semibold tracking-tight text-2xl text-foreground">{bid.listing.title}</Link>
                 <p className="mt-1 text-sm text-muted-foreground">{money(Number(bid.amount))}{bid.message ? ` · ${bid.message}` : ""}</p>
               </div>
-              <div className="flex flex-wrap items-center gap-2">
+              {books && <div className="flex flex-wrap items-center gap-2">
                 <form action={decideDeskBid} className="flex flex-wrap items-center gap-2">
                   <input type="hidden" name="id" value={bid.id} />
                   <input type="hidden" name="decision" value="ACCEPTED" />
@@ -71,7 +73,7 @@ export default async function DeskBookPage({
                   <input type="hidden" name="decision" value="DECLINED" />
                   <SubmitButton variant="ghost" className="h-10 text-[13px] font-medium">Pass</SubmitButton>
                 </form>
-              </div>
+              </div>}
             </li>
           ))}
         </ul>
@@ -110,7 +112,7 @@ export default async function DeskBookPage({
                     {stats.roi != null ? ` · ROI ${stats.roi.toFixed(1)}%` : ""}
                   </p>
                 </div>
-                <form action={setDeskHoldingStatus} className="flex items-center gap-2">
+                {books && <form action={setDeskHoldingStatus} className="flex items-center gap-2">
                   <input type="hidden" name="id" value={holding.id} />
                   <select name="status" defaultValue={holding.status} className="desk-input" aria-label={`Status for ${holding.title}`}>
                     <option value="CURRENT">Current</option>
@@ -118,15 +120,15 @@ export default async function DeskBookPage({
                     <option value="RESOLVED">Resolved</option>
                   </select>
                   <SubmitButton variant="outline" className="h-10 text-[13px] font-medium">Save</SubmitButton>
-                </form>
+                </form>}
               </div>
-              <form action={logDeskPayment} className="mt-4 grid gap-3 sm:grid-cols-4">
+              {books && <form action={logDeskPayment} className="mt-4 grid gap-3 sm:grid-cols-4">
                 <input type="hidden" name="holdingId" value={holding.id} />
                 <input name="amount" inputMode="decimal" className="desk-input" aria-label={`Payment for ${holding.title}`} placeholder="Amount" />
                 <input name="paidOn" type="date" className="desk-input" aria-label="Payment date" />
                 <input name="memo" className="desk-input" aria-label="Payment memo" placeholder="Memo" />
                 <SubmitButton className="h-11 text-[13px] font-medium">Log payment</SubmitButton>
-              </form>
+              </form>}
             </article>
           );
         })}

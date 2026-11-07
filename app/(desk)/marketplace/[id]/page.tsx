@@ -3,12 +3,14 @@ import { notFound, redirect } from "next/navigation";
 import { acknowledgeRoadNotice } from "@/actions/buyer";
 import { AccessLadder } from "@/components/access-ladder";
 import { BidBar } from "@/components/bid-bar";
+import { ComingSoonCard } from "@/components/coming-soon-card";
 import { CapitalStack, Donut, HorizontalBars } from "@/components/charts";
 import { CollateralPanel } from "@/components/collateral-panel";
 import { ComplianceNote } from "@/components/compliance-note";
 import { CompsPanel } from "@/components/comps-panel";
 import { IndicativePrice } from "@/components/indicative-price";
 import { DataRoomList } from "@/components/data-room-list";
+import { QuestionBoard } from "@/components/listing-questions";
 import { DealAnalyzer } from "@/components/deal-analyzer";
 import { GroupPanel } from "@/components/group-panel";
 import { ListingEconomics } from "@/components/listing-economics";
@@ -17,12 +19,13 @@ import { bidModeLabel, ListingTimeline } from "@/components/listing-timeline";
 import { LoanFacts, LoanFileView } from "@/components/loan-file-view";
 import { Notice } from "@/components/notice";
 import { OfferPanel } from "@/components/offer-panel";
+import { ListingPhotos } from "@/components/photo-manager";
 import { PoolTape } from "@/components/pool-tape";
 import { StatusPill } from "@/components/status-pill";
 import { StrataPanel } from "@/components/strata-panel";
 import { SubmitButton } from "@/components/submit-button";
 import { TabsContent } from "@/components/ui/tabs";
-import { canReadDocument, dataRoomOpenTo, isPrivateDocument, loanFileAccess, loanOpenTo } from "@/lib/acl";
+import { canManageRoom, canReadDocument, dataRoomOpenTo, isPrivateDocument, loanFileAccess, loanOpenTo, ndaOpensRoom } from "@/lib/acl";
 import { dealAccess } from "@/lib/data-room";
 import { requireUser } from "@/lib/auth";
 import { canOpenListing, openableListingIds } from "@/lib/access";
@@ -47,13 +50,16 @@ import { enrichListing, notifyIfAuctionClosed, rememberView } from "@/lib/listin
 import { stratify } from "@/lib/strata";
 import { num, prettyDate, q } from "@/lib/format";
 import { labelOf } from "@/lib/labels";
+import { comingSoonCard, launchPending, launchTime } from "@/lib/launch-rules";
 import { completeness, fieldState, groupByNote } from "@/lib/loan-file";
 import { depositTerms } from "@/lib/closing-clock";
 import { diligenceDays } from "@/lib/closing-service";
 import { allInYield, noteMetrics, poolMetrics } from "@/lib/metrics";
 import { prisma } from "@/lib/prisma";
+import { publishedQuestions, questionsAskedBy } from "@/lib/questions";
 import { eventSetsTerms } from "@/lib/auction";
 import { currentSaleEvent, roundText, when } from "@/lib/sale-events";
+import { listingFeeBps } from "@/lib/desk-fees";
 import { getSettings, isPro } from "@/lib/settings";
 import { canSubmitOffer } from "@/lib/verification";
 import { mapPoint, showableAvm } from "@/lib/enrichment";
@@ -76,7 +82,8 @@ export default async function ListingPage({
   const [listing, settings, live] = await Promise.all([
     prisma.listing.findUnique({
       where: { id },
-      include: { notes: true, documents: true, seller: true, broker: true, ndas: { where: { userId: user.id } } },
+      // Photos aren't data-room files: they show in the gallery, under the street address rule, and nowhere else.
+      include: { notes: true, documents: { where: { type: { not: "PHOTO" } } }, seller: true, broker: true, ndas: { where: { userId: user.id } } },
     }),
     getSettings(),
     prisma.listing.findMany({
@@ -95,7 +102,27 @@ export default async function ListingPage({
     listingId: listing.id,
     sellerId: listing.sellerId,
     brokerId: listing.brokerId,
+    launchAt: listing.launchAt,
   });
+  // A coming-soon listing shows buyers its teaser and a save button. Its file, room and bids wait for the launch.
+  if (!access.ok && access.reason === "coming" && listing.launchAt) {
+    const card = comingSoonCard({ ...listing, launchAt: listing.launchAt });
+    const saved = user.role === "BUYER" ? (await prisma.favorite.count({ where: { userId: user.id, listingId: listing.id } })) > 0 : false;
+    return (
+      <div className="max-w-2xl">
+        <Notice notice={q(query, "notice")} error={q(query, "error")} />
+        <p className="eyebrow mt-4">Coming soon</p>
+        <h1 className="mt-3 font-semibold tracking-tight text-[28px] leading-tight text-foreground">{listing.title}</h1>
+        <p className="mt-4 text-sm leading-relaxed text-muted-foreground">
+          The desk approved this listing to go live on {card.launchLabel}. The confidentiality agreement, the data room and bids open then.
+          {user.role === "BUYER" ? " Save it and you'll hear the moment it goes live." : ""}
+        </p>
+        <div className="mt-6">
+          <ComingSoonCard card={card} favorited={saved} canFavorite={user.role === "BUYER"} />
+        </div>
+      </div>
+    );
+  }
   if (!access.ok) {
     const copy = access.reason === "early"
       ? `This listing is inside the ${settings.earlyAccessHours}-hour early-access window.`
@@ -162,7 +189,12 @@ export default async function ListingPage({
     verificationStatus: profile?.status ?? null,
   }).ok;
   const closingParty = deal.whole || deal.loans.size > 0;
-  const unlocked = user.role === "ADMIN" || dataRoomOpenTo({ listingStatus: listing.status, signedNda: listing.ndas.length > 0, closingParty });
+  // An NDA opens the room only once the seller approves it, where they approve each bidder.
+  const roomNda = ndaOpensRoom(listing.ndas[0]);
+  const unlocked = user.role === "ADMIN" || dataRoomOpenTo({ listingStatus: listing.status, signedNda: roomNda, closingParty });
+  const accessWaiting = user.role === "BUYER" && !unlocked && listing.status === "APPROVED" && listing.ndas[0] && !roomNda
+    ? listing.ndas[0].accessStatus === "DECLINED" ? "The seller didn't approve your access to this room." : "Waiting for the seller to approve your access."
+    : null;
   // A buyer who signed but didn't win sees the room as closed, not an NDA prompt they can no longer use.
   const roomClosed = user.role === "BUYER" && !unlocked && listing.status !== "APPROVED";
   const ownNdaId = listing.ndas[0]?.documentId;
@@ -170,7 +202,7 @@ export default async function ListingPage({
   // Street and borrower are decided per loan: one sold out of a pool closes to everyone but its buyer.
   const loanOpen = (note: { id: string; tradeStatus: string }) =>
     user.role === "ADMIN" ||
-    loanOpenTo({ tradeStatus: note.tradeStatus, listingStatus: listing.status, signedNda: listing.ndas.length > 0, wholeParty: deal.whole, loanParty: deal.loans.has(note.id) });
+    loanOpenTo({ tradeStatus: note.tradeStatus, listingStatus: listing.status, signedNda: roomNda, wholeParty: deal.whole, loanParty: deal.loans.has(note.id) });
   const notes = listing.notes.map((note) => ({
     id: note.id,
     open: loanOpen(note),
@@ -205,7 +237,9 @@ export default async function ListingPage({
   const economics = listing.kind === "POOL" ? pool : noteMetrics(notes[0]);
   const asking = listing.kind === "POOL" ? pool.totalAsk : notes[0].askingPrice;
   const avms = forSale.map((note) => note.avm).filter((value): value is number => value != null);
-  const premium = (asking * settings.buyerPremiumBps) / 10000;
+  // The fees the listing went live with, which the closing will charge.
+  const fees = listingFeeBps(listing, settings);
+  const premium = (asking * fees.premiumBps) / 10000;
   // What a winning bidder owes, for the bid confirmation. A 0% deposit says nothing.
   const terms = depositTerms(settings);
   const deposit: [number, number] | undefined = terms.bps > 0 ? [terms.bps / 100, terms.days] : undefined;
@@ -226,10 +260,10 @@ export default async function ListingPage({
     ownNda: false,
     privateFile: true,
     proBuyer: user.role === "BUYER" && isPro(user),
-    signedNda: listing.ndas.length > 0,
+    signedNda: roomNda,
     listingStatus: listing.status,
     closingParty,
-    loan: loanFileAccess({ note: fileNote, listingId: listing.id, listingStatus: listing.status, signedNda: listing.ndas.length > 0, wholeParty: deal.whole, loanIds: deal.loans }),
+    loan: loanFileAccess({ note: fileNote, listingId: listing.id, listingStatus: listing.status, signedNda: roomNda, wholeParty: deal.whole, loanIds: deal.loans }),
   });
   const loanFileHref = (noteId: string) => `/marketplace/${listing.id}?loan=${noteId}&tab=file#loan-file`;
   const fileHref = (index: number) => (index >= 0 && index < listing.notes.length ? loanFileHref(listing.notes[index].id) : null);
@@ -258,6 +292,12 @@ export default async function ListingPage({
   const notices = confirmNotices(eligibility);
   // The buyer's verified-funds credential and headroom, and any strike pause, for the bid forms.
   const standing = user.role === "BUYER" ? await bidStanding(user.id) : null;
+  // Shared Q&A: answers read inside the room, a bidder's own questions, and the form for a bidder in the room.
+  const managesRoom = canManageRoom(user, listing);
+  const [answered, myQuestions] = await Promise.all([
+    publishedQuestions(listing.id),
+    user.role === "BUYER" && !managesRoom ? questionsAskedBy(listing.id, user.id) : Promise.resolve(null),
+  ]);
   // A loan bid restates only that loan's notices: a pool can hold one non-performing house among performing paper.
   const loanNotices = (noteId: string) => {
     const loan = forSale.find((item) => item.id === noteId);
@@ -286,6 +326,11 @@ export default async function ListingPage({
         </div>
         <h1 className="mt-3 font-semibold tracking-tight text-[28px] leading-tight text-foreground">{listing.title}</h1>
         <p className="mt-3 max-w-3xl text-sm leading-relaxed text-muted-foreground">{listing.summary || "No narrative from the seller."}</p>
+        {launchPending(listing) && listing.launchAt && (
+          <p role="status" className="mt-3 max-w-3xl border border-link/30 bg-link/5 px-3 py-2 text-sm leading-relaxed text-foreground rounded-lg tabular-nums">
+            Coming soon. Buyers see a teaser until it goes live on {launchTime(listing.launchAt)}, when the room and bids open.
+          </p>
+        )}
         {event && (
           <p className="mt-3 max-w-3xl border border-link/30 bg-link/5 px-3 py-2 text-sm leading-relaxed text-foreground rounded-lg tabular-nums">
             In the sale event <Link href={`/events#${event.id}`} className="font-medium text-link">{event.name}</Link>. Indications due {when(event.indicationsAt)}. Best and final due {when(event.bestFinalAt)}. {roundText(event)}
@@ -298,6 +343,7 @@ export default async function ListingPage({
           </p>
         )}
       </header>
+      <ListingPhotos listing={listing} viewer={user} deal={deal} />
 
       <div className="grid grid-cols-[minmax(0,1fr)] gap-8 lg:grid-cols-[minmax(0,1fr)_320px]">
         <div className="min-w-0">
@@ -308,13 +354,13 @@ export default async function ListingPage({
             economics={pro ? {
               asking,
               premium,
-              premiumBps: settings.buyerPremiumBps,
+              premiumBps: fees.premiumBps,
               upb: listing.kind === "POOL" ? pool.totalUpb : lead.upb,
               priceToUpb: economics.priceToUpb,
               priceToValue: economics.priceToValue,
               ltv: economics.ltv,
               currentYield: economics.currentYield,
-              allInYield: allInYield(economics.currentYield, settings.buyerPremiumBps),
+              allInYield: allInYield(economics.currentYield, fees.premiumBps),
               loansPriced: forSale.length,
               performing: forSale.filter((note) => note.paymentStatus === "PERFORMING").length,
               salePrice: listing.salePrice == null ? null : num(listing.salePrice),
@@ -330,7 +376,8 @@ export default async function ListingPage({
               verificationStatus={profile?.status ?? null}
               unlocked={unlocked}
               roomClosed={roomClosed}
-              canSign={!unlocked && !roomClosed && user.role === "BUYER"}
+              canSign={!unlocked && !roomClosed && user.role === "BUYER" && !accessWaiting}
+              waiting={accessWaiting}
               closingParty={closingParty}
               ndaSigned={unlocked && listing.ndas[0] ? prettyDate(listing.ndas[0].acknowledgedAt) : null}
             />
@@ -399,7 +446,7 @@ export default async function ListingPage({
                   bidding={user.role === "BUYER" ? {
                     deposit,
                     diligenceDays: diligence,
-                    premiumBps: settings.buyerPremiumBps,
+                    premiumBps: fees.premiumBps,
                     verified,
                     listingOpen: listing.status === "APPROVED",
                     noticesFor: loanNotices,
@@ -442,7 +489,7 @@ export default async function ListingPage({
                 documents={listing.documents.filter((document) => document.noteId === fileNote.id)}
                 open={fileOpen}
                 docsOpen={fileDocsOpen}
-                docGate={roomClosed || (fileNote.tradeStatus !== "AVAILABLE" && !fileOpen) ? "Closed" : pro ? "NDA required" : "Pro"}
+                docGate={roomClosed || (fileNote.tradeStatus !== "AVAILABLE" && !fileOpen) ? "Closed" : accessWaiting ? "Not open yet" : pro ? "NDA required" : "Pro"}
                 holder={holder}
                 pro={pro}
                 facts={listing.kind === "POOL"}
@@ -458,7 +505,16 @@ export default async function ListingPage({
                 documents={dataRoom}
                 roomClosed={roomClosed}
                 canOpen={(document) => ((pro || closingParty) && unlocked) || document.id === ownNdaId}
-                gate={roomClosed ? "Closed" : pro ? "NDA required" : "Pro"}
+                gate={roomClosed ? "Closed" : accessWaiting ? "Not open yet" : pro ? "NDA required" : "Pro"}
+              />
+              <QuestionBoard
+                listingId={listing.id}
+                published={answered}
+                mine={myQuestions}
+                canAsk={user.role === "BUYER" && !managesRoom && listing.status === "APPROVED" && roomNda}
+                inRoom={unlocked || managesRoom}
+                waiting={accessWaiting}
+                loans={listing.kind === "POOL" ? notes.map((note, index) => ({ id: note.id, label: `Loan ${index + 1} · ${note.open ? `${note.streetAddress}, ` : ""}${note.city}, ${note.state}` })) : []}
               />
             </TabsContent>
 
@@ -508,7 +564,7 @@ export default async function ListingPage({
                   defaultBid={performingSlice.ask || asking}
                   // The same premium the header nets out, and the loan's own occupancy and lien for the scenario
                   // weights. A pool's slice mixes loans, so it keeps the model's defaults.
-                  premiumBps={settings.buyerPremiumBps}
+                  premiumBps={fees.premiumBps}
                   occupancy={listing.kind === "POOL" ? null : lead.occupancy}
                   lienPosition={listing.kind === "POOL" ? null : lead.lienPosition}
                   // A single loan's foreclosure clock and live value estimate. A pool's slice has neither.
@@ -598,7 +654,7 @@ export default async function ListingPage({
         >
           <OfferPanel
             listingId={listing.id}
-            premiumBps={settings.buyerPremiumBps}
+            premiumBps={fees.premiumBps}
             deposit={deposit}
             diligenceDays={diligence}
             canOffer={canOffer}
@@ -609,6 +665,7 @@ export default async function ListingPage({
             acknowledgeFirst={acknowledgeFirst}
             standing={standing}
             heading={listing.kind === "POOL" ? "Bid the whole pool" : undefined}
+            loans={listing.kind === "POOL" && canOffer ? notes.map((note, index) => ({ id: note.id, label: `Loan ${index + 1} · ${note.open && note.streetAddress ? `${note.streetAddress}, ` : ""}${note.city}, ${note.state}`, ask: pro ? note.askingPrice : null })) : []}
             closedText={listing.status === "APPROVED" && !wholeOpen ? "Some loans in this pool have traded, so it can't be bid whole. Bid the loans still for sale in the table." : undefined}
           />
           <p className="text-xs leading-relaxed text-muted-foreground">Listed by {listing.seller.companyName || listing.seller.name}. An accepted bid opens a closing checklist with the premium and commission on the all-in total.</p>

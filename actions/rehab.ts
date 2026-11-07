@@ -1,12 +1,13 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { requireRole } from "@/lib/auth";
+import { requireDesk } from "@/lib/staff";
 import { SOUTH_FLORIDA_COSTS } from "@/lib/rehab";
 import { prisma } from "@/lib/prisma";
 
+// Rehab plans and unit costs are work on the desk's own holdings.
 async function admin() {
-  return requireRole(["ADMIN"]);
+  return requireDesk("deskBook", "/admin/book");
 }
 
 export async function ensureUnitCosts() {

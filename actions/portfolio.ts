@@ -3,6 +3,8 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireRole } from "@/lib/auth";
+import { guardDesk } from "@/lib/staff";
+import { readReceiptSplit } from "@/lib/portfolio-tax";
 import { prisma } from "@/lib/prisma";
 
 function amountOf(formData: FormData) {
@@ -13,18 +15,25 @@ function amountOf(formData: FormData) {
 export async function logBuyerPayment(formData: FormData) {
   const user = await requireRole(["BUYER", "ADMIN"]);
   const holdingId = String(formData.get("holdingId") || "");
+  guardDesk(user, "closings", "/buyer/portfolio");
   const holding = await prisma.buyerHolding.findUnique({ where: { id: holdingId } });
   if (!holding || (user.role !== "ADMIN" && holding.userId !== user.id)) {
     redirect("/buyer/portfolio?error=That note is not on your book.");
   }
-  const amount = amountOf(formData);
   const paidOn = String(formData.get("paidOn") || "");
   const memo = String(formData.get("memo") || "").trim().slice(0, 240);
-  if (!(amount > 0) || !/^\d{4}-\d{2}-\d{2}$/.test(paidOn)) {
-    redirect("/buyer/portfolio?error=Amount and date are required.");
-  }
+  // The split is optional. Without it the year-end statement estimates one from the loan and says so.
+  const read = readReceiptSplit({
+    amount: String(formData.get("amount") || ""),
+    principal: String(formData.get("principal") || ""),
+    interest: String(formData.get("interest") || ""),
+    fees: String(formData.get("fees") || ""),
+    escrow: String(formData.get("escrow") || ""),
+  });
+  if (read.error !== null) redirect(`/buyer/portfolio?error=${encodeURIComponent(read.error)}`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(paidOn)) redirect("/buyer/portfolio?error=Amount and date are required.");
   await prisma.cashReceipt.create({
-    data: { buyerHoldingId: holdingId, amount, paidOn: new Date(`${paidOn}T00:00:00Z`), memo },
+    data: { buyerHoldingId: holdingId, amount: read.amount, paidOn: new Date(`${paidOn}T00:00:00Z`), memo, source: "MANUAL", ...(read.split ?? {}) },
   });
   revalidatePath("/buyer/portfolio");
   redirect("/buyer/portfolio?notice=payment");
@@ -62,6 +71,7 @@ export async function setBuyerHoldingStatus(formData: FormData) {
   const id = String(formData.get("id") || "");
   const status = String(formData.get("status") || "");
   if (!["CURRENT", "WATCH", "RESOLVED"].includes(status)) redirect("/buyer/portfolio?error=Unknown status.");
+  guardDesk(user, "closings", "/buyer/portfolio");
   const holding = await prisma.buyerHolding.findUnique({ where: { id } });
   if (!holding || (user.role !== "ADMIN" && holding.userId !== user.id)) redirect("/buyer/portfolio");
   await prisma.buyerHolding.update({ where: { id }, data: { status: status as "CURRENT" } });

@@ -4,11 +4,17 @@ import { answerDeskBid } from "@/actions/desk-book";
 import { ConfirmSubmit } from "@/components/confirm-submit";
 import { SubmitButton } from "@/components/submit-button";
 import { DiscrepancyAnswers } from "@/components/discrepancy-answers";
+import { QuestionQueue } from "@/components/listing-questions";
+import { RoomAccessPanel } from "@/components/room-access";
 import { Notice } from "@/components/notice";
 import { SaleApproval, WithdrawListing } from "@/components/sale-approval";
+import { accessLog } from "@/lib/access-log";
 import { requireRole } from "@/lib/auth";
+import { bidderNamer } from "@/lib/bidder-alias";
 import { money, num, q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
+import { questionQueue } from "@/lib/questions";
+import { roomRequests } from "@/lib/room-access";
 import { deskBidNotAcceptable } from "@/lib/awards";
 
 export const metadata = { title: "Your resale" };
@@ -50,6 +56,13 @@ export default async function ResalePage({
   const [openClosings, differences] = await Promise.all([
     prisma.closing.count({ where: { listingId: listing.id, status: "OPEN" } }),
     prisma.fieldDiscrepancy.findMany({ where: { listingId: listing.id }, orderBy: { createdAt: "desc" } }),
+  ]);
+  // The room, as on a seller's page: bidder questions, access requests and the log, with bidders by letter.
+  const [nameOf, questions, requests, log] = await Promise.all([
+    bidderNamer(listing.id, user),
+    questionQueue(listing.id),
+    roomRequests(listing.id),
+    accessLog(listing.id, user),
   ]);
   return (
     <div className="mx-auto max-w-3xl">
@@ -98,6 +111,20 @@ export default async function ResalePage({
           {deskBidBlock && <p className="mt-2 text-sm text-muted-foreground">{deskBidBlock}</p>}
         </div>
       ))}
+      <QuestionQueue
+        rows={questions.map((row) => ({ ...row, asker: nameOf(row.asker) }))}
+        from="resale"
+        live={listing.status === "APPROVED"}
+        loans={listing.kind === "POOL" ? listing.notes.map((note, index) => ({ id: note.id, label: `Loan ${index + 1} · ${note.city}, ${note.state}` })) : []}
+      />
+      <RoomAccessPanel
+        listingId={listing.id}
+        from="resale"
+        roomApproval={Boolean(listing.roomApproval)}
+        editable={["SUBMITTED", "UNDER_REVIEW", "CHANGES_REQUESTED", "APPROVED"].includes(listing.status)}
+        requests={requests.map((request) => ({ ...request, bidder: nameOf(request.user) }))}
+        engagement={log.status === 200 ? log.engagement : []}
+      />
       <WithdrawListing listing={listing} offers={listing.inquiries} ask={ask} openClosings={openClosings} canWithdraw />
     </div>
   );

@@ -1,4 +1,5 @@
 import { decideOfacReview, reopenOfacReview, runRetention, saveDisclosure, saveRetention, screenName } from "@/actions/compliance";
+import { DeletionQueue } from "@/components/deletion-queue";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { SubmitButton } from "@/components/submit-button";
@@ -155,6 +156,8 @@ export default async function CompliancePage({
           </form>
         </div>
       </section>
+
+      <DeletionQueue />
     </div>
   );
 }

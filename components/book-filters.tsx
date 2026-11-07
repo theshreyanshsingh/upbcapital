@@ -20,6 +20,7 @@ const RANGES: { label: string; min: keyof BookFilters; max: keyof BookFilters; u
   { label: "Price / UPB", min: "ptuMin", max: "ptuMax", unit: "%" },
   { label: "Current yield", min: "yieldMin", max: "yieldMax", unit: "%" },
   { label: "Value", min: "valueMin", max: "valueMax", unit: "$" },
+  { label: "LTV", min: "ltvMin", max: "ltvMax", unit: "%" },
 ];
 
 // The book's full filter set, one labelled field for every attribute a card, a row or a listing shows.
@@ -136,11 +137,11 @@ export function BookFiltersForm({
                   </div>
                 ))}
               </div>
-              <p className="text-xs leading-relaxed text-muted-foreground">A pool is judged on the totals of the loans still for sale. Note rate matches any one loan.</p>
+              <p className="text-xs leading-relaxed text-muted-foreground">A pool is judged on the totals of the loans still for sale. Note rate matches any one loan. LTV is UPB over the seller&apos;s estimated value.</p>
             </fieldset>
           ) : (
             <p className={cn("text-sm leading-relaxed text-muted-foreground", sheet ? "col-span-2" : "sm:col-span-2")}>
-              Filters on balance, ask, rate, price to UPB, yield and value are part of Pro, along with those sorts.
+              Filters on balance, ask, rate, price to UPB, yield, value and LTV are part of Pro, along with those sorts.
             </p>
           )}
         </div>

@@ -1,3 +1,4 @@
+import { closingLoans } from "@/lib/closing";
 import { annualYield } from "@/lib/holdings";
 import { prisma } from "@/lib/prisma";
 
@@ -7,7 +8,7 @@ export async function ensureBuyerHolding(closingId: string) {
     include: { listing: { include: { notes: true } }, funders: true },
   });
   if (!closing || closing.status !== "COMPLETE" || !closing.inquiryId) return null;
-  const notes = closing.noteId ? closing.listing.notes.filter((note) => note.id === closing.noteId) : closing.listing.notes;
+  const notes = closingLoans(closing, closing.listing.notes);
   const upb = notes.reduce((sum, note) => sum + Number(note.upb), 0);
   const monthly = notes.reduce((sum, note) => sum + Number(note.monthlyPi), 0);
   if (closing.funders.length) {

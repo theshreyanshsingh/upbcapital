@@ -27,11 +27,13 @@ export default async function QueuePage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  await requireRole(["ADMIN"]);
+  const user = await requireRole(["ADMIN"]);
   const params = await searchParams;
   const tab = TABS.find((item) => item.id === q(params, "tab")) ?? TABS[0];
+  // Mine: listings this desk member owns, in the same columns.
+  const mine = q(params, "mine") === "1";
   const listings = await prisma.listing.findMany({
-    where: { status: { in: [...tab.statuses] } },
+    where: { status: { in: [...tab.statuses] }, ...(mine ? { deskOwnerId: user.id } : {}) },
     include: {
       seller: true,
       broker: true,
@@ -54,7 +56,7 @@ export default async function QueuePage({
         {TABS.map((item) => (
           <Link
             key={item.id}
-            href={`/admin/queue?tab=${item.id}`}
+            href={`/admin/queue?tab=${item.id}${mine ? "&mine=1" : ""}`}
             aria-current={item.id === tab.id ? "page" : undefined}
             className={`inline-flex min-h-9 shrink-0 items-center rounded-full border px-3.5 text-[13px] font-medium whitespace-nowrap pointer-coarse:min-h-10 ${item.id === tab.id ? "border-link/50 bg-link/10 text-link" : "border-border bg-card text-muted-foreground hover:text-foreground"}`}
           >
@@ -62,8 +64,20 @@ export default async function QueuePage({
           </Link>
         ))}
       </nav>
+      <nav aria-label="Whose listings" className="mt-3 flex gap-2">
+        {[{ label: "All", on: !mine, href: `/admin/queue?tab=${tab.id}` }, { label: "Mine", on: mine, href: `/admin/queue?tab=${tab.id}&mine=1` }].map((item) => (
+          <Link
+            key={item.label}
+            href={item.href}
+            aria-current={item.on ? "page" : undefined}
+            className={`inline-flex min-h-9 items-center rounded-full border px-3.5 text-[13px] font-medium ${item.on ? "border-link/50 bg-link/10 text-link" : "border-border bg-card text-muted-foreground hover:text-foreground"}`}
+          >
+            {item.label}
+          </Link>
+        ))}
+      </nav>
       <ul className="mt-6 divide-y divide-border border border-border rounded-xl">
-        {listings.length === 0 && <li className="px-5 py-8 text-sm text-muted-foreground">Nothing in this column.</li>}
+        {listings.length === 0 && <li className="px-5 py-8 text-sm text-muted-foreground">{mine ? "None of your listings are in this column." : "Nothing in this column."}</li>}
         {listings.map((listing) => (
           <li key={listing.id}>
             <Link href={`/admin/listings/${listing.id}`} className="flex flex-wrap items-center justify-between gap-3 px-5 py-5 hover:bg-muted/60">

@@ -38,6 +38,7 @@ import {
   Receipt,
   TrendingUp,
 } from "lucide-react";
+import type { DeskCapability } from "@/lib/desk-roles";
 
 // The desk's navigation for each role: the sidebar on a wide screen, and the tab bar plus its More sheet on a phone.
 export type ShellUser = {
@@ -46,9 +47,12 @@ export type ShellUser = {
   role: string;
   tier: string;
   unread: number;
+  // A desk account's capabilities, from lib/desk-roles.ts. Missing shows every desk page.
+  can?: readonly DeskCapability[];
 };
 
-export type NavItem = { href: string; label: string; icon: LucideIcon; section?: string; count?: number; short?: string };
+// needs: a desk page that only writes, hidden from a role that can't use it. Pages that show records stay for all.
+export type NavItem = { href: string; label: string; icon: LucideIcon; section?: string; count?: number; short?: string; needs?: DeskCapability };
 
 export function active(path: string, href: string) {
   if (href === "/seller" || href === "/admin" || href === "/marketplace" || href === "/buyer/subscription" || href === "/broker") {
@@ -111,7 +115,7 @@ export function dockFor(user: ShellUser): NavItem[] {
 export function navFor(user: ShellUser): NavItem[] {
   const notices: NavItem = { href: "/notifications", label: "Notifications", icon: Bell, count: user.unread };
   if (user.role === "ADMIN") {
-    return [
+    const items: NavItem[] = [
       { href: "/admin", label: "Revenue", icon: LayoutDashboard },
       notices,
       { href: "/inbox", label: "Inbox", icon: Inbox },
@@ -138,9 +142,11 @@ export function navFor(user: ShellUser): NavItem[] {
       { href: "/admin/audit", label: "Audit log", icon: ScrollText, section: "Records" },
       { href: "/admin/blog", label: "Journal", icon: Newspaper, section: "Records" },
       { href: "/admin/analytics", label: "Analytics", icon: ChartColumn, section: "Tools" },
-      { href: "/admin/assistant", label: "Assistant", icon: Bot, section: "Tools" },
-      { href: "/seller/api", label: "Seller API", icon: Code, section: "Tools" },
+      { href: "/admin/assistant", label: "Assistant", icon: Bot, section: "Tools", needs: "sales" },
+      { href: "/seller/api", label: "Seller API", icon: Code, section: "Tools", needs: "admin" },
     ];
+    const can = user.can;
+    return can ? items.filter((item) => !item.needs || can.includes(item.needs)) : items;
   }
   if (user.role === "BROKER") {
     return [

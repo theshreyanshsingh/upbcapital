@@ -1,11 +1,13 @@
 "use server";
 
 import { requireRole } from "@/lib/auth";
+import { DESK_DENIED, deskDenied } from "@/lib/staff";
 import { deskAssist, type DeskTask } from "@/lib/desk-ai";
 import { prisma } from "@/lib/prisma";
 
 export async function askDesk(_prev: { answer: string; provider: string }, formData: FormData) {
   const user = await requireRole(["ADMIN", "INSTITUTIONAL_SELLER"]);
+  if (deskDenied(user, "sales")) return { answer: DESK_DENIED, provider: "mock" };
   const task = String(formData.get("task") || "describe") as DeskTask;
   if (task !== "summarize" && task !== "tape" && task !== "describe") {
     return { answer: "That request is not one of the desk tasks.", provider: "mock" };

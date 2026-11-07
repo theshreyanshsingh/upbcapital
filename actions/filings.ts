@@ -1,12 +1,12 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { requireRole } from "@/lib/auth";
+import { requireDesk } from "@/lib/staff";
 import { FILING_COUNTIES, matchFiling, parseFilingCsv } from "@/lib/filings";
 import { prisma } from "@/lib/prisma";
 
 export async function importFilings(formData: FormData) {
-  await requireRole(["ADMIN"]);
+  await requireDesk("sales", "/admin/filings");
   const county = String(formData.get("county") || "");
   if (!(FILING_COUNTIES as readonly string[]).includes(county)) redirect("/admin/filings?error=Choose Miami-Dade, Broward, or Palm Beach.");
   const file = formData.get("file");
@@ -32,7 +32,7 @@ export async function importFilings(formData: FormData) {
 }
 
 export async function setFilingStatus(formData: FormData) {
-  await requireRole(["ADMIN"]);
+  await requireDesk("sales", "/admin/filings");
   const id = String(formData.get("id") || "");
   const status = String(formData.get("status") || "NEW");
   const outreach = String(formData.get("outreach") || "");

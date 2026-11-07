@@ -67,7 +67,8 @@ export async function getCurrentUser() {
   const row = await prisma.serverSession.findUnique({ where: { id: session.sid } });
   if (!row || row.userId !== session.sub || row.expiresAt.getTime() < Date.now()) return null;
   const user = await prisma.user.findUnique({ where: { id: session.sub } });
-  if (!user || accountLocked(user.accountStatus)) return null;
+  // A deleted account stays out even if its lock were lifted.
+  if (!user || accountLocked(user.accountStatus) || user.deletedAt) return null;
   return user;
 }
 

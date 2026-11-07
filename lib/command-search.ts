@@ -270,6 +270,7 @@ async function buyerResults(viewer: PaletteViewer, term: string, settings: Setti
             approvedAt: true,
             sellerId: true,
             brokerId: true,
+            launchAt: true,
             notes: { select: { city: true, state: true, upb: true, askingPrice: true, tradeStatus: true } },
           },
           orderBy: { approvedAt: "desc" },
@@ -321,6 +322,7 @@ async function buyerResults(viewer: PaletteViewer, term: string, settings: Setti
         listingId: listing.id,
         sellerId: listing.sellerId,
         brokerId: listing.brokerId,
+        launchAt: listing.launchAt,
       }).ok,
     )
     .slice(0, LIMIT)

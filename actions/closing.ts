@@ -13,8 +13,10 @@ import { OFAC_HOLD_MESSAGE, ofacHold } from "@/lib/screening";
 import { moneyGate, proceedsGate } from "@/lib/settlement";
 import { emitWebhook } from "@/lib/webhooks";
 import { extensionOf, mimeFor, putBytes, safeBasename } from "@/lib/storage";
+import { guardDesk } from "@/lib/staff";
 import { faultLabel, isCancelFault, strikeStanding } from "@/lib/strikes";
 import { uploadProblem } from "@/lib/uploads";
+import { proposeWireChange } from "@/lib/wire-changes";
 
 async function loadClosing(id: string) {
   return prisma.closing.findUnique({
@@ -41,28 +43,27 @@ export async function saveWireInstructions(formData: FormData) {
   const closingId = String(formData.get("closingId") || "");
   const { user, closing } = await participant(closingId);
   if (user.role !== "ADMIN") redirect(`/closings/${closingId}?error=Only the desk edits wire instructions.`);
+  guardDesk(user, "closings", `/closings/${closingId}`);
   if (closing.status !== "OPEN") redirect(`/closings/${closingId}?error=This closing is already finished.`);
   const wireInstructions = String(formData.get("wireInstructions") || "").trim();
   const providerRef = String(formData.get("providerRef") || "").trim();
-  await prisma.closing.update({ where: { id: closingId }, data: { wireInstructions, providerRef } });
-  if (wireInstructions !== closing.wireInstructions || providerRef !== closing.providerRef) {
-    await audit(user.id, "WIRE_EDIT", "closing", closingId, `Before: ${closing.wireInstructions.slice(0, 200)} (ref ${closing.providerRef || "none"}). After: ${wireInstructions.slice(0, 200)} (ref ${providerRef || "none"}).`);
+  // The escrow reference doesn't say where money goes, so it saves at once.
+  if (providerRef !== closing.providerRef) {
+    await prisma.closing.update({ where: { id: closingId }, data: { providerRef } });
+    await audit(user.id, "ESCROW_REF", "closing", closingId, `${closing.providerRef || "none"} to ${providerRef || "none"}`);
   }
-  if (wireInstructions !== closing.wireInstructions) {
-    // Changed wire details are the classic closing fraud, so each side hears about it from the desk.
-    const warning = "The desk changed the wire instructions on this closing. Before sending money, confirm them by phone on a number you already trust.";
-    for (const email of [...(await buyerSideEmails(closingId)), closing.listing.seller.email]) {
-      await notify(email, `Wires changed · ${closing.listing.title}`, warning);
-    }
-  }
+  // New instructions wait for a second desk member to approve them. Both sides are told when they take effect.
+  const proposed = await proposeWireChange(user, { closingId, instructions: wireInstructions, reason: String(formData.get("reason") || "") });
+  if (proposed.error !== null) redirect(`/closings/${closingId}?error=${encodeURIComponent(proposed.error)}#wires`);
   revalidatePath(`/closings/${closingId}`);
-  redirect(`/closings/${closingId}?notice=wires`);
+  redirect(`/closings/${closingId}?notice=${proposed.change ? encodeURIComponent("The new wire instructions are waiting for another desk member to approve them. The ones on file stand until then.") : "wires"}#wires`);
 }
 
 export async function uploadClosingFile(formData: FormData) {
   const closingId = String(formData.get("closingId") || "");
   const stepKey = String(formData.get("stepKey") || "");
   const { user, closing } = await participant(closingId);
+  guardDesk(user, "closings", `/closings/${closingId}`);
   if (closing.status !== "OPEN") redirect(`/closings/${closingId}?error=This closing is already finished.`);
   if (!isClosingStepKey(stepKey)) redirect(`/closings/${closingId}?error=Unknown step.`);
   const step = closing.steps.find((item) => item.key === stepKey);
@@ -98,6 +99,7 @@ export async function completeClosingStep(formData: FormData) {
   const override = String(formData.get("override") || "").trim().slice(0, 300);
   const { user, closing, inquiry } = await participant(closingId);
   if (user.role !== "ADMIN") redirect(`/closings/${closingId}?error=Only the desk advances a closing.`);
+  guardDesk(user, "closings", `/closings/${closingId}`);
   if (!isClosingStepKey(stepKey)) redirect(`/closings/${closingId}?error=Unknown step.`);
   if (closing.status !== "OPEN") redirect(`/closings/${closingId}?error=This closing is already finished.`);
   if (await ofacHold({ listingId: closing.listingId, userIds: [inquiry?.buyerId, closing.listing.sellerId, ...closing.funders.map((row) => row.userId)] })) {
@@ -145,6 +147,7 @@ export async function cancelClosing(formData: FormData) {
   const fault = String(formData.get("fault") || "").trim().toUpperCase();
   const { user, closing, inquiry } = await participant(closingId);
   if (user.role !== "ADMIN") redirect(`/closings/${closingId}?error=Only the desk cancels a closing.`);
+  guardDesk(user, "closings", `/closings/${closingId}`);
   if (closing.status !== "OPEN") redirect(`/closings/${closingId}?error=This closing is already finished.`);
   if (reason.length < 3) redirect(`/closings/${closingId}?error=${encodeURIComponent("Say why the closing is being canceled.")}`);
   if (!isCancelFault(fault)) redirect(`/closings/${closingId}?error=${encodeURIComponent("Choose whose failure ended the closing: the buyer, the seller or neither.")}`);
@@ -201,6 +204,7 @@ export async function setClosingDates(formData: FormData) {
   const closingId = String(formData.get("closingId") || "");
   const { user, closing } = await participant(closingId);
   if (user.role !== "ADMIN") redirect(`/closings/${closingId}?error=Only the desk sets closing dates.`);
+  guardDesk(user, "closings", `/closings/${closingId}`);
   if (closing.status !== "OPEN") redirect(`/closings/${closingId}?error=This closing is already finished.`);
   const target = dateInput(formData.get("targetCloseAt"));
   if (!target) redirect(`/closings/${closingId}?error=${encodeURIComponent("Set a target close date.")}`);
@@ -225,6 +229,7 @@ export async function recordSettlement(formData: FormData) {
   const side = String(formData.get("side") || "");
   const { user, closing } = await participant(closingId);
   if (user.role !== "ADMIN") redirect(`/closings/${closingId}?error=Only the desk records money movement.`);
+  guardDesk(user, "closings", `/closings/${closingId}`);
   if (closing.status === "CANCELED") redirect(`/closings/${closingId}?error=This closing was canceled.`);
   if (side !== "funds" && side !== "proceeds" && side !== "deposit") redirect(`/closings/${closingId}?error=Choose which wire this is.`);
   const amount = Number(String(formData.get("amount") || "").replace(/[$,\s]/g, ""));

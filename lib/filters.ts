@@ -40,6 +40,9 @@ export type BookFilters = {
   yieldMax?: number;
   valueMin?: number;
   valueMax?: number;
+  // Loan to value in percent: UPB over the estimated value, as lib/metrics.ts reads it.
+  ltvMin?: number;
+  ltvMax?: number;
 };
 
 export const BID_MODES = [
@@ -63,7 +66,7 @@ export type MultiKey = (typeof MULTI_KEYS)[number];
 export const FLAG_KEYS = ["modified", "bankruptcy", "hoaLien", "taxDelinquent", "deadline"] as const;
 
 // Every figure a free member sees veiled. Filtering on one would reveal it, so these apply on Pro only.
-export const FIGURE_KEYS = ["upbMin", "upbMax", "priceMin", "priceMax", "rateMin", "rateMax", "ptuMin", "ptuMax", "yieldMin", "yieldMax", "valueMin", "valueMax"] as const;
+export const FIGURE_KEYS = ["upbMin", "upbMax", "priceMin", "priceMax", "rateMin", "rateMax", "ptuMin", "ptuMax", "yieldMin", "yieldMax", "valueMin", "valueMax", "ltvMin", "ltvMax"] as const;
 
 // Facts that show only on a listing the viewer can open: its loan file and tape flags.
 export const FILE_KEYS = ["occupancy", "foreclosureStatus", "dlqMin", "dlqMax", "modified", "bankruptcy", "hoaLien", "taxDelinquent"] as const;
@@ -72,6 +75,7 @@ const KEY_ORDER: (keyof BookFilters)[] = [
   "q", "state", "kind", "status", "paymentStatus", "lienPosition", "propertyType", "occupancy", "foreclosureStatus",
   "dlqMin", "dlqMax", "modified", "bankruptcy", "hoaLien", "taxDelinquent", "bidMode", "deadline",
   "upbMin", "upbMax", "priceMin", "priceMax", "rateMin", "rateMax", "ptuMin", "ptuMax", "yieldMin", "yieldMax", "valueMin", "valueMax",
+  "ltvMin", "ltvMax",
 ];
 
 const CHOICES: Record<MultiKey, readonly { value: string }[]> = {
@@ -147,6 +151,8 @@ export function parseFilters(input: Raw): BookFilters {
     yieldMax: amount("yieldMax"),
     valueMin: amount("valueMin"),
     valueMax: amount("valueMax"),
+    ltvMin: amount("ltvMin"),
+    ltvMax: amount("ltvMax"),
   };
   return Object.fromEntries(Object.entries(filters).filter(([, value]) => value !== undefined)) as BookFilters;
 }
@@ -266,8 +272,8 @@ export function listingMatches(listing: MatchListing, filters: BookFilters) {
   if (!flagMatches(deadlineOf(listing), filters.deadline)) return false;
   const open = listing.notes.filter((note) => !note.tradeStatus || note.tradeStatus === "AVAILABLE");
   const notes = open.length ? open : listing.notes;
-  const { ptuMin, ptuMax, yieldMin, yieldMax, valueMin, valueMax } = filters;
-  if ([ptuMin, ptuMax, yieldMin, yieldMax, valueMin, valueMax].some((value) => value != null)) {
+  const { ptuMin, ptuMax, yieldMin, yieldMax, valueMin, valueMax, ltvMin, ltvMax } = filters;
+  if ([ptuMin, ptuMax, yieldMin, yieldMax, valueMin, valueMax, ltvMin, ltvMax].some((value) => value != null)) {
     if (notes.some((note) => note.monthlyPi === undefined || note.estimatedValue === undefined || note.interestRate === undefined)) return false;
     const figures = listingFigures(listing.kind, notes.map((note) => ({
       upb: note.upb,
@@ -278,6 +284,8 @@ export function listingMatches(listing: MatchListing, filters: BookFilters) {
       paymentStatus: note.paymentStatus,
     })));
     if (!inRange(figures.priceToUpb, ptuMin, ptuMax) || !inRange(figures.yield, yieldMin, yieldMax) || !inRange(figures.value, valueMin, valueMax)) return false;
+    // A loan with no value on file has no LTV, so an LTV filter never matches it.
+    if (!inRange(figures.ltv, ltvMin, ltvMax)) return false;
   }
   if (listing.kind !== "POOL") return notes.some((note) => noteMatches(note, filters));
   const { upbMin, upbMax, priceMin, priceMax, ...rest } = filters;
@@ -399,6 +407,7 @@ export function appliedChips(filters: BookFilters) {
     ["Price / UPB", "ptuMin", "ptuMax", (value) => `${value}%`],
     ["Yield", "yieldMin", "yieldMax", (value) => `${value}%`],
     ["Value", "valueMin", "valueMax", (value) => money(value)],
+    ["LTV", "ltvMin", "ltvMax", (value) => `${value}%`],
   ];
   for (const [name, min, max, show] of ranges) {
     const low = filters[min] as number | undefined;
@@ -418,6 +427,7 @@ export const SORTS = [
   { value: "upb", label: "Largest UPB", pro: true, dir: "desc" },
   { value: "ask", label: "Largest ask", pro: true, dir: "desc" },
   { value: "value", label: "Largest value", pro: true, dir: "desc" },
+  { value: "ltv", label: "Lowest LTV", pro: true, dir: "asc" },
 ] as const;
 
 export type SortKey = (typeof SORTS)[number]["value"];
@@ -438,7 +448,7 @@ export type SortRow = {
   approvedAt: number;
   deadline: number | null;
   state: string;
-  figures: { upb: number; asking: number; value: number; priceToUpb: number | null; yield: number | null };
+  figures: { upb: number; asking: number; value: number; priceToUpb: number | null; yield: number | null; ltv?: number | null };
 };
 
 function sortValue(row: SortRow, key: SortKey): number | string | null {
@@ -449,6 +459,7 @@ function sortValue(row: SortRow, key: SortKey): number | string | null {
   if (key === "yield") return row.figures.yield;
   if (key === "upb") return row.figures.upb;
   if (key === "ask") return row.figures.asking;
+  if (key === "ltv") return row.figures.ltv ?? null;
   return row.figures.value;
 }
 

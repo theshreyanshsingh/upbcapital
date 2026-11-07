@@ -1,16 +1,24 @@
 import { borrowerNotices, loansInScope, saleNoticeNeedsReminder } from "@/lib/borrower-notices";
-import { stepLabel } from "@/lib/closing";
+import { closingLoans, stepLabel } from "@/lib/closing";
 import { STEP_OWNER, effectiveDue, stepClock, stepNeedsReminder, targetDays } from "@/lib/closing-clock";
 import { retentionCutoff } from "@/lib/compliance";
+import { destructionRemindersDue, destructionRequestsDue, destructionWindowStart, sendDestructionReminder, sendDestructionRequest } from "@/lib/destruction";
 import { digestBody, digestSince } from "@/lib/digest";
+import { launchPending } from "@/lib/launch-rules";
 import { sendMarketDispatch } from "@/lib/dispatch";
 import { advanceSaleEvents } from "@/lib/sale-events";
 import { notify, notifyDesk } from "@/lib/email";
 import { notifyClosedAuctions } from "@/lib/listing-intel";
 import { prisma } from "@/lib/prisma";
 import { bidNeedsReminder, taskNeedsReminder } from "@/lib/schedule";
+import { roundupSearches, sendSearchRoundup } from "@/lib/search-alerts";
+import { reportOwners, sendSellerReport } from "@/lib/seller-report";
 import { purgeTapeDrafts } from "@/lib/tape-draft";
 import { unset } from "@/lib/db-filters";
+import { notifyWatchers } from "@/lib/watchers";
+import { dueDeliveries, retryDelivery, type WebhookSender } from "@/lib/webhooks";
+
+const DAY = 24 * 60 * 60 * 1000;
 
 // What a sending job did: how many went out, and how many items failed, with the first reason.
 export type Tally = { sent: number; failed: number; error: string };
@@ -68,6 +76,16 @@ export async function runJobs(now = new Date()) {
     ["Market dispatch", () => sendMarketDispatch(now)],
     // Rounds change on their dates. The event pages also advance an event when they load, between runs.
     ["Sale events", () => advanceSaleEvents(now)],
+    // Daily and weekly saved searches send one roundup each when their period is up.
+    ["Launches", () => import("@/lib/launch").then((launch) => launch.runLaunches(now))],
+    ["Search roundups", () => sendSearchRoundups(now)],
+    // Each seller or broker with a live listing hears how it did, once a week.
+    ["Seller reports", () => sendSellerReports(now)],
+    // Failed webhook deliveries whose next try is due.
+    ["Webhook retries", () => retryWebhooks(now)],
+    // Losing bidders are asked once to certify they destroyed the room's files, and reminded once a week later.
+    ["Destruction requests", () => sendDestructionRequests(now)],
+    ["Destruction reminders", () => remindDestruction(now)],
   ]);
 }
 
@@ -106,10 +124,45 @@ export async function sendDigest(user: { id: string; email: string; digest: stri
     orderBy: { score: "desc" },
     take: 12,
   });
-  const body = digestBody(matches.map((match) => ({ title: match.listing.title, score: match.score })));
+  // A coming-soon listing waits for its launch, which sends its own alerts.
+  const live = matches.filter((match) => !launchPending(match.listing, now));
+  const body = digestBody(live.map((match) => ({ title: match.listing.title, score: match.score })));
   if (!body) return false;
-  await notify(user.email, "Buy box digest", body);
+  await notify(user.email, "Buy box digest", body, { category: "digest", userId: user.id });
   return true;
+}
+
+// Daily and weekly saved searches. Each sends one roundup per period, claimed on its lastAlertAt. `userIds` narrows
+// a run, so a test sends only its own.
+export async function sendSearchRoundups(now = new Date(), options: { userIds?: string[] } = {}) {
+  const searches = await roundupSearches(options.userIds);
+  return eachItem("search roundup", searches, (search) => `search ${search.id}`, (search) => sendSearchRoundup(search, now));
+}
+
+// The weekly report to each seller or broker with a live listing, claimed on lastSellerReportAt.
+export async function sendSellerReports(now = new Date(), options: { userIds?: string[] } = {}) {
+  const owners = await reportOwners(options.userIds);
+  return eachItem("seller report", owners, (user) => `user ${user.id}`, (user) => sendSellerReport(user, now));
+}
+
+// Each due delivery is claimed on its try count, so an overlapping run sends it once. `endpointIds` narrows a run and
+// `send` stands in for the network, both for tests.
+export async function retryWebhooks(now = new Date(), options: { endpointIds?: string[]; send?: WebhookSender } = {}) {
+  const due = await dueDeliveries(now, options);
+  return eachItem("webhook retry", due, (delivery) => `delivery ${delivery.id}`, (delivery) => retryDelivery(delivery, now, options.send));
+}
+
+// Closings opened or closed since the last run say which listings went to a buyer. Rather than hook the award
+// itself, the job polls, so an award from any path is covered. `since` and `listingIds` narrow a run for tests.
+export async function sendDestructionRequests(now = new Date(), options: { since?: Date; listingIds?: string[] } = {}) {
+  const since = options.since ?? (await destructionWindowStart(now));
+  const due = await destructionRequestsDue(since, options);
+  return eachItem("destruction request", due, (nda) => `nda ${nda.id}`, (nda) => sendDestructionRequest(nda, now));
+}
+
+export async function remindDestruction(now = new Date(), options: { listingIds?: string[] } = {}) {
+  const due = await destructionRemindersDue(now, options);
+  return eachItem("destruction reminder", due, (nda) => `nda ${nda.id}`, (nda) => sendDestructionReminder(nda, now));
 }
 
 async function remindTasks(now: Date) {
@@ -132,32 +185,59 @@ async function remindTasks(now: Date) {
   });
 }
 
-async function remindBidDeadlines(now: Date) {
+// A day before bids close, the seller, the desk and every bidder hear once, claimed on bidReminderAt. Buyers who saved
+// a live listing hear once too, claimed on watchReminderAt, except those who bid and already got the bidder notice.
+// The two claims stand apart, so a run that sent one finishes the other on its next pass. `listingIds` narrows a run,
+// so a test reminds its own listings and nobody else's.
+export async function remindBidDeadlines(now = new Date(), options: { listingIds?: string[] } = {}) {
   const listings = await prisma.listing.findMany({
-    where: { bidMode: { not: "NONE" }, bidDeadline: { not: null }, ...unset("bidReminderAt") },
+    where: {
+      bidMode: { not: "NONE" },
+      bidDeadline: { gt: now, lte: new Date(now.getTime() + DAY) },
+      OR: [unset("bidReminderAt"), unset("watchReminderAt")],
+      ...(options.listingIds ? { id: { in: options.listingIds } } : {}),
+    },
     include: { seller: true, inquiries: { where: { type: "OFFER" }, include: { buyer: true } } },
   });
   return eachItem("bid reminder", listings, (listing) => `listing ${listing.id}`, async (listing) => {
-    if (!bidNeedsReminder(listing, now)) return false;
-    const claim = await prisma.listing.updateMany({ where: { id: listing.id, ...unset("bidReminderAt") }, data: { bidReminderAt: now } });
-    if (claim.count !== 1) return false;
     const when = listing.bidDeadline?.toISOString().slice(0, 16) ?? "";
     const subject = `Bid deadline · ${listing.title}`;
-    const body = `Bids on ${listing.title} close at ${when} UTC.`;
-    await notify(listing.seller.email, subject, body);
-    await notifyDesk(subject, body);
-    // A buyer with several offers on the listing hears once.
-    for (const email of new Set(listing.inquiries.map((inquiry) => inquiry.buyer.email))) await notify(email, subject, body);
-    return true;
+    let sent = false;
+    if (bidNeedsReminder(listing, now)) {
+      const claim = await prisma.listing.updateMany({ where: { id: listing.id, ...unset("bidReminderAt") }, data: { bidReminderAt: now } });
+      if (claim.count === 1) {
+        const body = `Bids on ${listing.title} close at ${when} UTC.`;
+        await notify(listing.seller.email, subject, body);
+        await notifyDesk(subject, body);
+        // A buyer with several offers on the listing hears once.
+        for (const email of new Set(listing.inquiries.map((inquiry) => inquiry.buyer.email))) await notify(email, subject, body);
+        sent = true;
+      }
+    }
+    if (listing.status === "APPROVED" && bidNeedsReminder({ ...listing, bidReminderAt: listing.watchReminderAt }, now)) {
+      const claim = await prisma.listing.updateMany({ where: { id: listing.id, ...unset("watchReminderAt") }, data: { watchReminderAt: now } });
+      if (claim.count === 1) {
+        await notifyWatchers({
+          listingId: listing.id,
+          event: "DEADLINE",
+          subject,
+          body: `Bids on ${listing.title}, a listing you saved, close at ${when} UTC.`,
+          except: listing.inquiries.map((inquiry) => inquiry.buyerId),
+        });
+        sent = true;
+      }
+    }
+    return sent;
   });
 }
 
 // A bid past its good-until date closes. Each is claimed with a conditional write, so an award or a withdrawal that
 // lands first wins, and an overlapping run tells nobody twice. The buyer hears, and so does a seller who was asked
-// to approve it, so they don't answer a bid that is gone.
-export async function expireBids(now = new Date()) {
+// to approve it, so they don't answer a bid that is gone. `inquiryIds` narrows the run, so a test expires only its
+// own bids.
+export async function expireBids(now = new Date(), options: { inquiryIds?: string[] } = {}) {
   const bids = await prisma.inquiry.findMany({
-    where: { type: "OFFER", status: { in: ["OPEN", "REVIEWED"] }, expiresAt: { lte: now } },
+    where: { type: "OFFER", status: { in: ["OPEN", "REVIEWED"] }, expiresAt: { lte: now }, ...(options.inquiryIds ? { id: { in: options.inquiryIds } } : {}) },
     include: { buyer: true, listing: { include: { seller: true } } },
   });
   return eachItem("bid expiry", bids, (bid) => `inquiry ${bid.id}`, async (bid) => {
@@ -177,12 +257,13 @@ export async function expireBids(now = new Date()) {
   });
 }
 
-// One message per closing and party, listing every step that is late or due within two days.
-export async function remindClosingSteps(now = new Date()) {
+// One message per closing and party, listing every step that is late or due within two days. `closingIds` narrows
+// the run, so a test reminds its own closings and never reads one whose listing another test is deleting.
+export async function remindClosingSteps(now = new Date(), options: { closingIds?: string[] } = {}) {
   const settings = await prisma.platformSettings.findUnique({ where: { id: "default" } });
   const days = targetDays(settings?.closingTargetDays);
   const closings = await prisma.closing.findMany({
-    where: { status: "OPEN" },
+    where: { status: "OPEN", ...(options.closingIds ? { id: { in: options.closingIds } } : {}) },
     include: { steps: true, listing: { include: { seller: true } }, funders: { include: { user: true } } },
   });
   return eachItem("closing reminder", closings, (closing) => `closing ${closing.id}`, async (closing) => {
@@ -223,7 +304,7 @@ export async function remindSaleNotices(now = new Date()) {
     include: { listing: { include: { notes: true } }, boarding: true, funders: { include: { user: true } } },
   });
   return eachItem("sale notice reminder", closings, (closing) => `closing ${closing.id}`, async (closing) => {
-    const notes = closing.noteId ? closing.listing.notes.filter((note) => note.id === closing.noteId) : closing.listing.notes;
+    const notes = closingLoans(closing, closing.listing.notes);
     const plan = borrowerNotices(closing, closing.boarding, loansInScope(notes, closing.loanPurpose).length, now);
     if (plan.sale.state === "not_needed" || !saleNoticeNeedsReminder(plan.sale.due, closing.ownerNoticeSentAt, closing.ownerNoticeRemindedAt, now)) return false;
     const claim = await prisma.closing.updateMany({

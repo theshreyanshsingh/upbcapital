@@ -3,14 +3,16 @@ import { notifySeats, onGroupAccepted, onGroupCounter, onGroupDeclined } from "@
 import { deadlinePassed } from "@/lib/auction";
 import { audit } from "@/lib/audit";
 import { unset } from "@/lib/db-filters";
-import { openClosing, tradeConflict } from "@/lib/closing-service";
+import { openClosing, partConflict, tradeConflict } from "@/lib/closing-service";
 import { notify, notifyDesk } from "@/lib/email";
 import { buyNowAgreed, buyNowClearBlock, buyNowConsent, buyNowSetBlock, samePrice } from "@/lib/buy-now";
 import { listingWithdrawBlock } from "@/lib/listing-status";
+import { loanPriceProblem, standingLoanPrices, sumPrices, type LoanPrices } from "@/lib/loan-prices";
 import { bidExpired, buyerPrice, withdrawBlock, type OfferMoney } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
 import { OFAC_HOLD_MESSAGE, ofacHold } from "@/lib/screening";
 import { strikeStanding } from "@/lib/strikes";
+import { notifyWatchers } from "@/lib/watchers";
 
 const LIVE = ["OPEN", "REVIEWED"] as const;
 
@@ -21,18 +23,69 @@ function dollars(amount: number) {
 // Why open bids are closing, in the words each bidder and group hears. The default is another bid winning.
 type DeclineWhy = { subject: string; bidder: string; group: string; reason: string };
 
+// The award that closed the round. An offer award passes its price, so each losing bidder can hear where they
+// stood. A buy-it-now win passes buyNow, and nobody hears more, since its price is on the listing.
+// A part-pool award passes the loans it took in noteIds.
+type Winner = { id: string | null; listingId: string; noteId: string | null; noteIds?: string[]; price?: number | null; buyNow?: boolean };
+
+const ORDINALS = ["th", "st", "nd", "rd"];
+
+function ordinal(rank: number) {
+  const tens = rank % 100;
+  return `${rank}${tens >= 11 && tens <= 13 ? "th" : ORDINALS[rank % 10] ?? "th"}`;
+}
+
+// What a losing bidder hears once a bid is awarded: how many bids the round had, where theirs ranked by price, and
+// whether the winning price met the seller's reserve. Never an amount, and never who won. The round is every live
+// bid on the same loans as the winner, the winner included.
+export function roundFeedback(input: { winnerPrice: number; reserve: number | null | undefined; bids: { id: string; price: number | null }[] }, loserId: string) {
+  const mine = input.bids.find((bid) => bid.id === loserId)?.price;
+  if (mine == null || input.bids.length < 2) return null;
+  const priced = input.bids.filter((bid): bid is { id: string; price: number } => bid.price != null);
+  const rank = priced.filter((bid) => bid.price > mine + 0.005).length + 1;
+  const tied = priced.some((bid) => bid.id !== loserId && Math.abs(bid.price - mine) < 0.005);
+  const reserve = input.reserve != null && input.reserve > 0
+    ? input.winnerPrice >= input.reserve ? "The winning bid met the seller's reserve." : "The winning bid was under the seller's reserve, and the seller approved it."
+    : "The seller set no reserve and approved the winning bid.";
+  return `The round had ${input.bids.length} bids, and yours ranked ${ordinal(rank)} by price${tied ? ", tied with another bid" : ""}. ${reserve}`;
+}
+
 // Once a bid wins, the others on the same loans can't, so they close now: an award, a desk purchase, a manual sale,
 // or the seller withdrawing the listing. Each bidder hears it without the price or the winner. A one-loan sale also
 // ends offers on the whole listing, which can no longer trade whole. Pass a null winner id when the winning bid
 // isn't an offer.
-export async function declineLosingBids(winner: { id: string | null; listingId: string; noteId: string | null }, title: string, why?: DeclineWhy) {
+export async function declineLosingBids(winner: Winner, title: string, why?: DeclineWhy) {
   const open = await prisma.inquiry.findMany({
     where: { listingId: winner.listingId, ...(winner.id ? { id: { not: winner.id } } : {}), type: "OFFER", status: { in: [...LIVE] } },
-    include: { buyer: { select: { email: true } } },
+    include: { buyer: { select: { email: true } }, messages: { select: { kind: true, amount: true, createdAt: true, authorId: true } } },
   });
-  const losers = winner.noteId ? open.filter((offer) => !offer.noteId || offer.noteId === winner.noteId) : open;
+  // A sale of some loans closes the bids on those loans and the bids for the whole pool, which can no longer trade
+  // whole. A pool bid that lets the seller take part of it stays open while one of its priced loans is still free.
+  const sold = winner.noteIds?.length ? winner.noteIds : winner.noteId ? [winner.noteId] : null;
+  const free = sold ? new Set((await prisma.note.findMany({ where: { listingId: winner.listingId, tradeStatus: "AVAILABLE" }, select: { id: true } })).map((note) => note.id)) : null;
+  const canStillWin = (offer: (typeof open)[number]) => {
+    if (!free || !offer.allowPartial) return false;
+    const prices = standingLoanPrices(offer.loanPrices, buyerPrice(offer.amount, pricedMessages(offer.messages), offer.buyerId));
+    return Boolean(prices && Object.keys(prices).some((noteId) => free.has(noteId) && !sold?.includes(noteId)));
+  };
+  const losers = sold ? open.filter((offer) => (offer.noteId ? sold.includes(offer.noteId) : !canStillWin(offer))) : open;
   const { emitWebhook } = await import("@/lib/webhooks");
-  const sellerId = (await prisma.listing.findUnique({ where: { id: winner.listingId }, select: { sellerId: true } }))?.sellerId;
+  const listing = await prisma.listing.findUnique({ where: { id: winner.listingId }, select: { sellerId: true, reservePrice: true } });
+  const sellerId = listing?.sellerId;
+  // Feedback follows an offer award only. A desk purchase, a manual sale or a withdrawal has no round to rank.
+  const winnerPrice = winner.price;
+  const round = !why && winner.id && winnerPrice != null && winnerPrice > 0 && !winner.buyNow && !winner.noteIds?.length
+    ? {
+      winnerPrice,
+      reserve: listing?.reservePrice,
+      bids: [
+        { id: winner.id, price: winnerPrice },
+        ...open
+          .filter((offer) => offer.noteId === winner.noteId)
+          .map((offer) => ({ id: offer.id, price: buyerPrice(offer.amount, pricedMessages(offer.messages), offer.buyerId) })),
+      ],
+    }
+    : null;
   let declined = 0;
   for (const loser of losers) {
     // A bid its buyer withdrew a moment ago stays withdrawn, and they aren't told it was declined.
@@ -46,18 +99,26 @@ export async function declineLosingBids(winner: { id: string | null; listingId: 
       why ? `${why.subject} · ${title}` : `Bid not selected · ${title}`,
       why
         ? why.bidder
-        : winner.noteId && !loser.noteId
-          ? "A loan in this pool was sold on its own, so the pool can no longer trade whole. Thank you for bidding."
-          : "Another bid was accepted. Thank you for bidding.",
+        : winner.noteIds?.length
+          ? loser.noteId
+            ? "That loan was sold as part of the pool. Thank you for bidding."
+            : "Part of this pool was sold, so it can no longer trade whole. Thank you for bidding."
+          : winner.noteId && !loser.noteId
+            ? "A loan in this pool was sold on its own, so the pool can no longer trade whole. Thank you for bidding."
+            : feedbackText(round ? roundFeedback(round, loser.id) : null),
     );
   }
   // The desk's open bids on the same loans can't be taken either, so they come off the seller's page. A desk bid
   // that just won is already ACCEPTED.
   await prisma.deskBid.updateMany({
-    where: { listingId: winner.listingId, status: "OPEN", ...(winner.noteId ? { OR: [{ noteId: winner.noteId }, ...unset("noteId").OR] } : {}) },
+    where: { listingId: winner.listingId, status: "OPEN", ...(sold ? { OR: [{ noteId: { in: sold } }, ...unset("noteId").OR] } : {}) },
     data: { status: "WITHDRAWN" },
   });
   return declined;
+}
+
+function feedbackText(feedback: string | null) {
+  return feedback ? `Another bid was accepted. ${feedback} Thank you for bidding.` : "Another bid was accepted. Thank you for bidding.";
 }
 
 // Takes one loan into contract only if it is still free, in a single write, so two awards at the same moment
@@ -137,10 +198,12 @@ function loadOffer(inquiryId: string) {
 type Offer = NonNullable<Awaited<ReturnType<typeof loadOffer>>>;
 
 // Every check an award needs, before any write. It runs again at the moment of award, because a seller may
-// approve days after the desk asked and the deal can change in between.
-export async function checkAward(inquiryId: string) {
+// approve days after the desk asked and the deal can change in between. A part-pool award passes the loans it
+// takes, and is priced at the buyer's own loan prices for them.
+export async function checkAward(inquiryId: string, part?: { noteIds: string[] }) {
   const offer = await loadOffer(inquiryId);
   if (!offer || offer.type !== "OFFER") return { error: "That offer no longer exists." } as const;
+  if (part && offer.noteId) return { error: "That bid is for one loan, so there is no part of it to take." } as const;
   if (offer.status === "DECLINED") return { error: "That offer was declined or its closing was canceled. The buyer can send a new one." } as const;
   if (offer.status === "WITHDRAWN") return { error: "The buyer withdrew that bid." } as const;
   if (offer.status === "EXPIRED" || (offer.status !== "ACCEPTED" && bidExpired(offer.expiresAt))) {
@@ -155,6 +218,8 @@ export async function checkAward(inquiryId: string) {
   if (offer.buyer.accountStatus !== "APPROVED") return { error: "That buyer account is not approved." } as const;
   // A group's seats all become funders and closing parties, so each seat holder is checked like the lead.
   const group = await prisma.groupBuy.findFirst({ where: { inquiryId }, include: { positions: { include: { user: { select: { accountStatus: true } } } } } });
+  // The seats fund the group's whole price, so its bid is never split.
+  if (part && group) return { error: "A group's bid is funded seat by seat for the whole pool, so it can't be split." } as const;
   const seats = group ? group.positions.filter((seat) => seat.status !== "DROPPED") : [];
   if (seats.some((seat) => seat.user.accountStatus !== "APPROVED")) return { error: "A group seat holder's account is not approved." } as const;
   const parties = [offer.buyerId, offer.listing.sellerId, ...seats.map((seat) => seat.userId)];
@@ -165,7 +230,7 @@ export async function checkAward(inquiryId: string) {
   if (standings[0].paused) return { error: "This buyer's bidding is paused for closings that didn't complete. Clear a strike on their buyer file before awarding." } as const;
   if (standings.some((standing) => standing.paused)) return { error: "A group seat holder's bidding is paused for closings that didn't complete. Clear a strike on their buyer file before awarding." } as const;
   if (offer.listing.bidMode !== "NONE" && !deadlinePassed(offer.listing.bidDeadline)) return { error: "Award this after the bid deadline." } as const;
-  const conflict = await tradeConflict(offer.listingId, offer.noteId);
+  const conflict = part ? await partConflict(offer.listingId, part.noteIds) : await tradeConflict(offer.listingId, offer.noteId);
   if (conflict) return { error: conflict } as const;
   const messages = await prisma.offerMessage.findMany({ where: { inquiryId } });
   // Only a price the buyer put forward can be awarded. A desk counter they haven't accepted can't.
@@ -175,6 +240,7 @@ export async function checkAward(inquiryId: string) {
     offer.buyerId,
   );
   if (!price || price <= 0) return { error: "That offer has no amount." } as const;
+  if (part) return checkPart(offer, price, part.noteIds);
   // A group bid is the seats' money. Every seat must have agreed to this price, and together they must cover it.
   if (group) {
     if (seats.some((seat) => seat.status === "RECONFIRM")) return { error: "Some group seats haven't reconfirmed the latest price." } as const;
@@ -183,13 +249,85 @@ export async function checkAward(inquiryId: string) {
       return { error: `The group's seats add up to $${Math.round(covered).toLocaleString("en-US")}, not $${Math.round(price).toLocaleString("en-US")}. The seats reconfirm a price before it can be awarded.` } as const;
     }
   }
-  const agreed = sellerAgreed({
+  let agreed = sellerAgreed({
     price,
     reserve: offer.listing.reservePrice,
     approvedAmount: offer.sellerApprovedAmount,
     buyNow: { bid: offer.buyNow, price: offer.listing.buyNowPrice },
   });
+  // An approval that answered a question about part of the pool doesn't sell the whole of it.
+  if (agreed === "approved" && askedPriceStands(offer.sellerAskedAmount, offer.sellerApprovedAmount) && (await partAsked(offer))) agreed = null;
   return { error: null, offer, price, agreed } as const;
+}
+
+// The part-pool checks once the shared ones pass: the buyer priced every loan and allowed part to be taken, the
+// part is some of the pool and not all of it, and the seller agreed to that part at that price.
+async function checkPart(offer: Offer, wholePrice: number, noteIds: string[]) {
+  const prices = standingLoanPrices(offer.loanPrices, wholePrice);
+  if (!prices) return { error: "This bid has no loan prices that add up to it, so part of the pool can't be taken." } as const;
+  if (!offer.allowPartial) return { error: "The buyer didn't allow part of the pool to be taken." } as const;
+  const unique = [...new Set(noteIds)];
+  if (unique.length !== noteIds.length || unique.some((noteId) => prices[noteId] == null)) return { error: "Each loan in the part must be one the buyer priced, once." } as const;
+  const pool = await prisma.note.count({ where: { listingId: offer.listingId } });
+  if (unique.length >= pool) return { error: "That is the whole pool. Award the bid whole." } as const;
+  const price = partPrice(prices, unique);
+  const reserve = offer.listing.reservePrice;
+  // A reserve is the seller's word on the whole pool. A part at or above it leaves them the rest as well.
+  if (reserve != null && reserve > 0 && price >= reserve) return { error: null, offer, price, agreed: "reserve" as const, noteIds: unique } as const;
+  const asked = await partAsked(offer);
+  const approved =
+    asked != null &&
+    sameLoans(asked, unique) &&
+    askedPriceStands(offer.sellerAskedAmount, price) &&
+    askedPriceStands(offer.sellerApprovedAmount, price) &&
+    !offer.sellerDeclined &&
+    Boolean(offer.sellerAnsweredAt && offer.sellerAskedAt && offer.sellerAnsweredAt >= offer.sellerAskedAt);
+  return { error: null, offer, price, agreed: approved ? ("approved" as const) : null, noteIds: unique } as const;
+}
+
+// What part of a pool sells for: the buyer's loan prices for those loans, to the cent.
+export function partPrice(prices: LoanPrices, noteIds: readonly string[]) {
+  return Math.round(sumPrices(prices, noteIds) * 100) / 100;
+}
+
+function sameLoans(a: readonly string[], b: readonly string[]) {
+  const left = new Set(a);
+  return left.size === new Set(b).size && b.every((noteId) => left.has(noteId));
+}
+
+// A question to the seller about part of a pool names the loans. The audit log is the record of which ones, keyed to
+// the moment of the question, so a later question about the whole pool or another part replaces it.
+const PART_ASK = "SELLER_ASKED_PART";
+
+async function recordPartAsk(inquiryId: string, askedAt: Date, noteIds: string[], actorId: string | null) {
+  // Written whole, not through audit(), which trims the detail: a large part can't lose loans off the end.
+  await prisma.auditEvent.create({
+    data: { actorId, action: PART_ASK, entityType: "inquiry", entityId: inquiryId, detail: `asked ${askedAt.toISOString()} · ${noteIds.length} loan${noteIds.length === 1 ? "" : "s"} · ${noteIds.join(",")}` },
+  });
+}
+
+export function readPartAsk(detail: string) {
+  const match = /^asked (\S+) · \d+ loans? · (.+)$/.exec(detail);
+  return match ? { at: match[1], noteIds: match[2].split(",").filter(Boolean) } : null;
+}
+
+// The loans the seller is being asked about, when the open question is about part of the pool. Null for a question
+// about the whole bid, or no question.
+export async function partAsked(offer: { id: string; sellerAskedAt: Date | null }) {
+  if (!offer.sellerAskedAt) return null;
+  const at = offer.sellerAskedAt.toISOString();
+  const rows = await prisma.auditEvent.findMany({ where: { entityId: offer.id, action: PART_ASK }, orderBy: { createdAt: "desc" }, take: 10, select: { detail: true } });
+  for (const row of rows) {
+    const ask = readPartAsk(row.detail);
+    if (ask && ask.at === at) return ask.noteIds;
+  }
+  return null;
+}
+
+// The part's price as the bid stands now, so an answer to the old figure can't sell at a new one.
+export function askedPartPrice(offer: { amount: number | null; loanPrices?: unknown; buyerId: string; messages: OfferMoney[] }, noteIds: readonly string[]) {
+  const prices = standingLoanPrices(offer.loanPrices, buyerPrice(offer.amount, offer.messages, offer.buyerId));
+  return prices && noteIds.every((noteId) => prices[noteId] != null) ? partPrice(prices, noteIds) : null;
 }
 
 // Where the seller of record answers. A broker who filed the listing answers from the deal page, and a buyer
@@ -200,16 +338,21 @@ export function sellerPage(listing: { id: string; sellerId: string; brokerId: st
   return `/seller/listings/${listing.id}`;
 }
 
-export async function askSeller(offer: Offer, price: number) {
+// A question about part of a pool passes the loans, and the seller is told the rest stays on the book.
+export async function askSeller(offer: Offer, price: number, part?: { noteIds: string[]; actorId: string | null }) {
+  const askedAt = new Date();
   await prisma.inquiry.update({
     where: { id: offer.id },
-    data: { sellerAskedAt: new Date(), sellerAskedAmount: price, sellerAnsweredAt: null, sellerDeclined: null },
+    data: { sellerAskedAt: askedAt, sellerAskedAmount: price, sellerAnsweredAt: null, sellerDeclined: null },
   });
+  if (part) await recordPartAsk(offer.id, askedAt, part.noteIds, part.actorId);
   const link = `${process.env.NEXT_PUBLIC_APP_URL || ""}${sellerPage(offer.listing, offer.listing.seller.role)}`;
   await notify(
     offer.listing.seller.email,
     `Approve a sale · ${offer.listing.title}`,
-    `The desk recommends accepting $${price.toLocaleString("en-US")} from a verified buyer${offer.noteId ? " for one loan" : ""}. Nothing is sold until you approve. Approve or decline here: ${link}`,
+    part
+      ? `The desk recommends selling ${part.noteIds.length} loan${part.noteIds.length === 1 ? "" : "s"} of the pool for ${dollars(price)} to a verified buyer, at the buyer's own loan prices. The other loans stay on the book. Nothing is sold until you approve. Approve or decline here: ${link}`
+      : `The desk recommends accepting $${price.toLocaleString("en-US")} from a verified buyer${offer.noteId ? " for one loan" : ""}. Nothing is sold until you approve. Approve or decline here: ${link}`,
   );
 }
 
@@ -284,7 +427,7 @@ export async function awardOffer(inquiryId: string, actorId: string) {
       ? `${offer.buyer.name} confirmed your buy-it-now price of ${dollars(price)}, so the sale went ahead as you agreed. Closing checklist: ${link}`
       : `${offer.buyer.name}'s offer was accepted. Closing checklist: ${link}`,
   );
-  const declined = await declineLosingBids(offer, offer.listing.title);
+  const declined = await declineLosingBids({ id: offer.id, listingId: offer.listingId, noteId: offer.noteId, price, buyNow }, offer.listing.title);
   // The seller reads every review comment, so the bidder stays out of it. The audit log keeps the name.
   await prisma.reviewComment.create({
     data: { listingId: offer.listingId, authorId: actorId, action: "COMMENT", comment: "An offer was accepted. The closing checklist is open." },
@@ -304,6 +447,129 @@ const AGREED_AS = {
   reserve: "within the seller's reserve",
   approved: "approved by the seller",
 } as const;
+
+// Part of a pool to a buyer who priced each loan and allowed it: those loans go into contract one by one, as a
+// one-loan award takes its loan, a closing opens for them at the buyer's loan prices, and the listing stays live for
+// the rest. Bids that can still win another loan stay open. It refuses without the seller's agreement to that part.
+export async function awardPartial(inquiryId: string, noteIds: string[], actorId: string) {
+  const check = await checkAward(inquiryId, { noteIds });
+  if (check.error !== null) return check;
+  if (!("noteIds" in check)) return { error: "That offer can't be split." } as const;
+  const { offer, price } = check;
+  const loans = check.noteIds;
+  if (!check.agreed) return { error: "The seller hasn't approved this price for these loans." } as const;
+  const won = await prisma.inquiry.updateMany({
+    where: { id: offer.id, status: { in: [...LIVE] }, OR: [...unset("expiresAt").OR, { expiresAt: { gt: new Date() } }] },
+    data: { status: "ACCEPTED", amount: price },
+  });
+  if (won.count !== 1) return { error: "That offer was decided a moment ago." } as const;
+  // Each loan is claimed the way a one-loan award claims its loan. A loser puts back what it took.
+  const claimed: string[] = [];
+  const release = async () => {
+    if (claimed.length) await prisma.note.updateMany({ where: { id: { in: claimed }, tradeStatus: "IN_CONTRACT" }, data: { tradeStatus: "AVAILABLE" } });
+    await prisma.inquiry.update({ where: { id: offer.id }, data: { status: offer.status, amount: offer.amount } });
+  };
+  for (const noteId of loans) {
+    if (!(await claimLoan(noteId))) {
+      await release();
+      return { error: "A loan in that part went into contract a moment ago. Check its open closing." } as const;
+    }
+    claimed.push(noteId);
+  }
+  // A whole-listing award that claimed the listing first wins, and these loans go back.
+  const listing = await prisma.listing.findUnique({ where: { id: offer.listingId }, select: { status: true, _count: { select: { notes: true } } } });
+  if (listing?.status !== "APPROVED") {
+    await release();
+    return { error: "The whole listing went into contract a moment ago." } as const;
+  }
+  const closing = await openClosing({ listingId: offer.listingId, inquiryId: offer.id, noteId: null, noteIds: loans, salePrice: price, title: offer.listing.title });
+  const { emitWebhook } = await import("@/lib/webhooks");
+  await emitWebhook(offer.listing.sellerId, "offer.accepted", { inquiryId: offer.id, listingId: offer.listingId, closingId: closing.id, amount: price, noteIds: loans });
+  const link = `${process.env.NEXT_PUBLIC_APP_URL || ""}/closings/${closing.id}`;
+  const part = `${loans.length} of the ${listing._count.notes} loans`;
+  await notify(
+    offer.buyer.email,
+    `Part of your pool bid accepted · ${offer.listing.title}`,
+    `Your bid was accepted for ${part}, at your loan prices: ${dollars(price)} in all. The closing checklist is open: ${link}`,
+  );
+  await notify(
+    offer.listing.seller.email,
+    `Part of the pool sold · ${offer.listing.title}`,
+    `${offer.buyer.name}'s bid was accepted for ${part} at ${dollars(price)}. The other loans stay on the book. Closing checklist: ${link}`,
+  );
+  const declined = await declineLosingBids({ id: offer.id, listingId: offer.listingId, noteId: null, noteIds: loans, price }, offer.listing.title);
+  await prisma.reviewComment.create({
+    data: { listingId: offer.listingId, authorId: actorId, action: "COMMENT", comment: `Part of the pool was sold: ${part}. The closing checklist is open, and the other loans stay on the book.` },
+  });
+  await audit(
+    actorId,
+    "AWARD_PARTIAL",
+    "inquiry",
+    offer.id,
+    `${offer.listing.title} · ${offer.buyer.name} · ${part} at ${dollars(price)} · ${AGREED_AS[check.agreed]}${declined ? ` · ${declined} other bid${declined === 1 ? "" : "s"} declined` : ""}`,
+  );
+  return { error: null, closingId: closing.id, declined, price, noteIds: loans } as const;
+}
+
+export type CombinationPick = { bidId: string; kind: "whole" | "part" | "loan"; noteIds: string[] };
+
+export type ComponentOutcome = {
+  bidId: string;
+  kind: CombinationPick["kind"];
+  noteIds: string[];
+  result: "awarded" | "asked" | "failed";
+  closingId?: string;
+  error?: string;
+};
+
+// The optimiser's combination, award by award in order. Each one runs every check a single award does. One the
+// seller hasn't agreed to goes to the seller first, and one that fails says why, without stopping the rest.
+export async function awardCombination(picks: CombinationPick[], actorId: string) {
+  const outcomes: ComponentOutcome[] = [];
+  for (const pick of picks) {
+    const base = { bidId: pick.bidId, kind: pick.kind, noteIds: pick.noteIds };
+    const part = pick.kind === "part" ? { noteIds: pick.noteIds } : undefined;
+    const check = await checkAward(pick.bidId, part);
+    if (check.error !== null) {
+      outcomes.push({ ...base, result: "failed", error: check.error });
+      continue;
+    }
+    if (!check.agreed) {
+      // The same question already waiting on the seller isn't sent again.
+      const asked = await partAsked(check.offer);
+      const waiting = awaitingSeller(check.offer) && askedPriceStands(check.offer.sellerAskedAmount, check.price) && (part ? asked != null && sameLoans(asked, pick.noteIds) : asked == null);
+      if (!waiting) {
+        await askSeller(check.offer, check.price, part ? { noteIds: pick.noteIds, actorId } : undefined);
+        await audit(actorId, "SELLER_ASKED", "inquiry", pick.bidId, `${check.offer.listing.title} · ${dollars(check.price)}${part ? ` for ${pick.noteIds.length} loan${pick.noteIds.length === 1 ? "" : "s"}` : ""}`);
+      }
+      outcomes.push({ ...base, result: "asked" });
+      continue;
+    }
+    const result = part ? await awardPartial(pick.bidId, pick.noteIds, actorId) : await awardOffer(pick.bidId, actorId);
+    outcomes.push(result.error === null ? { ...base, result: "awarded", closingId: result.closingId } : { ...base, result: "failed", error: result.error });
+  }
+  return outcomes;
+}
+
+// A counter moves the bid's total, so the loan prices under it no longer add up and they clear. A buyer naming their
+// own price may price each loan again with it. Returns what to write once the counter lands.
+export async function counterLoanPrices(input: {
+  inquiry: { listingId: string; noteId: string | null; loanPrices: unknown };
+  amount: number;
+  prices: LoanPrices | null;
+  allowPartial: boolean;
+}) {
+  if (input.prices) {
+    const listing = await prisma.listing.findUnique({ where: { id: input.inquiry.listingId }, select: { kind: true, notes: { select: { id: true } } } });
+    if (input.inquiry.noteId || listing?.kind !== "POOL") return { error: "Loan prices go with a bid on a whole pool." } as const;
+    const problem = loanPriceProblem({ prices: input.prices, loanIds: listing.notes.map((note) => note.id), amount: input.amount });
+    if (problem) return { error: problem } as const;
+    return { error: null, data: { loanPrices: input.prices, allowPartial: input.allowPartial }, cleared: false } as const;
+  }
+  if (input.inquiry.loanPrices == null) return { error: null, data: null, cleared: false } as const;
+  // A Json field takes null on MongoDB; { unset: true } would be stored as an object.
+  return { error: null, data: { loanPrices: null, allowPartial: null }, cleared: true } as const;
+}
 
 // Buy-it-now bids still waiting on the desk: confirmed, but the award didn't finish. While one is open the seller's
 // price stands, so the buyer who confirmed first can still be awarded at it.
@@ -348,6 +614,16 @@ export async function setBuyNow(listingId: string, actorId: string, price: numbe
       `Buy it now ${listing.buyNowPrice == null ? "set" : "changed"} · ${listing.title}`,
       `The ${who} committed to sell ${pool ? "the whole pool" : "the note"} at ${dollars(price)} to the first verified buyer who confirms it. ${shown} The first confirmation opens the closing without asking the desk or the seller.`,
     );
+    // Watchers hear that a price is there, not what it is: on the free desk the price is veiled like the ask.
+    if (listing.status === "APPROVED") {
+      await notifyWatchers({
+        listingId,
+        event: "BUY_NOW",
+        subject: `Buy it now available · ${listing.title}`,
+        body: `${listing.title}, a listing you saved, has a buy-it-now price. The first verified buyer who confirms it buys ${pool ? "the whole pool" : "the note"}.`,
+        except: [actorId],
+      });
+    }
   }
   return { error: null, price, unchanged: false } as const;
 }
@@ -398,14 +674,24 @@ export async function recordSellerCounter(inquiryId: string, sellerId: string, a
   if (!awaitingSeller(offer) || offer.sellerAskedAmount == null || (offer.status !== "OPEN" && offer.status !== "REVIEWED")) {
     return { error: "Nothing on this listing is waiting for your answer." } as const;
   }
+  // A counter is a price for the whole bid, which a question about part of the pool isn't.
+  if (await partAsked(offer)) return { error: "The desk asked about part of the pool, which can't be countered. Approve or decline it, and the desk can ask again." } as const;
   if (offer.listing.status !== "APPROVED") return { error: "This listing isn't live right now, so you can't counter." } as const;
   if (bidExpired(offer.expiresAt, now)) return { error: "That bid passed its good-until date, so there is nothing to counter." } as const;
   if (!Number.isFinite(amount) || amount <= 0 || amount > 1_000_000_000) return { error: "Enter your counter in dollars." } as const;
   const current = buyerPrice(offer.amount, pricedMessages(offer.messages), offer.buyerId);
   if (current != null && amount <= current + 0.005) return { error: "A counter is above the buyer's bid. To sell at their price, approve it." } as const;
+  // The counter is for the whole pool, so loan prices under the old total clear. The buyer can price again on answering.
   const answered = await prisma.inquiry.updateMany({
     where: sameQuestion(offer),
-    data: { sellerCounterAmount: amount, sellerCounteredAt: now, sellerApprovedAmount: amount, sellerAnsweredAt: now, sellerDeclined: false },
+    data: {
+      sellerCounterAmount: amount,
+      sellerCounteredAt: now,
+      sellerApprovedAmount: amount,
+      sellerAnsweredAt: now,
+      sellerDeclined: false,
+      ...(offer.loanPrices != null ? { loanPrices: null, allowPartial: null } : {}),
+    },
   });
   if (answered.count !== 1) return { error: "This bid was answered a moment ago." } as const;
   const title = offer.listing.title;
@@ -418,7 +704,7 @@ export async function recordSellerCounter(inquiryId: string, sellerId: string, a
   await notify(
     offer.buyer.email,
     `Seller counter · ${title}`,
-    `The seller countered your bid at ${dollars(amount)}. The seller has already agreed to that price, so if you accept it the desk can award it without asking again. You can also leave your bid as it is: ${link}`,
+    `The seller countered your bid at ${dollars(amount)}. The seller has already agreed to that price, so if you accept it the desk can award it without asking again.${offer.loanPrices != null ? " Your loan prices were cleared with the counter, so price each loan again when you answer if the seller may take part of the pool." : ""} You can also leave your bid as it is: ${link}`,
   );
   await notifyDesk(
     `Seller countered · ${title}`,
@@ -445,6 +731,8 @@ export async function withdrawListing(listingId: string, actorId: string, now = 
     await prisma.listing.updateMany({ where: { id: listingId, status: "WITHDRAWN" }, data: { status: listing.status, withdrawnAt: listing.withdrawnAt } });
     return { error: "A bid on this listing was accepted a moment ago, so it can't be withdrawn." } as const;
   }
+  // Bidders hear through their own bid, so the watcher notice below skips them.
+  const bidders = await prisma.inquiry.findMany({ where: { listingId, type: "OFFER", status: { in: [...LIVE] } }, select: { buyerId: true } });
   const declined = await declineLosingBids({ id: null, listingId, noteId: null }, listing.title, {
     subject: "Listing withdrawn",
     bidder: "The seller withdrew this listing, so your bid is closed. Nothing is owed. Thank you for bidding.",
@@ -465,5 +753,12 @@ export async function withdrawListing(listingId: string, actorId: string, now = 
   if (listing.sellerId !== actorId) {
     await notify(listing.seller.email, `Listing withdrawn · ${listing.title}`, `Your broker withdrew ${listing.title} from the book.${bids}`);
   }
+  await notifyWatchers({
+    listingId,
+    event: "WITHDRAWN",
+    subject: `Listing withdrawn · ${listing.title}`,
+    body: `${listing.title}, a listing you saved, was withdrawn. It is off the book and takes no bids.`,
+    except: [actorId, ...bidders.map((bid) => bid.buyerId)],
+  });
   return { error: null, declined } as const;
 }

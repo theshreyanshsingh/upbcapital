@@ -3,13 +3,16 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireUser } from "@/lib/auth";
+import { guardDesk } from "@/lib/staff";
 import { mintKey } from "@/lib/api-keys";
 import { prisma } from "@/lib/prisma";
-import { webhookUrlProblem } from "@/lib/webhooks";
+import { cleanEvents, redeliver, webhookUrlProblem } from "@/lib/webhooks";
 
 async function seller() {
   const user = await requireUser();
   if (user.role !== "INSTITUTIONAL_SELLER" && user.role !== "ADMIN") redirect("/");
+  // A desk key reads and pushes as the desk, so minting one is an owner's call.
+  guardDesk(user, "admin", "/seller/api");
   return user;
 }
 
@@ -50,4 +53,23 @@ export async function deleteWebhook(formData: FormData) {
   const id = String(formData.get("id") || "");
   await prisma.webhookEndpoint.deleteMany({ where: { id, userId: user.id } });
   redirect("/seller/api?notice=webhook");
+}
+
+// Which events one endpoint receives. At least one, or the endpoint should be removed instead.
+export async function saveWebhookEvents(formData: FormData) {
+  const user = await seller();
+  const id = String(formData.get("endpointId") || "");
+  const events = cleanEvents(formData.getAll("events"));
+  if (!events) redirect(`/seller/api?error=${encodeURIComponent("Pick at least one event, or remove the webhook.")}`);
+  const saved = await prisma.webhookEndpoint.updateMany({ where: { id, userId: user.id }, data: { events } });
+  if (saved.count !== 1) redirect(`/seller/api?error=${encodeURIComponent("That webhook isn't on this account.")}`);
+  redirect("/seller/api?notice=webhook");
+}
+
+export async function redeliverWebhook(formData: FormData) {
+  const user = await seller();
+  const result = await redeliver(String(formData.get("deliveryId") || ""), user.id);
+  if (result.error) redirect(`/seller/api?error=${encodeURIComponent(result.error)}`);
+  const notice = result.delivered ? "Sent again, and the endpoint took it." : "Sent again, and the endpoint refused it. The log shows its answer.";
+  redirect(`/seller/api?notice=${encodeURIComponent(notice)}`);
 }

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { PageIntro } from "@/components/page-intro";
 import { requireRole } from "@/lib/auth";
 import { money, num } from "@/lib/format";
+import { launchPending, launchTime } from "@/lib/launch-rules";
 import { prisma } from "@/lib/prisma";
 import { isPro } from "@/lib/settings";
 
@@ -23,10 +24,15 @@ export default async function FavoritesPage() {
         {favorites.map((favorite) => (
           <Link key={favorite.id} href={`/marketplace/${favorite.listingId}`} className="block px-5 py-5 hover:bg-muted/60">
             <p className="font-semibold tracking-tight text-3xl text-foreground">{favorite.listing.title}</p>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {favorite.listing.notes[0]?.city}, {favorite.listing.notes[0]?.state}
-              {pro ? ` · ask ${money(favorite.listing.notes.reduce((sum, note) => sum + num(note.askingPrice), 0))}` : " · economics on Pro"}
-            </p>
+            {/* A coming-soon listing keeps its ask and place for the launch, as on the book. */}
+            {launchPending(favorite.listing) && favorite.listing.launchAt ? (
+              <p className="mt-1 text-sm text-muted-foreground">Coming soon · goes live {launchTime(favorite.listing.launchAt)}</p>
+            ) : (
+              <p className="mt-1 text-sm text-muted-foreground">
+                {favorite.listing.notes[0]?.city}, {favorite.listing.notes[0]?.state}
+                {pro ? ` · ask ${money(favorite.listing.notes.reduce((sum, note) => sum + num(note.askingPrice), 0))}` : " · economics on Pro"}
+              </p>
+            )}
           </Link>
         ))}
       </div>

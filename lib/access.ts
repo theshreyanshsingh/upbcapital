@@ -1,5 +1,6 @@
 import type { ListingStatus, Role, SubscriptionStatus, SubscriptionTier } from "@prisma/client";
 import { demoSeat } from "@/lib/deploy";
+import { launchPending } from "@/lib/launch-rules";
 import { isEarlyAccess, isPro } from "@/lib/settings";
 
 export type Viewer = {
@@ -53,6 +54,9 @@ export function canOpenListing(input: {
   listingId: string;
   sellerId: string;
   brokerId?: string | null;
+  // A coming-soon listing opens to its own side and the desk only. Buyers see its teaser on the book.
+  launchAt?: Date | null;
+  now?: Date;
 }) {
   if (input.viewer.role === "ADMIN") return { ok: true as const };
   if (input.viewer.id === input.sellerId || (input.brokerId && input.viewer.id === input.brokerId)) return { ok: true as const };
@@ -61,6 +65,7 @@ export function canOpenListing(input: {
     return { ok: false as const, reason: "account" as const };
   }
   if (!listingIsPublic(input.status)) return { ok: false as const, reason: "unpublished" as const };
+  if (input.status === "APPROVED" && launchPending({ launchAt: input.launchAt }, input.now)) return { ok: false as const, reason: "coming" as const };
   if (input.status === "SOLD") return { ok: true as const };
   if (isEarlyAccess(input.approvedAt, input.earlyAccessHours) && !isPro(input.viewer)) {
     return { ok: false as const, reason: "early" as const };

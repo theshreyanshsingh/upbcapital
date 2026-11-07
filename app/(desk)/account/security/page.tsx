@@ -1,5 +1,6 @@
 import QRCode from "qrcode";
 import { acknowledgeRecovery, beginTotp, changePassword, confirmTotp, disableTotp, revokeOtherSessions, revokeSession, setEmailFallback } from "@/actions/security";
+import { AccountDeletion } from "@/components/account-deletion";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { SubmitButton } from "@/components/submit-button";
@@ -136,6 +137,8 @@ export default async function SecurityPage({
           </form>
         )}
       </section>
+
+      <AccountDeletion user={user} />
     </div>
   );
 }

@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { requireRole } from "@/lib/auth";
+import { requireDesk } from "@/lib/staff";
 import {
   chainDetail,
   clearFieldVerified,
@@ -48,7 +48,7 @@ function back(note: { id: string; listingId: string }, outcome: Outcome<unknown>
 }
 
 export async function saveCollateral(formData: FormData) {
-  const user = await requireRole(["ADMIN"]);
+  const user = await requireDesk("sales", "/admin/queue");
   const note = await loanOf(formData);
   const kind = text(formData, "kind");
   // A chain link's parties are typed apart and kept together, so the chain can be checked for gaps.
@@ -76,14 +76,14 @@ export async function saveCollateral(formData: FormData) {
 }
 
 export async function removeCollateral(formData: FormData) {
-  const user = await requireRole(["ADMIN"]);
+  const user = await requireDesk("sales", "/admin/queue");
   const note = await loanOf(formData);
   const outcome = await removeCollateralItem(user.id, { noteId: note.id, id: text(formData, "itemId") });
   back(note, outcome, "The collateral line is removed.");
 }
 
 export async function moveCollateral(formData: FormData) {
-  const user = await requireRole(["ADMIN"]);
+  const user = await requireDesk("sales", "/admin/queue");
   const note = await loanOf(formData);
   const direction = text(formData, "direction") === "up" ? "up" : "down";
   const outcome = await moveChainLink(user.id, { noteId: note.id, id: text(formData, "itemId"), direction });
@@ -91,7 +91,7 @@ export async function moveCollateral(formData: FormData) {
 }
 
 export async function logRisk(formData: FormData) {
-  const user = await requireRole(["ADMIN"]);
+  const user = await requireDesk("sales", "/admin/queue");
   const note = await loanOf(formData);
   const outcome = await logRiskCheck(user.id, {
     noteId: note.id,
@@ -106,7 +106,7 @@ export async function logRisk(formData: FormData) {
 }
 
 export async function verifyField(formData: FormData) {
-  const user = await requireRole(["ADMIN"]);
+  const user = await requireDesk("sales", "/admin/queue");
   const note = await loanOf(formData);
   const outcome = await markFieldVerified(user.id, {
     noteId: note.id,
@@ -124,14 +124,14 @@ export async function verifyField(formData: FormData) {
 }
 
 export async function clearField(formData: FormData) {
-  const user = await requireRole(["ADMIN"]);
+  const user = await requireDesk("sales", "/admin/queue");
   const note = await loanOf(formData);
   const outcome = await clearFieldVerified(user.id, { noteId: note.id, field: text(formData, "field") });
   back(note, outcome, "The check is cleared. The field reads as seller-stated.");
 }
 
 export async function uploadLoanReport(formData: FormData) {
-  const user = await requireRole(["ADMIN"]);
+  const user = await requireDesk("sales", "/admin/queue");
   const note = await loanOf(formData);
   const file = formData.get("file");
   if (!(file instanceof File) || file.size <= 0) back(note, { ok: false, error: "Choose a file." }, "");

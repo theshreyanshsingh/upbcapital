@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { login, signup } from "@/actions/auth";
 import { SubmitButton } from "@/components/submit-button";
 import { Input } from "@/components/ui/input";
@@ -109,6 +110,24 @@ export function SignupForm({ lead = "", email = "", referral = "" }: { lead?: st
           </label>
         </div>
       )}
+      {/* The links open a new tab, so reading them doesn't clear the form. */}
+      <label className="flex items-start gap-2.5 text-sm text-foreground">
+        <input
+          type="checkbox"
+          name="terms"
+          value="yes"
+          required
+          aria-invalid={invalid("terms") ? true : undefined}
+          aria-describedby={invalid("terms")}
+          className="mt-0.5 size-4 shrink-0 accent-link"
+        />
+        <span>
+          I agree to the{" "}
+          <Link href="/terms" target="_blank" className="text-link">Terms of use</Link>
+          {" "}and{" "}
+          <Link href="/privacy" target="_blank" className="text-link">Privacy policy</Link>.
+        </span>
+      </label>
       {state.error && <p id="signup-error" role="alert" className="text-sm text-bad">{state.error}</p>}
       <SubmitButton className="h-11 px-6 text-[13px] font-medium" pendingLabel="Creating…">
         Create account

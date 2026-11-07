@@ -2,9 +2,11 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { ndaOpensRoom } from "@/lib/acl";
 import { audit } from "@/lib/audit";
-import { requireRole, requireUser } from "@/lib/auth";
+import { requireUser } from "@/lib/auth";
 import { canSubmitBid, sealedFromSeller } from "@/lib/auction";
+import { guardDesk, requireDesk } from "@/lib/staff";
 import { notify, notifyDesk } from "@/lib/email";
 import { fillState, resolvePositionAmount } from "@/lib/group-buy";
 import { notifySeats } from "@/lib/group-events";
@@ -29,6 +31,8 @@ async function buyerReady(userId: string, listingId: string) {
   const gate = canSubmitOffer({ role: user.role, accountStatus: user.accountStatus, verificationStatus: profile?.status ?? null });
   if (!gate.ok) return gate.reason === "verification" ? "Verify the buyer file before joining a group." : "This account cannot join a group.";
   if (!nda) return "Sign the confidentiality agreement before taking a seat.";
+  // Where the seller approves each bidder, a seat waits for that approval like the room does.
+  if (!ndaOpensRoom(nda)) return nda.accessStatus === "DECLINED" ? "The seller didn't approve your access to this listing." : "The seller is still deciding on your access to this listing.";
   return null;
 }
 
@@ -96,7 +100,7 @@ async function publishOffer(groupId: string) {
       sealed,
       group: true,
     });
-    await notifyDesk(`Group offer · ${group.listing.title}`, message);
+    await notifyDesk(`Group offer · ${group.listing.title}`, message, { capability: "sealedBids" });
   }
   await prisma.groupBuy.update({ where: { id: group.id }, data: { status: "OFFERED" } });
 }
@@ -111,6 +115,7 @@ export async function openGroup(formData: FormData) {
   if ((await prisma.note.count({ where: { listingId, tradeStatus: { not: "AVAILABLE" } } })) > 0) {
     redirect(`${back}?error=${encodeURIComponent("Some loans on this listing have traded, so a group can't buy it whole.")}`);
   }
+  guardDesk(user, "sales", back);
   const blocked = user.role === "ADMIN" ? null : await buyerReady(user.id, listingId);
   if (blocked) redirect(`${back}?error=${encodeURIComponent(blocked)}`);
   const existing = await prisma.groupBuy.findFirst({ where: { listingId, status: { in: [...OPEN_GROUP] } } });
@@ -215,6 +220,7 @@ export async function dropSeat(formData: FormData) {
   }
   const seat = group.positions.find((row) => row.userId === user.id && row.status !== "DROPPED");
   if (!seat && user.role !== "ADMIN") redirect(`/groups/${groupId}?error=That seat is not yours.`);
+  if (!seat) guardDesk(user, "sales", `/groups/${groupId}`);
   const targetId = seat?.id || String(formData.get("positionId") || "");
   await prisma.groupPosition.update({ where: { id: targetId }, data: { status: "DROPPED" } });
   if (group.inquiryId && (group.status === "OFFERED" || group.status === "COUNTERED")) {
@@ -233,6 +239,7 @@ export async function extendGroup(formData: FormData) {
   const groupId = String(formData.get("groupId") || "");
   const group = await prisma.groupBuy.findUnique({ where: { id: groupId }, include: { listing: true } });
   if (!group || (group.openedById !== user.id && user.role !== "ADMIN")) redirect(`/groups/${groupId}?error=Only the opener or the desk can extend.`);
+  guardDesk(user, "sales", `/groups/${groupId}`);
   const deadline = new Date(String(formData.get("deadline") || ""));
   if (Number.isNaN(deadline.getTime()) || deadline.getTime() < Date.now()) redirect(`/groups/${groupId}?error=Pick a future deadline.`);
   await prisma.groupBuy.update({ where: { id: groupId }, data: { deadline, status: group.status === "DISSOLVED" ? "GATHERING" : group.status } });
@@ -245,6 +252,7 @@ export async function allowPartialGroup(formData: FormData) {
   const groupId = String(formData.get("groupId") || "");
   const group = await prisma.groupBuy.findUnique({ where: { id: groupId }, include: { listing: true } });
   if (!group || (user.role !== "ADMIN" && user.id !== group.listing.sellerId)) redirect(`/groups/${groupId}?error=Only the seller or the desk can allow a partial bid.`);
+  guardDesk(user, "sales", `/groups/${groupId}`);
   await prisma.groupBuy.update({ where: { id: groupId }, data: { allowPartial: formData.get("allowPartial") === "on" } });
   redirect(`/groups/${groupId}?notice=partial`);
 }
@@ -254,6 +262,7 @@ export async function bidPartial(formData: FormData) {
   const groupId = String(formData.get("groupId") || "");
   const group = await prisma.groupBuy.findUnique({ where: { id: groupId }, include: { positions: true, listing: true } });
   if (!group || (group.openedById !== user.id && user.role !== "ADMIN")) redirect(`/groups/${groupId}?error=Only the opener or the desk can send a partial bid.`);
+  guardDesk(user, "sales", `/groups/${groupId}`);
   if (!group.allowPartial) redirect(`/groups/${groupId}?error=The seller has not allowed a partial bid.`);
   if (group.status !== "GATHERING") redirect(`/groups/${groupId}?error=${encodeURIComponent("A partial bid goes out only while the group is gathering.")}`);
   // A seat waiting to reconfirm a counter hasn't agreed to it, so it can't be signed up on its behalf.
@@ -279,6 +288,7 @@ export async function dissolveGroup(formData: FormData) {
   const groupId = String(formData.get("groupId") || "");
   const group = await prisma.groupBuy.findUnique({ where: { id: groupId }, include: { listing: true } });
   if (!group || (group.openedById !== user.id && user.role !== "ADMIN")) redirect(`/groups/${groupId}?error=Only the opener or the desk can dissolve the group.`);
+  guardDesk(user, "sales", `/groups/${groupId}`);
   if (group.status === "CLOSING" || group.status === "CLOSED") redirect(`/groups/${groupId}?error=The closing has started.`);
   if (group.inquiryId) {
     await prisma.inquiry.update({ where: { id: group.inquiryId }, data: { status: "DECLINED" } });
@@ -291,8 +301,8 @@ export async function dissolveGroup(formData: FormData) {
 // Only the desk marks a share funded, from a wire it can see. A seat holder's own word is not money in, and the
 // deposit step completes from the recorded deposit, not from these marks.
 export async function markShareFunded(formData: FormData) {
-  const user = await requireRole(["ADMIN"]);
   const closingId = String(formData.get("closingId") || "");
+  const user = await requireDesk("closings", `/closings/${closingId}`);
   const userId = String(formData.get("userId") || "");
   const reference = String(formData.get("reference") || "").trim().slice(0, 120);
   const funder = await prisma.closingFunder.findUnique({ where: { closingId_userId: { closingId, userId } }, include: { closing: { include: { listing: true } }, user: true } });
@@ -312,6 +322,6 @@ export async function markShareFunded(formData: FormData) {
 }
 
 export async function deskOpenGroup(formData: FormData) {
-  await requireRole(["ADMIN"]);
+  await requireDesk("sales", `/marketplace/${String(formData.get("listingId") || "")}`);
   return openGroup(formData);
 }

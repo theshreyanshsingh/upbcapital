@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireUser } from "@/lib/auth";
+import { guardDesk } from "@/lib/staff";
 import { prisma } from "@/lib/prisma";
 
 export async function saveBoarding(formData: FormData) {
@@ -14,6 +15,7 @@ export async function saveBoarding(formData: FormData) {
   const funder = await prisma.closingFunder.findUnique({ where: { closingId_userId: { closingId, userId: user.id } } });
   const allowed = user.role === "ADMIN" || user.id === closing.listing.sellerId || user.id === inquiry?.buyerId || Boolean(funder);
   if (!allowed) redirect("/closings");
+  if (user.id !== closing.listing.sellerId && user.id !== inquiry?.buyerId && !funder) guardDesk(user, "closings", `/closings/${closingId}`);
   if (closing.status !== "COMPLETE" && user.role !== "ADMIN") {
     redirect(`/closings/${closingId}?error=${encodeURIComponent("Boarding opens after the file is closed.")}`);
   }

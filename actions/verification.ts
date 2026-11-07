@@ -6,7 +6,8 @@ import type { InvestorEntity, VerificationStatus } from "@prisma/client";
 import { audit } from "@/lib/audit";
 import { proofExpiry } from "@/lib/bid-sheet";
 import { ROAD_THRESHOLD, readEligibility, reoStrategyLabel } from "@/lib/eligibility";
-import { requireRole, requireUser } from "@/lib/auth";
+import { requireUser } from "@/lib/auth";
+import { requireDesk } from "@/lib/staff";
 import { notify, notifyDesk } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
 import { OFAC_DOWN_MESSAGE, OFAC_HOLD_MESSAGE, ofacHold, screenInBackground, screenUser } from "@/lib/screening";
@@ -132,7 +133,7 @@ export async function saveEligibility(formData: FormData) {
 }
 
 export async function reviewVerification(formData: FormData) {
-  const reviewer = await requireRole(["ADMIN"]);
+  const reviewer = await requireDesk("compliance", "/admin/verification");
   const userId = String(formData.get("userId") || "");
   const decision = String(formData.get("decision") || "");
   const reviewerNote = String(formData.get("reviewerNote") || "").trim();

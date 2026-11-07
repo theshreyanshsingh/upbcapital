@@ -8,10 +8,11 @@ import { audit } from "@/lib/audit";
 import { deadlinePassed } from "@/lib/auction";
 import { approvalHold } from "@/lib/discrepancies";
 import { askSeller, awardOffer, checkAward, declineLosingBids } from "@/lib/awards";
-import { endSessions, requireRole } from "@/lib/auth";
+import { endSessions } from "@/lib/auth";
 import { notify, sendAlert } from "@/lib/email";
 import { DEFAULT_CLOSING_DAYS, DEFAULT_DEPOSIT_BPS, DEFAULT_DEPOSIT_DAYS } from "@/lib/closing-clock";
 import { onGroupDeclined } from "@/lib/group-events";
+import { approvalFields, launchTime, readLaunchAt } from "@/lib/launch-rules";
 import { rescoreListing } from "@/lib/matching";
 import { postRevenueOnce } from "@/lib/ledger";
 import { feeBreakdown, percentToBps } from "@/lib/money";
@@ -21,10 +22,15 @@ import { clearSettingsCache, getSettings } from "@/lib/settings";
 import { cancelBuyerSubscription } from "@/lib/stripe-billing";
 import { syncProPrice } from "@/lib/stripe-sync";
 import { deskDecisionAllowed } from "@/lib/listing-status";
+import { feesAtApproval, listingFeeBps } from "@/lib/desk-fees";
 import { settleByEdit } from "@/lib/discrepancies";
+import { watchReprice } from "@/lib/watchers";
+import { requireDesk, type DeskCapability } from "@/lib/staff";
+import { proposeWireChange } from "@/lib/wire-changes";
 
-async function admin() {
-  return requireRole(["ADMIN"]);
+// Each desk action names the part of the desk it belongs to, and the page a refusal goes back to.
+async function admin(capability: DeskCapability, back: string) {
+  return requireDesk(capability, back);
 }
 
 function back(listingId: string, notice: string) {
@@ -36,7 +42,7 @@ function back(listingId: string, notice: string) {
 }
 
 export async function reviewListing(formData: FormData) {
-  const user = await admin();
+  const user = await admin("sales", `/admin/listings/${String(formData.get("listingId") || "")}`);
   const listingId = String(formData.get("listingId") || "");
   const action = String(formData.get("action") || "");
   const comment = String(formData.get("comment") || "").trim();
@@ -73,6 +79,9 @@ export async function reviewListing(formData: FormData) {
   }
 
   if (action === "APPROVE") {
+    // A launch time keeps the listing coming soon until then. Blank goes live now.
+    const launch = readLaunchAt(String(formData.get("launchAt") || ""));
+    if (launch.error) redirect(`/admin/listings/${listingId}?error=${encodeURIComponent(launch.error)}`);
     // The discrepancy gate: nothing goes live while a difference between the tape and a document the desk read is unanswered.
     const hold = await approvalHold(listingId);
     if (hold) redirect(`/admin/listings/${listingId}?error=${encodeURIComponent(hold)}`);
@@ -81,7 +90,21 @@ export async function reviewListing(formData: FormData) {
     if (await ofacHold({ listingId, userIds: [listing.sellerId] })) {
       redirect(`/admin/listings/${listingId}?error=${encodeURIComponent(OFAC_HOLD_MESSAGE)}`);
     }
-    await moveTo({ status: "APPROVED", approvedAt: new Date() });
+    // The fees in force now go on the listing, so bids and the closing use them whatever the settings say later.
+    // A listing approved again after changes takes the fees of the new approval.
+    await moveTo({ status: "APPROVED", ...approvalFields(launch.at), ...feesAtApproval(await getSettings()) });
+    if (launch.at) {
+      const opens = launchTime(launch.at);
+      await record(user.id, listingId, "APPROVE", comment || `Approved. Coming soon until ${opens}.`);
+      await notify(
+        listing.seller.email,
+        `Coming soon · ${listing.title}`,
+        `${comment ? `${comment}\n\n` : ""}Your listing is approved and shows on the book as coming soon. Buyers can save it now. It goes live to approved buyers on ${opens}, and the data room and bids open then.`,
+      );
+      // Scored now so the desk sees standing bids. Saved-search alerts and buy-box mail go from the launch job.
+      await rescoreListing(listingId, false);
+      back(listingId, `Coming soon until ${opens}`);
+    }
     await record(user.id, listingId, "APPROVE", comment || "Approved for the book.");
     await notify(listing.seller.email, `Live · ${listing.title}`, comment || "Your listing is live to approved buyers.");
     await alertMatchingSearches(listingId);
@@ -141,7 +164,8 @@ export async function reviewListing(formData: FormData) {
       redirect(`/admin/listings/${listingId}?error=${encodeURIComponent("Record how the seller agreed to this price, such as the email and its date.")}`);
     }
     const settings = await getSettings();
-    const fees = feeBreakdown(salePrice, settings.buyerPremiumBps, settings.sellerCommissionBps);
+    const listed = listingFeeBps(listing, settings);
+    const fees = feeBreakdown(salePrice, listed.premiumBps, listed.commissionBps);
     await moveTo({
       status: "SOLD",
       soldAt: new Date(),
@@ -186,7 +210,7 @@ const STALE_ESTIMATE = {
 } as const;
 
 export async function adminUpdateListing(formData: FormData) {
-  const user = await admin();
+  const user = await admin("sales", `/admin/listings/${String(formData.get("listingId") || "")}`);
   const listingId = String(formData.get("listingId") || "");
   const listing = await prisma.listing.findUnique({ where: { id: listingId }, include: { notes: true } });
   if (!listing) redirect("/admin/queue");
@@ -224,11 +248,14 @@ export async function adminUpdateListing(formData: FormData) {
     await prisma.note.update({ where: { id: note.id }, data: { ...data, ...(moved ? STALE_ESTIMATE : {}) } });
     // A desk correction can carry the document's value, which answers the open question about it.
     await settleByEdit(user.id, note.id);
+    // Buyers who saved a live listing hear of a new ask.
+    await watchReprice({ listingId, before: Number(note.askingPrice), after: data.askingPrice, loans: 1, actorId: user.id });
     // A new borrower name has never been screened, and awards and closings only check rows already on file.
     if (data.borrowerName && data.borrowerName !== note.borrowerName.trim()) screenInBackground(() => screenListing(listingId, user.id));
   }
 
   if (listing.kind === "POOL") {
+    const repriced = { before: 0, after: 0, loans: 0 };
     for (const note of listing.notes) {
       const upb = Number(formData.get(`upb_${note.id}`));
       const askingPrice = Number(formData.get(`ask_${note.id}`));
@@ -236,6 +263,11 @@ export async function adminUpdateListing(formData: FormData) {
       const data: { upb?: number; askingPrice?: number; estimatedValue?: number; paymentStatus?: "PERFORMING" | "NON_PERFORMING" | "SUB_PERFORMING" } = {};
       if (Number.isFinite(upb) && upb > 0) data.upb = upb;
       if (Number.isFinite(askingPrice) && askingPrice > 0) data.askingPrice = askingPrice;
+      if (data.askingPrice !== undefined && Math.round(data.askingPrice * 100) !== Math.round(Number(note.askingPrice) * 100)) {
+        repriced.before += Number(note.askingPrice);
+        repriced.after += data.askingPrice;
+        repriced.loans += 1;
+      }
       if (Number.isFinite(estimatedValue) && estimatedValue > 0) data.estimatedValue = estimatedValue;
       const payment = String(formData.get(`status_${note.id}`) || "");
       if (payment === "PERFORMING" || payment === "NON_PERFORMING" || payment === "SUB_PERFORMING") data.paymentStatus = payment;
@@ -245,6 +277,7 @@ export async function adminUpdateListing(formData: FormData) {
         await settleByEdit(user.id, note.id);
       }
     }
+    await watchReprice({ listingId, ...repriced, actorId: user.id });
   }
 
   await record(user.id, listingId, "EDIT", "Desk edited the listing.");
@@ -252,7 +285,7 @@ export async function adminUpdateListing(formData: FormData) {
 }
 
 export async function decideInquiry(formData: FormData) {
-  const user = await admin();
+  const user = await admin("sales", "/admin/offers");
   const inquiryId = String(formData.get("inquiryId") || "");
   const decision = String(formData.get("decision") || "");
   const inquiry = await prisma.inquiry.findUnique({
@@ -303,7 +336,7 @@ export async function decideInquiry(formData: FormData) {
 }
 
 export async function setAccountStatus(formData: FormData) {
-  const actor = await admin();
+  const actor = await admin("compliance", "/admin/users");
   const userId = String(formData.get("userId") || "");
   const status = String(formData.get("status") || "") as AccountStatus;
   if (userId === actor.id) redirect("/admin/users?error=You cannot change your own account.");
@@ -324,7 +357,7 @@ export async function setAccountStatus(formData: FormData) {
 }
 
 export async function forceSignOut(formData: FormData) {
-  const actor = await admin();
+  const actor = await admin("admin", "/admin/users");
   const userId = String(formData.get("userId") || "");
   if (userId === actor.id) redirect("/admin/users?error=Use your security page for your own devices.");
   await endSessions(userId);
@@ -335,7 +368,7 @@ export async function forceSignOut(formData: FormData) {
 
 // For a user who lost both the authenticator and the recovery codes. Their next sign-in is by password alone.
 export async function resetTwoFactor(formData: FormData) {
-  const actor = await admin();
+  const actor = await admin("admin", "/admin/users");
   const userId = String(formData.get("userId") || "");
   if (userId === actor.id) redirect("/admin/users?error=You cannot clear your own second factor.");
   const user = await prisma.user.update({
@@ -351,7 +384,7 @@ export async function resetTwoFactor(formData: FormData) {
 }
 
 export async function setMembership(formData: FormData) {
-  const actor = await admin();
+  const actor = await admin("admin", "/admin/users");
   const userId = String(formData.get("userId") || "");
   const tier = String(formData.get("tier") || "FREE");
   const target = await prisma.user.findUnique({ where: { id: userId } });
@@ -386,7 +419,7 @@ export async function setMembership(formData: FormData) {
 }
 
 export async function saveSettings(formData: FormData) {
-  const actor = await admin();
+  const actor = await admin("admin", "/admin/settings");
   const before = await getSettings();
   const premium = Number(formData.get("buyerPremium"));
   const commission = Number(formData.get("sellerCommission"));
@@ -432,6 +465,8 @@ export async function saveSettings(formData: FormData) {
   if (brokerFlat < 0 || affiliateFlat < 0 || brokerFlat > 100000 || affiliateFlat > 100000) {
     redirect("/admin/settings?error=Flat broker fees stay between $0 and $100,000.");
   }
+  // The default wire instructions change only when a second desk member approves, so the schedule leaves them as
+  // they are and the typed text goes in as a proposal.
   const wireInstructions = String(formData.get("wireInstructions") || "");
   const cents = Math.round(price * 100);
   const current = await prisma.platformSettings.upsert({
@@ -447,7 +482,6 @@ export async function saveSettings(formData: FormData) {
       depositDays: Math.round(depositDays),
       diligenceDays,
       requireTwoStep,
-      wireInstructions,
       chargeDeskFees: formData.get("chargeDeskFees") === "on",
       brokerFeeBasis: brokerBasis as "PERCENT" | "FLAT",
       brokerFeeBps: percentToBps(brokerPercent),
@@ -468,7 +502,6 @@ export async function saveSettings(formData: FormData) {
       depositDays: Math.round(depositDays),
       diligenceDays,
       requireTwoStep,
-      wireInstructions,
       chargeDeskFees: formData.get("chargeDeskFees") === "on",
       brokerFeeBasis: brokerBasis as "PERCENT" | "FLAT",
       brokerFeeBps: percentToBps(brokerPercent),
@@ -493,19 +526,23 @@ export async function saveSettings(formData: FormData) {
   // Checkout still charges the old Stripe price, so the page keeps showing it rather than a price nobody is charged.
   const priceKept = synced.mode === "error" && before.proMonthlyPriceCents !== cents;
   if (priceKept) await prisma.platformSettings.update({ where: { id: "default" }, data: { proMonthlyPriceCents: before.proMonthlyPriceCents } });
+  const wires = await proposeWireChange(actor, { closingId: null, instructions: wireInstructions });
+  const wireNote = wires.error !== null ? ` ${wires.error}` : wires.change ? " The new default wire instructions wait for another desk member to approve them." : "";
   await audit(
     actor.id,
     "FEE_SCHEDULE",
     "settings",
     "default",
-    `Premium ${premium}%, commission ${commission}%, Pro $${priceKept ? (before.proMonthlyPriceCents / 100).toFixed(2) : price}${priceKept ? " (kept, Stripe failed)" : ""}, early access ${Math.round(early)}h, free browse ${Math.round(limit)}, target close ${Math.round(closingDays)} days, diligence ${diligenceDays ? `${diligenceDays} days` : "none"}. Default wires ${wireInstructions === before.wireInstructions ? "unchanged" : "changed"}.`,
+    `Premium ${premium}%, commission ${commission}%, Pro $${priceKept ? (before.proMonthlyPriceCents / 100).toFixed(2) : price}${priceKept ? " (kept, Stripe failed)" : ""}, early access ${Math.round(early)}h, free browse ${Math.round(limit)}, target close ${Math.round(closingDays)} days, diligence ${diligenceDays ? `${diligenceDays} days` : "none"}. Default wires ${wires.change ? "sent for approval" : wires.error !== null ? "not changed" : "unchanged"}.`,
   );
   clearSettingsCache();
   revalidatePath("/admin/settings");
   revalidatePath("/marketplace");
   if (synced.mode === "error") {
     const kept = priceKept ? ` Pro stays at $${(before.proMonthlyPriceCents / 100).toFixed(2)} until it is.` : "";
-    redirect(`/admin/settings?error=${encodeURIComponent(`The schedule is saved. Stripe was not updated: ${synced.detail}${kept}`)}`);
+    redirect(`/admin/settings?error=${encodeURIComponent(`The schedule is saved. Stripe was not updated: ${synced.detail}${kept}${wireNote}`)}`);
   }
+  if (wires.error !== null) redirect(`/admin/settings?error=${encodeURIComponent(`The schedule is saved.${wireNote}`)}#wires`);
+  if (wires.change) redirect(`/admin/settings?notice=${encodeURIComponent(`The fee schedule is saved.${wireNote}`)}#wires`);
   redirect(`/admin/settings?notice=${synced.mode === "created" ? "stripe_price" : "saved_settings"}`);
 }

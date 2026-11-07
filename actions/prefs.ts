@@ -1,9 +1,11 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { requireRole, requireUser } from "@/lib/auth";
+import { requireUser } from "@/lib/auth";
+import { requireDesk } from "@/lib/staff";
 import { prisma } from "@/lib/prisma";
 import { sendDueDigests } from "@/lib/jobs";
+import { REPORT_ROLES } from "@/lib/seller-report";
 
 export async function saveNotificationPrefs(formData: FormData) {
   const user = await requireUser();
@@ -17,14 +19,15 @@ export async function saveNotificationPrefs(formData: FormData) {
       digest: digest as "WEEKLY",
       // The monthly market dispatch is opt-in, for every role.
       marketDispatch: formData.get("marketDispatch") === "on",
-      ...(user.role === "BUYER" ? { dealAlerts: formData.get("dealAlerts") === "on" } : {}),
+      ...(user.role === "BUYER" ? { dealAlerts: formData.get("dealAlerts") === "on", watchAlerts: formData.get("watchAlerts") === "on" } : {}),
+      ...((REPORT_ROLES as readonly string[]).includes(user.role) ? { sellerReport: formData.get("sellerReport") === "on" } : {}),
     },
   });
   redirect("/account/notifications?notice=prefs");
 }
 
 export async function sendMatchDigests() {
-  await requireRole(["ADMIN"]);
+  await requireDesk("sales", "/admin/analytics");
   const { sent, failed } = await sendDueDigests();
   const missed = failed ? ` ${failed} could not be sent. The server log has the reason.` : "";
   redirect(`/admin/analytics?notice=${encodeURIComponent(`Digest sent to ${sent} buyer${sent === 1 ? "" : "s"}.${missed}`)}`);
