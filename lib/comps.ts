@@ -201,20 +201,22 @@ export function tradeFromLoans(
 
 // Every closed trade in the window. Server only: it reads the database, which it imports here so the pure helpers
 // above stay safe to import anywhere.
+// A private sale's price stays out: comps reach every Pro buyer, the indicative range and the dispatch, so only a
+// listing that was public is a comp (lib/private-listings.ts).
 export async function loadClosedTrades(now = new Date(), windowMonths = COMP_WINDOW_MONTHS): Promise<ClosedTrade[]> {
-  const { prisma } = await import("@/lib/prisma");
+  const [{ prisma }, { publicListing }] = await Promise.all([import("@/lib/prisma"), import("@/lib/private-listings")]);
   const since = new Date(now);
   since.setMonth(since.getMonth() - windowMonths);
   const loanFields = { id: true, upb: true, lienPosition: true, paymentStatus: true, state: true } as const;
   const [closings, sold] = await Promise.all([
     prisma.closing.findMany({
-      where: { status: "COMPLETE" },
+      where: { status: "COMPLETE", listing: publicListing() },
       select: { listingId: true, noteId: true, noteIds: true, salePrice: true, closedAt: true, openedAt: true, listing: { select: { notes: { select: loanFields } } } },
       orderBy: { openedAt: "desc" },
       take: 5000,
     }),
     prisma.listing.findMany({
-      where: { status: "SOLD" },
+      where: { status: "SOLD", AND: [publicListing()] },
       select: { id: true, salePrice: true, soldAt: true, updatedAt: true, notes: { select: loanFields } },
       orderBy: { updatedAt: "desc" },
       take: 5000,

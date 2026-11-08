@@ -3,6 +3,7 @@ import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from "pdf
 import { depositTerms } from "@/lib/closing-clock";
 import { diligenceDays } from "@/lib/closing-service";
 import { prisma } from "@/lib/prisma";
+import { listingScope } from "@/lib/private-listings";
 import { EVENT_STATUS_LABEL, milestones, when } from "@/lib/sale-events";
 import { getSettings } from "@/lib/settings";
 import { deskContact } from "@/lib/staff";
@@ -22,8 +23,10 @@ type EventListing = { id: string; title: string; status: string; kind: string; s
 export async function eventPapers(eventId: string, viewer: Viewer) {
   const event = await prisma.saleEvent.findUnique({ where: { id: eventId } });
   if (!event) return { status: 404 as const };
+  // A buyer's letter leaves out what the book hides from them: private listings they weren't invited to, and every
+  // listing of a seller who excludes them (lib/private-listings.ts).
   const rows = await prisma.listing.findMany({
-    where: { saleEventId: event.id },
+    where: { saleEventId: event.id, AND: [await listingScope(viewer)] },
     select: { id: true, title: true, status: true, kind: true, sellerId: true, brokerId: true, _count: { select: { notes: true } } },
     orderBy: { approvedAt: "asc" },
   });

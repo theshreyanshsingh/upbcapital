@@ -6,9 +6,11 @@ import { Notice } from "@/components/notice";
 import { ConfirmSubmit } from "@/components/confirm-submit";
 import { SubmitButton } from "@/components/submit-button";
 import { requireUser } from "@/lib/auth";
+import { bidCapFor, capHint } from "@/lib/bid-caps";
 import { money, prettyDate, q } from "@/lib/format";
 import { fillState, positionEconomics, seatName } from "@/lib/group-buy";
 import { prisma } from "@/lib/prisma";
+import { canSeeListing } from "@/lib/private-listings";
 
 export const metadata = { title: "Group buy" };
 
@@ -30,9 +32,13 @@ export default async function GroupPage({
     },
   });
   if (!group) notFound();
+  // A group on a listing hidden from this viewer isn't there for them, seat or not (lib/private-listings.ts).
+  if (!(await canSeeListing(user, group.listing))) notFound();
   const target = Number(group.targetAmount);
   const seats = group.positions.map((seat) => ({ amount: Number(seat.amount), status: seat.status, slice: seat.slice }));
   const state = fillState(target, seats);
+  // A seat stays under the buyer's bid cap like one bid (lib/bid-caps.ts). Shown only when one below the funds applies.
+  const cap = user.role === "BUYER" ? capHint(await bidCapFor(user.id)) : null;
   const notes = group.listing.notes;
   const upb = notes.reduce((sum, note) => sum + Number(note.upb), 0);
   const monthly = notes.reduce((sum, note) => sum + Number(note.monthlyPi), 0);
@@ -84,6 +90,7 @@ export default async function GroupPage({
               <form action={reconfirmSeat}>
                 <input type="hidden" name="groupId" value={group.id} />
                 <SubmitButton className="h-10 text-[13px] font-medium">Reconfirm</SubmitButton>
+                {cap && Math.round(Number(seat.amount) * 100) > cap.cents + 1 && <p className="mt-1 max-w-xs text-xs text-bad">This seat is over your cap. {cap.line}</p>}
               </form>
             )}
             {seat.userId === user.id && (group.status === "GATHERING" || group.status === "COUNTERED" || group.status === "OFFERED") && (
@@ -115,6 +122,7 @@ export default async function GroupPage({
           <input type="hidden" name="groupId" value={group.id} />
           <input name="amount" inputMode="decimal" className="desk-input" aria-label="Seat amount" placeholder="Dollars" />
           <input name="percent" className="desk-input" aria-label="Seat percent" placeholder="Or percent of the price" />
+          {cap && <p className="text-[13px] text-foreground tabular-nums">{cap.line}</p>}
           {group.structure === "SENIOR_JUNIOR" && (
             <select name="slice" className="desk-input" aria-label="Slice">
               <option value="SENIOR">Senior, paid first</option>

@@ -10,6 +10,7 @@ import { canCompleteStep } from "@/lib/closing";
 import { buyerSideEmails, cancelOpenClosing, completeDepositFromWire, finalizeClosing, isClosingStepKey, walkAwayFromClosing } from "@/lib/closing-service";
 import { depositNoticeLine } from "@/lib/deposits";
 import { prisma } from "@/lib/prisma";
+import { payoutLabel, proceedsAccount } from "@/lib/payout-accounts";
 import { OFAC_HOLD_MESSAGE, ofacHold } from "@/lib/screening";
 import { moneyGate, proceedsGate } from "@/lib/settlement";
 import { emitWebhook } from "@/lib/webhooks";
@@ -249,6 +250,11 @@ export async function recordSettlement(formData: FormData) {
   if (gate && override.length < 3) {
     redirect(`/closings/${closingId}?error=${encodeURIComponent(`${gate} Record those before paying the seller, or give a reason to go ahead without them.`)}`);
   }
+  // Proceeds go only to a payout account of the seller's that the desk verified by call-back, and no reason
+  // overrides that. lib/payout-accounts.ts.
+  const payout = side === "proceeds" ? await proceedsAccount(closing.listing.sellerId, String(formData.get("payoutAccountId") || "")) : null;
+  if (payout && payout.error !== null) redirect(`/closings/${closingId}?error=${encodeURIComponent(payout.error)}#payout`);
+  const paidTo = payout ? ` to ${payoutLabel(payout.account)}` : "";
   const cents = Math.round(amount * 100);
   const before = side === "funds" ? closing.fundsReceivedCents : side === "deposit" ? closing.depositReceivedCents : closing.proceedsSentCents;
   await prisma.closing.update({
@@ -257,13 +263,15 @@ export async function recordSettlement(formData: FormData) {
       ? { fundsReceivedCents: cents, fundsReceivedAt: at, fundsReference: reference }
       : side === "deposit"
         ? { depositReceivedCents: cents, depositReceivedAt: at, depositReference: reference }
-        : { proceedsSentCents: cents, proceedsSentAt: at, proceedsReference: reference },
+        : { proceedsSentCents: cents, proceedsSentAt: at, proceedsReference: reference, payoutAccountId: payout?.account.id },
   });
   if (gate) await audit(user.id, "CLOSING_OVERRIDE", "closing", closingId, `PROCEEDS: ${gate} Reason: ${override}`);
   const label = side === "funds" ? "Buyer funds received" : side === "deposit" ? "Buyer deposit received" : "Seller proceeds sent";
   const dollars = `$${amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   await audit(user.id, side === "funds" ? "FUNDS_RECEIVED" : side === "deposit" ? "DEPOSIT_RECEIVED" : "PROCEEDS_SENT", "closing", closingId, `${label}: ${before == null ? "none" : `$${(before / 100).toFixed(2)}`} to ${dollars} on ${at.toISOString().slice(0, 10)}${reference ? ` · ${reference}` : ""}`);
-  const message = `The desk recorded ${label.toLowerCase()} of ${dollars} on ${at.toISOString().slice(0, 10)}${reference ? ` (reference ${reference})` : ""} for ${closing.listing.title}. If that does not match your records, reply on the closing thread.`;
+  // The account it went to is its own entry, so the timeline still reads the wire line above.
+  if (payout) await audit(user.id, "PROCEEDS_ACCOUNT", "closing", closingId, `Seller proceeds to ${payoutLabel(payout.account)} (${payout.account.id})`);
+  const message = `The desk recorded ${label.toLowerCase()} of ${dollars}${paidTo} on ${at.toISOString().slice(0, 10)}${reference ? ` (reference ${reference})` : ""} for ${closing.listing.title}. If that does not match your records, reply on the closing thread.`;
   if (side === "proceeds") await notify(closing.listing.seller.email, `${label} · ${closing.listing.title}`, message);
   if (side === "funds" || side === "deposit") {
     for (const email of await buyerSideEmails(closingId)) await notify(email, `${label} · ${closing.listing.title}`, message);

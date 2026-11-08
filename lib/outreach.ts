@@ -1,6 +1,7 @@
 import { appOrigin } from "@/lib/billing";
 import { notify } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
+import { audienceOf } from "@/lib/private-listings";
 
 const DAY = 24 * 60 * 60 * 1000;
 export const MAX_RECIPIENTS = 200;
@@ -54,10 +55,14 @@ export async function sendAudience(listingId: string) {
       })
     : [];
   const boxById = new Map(boxes.map((box) => [box.id, box]));
-  const matches = matchRows.flatMap((row) => {
+  const fitting = matchRows.flatMap((row) => {
     const buyBox = boxById.get(row.buyBoxId);
     return buyBox ? [{ ...row, buyBox }] : [];
   });
+  // A private listing goes to its invitees only, and never to a buyer its seller excludes (lib/private-listings.ts).
+  const listing = await prisma.listing.findUnique({ where: { id: listingId }, select: { id: true, sellerId: true, brokerId: true, visibility: true } });
+  const shown = listing ? new Set((await audienceOf(listing, fitting.map((match) => match.buyBox.user))).map((user) => user.id)) : new Set<string>();
+  const matches = fitting.filter((match) => shown.has(match.buyBox.user.id));
   const seen = new Set<string>();
   const viewed = new Set(views.map((view) => view.userId));
   const offered = new Set(offers.filter((inquiry) => inquiry.type === "OFFER").map((inquiry) => inquiry.buyerId));

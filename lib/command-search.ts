@@ -12,6 +12,7 @@ import { moneyCompact, num } from "@/lib/format";
 import { docLabel, roleLabel } from "@/lib/labels";
 import { loansForSale } from "@/lib/metrics";
 import { prisma } from "@/lib/prisma";
+import { canSee, invitedTo, listingAccess, visibleWhere } from "@/lib/private-listings";
 import { documentGate } from "@/lib/room-access";
 import { getSettings, isPro } from "@/lib/settings";
 import { threadWalls } from "@/lib/threads";
@@ -275,14 +276,17 @@ async function buyerResults(viewer: PaletteViewer, term: string, settings: Setti
   const pro = isPro(viewer);
   const mine = await prisma.inquiry.findMany({ where: { buyerId: viewer.id }, select: { id: true } });
   const mineIds = mine.map((row) => row.id);
+  // Private listings find their invitees only, and a seller's excluded buyers find none of theirs.
+  const sight = await listingAccess(viewer);
   const [book, found, resales, bids, closings, holdings, saved] = await Promise.all([
-    approved ? prisma.listing.findMany({ where: { status: { in: PUBLIC } }, select: { id: true, status: true, approvedAt: true } }) : Promise.resolve([]),
+    approved ? prisma.listing.findMany({ where: { status: { in: PUBLIC } }, select: { id: true, status: true, approvedAt: true, visibility: true } }) : Promise.resolve([]),
     approved
       ? prisma.listing.findMany({
           where: {
             status: { in: PUBLIC },
             sellerId: { not: viewer.id },
             OR: [{ title: text }, { notes: { some: { OR: [{ city: text }, { state: text }] } } }, ...(byId ? [{ id: byId }] : [])],
+            AND: [visibleWhere(sight)],
           },
           select: {
             id: true,
@@ -293,6 +297,7 @@ async function buyerResults(viewer: PaletteViewer, term: string, settings: Setti
             sellerId: true,
             brokerId: true,
             launchAt: true,
+            visibility: true,
             notes: { select: { city: true, state: true, upb: true, askingPrice: true, tradeStatus: true } },
           },
           orderBy: { approvedAt: "desc" },
@@ -334,7 +339,9 @@ async function buyerResults(viewer: PaletteViewer, term: string, settings: Setti
   ]);
   const openable = openableListingIds(book, settings.earlyAccessHours, settings.freeBrowseLimit);
   const opens: Opens = (listing) =>
+    canSee(sight, listing) &&
     canOpenListing({
+      invited: invitedTo(sight, listing),
       viewer,
       status: listing.status,
       approvedAt: listing.approvedAt,
@@ -475,12 +482,12 @@ async function deskResults(viewer: PaletteViewer, term: string): Promise<Command
 // text can carry a figure or a name, so none is kept in the browser's recent items.
 
 type Text = { contains: string; mode: "insensitive" };
-type ListingGate = { id: string; status: ListingStatus; approvedAt: Date | null; sellerId: string; brokerId: string | null; launchAt: Date | null };
+type ListingGate = { id: string; status: ListingStatus; approvedAt: Date | null; sellerId: string; brokerId: string | null; launchAt: Date | null; visibility: string | null };
 // Whether the book opens a listing's page to this buyer, from buyerResults.
 type Opens = (listing: ListingGate) => boolean;
 type RecordScope = { opens?: Opens; inquiryIds?: string[] };
 
-const GATE_SELECT = { id: true, title: true, status: true, approvedAt: true, sellerId: true, brokerId: true, launchAt: true } as const;
+const GATE_SELECT = { id: true, title: true, status: true, approvedAt: true, sellerId: true, brokerId: true, launchAt: true, visibility: true } as const;
 // More rows than are shown, since the rules below drop some.
 const CANDIDATES = 30;
 

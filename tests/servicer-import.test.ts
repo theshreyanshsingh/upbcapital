@@ -135,7 +135,7 @@ test("the preview sorts each field into fill, agree, differ or held before anyth
   assert.equal(held.note, "The seller already explained this difference.");
   const upb = preview.loans[0].lines.find((line) => line.field === "upb")!;
   assert.deepEqual({ tape: upb.tape, report: upb.report }, { tape: "100000", report: "98500" });
-  assert.deepEqual(preview.totals, { rows: 2, matched: 2, fill: 7, confirm: 4, differ: 1, held: 2 });
+  assert.deepEqual(preview.totals, { rows: 2, matched: 2, fill: 7, confirm: 4, differ: 1, held: 2, update: 0 });
   assert.deepEqual(preview.missing, []);
   // A holder's software never fills the servicer's name: the holder services the loan itself.
   assert.equal(previewImport(tape, read, TERRA).loans[1].lines.some((line) => line.field === "servicerName"), false);

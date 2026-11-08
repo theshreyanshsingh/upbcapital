@@ -18,6 +18,7 @@ import {
   parseLoanPurpose,
   parseLossMitStage,
   parseMersMin,
+  parsePaymentType,
   parseValueType,
   parseYesNo,
   payStringMonths,
@@ -280,7 +281,82 @@ export function readServicing(
   put(record, "hoaLien", yesNo("hoaLien", "HOA lien"));
   put(record, "taxDelinquent", yesNo("taxDelinquent", "Taxes delinquent"));
   readTerms(record, get, warn, mapping, notes);
+  readRisk(record, get, (key) => cell(row, mapping, key), warn, notes);
   return { record, notes };
+}
+
+// Tape v3: balances, structure and risk flags, under the same rule. A payoff is only a figure with its good-through
+// date, so one without the other is left off.
+function readRisk(
+  record: ServicingRecord,
+  get: (key: TapeFieldKey) => string,
+  raw: (key: TapeFieldKey) => string,
+  warn: (field: TapeFieldKey, message: string) => void,
+  notes: ServicingNote[],
+) {
+  // floor: "positive" for a balance that can't be nothing, "zero" for one that can, "any" for an escrow account.
+  const amount = (key: "originalBalance" | "escrowBalance" | "arrearsAmount" | "payoffAmount" | "seniorLienBalance", label: string, floor: "positive" | "zero" | "any") => {
+    const text = get(key);
+    if (!text) return;
+    const value = parseMoney(text);
+    if (value == null) warn(key, `${label} “${clip(text)}” wasn't read as an amount and will be left off.`);
+    else if (floor === "positive" && value <= 0) warn(key, `${label} “${clip(text)}” isn't above zero and will be left off.`);
+    else if (floor === "zero" && value < 0) warn(key, `${label} “${clip(text)}” is below zero and will be left off.`);
+    else record[key] = Math.round(value * 100) / 100;
+  };
+  const date = (key: "payoffAsOf" | "balloonDate", label: string) => {
+    const text = get(key);
+    if (!text) return;
+    const parsed = parseDate(text);
+    if (!parsed) warn(key, `${label} “${clip(text)}” wasn't read as a date and will be left off.`);
+    else record[key] = parsed;
+  };
+  const flag = (key: "scraFlag" | "borrowerDeceased" | "litigationFlag", label: string) => {
+    const parsed = parseYesNo(raw(key));
+    if (parsed == null && get(key)) warn(key, `${label} “${clip(raw(key))}” wasn't read as yes or no and will be left off.`);
+    put(record, key, parsed);
+  };
+
+  amount("originalBalance", "Original balance", "positive");
+  // An escrow account the servicer advanced runs negative, so a negative escrow balance is kept.
+  amount("escrowBalance", "Escrow balance", "any");
+  amount("arrearsAmount", "Arrears", "zero");
+  amount("payoffAmount", "Payoff", "positive");
+  date("payoffAsOf", "Payoff good-through date");
+  if (record.payoffAmount != null && !record.payoffAsOf) {
+    warn("payoffAmount", "The payoff has no good-through date and will be left off. Map the payoff date column.");
+    delete record.payoffAmount;
+  } else if (record.payoffAsOf && record.payoffAmount == null) {
+    warn("payoffAsOf", "The payoff date has no payoff amount and will be left off.");
+    delete record.payoffAsOf;
+  }
+
+  // A "Balloon" column is sometimes a yes or no, which says the payment type, not the date.
+  const balloon = get("balloonDate");
+  const balloonFlag = balloon ? parseYesNo(balloon) : null;
+  if (balloonFlag != null) {
+    if (balloonFlag && !get("paymentType")) {
+      record.paymentType = "BALLOON";
+      notes.push({ field: "balloonDate", level: "fix", message: `Balloon “${clip(balloon)}” will be stored as the payment type, without a balloon date.` });
+    }
+  } else {
+    date("balloonDate", "Balloon date");
+  }
+  const typeRaw = get("paymentType");
+  if (typeRaw) {
+    const type = parsePaymentType(typeRaw);
+    if (!type) warn("paymentType", `Payment type “${clip(typeRaw)}” isn't fixed, ARM, interest-only, balloon or other and will be left off.`);
+    put(record, "paymentType", type);
+  }
+  amount("seniorLienBalance", "Senior lien balance", "zero");
+
+  flag("scraFlag", "SCRA protection");
+  flag("borrowerDeceased", "Borrower deceased");
+  flag("litigationFlag", "Litigation");
+  const litigationNote = get("litigationNote").slice(0, 300);
+  put(record, "litigationNote", litigationNote || null);
+  // A note about a case answers the litigation question when the flag is blank.
+  if (litigationNote && record.litigationFlag === undefined && !get("litigationFlag")) record.litigationFlag = true;
 }
 
 const ROUNDED = /^\d(\.\d+)?E\+\d+$/i;

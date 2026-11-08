@@ -13,6 +13,7 @@ import { homeFor } from "@/lib/labels";
 import { prisma } from "@/lib/prisma";
 import { consumeRateLimit } from "@/lib/rate-limit";
 import { newRecoveryCodes, packHashes, takeRecoveryCode } from "@/lib/recovery";
+import { safeNext } from "@/lib/safe-next";
 import { generateTotpSecret, verifyTotp } from "@/lib/totp";
 import { unset } from "@/lib/db-filters";
 
@@ -97,18 +98,21 @@ export async function verifyLoginTotp(formData: FormData) {
   if (!userId) redirect("/login?error=" + encodeURIComponent("Sign in again, then enter the code."));
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user || !user.totpEnabled || accountLocked(user.accountStatus)) redirect("/login");
+  // The page sign-in was going to, carried through the code step. Same-site paths only.
+  const next = safeNext(formData.get("next"), "");
+  const verify = `/login/verify?${next ? `next=${encodeURIComponent(next)}&` : ""}error=`;
   if (!(await consumeRateLimit(`totp:${user.id}`, 5, 15 * 60 * 1000))) {
-    redirect("/login/verify?error=" + encodeURIComponent("Too many codes. Wait fifteen minutes and try again."));
+    redirect(verify + encodeURIComponent("Too many codes. Wait fifteen minutes and try again."));
   }
   const code = String(formData.get("code") || "");
   if (!(await acceptSecondFactor(user, code))) {
-    redirect("/login/verify?error=" + encodeURIComponent("That code is not current."));
+    redirect(verify + encodeURIComponent("That code is not current."));
   }
   await clearPending();
   await setSession({ sub: user.id, email: user.email, role: user.role, name: user.name });
   await audit(user.id, "LOGIN", "user", user.id, "with second factor");
   const fallback = user.role === "BUYER" && user.accountStatus !== "APPROVED" ? "/buyer/pending" : homeFor(user.role);
-  redirect(fallback);
+  redirect(safeNext(next, fallback));
 }
 
 export async function sendEmailCode() {

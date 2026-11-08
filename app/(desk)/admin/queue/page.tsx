@@ -1,11 +1,14 @@
 import Link from "next/link";
+import { BulkPick, BulkResults, BulkReviewForm } from "@/components/bulk-review";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { StatusPill } from "@/components/status-pill";
 import { requireRole } from "@/lib/auth";
 import { DUPLICATE_COMMENT } from "@/lib/duplicates";
 import { q } from "@/lib/format";
+import { isRunId } from "@/lib/desk-bulk";
 import { prisma } from "@/lib/prisma";
+import { deskCan } from "@/lib/staff";
 
 const TABS = [
   { id: "review", label: "Needs the desk", statuses: ["SUBMITTED", "UNDER_REVIEW", "CHANGES_REQUESTED"] },
@@ -47,6 +50,9 @@ export default async function QueuePage({
     orderBy: tab.id === "review" ? { submittedAt: "asc" } : { updatedAt: "desc" },
   });
   const now = Date.now();
+  // Bulk decisions are for the sales side, on the column that waits for the desk.
+  const picks = tab.id === "review" && deskCan(user, "sales") && listings.length > 0;
+  const run = q(params, "bulk");
   return (
     <div>
       <PageIntro eyebrow="Review" title="The queue." lede="Nothing reaches buyers until the desk releases it." />
@@ -76,11 +82,14 @@ export default async function QueuePage({
           </Link>
         ))}
       </nav>
+      {isRunId(run) && <BulkResults run={run} viewerId={user.id} />}
+      {picks && <BulkReviewForm />}
       <ul className="mt-6 divide-y divide-border border border-border rounded-xl">
         {listings.length === 0 && <li className="px-5 py-8 text-sm text-muted-foreground">{mine ? "None of your listings are in this column." : "Nothing in this column."}</li>}
         {listings.map((listing) => (
-          <li key={listing.id}>
-            <Link href={`/admin/listings/${listing.id}`} className="flex flex-wrap items-center justify-between gap-3 px-5 py-5 hover:bg-muted/60">
+          <li key={listing.id} className={picks ? "flex items-stretch" : undefined}>
+            {picks && <BulkPick id={listing.id} title={listing.title} />}
+            <Link href={`/admin/listings/${listing.id}`} className="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-3 px-5 py-5 hover:bg-muted/60">
               <div>
                 <p className="font-semibold tracking-tight text-2xl text-foreground">{listing.title}</p>
                 <p className="mt-1 text-sm text-muted-foreground">

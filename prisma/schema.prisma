@@ -303,6 +303,14 @@ model User {
   referrals                    User[]             @relation("Referrals")
   referralCredits              Int                @default(0)
   referralRewarded             Boolean            @default(false)
+  // The desk's own bid cap for this buyer, in cents, or bidCapLifted to lift the new-bidder cap. lib/bid-caps.ts.
+  bidCapCents                  Int?
+  bidCapLifted                 Boolean?
+  // The deal-announcement list. Missing means not on it. lib/announcements.ts.
+  announcements                Boolean?
+  // A Pro trial, once per account. lib/trial.ts.
+  trialStartedAt               DateTime?
+  trialEndsAt                  DateTime?
   totpSecret                   String             @default("")
   totpEnabled                  Boolean            @default(false)
   recoveryHashes               String             @default("")
@@ -370,6 +378,7 @@ model User {
   buyerEntities                BuyerEntity[]
   beneficialOwners             BeneficialOwner[]
   agreements                   AgreementAcceptance[]
+  payoutAccounts               PayoutAccount[]
 }
 
 model PlatformSettings {
@@ -431,6 +440,11 @@ model PlatformSettings {
   stallDays            Int?
   // Months a buyer's approved file stays current before the buyer must re-certify. Missing means 12.
   recertifyMonths      Int?
+  // A new bidder's largest bid, in cents, until they have closed newBidderCloses deals. Missing means no cap.
+  newBidderCapCents    Int?
+  newBidderCloses      Int?
+  // Days of Pro a new buyer may try once. Missing or 0 means no trial. lib/trial.ts.
+  proTrialDays         Int?
   updatedAt            DateTime @updatedAt
 }
 
@@ -453,6 +467,9 @@ model BrokerProfile {
   affiliateFeeBasis  FeeBasis?
   affiliateFeeBps    Int?
   affiliateFeeCents  Int?
+  // The intake form a broker embeds on their own site, and the sites allowed to frame it. lib/broker-widget.ts.
+  widgetEnabled      Boolean?
+  widgetOrigins      String[]  @default([])
   updatedAt          DateTime  @updatedAt
 }
 
@@ -533,6 +550,22 @@ model Listing {
   // An approved listing with a launch date shows on the book as coming soon until then: buyers can save it, but
   // the room, bids and alerts wait for the date. launchNotifiedAt is set once watchers hear it went live.
   launchAt             DateTime?
+  // PRIVATE keeps the listing off the marketplace, search, roundups and matching. Only invited buyers and the desk
+  // see it. Missing means public. lib/private-listings.ts.
+  visibility           String?
+  invites              ListingInvite[]
+  // Hours the seller has to answer the desk's ask on a bid. Missing means the default in lib/seller-decisions.ts.
+  sellerResponseHours  Int?
+  // Who pays UPB's fees on this listing: SPLIT (the buyer pays the premium, the seller the commission), SELLER (the
+  // seller pays both) or BUYER (the buyer pays both). Fixed at go-live with the fee schedule. Missing means SPLIT.
+  feePayer             String?
+  // A tape the desk filed for the seller, and the seller's confirmation that it is theirs and correct. A desk-filed
+  // listing can't be approved until the seller confirms. lib/desk-intake.ts.
+  filedByDeskId        String?
+  sellerConfirmedAt    DateTime?
+  sellerConfirmedById  String?
+  // Diligence items the desk waived before go-live: { item: { by, at, reason } }. lib/diligence-checklist.ts.
+  diligenceWaivers     Json?
   launchNotifiedAt     DateTime?
   notes                Note[]
   documents            Document[]
@@ -630,6 +663,23 @@ model Note {
   servicerSource     String?
   // Fields the desk checked against a document: { field: { at, by, source } }. Anything absent is seller-stated.
   verifiedFields     Json?
+  // Tape v3: balances, structure and risk flags a buyer prices from. All optional.
+  originalBalance    Float?
+  escrowBalance      Float?
+  // Unpaid installments, fees and advances owed, and the payoff quoted, with its date.
+  arrearsAmount      Float?
+  payoffAmount       Float?
+  payoffAsOf         DateTime?
+  balloonDate        DateTime?
+  // FIXED, ARM, INTEREST_ONLY, BALLOON or OTHER.
+  paymentType        String?
+  // What is owed ahead of this lien, for a second or third.
+  seniorLienBalance  Float?
+  // Servicemember protection, a deceased borrower, and litigation on the loan or property.
+  scraFlag           Boolean?
+  borrowerDeceased   Boolean?
+  litigationFlag     Boolean?
+  litigationNote     String?
   inquiries          Inquiry[]
   filings            CourtFiling[]
   collateral         CollateralItem[]
@@ -704,6 +754,9 @@ model Inquiry {
   backupAt             DateTime?
   backupDeclinedAt     DateTime?
   backupUntil          DateTime?
+  // When the seller must answer the desk's ask on this bid, and the one reminder before then.
+  sellerRespondBy      DateTime?
+  sellerRemindedAt     DateTime?
 
   @@index([listingId])
   @@index([buyerId])
@@ -1217,6 +1270,17 @@ model Closing {
   stallWarnedAt         DateTime?
   stallFinalAt          DateTime?
   stallEscalatedAt      DateTime?
+  // Proration: the cut-off date the price was set at, and the adjustment for principal paid down and interest
+  // accrued between it and closing, in cents (positive is owed to the seller). lib/proration.ts.
+  cutoffDate            DateTime?
+  prorationCents        Int?
+  prorationDetail       Json?
+  // The seller's payout account the desk checked by call-back. Proceeds go only to a verified account.
+  payoutAccountId       String?
+  // The bid tape checked against the tape at closing: { loans: [...], differences: [...] }. lib/tie-out.ts.
+  tieOut                Json?
+  tieOutAt              DateTime?
+  tieOutById            String?
   steps                 ClosingStep[]
   signatures            SignatureRequest[]
   boarding              ServicerBoarding?
@@ -1485,11 +1549,15 @@ model SellerLead {
   status         LeadStatus    @default(NEW)
   userId         String?
   listingId      String?
+  // The broker whose embedded form brought the lead, and where it came from: QUOTE, WIDGET or another source.
+  brokerId       String?
+  source         String?
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
 
   @@index([status])
   @@index([email])
+  @@index([brokerId])
 }
 
 model DeskBid {
@@ -2206,4 +2274,127 @@ model Servicer {
   active       Boolean  @default(true)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+}
+
+// An invitation to a private listing. The link carries the token; the desk or seller can revoke it.
+model ListingInvite {
+  id          String    @id @default(cuid()) @map("_id")
+  listingId   String
+  listing     Listing   @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  email       String
+  userId      String?
+  token       String    @unique
+  invitedById String
+  createdAt   DateTime  @default(now())
+  openedAt    DateTime?
+  revokedAt   DateTime?
+
+  @@index([listingId])
+  @@index([email])
+}
+
+// A buyer a seller never sells to: none of the seller's listings shows to them or takes their bid. Matched by
+// account, email or company name. lib/private-listings.ts.
+model SellerExclusion {
+  id          String   @id @default(cuid()) @map("_id")
+  sellerId    String
+  buyerId     String?
+  email       String?
+  company     String?
+  reason      String   @default("")
+  createdById String
+  createdAt   DateTime @default(now())
+
+  @@index([sellerId])
+}
+
+// A seller's account for proceeds. UPB keeps the bank, the account name, the routing number and the last four
+// digits, never the whole account number. The desk confirms the details by calling a number it found itself, not
+// one from the request, and logs the call. lib/payout-accounts.ts.
+model PayoutAccount {
+  id             String    @id @default(cuid()) @map("_id")
+  userId         String
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bankName       String
+  accountName    String
+  routingNumber  String
+  accountLast4   String
+  // PENDING, VERIFIED or REJECTED.
+  status         String    @default("PENDING")
+  callbackAt     DateTime?
+  callbackById   String?
+  // The number the desk dialled and where it found it.
+  callbackPhone  String?
+  callbackSource String?
+  callbackNote   String?
+  verifiedById   String?
+  verifiedAt     DateTime?
+  retiredAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([userId])
+}
+
+// A numbered fee invoice or credit note. Numbers come from Counter and never repeat. lib/invoices.ts.
+model Invoice {
+  id          String    @id @default(cuid()) @map("_id")
+  number      String    @unique
+  // PREMIUM, COMMISSION or CREDIT_NOTE.
+  kind        String
+  closingId   String?
+  userId      String
+  amountCents Int
+  description String
+  creditOfId  String?
+  issuedAt    DateTime  @default(now())
+  voidedAt    DateTime?
+
+  @@index([closingId])
+  @@index([userId])
+}
+
+// A named sequence, incremented atomically.
+model Counter {
+  id    String @id @map("_id")
+  value Int    @default(0)
+}
+
+// Someone on the deal-announcement list without an account, after confirming by email.
+model Subscriber {
+  id             String    @id @default(cuid()) @map("_id")
+  email          String    @unique
+  name           String    @default("")
+  token          String    @unique
+  confirmedAt    DateTime?
+  unsubscribedAt DateTime?
+  source         String    @default("")
+  createdAt      DateTime  @default(now())
+}
+
+// A deal announcement as sent, with its reach.
+model Announcement {
+  id         String   @id @default(cuid()) @map("_id")
+  subject    String
+  body       String
+  listingIds String[] @default([])
+  sentById   String
+  recipients Int      @default(0)
+  sentAt     DateTime @default(now())
+  events     EmailEvent[]
+}
+
+// An open or a click on an announcement, by recipient token, so a recipient counts once per kind.
+model EmailEvent {
+  id             String       @id @default(cuid()) @map("_id")
+  announcementId String
+  announcement   Announcement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+  // A hash of the recipient's address, never the address itself.
+  recipient      String
+  // OPEN or CLICK.
+  kind           String
+  url            String?
+  createdAt      DateTime     @default(now())
+
+  @@index([announcementId, kind])
 }

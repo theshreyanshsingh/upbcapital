@@ -53,7 +53,9 @@ export default async function AdminVerificationPage({
           <li key={profile.userId} id={`buyer-${profile.userId}`} className="glass scroll-mt-6 p-5">
             <div className="flex flex-wrap items-baseline justify-between gap-3">
               <div>
-                <p className="font-semibold tracking-tight text-3xl text-foreground">{profile.entityName || profile.user.name}</p>
+                <p className="font-semibold tracking-tight text-3xl text-foreground">
+                  <a href={`/admin/buyers/${profile.userId}`}>{profile.entityName || profile.user.name}</a>
+                </p>
                 <p className="mt-1 text-sm text-muted-foreground">
                   {profile.user.email} · {entityLabel(profile.entityType).toLowerCase()} · {profile.jurisdiction} · {profile.accredited ? "self-certified accredited" : "not certified"}
                 </p>

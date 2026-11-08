@@ -1,7 +1,9 @@
 import { reviewSellerFile } from "@/actions/seller-identity";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
+import { SellerExclusionList } from "@/components/private-sale";
 import { prettyDate, q } from "@/lib/format";
+import { exclusionsBySeller } from "@/lib/private-listings";
 import { entityLabel, roleLabel } from "@/lib/labels";
 import { ofacBlocks } from "@/lib/ofac";
 import { prisma } from "@/lib/prisma";
@@ -33,10 +35,12 @@ export default async function SellerFilesPage({
   const profiles = [...rows.filter((row) => row.status === "SUBMITTED"), ...rows.filter((row) => row.status !== "SUBMITTED")];
   const userIds = profiles.map((profile) => profile.userId);
   const reviewerIds = [...new Set(profiles.map((profile) => profile.reviewedById).filter((id): id is string => Boolean(id)))];
-  const [checks, waiting, reviewers] = await Promise.all([
+  const [checks, waiting, reviewers, excluded] = await Promise.all([
     prisma.ofacCheck.findMany({ where: { userId: { in: userIds }, result: "REVIEW" }, orderBy: { createdAt: "desc" } }),
     prisma.listing.findMany({ where: { sellerId: { in: userIds }, status: { in: [...IN_REVIEW] } }, select: { id: true, sellerId: true, title: true } }),
     reviewerIds.length ? prisma.user.findMany({ where: { id: { in: reviewerIds } }, select: { id: true, name: true } }) : Promise.resolve([]),
+    // The buyers each seller never sells to, which the desk reads and the seller keeps (lib/private-listings.ts).
+    exclusionsBySeller(userIds),
   ]);
   const reviewerName = new Map(reviewers.map((person) => [person.id, person.name]));
   const required = sellerIdentityRequired(settings);
@@ -111,6 +115,12 @@ export default async function SellerFilesPage({
                     </span>
                   ))}
                 </p>
+              )}
+              {(excluded.get(profile.userId) ?? []).length > 0 && (
+                <details className="mt-3">
+                  <summary className="cursor-pointer text-sm text-foreground">Excluded buyers · {excluded.get(profile.userId)?.length}</summary>
+                  <SellerExclusionList rows={excluded.get(profile.userId) ?? []} empty="" />
+                </details>
               )}
               <form action={reviewSellerFile} className="mt-4 space-y-3">
                 <input type="hidden" name="userId" value={profile.userId} />

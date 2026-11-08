@@ -54,7 +54,7 @@ export function LoginPanel({ next, demo }: { next?: string; demo?: DemoDesk }) {
   );
 }
 
-export function SignupForm({ lead = "", email = "", referral = "" }: { lead?: string; email?: string; referral?: string }) {
+export function SignupForm({ lead = "", email = "", referral = "", next = "" }: { lead?: string; email?: string; referral?: string; next?: string }) {
   const [state, action] = useActionState(signup, { error: "" } as { error: string; field?: string });
   const [role, setRole] = useState(lead ? "INDIVIDUAL_SELLER" : "BUYER");
   const form = useRef<HTMLFormElement>(null);
@@ -68,6 +68,7 @@ export function SignupForm({ lead = "", email = "", referral = "" }: { lead?: st
   return (
     <form ref={form} action={action} className="glass space-y-6 p-6 md:p-10">
       {lead && <input type="hidden" name="lead" value={lead} />}
+      {next && <input type="hidden" name="next" value={next} />}
       <div className="grid gap-3 sm:grid-cols-2">
         {[
           ["BUYER", "Buyer", "Underwrite the book."],

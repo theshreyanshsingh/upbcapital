@@ -7,7 +7,7 @@ import { depositCents, depositTerms } from "@/lib/closing-clock";
 import { diligenceDays } from "@/lib/closing-service";
 import { money } from "@/lib/format";
 import { homeFor } from "@/lib/labels";
-import { EXAMPLE_PRICES, chargeFees, feeTerms, rateText, tierLabel, type Fees } from "@/lib/fee-schedule";
+import { EXAMPLE_PRICES, FEE_PAYERS, chargeFees, feeTerms, rateText, tierLabel, type Fees } from "@/lib/fee-schedule";
 import { getSettings } from "@/lib/settings";
 
 // Public, so a buyer or seller can read the costs before asking for an account. The desk navigation links here too.
@@ -59,7 +59,11 @@ export default async function FeeSchedulePage() {
     ["Affiliate fee", `${share(affiliate)}. Paid the same way, out of UPB's fees.`],
     ["Pro membership", `${money(settings.proMonthlyPriceCents / 100, 2)} a month, for buyers.`],
     ["Desk purchases", `When UPB's desk buys a note for its own book, there is no buyer premium${settings.chargeDeskFees ? ", and the seller commission applies." : " and no seller commission."}`],
+    ["Who pays", "Split by default: the buyer pays the premium and the seller the commission. Before a listing goes live, its seller may pay both fees, or have the buyer pay both. Each fee is worked out the same way, tiers and minimums included. The listing shows the choice before anyone bids."],
   ];
+  // The middle example price under each choice of who pays.
+  const payerPrice = EXAMPLE_PRICES[1];
+  const payers = FEE_PAYERS.map((payer) => ({ payer, fees: chargeFees({ ...terms, ...(payer === "SPLIT" ? {} : { payer }) }, payerPrice) }));
   const examples = EXAMPLE_PRICES.map((price) => {
     const fees = chargeFees(terms, price);
     const pool = fees.premiumCents + fees.commissionCents;
@@ -158,6 +162,37 @@ export default async function FeeSchedulePage() {
         <p className="mt-4 text-xs leading-relaxed text-muted-foreground">
           A broker or affiliate fee comes out of UPB&apos;s fees and only applies when one brought the deal. Third-party costs, such as recording or a servicer&apos;s boarding fee, are not UPB fees and are not shown.
         </p>
+      </section>
+      <section className="glass p-5 md:p-6" aria-labelledby="payer-heading">
+        <h2 id="payer-heading" className="eyebrow">Who pays</h2>
+        <p className="mt-2 text-sm text-muted-foreground">A {money(payerPrice)} trade under each choice the seller can make. UPB&apos;s fees on the trade are the same; only who pays them moves.</p>
+        <div className="mt-4 overflow-x-auto">
+          <table className="w-full min-w-[22rem] text-sm tabular-nums">
+            <thead>
+              <tr className="text-left text-[13px] text-muted-foreground">
+                <th scope="col" className="sr-only">Line</th>
+                {payers.map(({ payer }) => (
+                  <th key={payer} scope="col" className="py-1 pl-3 text-right font-medium">{payer === "SPLIT" ? "Split" : payer === "SELLER" ? "Seller pays both" : "Buyer pays both"}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {([
+                ["Buyer premium", (fees: Fees) => money(fees.premiumCents / 100)],
+                ["The buyer pays", (fees: Fees) => money(fees.buyerTotalCents / 100)],
+                ["Seller commission", (fees: Fees) => money(fees.commissionCents / 100)],
+                ["The seller nets", (fees: Fees) => money(fees.netToSellerCents / 100)],
+              ] as [string, (fees: Fees) => string][]).map(([label, value]) => (
+                <tr key={label} className="text-muted-foreground">
+                  <th scope="row" className="py-1.5 pr-3 text-left font-normal">{label}</th>
+                  {payers.map(({ payer, fees }) => (
+                    <td key={payer} className="py-1.5 pl-3 text-right text-foreground">{value(fees)}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </section>
       <p className="text-sm text-muted-foreground">
         Fees are charged under the <Link href="/terms" className="text-link">terms of use</Link>. Questions about a particular trade go to the desk.

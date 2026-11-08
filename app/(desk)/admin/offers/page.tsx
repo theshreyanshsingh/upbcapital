@@ -13,6 +13,7 @@ import { money, num, prettyDate, q } from "@/lib/format";
 import { feeTerms, feesFor, rateText } from "@/lib/fee-schedule";
 import { bidExpired, buyerPrice, canCounter, counterFrom, openCounter } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
+import { awardBlocks } from "@/lib/private-listings";
 import { getSettings } from "@/lib/settings";
 import { deskCan } from "@/lib/staff";
 import Link from "next/link";
@@ -42,6 +43,8 @@ export default async function AdminOffersPage({
   const closingFor = new Map(closings.map((closing) => [closing.inquiryId, closing.id]));
   // The buying entity each bid is for, when the buyer chose one beyond their main file.
   const entityOf = await bidEntityNames(inquiries.map((item) => item.buyerEntityId));
+  // Live bids from a buyer the seller now excludes, or a private listing no longer shows to, can't be awarded.
+  const hiddenBids = await awardBlocks(inquiries.filter((item) => item.type === "OFFER" && (item.status === "OPEN" || item.status === "REVIEWED" || item.status === "ACCEPTED")));
   const premium = rateText(feeTerms(null, settings), "premium");
   return (
     <div>
@@ -92,7 +95,7 @@ export default async function AdminOffersPage({
                 <div>
                   <Link href={`/admin/listings/${inquiry.listingId}`} className="font-semibold tracking-tight text-2xl text-foreground">{inquiry.listing.title}</Link>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    {inquiry.buyer.name} · {inquiry.buyer.email} · {prettyDate(inquiry.createdAt)}
+                    <Link href={`/admin/buyers/${inquiry.buyerId}`} className="text-link">{inquiry.buyer.name}</Link> · {inquiry.buyer.email} · {prettyDate(inquiry.createdAt)}
                     {inquiry.listing.broker ? ` · ${inquiry.listing.brokerRole === "AFFILIATE" ? "affiliate" : "broker"} ${inquiry.listing.broker.name}` : ""}
                     {inquiry.buyer.referredBy?.role === "BROKER" ? ` · referred by ${inquiry.buyer.referredBy.name}` : ""}
                     {inquiry.note ? ` · loan in ${inquiry.note.city}` : inquiry.type === "OFFER" ? " · whole listing" : ""}
@@ -118,6 +121,7 @@ export default async function AdminOffersPage({
                   {inquiry.status === "EXPIRED" || lapsed ? `Lapsed ${prettyDate(inquiry.expiresAt)} · the buyer's good-until date passed` : `Good until ${prettyDate(inquiry.expiresAt)}`}
                 </p>
               )}
+              {hiddenBids.get(inquiry.id) && <p role="status" className="mt-2 text-[13px] font-medium text-bad">{hiddenBids.get(inquiry.id)}</p>}
               {inquiry.status === "WITHDRAWN" && <p className="mt-2 text-[13px] text-muted-foreground">Withdrawn by the buyer{inquiry.withdrawnAt ? ` ${prettyDate(inquiry.withdrawnAt)}` : ""}</p>}
               {live && !walled && <p className={`mt-2 text-[13px] ${agreed ? "text-good" : "text-muted-foreground"}`}>{sellerLine}</p>}
               {/* The seller's own pick, behind the same wall as the amount it agreed to. */}

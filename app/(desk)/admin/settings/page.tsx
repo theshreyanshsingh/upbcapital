@@ -20,6 +20,8 @@ import { ConfirmSubmit } from "@/components/confirm-submit";
 import { ReaderSettings } from "@/components/document-reader";
 import { FeeScheduleForm } from "@/components/fee-schedule-form";
 import { RecertifySettings } from "@/components/recertify-settings";
+import { TrialSettings } from "@/components/trial-settings";
+import { BidCapSettings } from "@/components/bid-cap-settings";
 import { SellerIdentitySetting } from "@/components/seller-identity";
 import { SignatureSettings } from "@/components/signature-panel";
 import { deskCan } from "@/lib/staff";
@@ -274,6 +276,8 @@ export default async function SettingsPage({
       </form>
       <BackstopSettings owns={owns} stallDays={settings.stallDays} />
       <RecertifySettings owns={owns} months={settings.recertifyMonths} />
+      <TrialSettings owns={owns} days={settings.proTrialDays} stripe={Boolean(process.env.STRIPE_SECRET_KEY)} />
+      <BidCapSettings owns={owns} capCents={settings.newBidderCapCents} closes={settings.newBidderCloses} />
       <SignatureSettings owns={owns} setting={settings.psaSignHours} />
       <ReaderSettings owns={owns} />
       <SellerIdentitySetting value={settings.requireSellerIdentity} owns={owns} />

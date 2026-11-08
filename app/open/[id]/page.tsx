@@ -7,6 +7,7 @@ import { getCurrentUser } from "@/lib/auth";
 import { labelOf } from "@/lib/labels";
 import { launchPending } from "@/lib/launch-rules";
 import { prisma } from "@/lib/prisma";
+import { canSeeListing, isPrivateListing } from "@/lib/private-listings";
 import { upbBucket } from "@/lib/strata";
 
 export const dynamic = "force-dynamic";
@@ -18,7 +19,8 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
     include: { notes: { take: 1 } },
   });
   const note = listing?.notes[0];
-  if (!listing || !note || !["APPROVED", "PENDING"].includes(listing.status)) {
+  // A private listing names nothing in its title, whoever asks (lib/private-listings.ts).
+  if (!listing || !note || !["APPROVED", "PENDING"].includes(listing.status) || isPrivateListing(listing)) {
     return { title: "Listing" };
   }
   const title = `${note.city}, ${note.state} ${labelOf("payment", note.paymentStatus).toLowerCase()} note`;
@@ -35,6 +37,9 @@ export default async function OpenListingPage({ params }: { params: Promise<{ id
     prisma.listing.findUnique({ where: { id }, include: { notes: true, seller: true } }),
   ]);
   if (!listing || !["APPROVED", "PENDING"].includes(listing.status) || listing.notes.length === 0) notFound();
+  // The public page of a private listing is not found, and neither is any listing of a seller who excludes the
+  // signed-in buyer. An invitee, the seller and the desk see it.
+  if (!(await canSeeListing(user, listing))) notFound();
   const note = [...listing.notes].sort((a, b) => Number(b.upb) - Number(a.upb))[0];
   const upb = listing.notes.reduce((sum, row) => sum + Number(row.upb), 0);
   const states = [...new Set(listing.notes.map((row) => row.state))].join(", ");

@@ -121,6 +121,18 @@ function servicingData(input: NoteInput, clearBlanks: boolean) {
     lossMitStage: input.lossMitStage,
     inheritedCovenants: input.inheritedCovenants,
     originatorLicense: input.originatorLicense,
+    originalBalance: input.originalBalance,
+    escrowBalance: input.escrowBalance,
+    arrearsAmount: input.arrearsAmount,
+    payoffAmount: input.payoffAmount,
+    payoffAsOf: input.payoffAsOf,
+    balloonDate: input.balloonDate,
+    paymentType: input.paymentType,
+    seniorLienBalance: input.seniorLienBalance,
+    scraFlag: input.scraFlag,
+    borrowerDeceased: input.borrowerDeceased,
+    litigationFlag: input.litigationFlag,
+    litigationNote: input.litigationNote,
   };
   return Object.fromEntries(Object.entries(fields).filter(([, value]) => clearBlanks || value != null)) as Partial<typeof fields>;
 }

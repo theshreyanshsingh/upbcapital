@@ -171,6 +171,8 @@ export type BidStanding = {
   credential: BidCredentialView | null;
   // Set when the buyer's bidding is paused for strikes. The forms show it in place of the bid box.
   paused: string | null;
+  // A bid cap below the verified funds, in cents, with the line the forms show (lib/bid-caps.ts capHint).
+  cap?: { cents: number; line: string } | null;
 };
 
 // Headroom left after a bid of this all-in on this loan, for the bid confirmation. Null when no ceiling applies.

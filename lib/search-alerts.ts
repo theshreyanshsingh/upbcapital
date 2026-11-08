@@ -6,6 +6,7 @@ import { notify } from "@/lib/email";
 import { filtersFromSaved, listingMatches } from "@/lib/filters";
 import { launchPending } from "@/lib/launch-rules";
 import { prisma } from "@/lib/prisma";
+import { audienceOf, listingScope } from "@/lib/private-listings";
 import { isPro } from "@/lib/settings";
 
 // A saved search alerts as each listing goes live, or gathers what went live into one daily or weekly roundup.
@@ -74,8 +75,10 @@ export async function alertMatchingSearches(listingId: string, now = new Date())
     include: { user: true },
   });
   const input = matchInput(listing);
+  // A private listing alerts its invitees only, and never a buyer its seller excludes (lib/private-listings.ts).
+  const shown = new Set((await audienceOf(listing, [...new Map(searches.map((search) => [search.user.id, search.user])).values()])).map((user) => user.id));
   for (const search of searches) {
-    if (!alertsOn(search.user)) continue;
+    if (!alertsOn(search.user) || !shown.has(search.user.id)) continue;
     if (!listingMatches(input, filtersFromSaved(search.filters))) continue;
     await notify(
       search.user.email,
@@ -120,7 +123,9 @@ export async function sendSearchRoundup(search: SavedSearch & { user: User }, no
   if (claim.count !== 1) return false;
   // Up to this run's start; anything approved after opens the next window.
   const listings = await prisma.listing.findMany({
-    where: { status: "APPROVED", approvedAt: { gte: since, lt: now } },
+    // Only what this buyer would see on the book: no private listing they weren't invited to, nothing from a seller
+    // who excludes them.
+    where: { status: "APPROVED", approvedAt: { gte: since, lt: now }, AND: [await listingScope(search.user)] },
     include: { notes: true },
     orderBy: { approvedAt: "desc" },
   });

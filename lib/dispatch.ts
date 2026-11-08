@@ -8,6 +8,7 @@ import { marketRate, rateStale } from "@/lib/indicative";
 import { loansForSale } from "@/lib/metrics";
 import { typedNumber } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
+import { publicListing } from "@/lib/private-listings";
 import { clearSettingsCache, getSettings, isPro } from "@/lib/settings";
 import { ruleHolder, ruleOf } from "@/lib/standing-bids";
 
@@ -487,7 +488,8 @@ export async function loadDispatch(now = new Date()): Promise<Dispatch> {
     prisma.agencySale.findMany({ orderBy: { bidDate: "desc" }, take: 300 }),
     loadClosedTrades(now).catch(() => []),
     prisma.listing.findMany({
-      where: { OR: [{ status: "APPROVED" }, { status: { in: ["PENDING", "SOLD"] }, approvedAt: { gte: period.start, lt: period.end } }] },
+      // The dispatch goes to the whole list, so a private listing never counts in its book figures.
+      where: { OR: [{ status: "APPROVED" }, { status: { in: ["PENDING", "SOLD"] }, approvedAt: { gte: period.start, lt: period.end } }], AND: [publicListing()] },
       select: { id: true, status: true, approvedAt: true, notes: { select: { upb: true, askingPrice: true, paymentStatus: true, tradeStatus: true } } },
     }),
     prisma.buyBox.findMany({
@@ -501,7 +503,7 @@ export async function loadDispatch(now = new Date()): Promise<Dispatch> {
         bidCap: true,
         targetYield: true,
         bidSpread: true,
-        user: { select: { role: true, accountStatus: true, subscriptionTier: true, subscriptionStatus: true, subscriptionCurrentPeriodEnd: true } },
+        user: { select: { role: true, accountStatus: true, subscriptionTier: true, subscriptionStatus: true, subscriptionCurrentPeriodEnd: true, trialEndsAt: true } },
       },
     }),
     getSettings(),

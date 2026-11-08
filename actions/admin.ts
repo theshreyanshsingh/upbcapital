@@ -6,7 +6,10 @@ import type { AccountStatus, Prisma, ReviewAction } from "@prisma/client";
 import { alertMatchingSearches } from "@/lib/search-alerts";
 import { audit } from "@/lib/audit";
 import { deadlinePassed } from "@/lib/auction";
+import { editDetail, listingChanges, readEditReason, sellerEditNotice } from "@/lib/desk-edits";
 import { approvalHold } from "@/lib/discrepancies";
+import { clearSellerConfirmation, deskIntakeHold, RECONFIRM_LINE } from "@/lib/desk-intake";
+import { diligenceHold } from "@/lib/diligence-checklist";
 import { askSeller, awardOffer, checkAward, declineLosingBids } from "@/lib/awards";
 import { endSessions } from "@/lib/auth";
 import { notify, sendAlert } from "@/lib/email";
@@ -90,6 +93,12 @@ export async function reviewListing(formData: FormData) {
     // The seller identity gate: when the desk requires it, a seller's listing waits on their approved seller file.
     const identity = await sellerIdentityHold(listing, await getSettings());
     if (identity) redirect(`/admin/listings/${listingId}?error=${encodeURIComponent(identity)}`);
+    // A tape the desk filed for the seller waits on the seller's word that it is theirs and correct.
+    const unconfirmed = deskIntakeHold(listing);
+    if (unconfirmed) redirect(`/admin/listings/${listingId}?error=${encodeURIComponent(unconfirmed)}`);
+    // The diligence set: each required item on file, or waived by compliance with a reason.
+    const diligence = await diligenceHold(listingId);
+    if (diligence) redirect(`/admin/listings/${listingId}?error=${encodeURIComponent(diligence)}#diligence`);
     const screened = await screenListing(listingId, user.id);
     if (screened.unavailable) redirect(`/admin/listings/${listingId}?error=${encodeURIComponent(OFAC_DOWN_MESSAGE)}`);
     if (await ofacHold({ listingId, userIds: [listing.sellerId] })) {
@@ -217,6 +226,9 @@ export async function adminUpdateListing(formData: FormData) {
   const listingId = String(formData.get("listingId") || "");
   const listing = await prisma.listing.findUnique({ where: { id: listingId }, include: { notes: true } });
   if (!listing) redirect("/admin/queue");
+  // Every desk edit says why. The seller and the audit log read the reason with the fields it changed.
+  const why = readEditReason(formData.get("reason"));
+  if (why.error !== null) redirect(`/admin/listings/${listingId}?error=${encodeURIComponent(why.error)}`);
   const title = String(formData.get("title") || "").trim();
   const summary = String(formData.get("summary") || "").trim();
   await prisma.listing.update({
@@ -283,8 +295,14 @@ export async function adminUpdateListing(formData: FormData) {
     await watchReprice({ listingId, ...repriced, actorId: user.id });
   }
 
-  await record(user.id, listingId, "EDIT", "Desk edited the listing.");
-  back(listingId, "Listing updated");
+  // Each field before and after, read back from the rows, so the log holds what was saved (lib/desk-edits.ts).
+  const edited = await prisma.listing.findUnique({ where: { id: listingId }, include: { notes: true, seller: { select: { email: true } } } });
+  const changes = edited ? listingChanges(listing, edited) : [];
+  await record(user.id, listingId, "EDIT", editDetail(why.reason, changes));
+  // A change to a desk-filed tape the seller confirmed clears that confirmation, and the notice says so.
+  const reconfirm = changes.length > 0 && (await clearSellerConfirmation(user.id, listingId, [...new Set(changes.map((change) => change.label))].join(", ")));
+  if (edited && changes.length) await notify(edited.seller.email, `Desk edit · ${edited.title}`, `${sellerEditNotice(why.reason, changes)}${reconfirm ? ` ${RECONFIRM_LINE}` : ""}`);
+  back(listingId, changes.length ? "Listing updated" : "Saved. No field changed.");
 }
 
 export async function decideInquiry(formData: FormData) {

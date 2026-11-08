@@ -9,6 +9,7 @@ import { money, num, pct, prettyDate } from "@/lib/format";
 import { labelOf } from "@/lib/labels";
 import { COMPARE_LIMIT, compareColumn, type CompareColumn, type FlagCount } from "@/lib/metrics";
 import { prisma } from "@/lib/prisma";
+import { canSee, invitedTo, listingAccess } from "@/lib/private-listings";
 import { getSettings, isPro } from "@/lib/settings";
 
 export const metadata = { title: "Compare" };
@@ -29,18 +30,21 @@ export default async function ComparePage({
     .filter((value) => /^[A-Za-z0-9_-]{1,64}$/.test(value));
   const ids = asked.slice(0, COMPARE_LIMIT);
   const pro = user.role === "ADMIN" || isPro(user);
-  const [settings, found, live] = await Promise.all([
+  const [settings, found, live, sight] = await Promise.all([
     getSettings(),
     ids.length ? prisma.listing.findMany({ where: { id: { in: ids } }, include: { notes: true } }) : Promise.resolve([]),
-    prisma.listing.findMany({ where: { status: { in: ["APPROVED", "PENDING"] } }, select: { id: true, status: true, approvedAt: true } }),
+    prisma.listing.findMany({ where: { status: { in: ["APPROVED", "PENDING"] } }, select: { id: true, status: true, approvedAt: true, visibility: true } }),
+    listingAccess(user),
   ]);
   const openable = openableListingIds(live, settings.earlyAccessHours, settings.freeBrowseLimit);
   const byId = new Map(found.map((listing) => [listing.id, listing]));
-  // Each listing passes the same check its own page runs, one by one, before anything about it shows.
+  // Each listing passes the same check its own page runs, one by one, before anything about it shows. One hidden
+  // from this viewer reads as missing (lib/private-listings.ts).
   const columns: CompareColumn[] = ids.flatMap((id) => {
     const listing = byId.get(id);
-    if (!listing) return [{ id, hidden: true, hold: null, title: "", card: null, file: null, figures: null }];
+    if (!listing || !canSee(sight, listing)) return [{ id, hidden: true, hold: null, title: "", card: null, file: null, figures: null }];
     const access = canOpenListing({
+      invited: invitedTo(sight, listing),
       viewer: user,
       status: listing.status,
       approvedAt: listing.approvedAt,

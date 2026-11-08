@@ -29,6 +29,7 @@ export function StrataPanel({
         <div className="flex gap-3">
           <a className="text-[13px] font-medium text-link" href={`${exportBase}?format=csv`}>CSV</a>
           <a className="text-[13px] font-medium text-link" href={`${exportBase}?format=xlsx`}>Excel</a>
+          <a className="text-[13px] font-medium text-link" href={`${exportBase}?format=mismo`} title="The tape keyed by MISMO names. See the tape standard.">MISMO JSON</a>
         </div>
       </div>
       <dl className="mt-5 grid gap-px bg-muted sm:grid-cols-3">

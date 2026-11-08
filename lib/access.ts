@@ -56,6 +56,9 @@ export function canOpenListing(input: {
   brokerId?: string | null;
   // A coming-soon listing opens to its own side and the desk only. Buyers see its teaser on the book.
   launchAt?: Date | null;
+  // A private listing the caller confirmed this buyer was invited to (lib/private-listings.ts). The seller asked
+  // them in by name, so the early-access and free-slice holds don't apply.
+  invited?: boolean;
   now?: Date;
 }) {
   if (input.viewer.role === "ADMIN") return { ok: true as const };
@@ -66,7 +69,7 @@ export function canOpenListing(input: {
   }
   if (!listingIsPublic(input.status)) return { ok: false as const, reason: "unpublished" as const };
   if (input.status === "APPROVED" && launchPending({ launchAt: input.launchAt }, input.now)) return { ok: false as const, reason: "coming" as const };
-  if (input.status === "SOLD") return { ok: true as const };
+  if (input.status === "SOLD" || input.invited) return { ok: true as const };
   if (isEarlyAccess(input.approvedAt, input.earlyAccessHours) && !isPro(input.viewer)) {
     return { ok: false as const, reason: "early" as const };
   }
@@ -76,13 +79,15 @@ export function canOpenListing(input: {
   return { ok: true as const };
 }
 
+// A private listing takes no place in the free slice: it opens to its invitees only, through canOpenListing's
+// invited flag. Callers select visibility so the slice is the same on every page.
 export function openableListingIds(
-  listings: { id: string; status: ListingStatus; approvedAt: Date | null }[],
+  listings: { id: string; status: ListingStatus; approvedAt: Date | null; visibility?: string | null }[],
   earlyAccessHours: number,
   limit: number,
 ) {
   const ranked = listings
-    .filter((listing) => listing.status === "APPROVED" || listing.status === "PENDING")
+    .filter((listing) => (listing.status === "APPROVED" || listing.status === "PENDING") && listing.visibility !== "PRIVATE")
     .filter((listing) => !isEarlyAccess(listing.approvedAt, earlyAccessHours))
     .sort((a, b) => (b.approvedAt?.getTime() ?? 0) - (a.approvedAt?.getTime() ?? 0));
   return new Set(ranked.slice(0, Math.max(limit, 0)).map((listing) => listing.id));

@@ -6,6 +6,7 @@ import { closingClock, targetDays } from "@/lib/closing-clock";
 import { getSettings } from "@/lib/settings";
 import { money, prettyDate } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
+import { buyerDueCents, sellerNetCents } from "@/lib/settlement";
 
 export const metadata = { title: "Closings" };
 
@@ -46,11 +47,11 @@ export default async function ClosingsPage({ searchParams }: { searchParams: Pro
   });
   // Each side sees its own figure: the buyer what they wire, the seller what they net, a broker their fee.
   const figure = (closing: (typeof closings)[number]) => {
-    if (user.role === "ADMIN") return `All-in ${money(closing.buyerTotalCents / 100)} · net ${money(closing.netToSellerCents / 100)}`;
-    if (closing.listing.sellerId === user.id) return `Net ${money(closing.netToSellerCents / 100)}`;
+    if (user.role === "ADMIN") return `All-in ${money(buyerDueCents(closing) / 100)} · net ${money(sellerNetCents(closing) / 100)}`;
+    if (closing.listing.sellerId === user.id) return `Net ${money(sellerNetCents(closing) / 100)}`;
     const share = closing.funders[0];
     if (share) return `Your share ${money(Number(share.amount) + share.premiumCents / 100)}`;
-    if (user.role === "BUYER") return `All-in ${money(closing.buyerTotalCents / 100)}`;
+    if (user.role === "BUYER") return `All-in ${money(buyerDueCents(closing) / 100)}`;
     const fee = closing.brokerFees.reduce((sum, row) => sum + row.amountCents, 0);
     return fee ? `Your fee ${money(fee / 100)}` : null;
   };

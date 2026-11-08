@@ -1,5 +1,5 @@
 import { US_STATES } from "@/lib/labels";
-import { monthsDelinquentFrom, parsePaymentStatus, readServicing, tapePayWidth } from "@/lib/tape";
+import { monthsDelinquentFrom, parseDate, parsePaymentStatus, readServicing, tapePayWidth } from "@/lib/tape";
 import { payStringMonths, type ServicingRecord, type TapeFieldKey } from "@/lib/tape-fields";
 
 export type TapeFlag = {
@@ -108,7 +108,61 @@ export function reviewTape(rows: Record<string, string>[], mapping: Partial<Reco
     const servicing = readServicing(row, mapping, payWidth);
     for (const note of servicing.notes) flags.push({ row: rowNumber, ...note });
     flags.push(...servicingFlags(rowNumber, servicing.record, parsePaymentStatus(statusRaw), cell(row, mapping, "monthsDelinquent"), now));
+    flags.push(...riskFlags(rowNumber, servicing.record, {
+      lien: lienRaw,
+      upb: upb.value,
+      value: value.value,
+      maturity: parseDate(cell(row, mapping, "maturityDate")),
+      now,
+    }));
   });
+  return flags;
+}
+
+const FIRST_LIEN = new Set(["1", "1st", "first", "firstlien"]);
+const JUNIOR_LIEN = new Set(["2", "2nd", "second", "secondlien", "3", "3rd", "third", "thirdlien"]);
+
+// Combined LTV for a junior lien: this loan and what is owed ahead of it, over the value. Null for a first lien,
+// or when the senior balance, the UPB or the value is missing.
+export function combinedLtv(input: { lien: string; upb: number | null; value: number | null; seniorLienBalance?: number | null }) {
+  const lien = input.lien.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (!JUNIOR_LIEN.has(lien) ||input.seniorLienBalance == null || !input.upb || !input.value || input.value <= 0) return null;
+  return ((input.upb + input.seniorLienBalance) / input.value) * 100;
+}
+
+const PAYOFF_STALE_DAYS = 90;
+
+// Tape v3. A payoff is the balance plus interest and fees, so one under the UPB is worth a second look. A balloon
+// needs its date, and a past balloon means the whole balance is already due.
+function riskFlags(row: number, record: ServicingRecord, loan: { lien: string; upb: number | null; value: number | null; maturity: Date | null; now: Date }) {
+  const flags: TapeFlag[] = [];
+  const warn = (field: string, message: string) => flags.push({ row, level: "warn", field, message });
+  const { now } = loan;
+  if (record.payoffAmount != null && loan.upb && record.payoffAmount < loan.upb - 1) {
+    warn("payoffAmount", `The payoff, ${record.payoffAmount.toLocaleString("en-US")}, is less than the UPB. A payoff is usually the balance plus interest and fees.`);
+  }
+  if (record.payoffAsOf && record.payoffAsOf.getTime() < now.getTime() - PAYOFF_STALE_DAYS * DAY) {
+    warn("payoffAsOf", `The payoff is good through ${day(record.payoffAsOf)}, more than ${PAYOFF_STALE_DAYS} days ago. Ask the servicer for a new quote.`);
+  }
+  if (record.paymentType === "BALLOON" && !record.balloonDate) warn("balloonDate", "The payment type is balloon, but the balloon date is missing.");
+  if (record.balloonDate && loan.maturity && record.balloonDate.getTime() > loan.maturity.getTime() + DAY) {
+    warn("balloonDate", `The balloon date, ${day(record.balloonDate)}, is after the maturity date.`);
+  }
+  if (record.balloonDate && record.balloonDate.getTime() < now.getTime() - DAY) {
+    warn("balloonDate", `The balloon date, ${day(record.balloonDate)}, has passed, so the whole balance is due.`);
+  }
+  const armTerms = Boolean(record.armIndex) || record.armMargin != null || record.armNextReset != null;
+  if (record.paymentType === "ARM" && !armTerms) warn("paymentType", "The payment type is ARM, but the index and the margin are missing.");
+  if (record.paymentType === "FIXED" && armTerms) warn("paymentType", "The payment type is fixed, but the tape carries ARM terms.");
+  const lien = loan.lien.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (record.seniorLienBalance != null && FIRST_LIEN.has(lien)) {
+    warn("seniorLienBalance", "A first lien has nothing ahead of it, so the senior lien balance won't count in its LTV.");
+  }
+  const combined = combinedLtv({ ...loan, seniorLienBalance: record.seniorLienBalance });
+  // A UPB over the value is already flagged on its own.
+  if (combined != null && combined > 100 && loan.upb != null && loan.value != null && loan.upb <= loan.value) {
+    warn("ltv", `Combined LTV is ${Math.round(combined)}% with the senior lien, above 100% of the stated value.`);
+  }
   return flags;
 }
 

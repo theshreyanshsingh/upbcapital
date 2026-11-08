@@ -4,6 +4,7 @@ import { Logo } from "@/components/logo";
 import { Notice } from "@/components/notice";
 import { DEMO_EMAILS, DEMO_LOGINS, DEV_DEMO_PASSWORD, showDemoDesk } from "@/lib/deploy";
 import { q } from "@/lib/format";
+import { safeNext } from "@/lib/safe-next";
 import { prisma } from "@/lib/prisma";
 
 export const metadata = { title: "Sign in" };
@@ -14,6 +15,8 @@ export default async function LoginPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const params = await searchParams;
+  // A same-site path to return to, such as a private-sale invitation, kept when they choose to sign up instead.
+  const next = safeNext(q(params, "next"), "");
   const demoAccounts = await prisma.user.count({ where: { email: { in: DEMO_EMAILS } } }).catch(() => 0);
   const demo = showDemoDesk(process.env, demoAccounts) ? { password: DEV_DEMO_PASSWORD, accounts: DEMO_LOGINS } : undefined;
   return (
@@ -26,13 +29,13 @@ export default async function LoginPage({
           <Notice notice={q(params, "notice")} error={q(params, "error")} />
         </div>
         <div className="mt-5">
-          <LoginPanel next={q(params, "next")} demo={demo} />
+          <LoginPanel next={next} demo={demo} />
         </div>
         <p className="mt-4 text-sm text-muted-foreground">
           <Link href="/login/forgot" className="text-link">Forgot your password?</Link>
         </p>
         <p className="mt-2 text-sm text-muted-foreground">
-          No account yet? <Link href="/signup" className="text-link">Request access</Link>
+          No account yet? <Link href={next ? `/signup?next=${encodeURIComponent(next)}` : "/signup"} className="text-link">Request access</Link>
         </p>
         <p className="mt-6 text-xs text-muted-foreground">
           <Link href="/terms" className="text-link">Terms of use</Link>

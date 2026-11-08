@@ -6,6 +6,7 @@ import { showableAvm } from "@/lib/enrichment";
 import { timelineLine } from "@/lib/foreclosure";
 import { buildMemoPdf } from "@/lib/memo-pdf";
 import { prisma } from "@/lib/prisma";
+import { canSeeListing } from "@/lib/private-listings";
 import { isPro } from "@/lib/settings";
 import { performingCase, priceForYield, yieldAtPrice, type PricingNote } from "@/lib/underwriting";
 
@@ -22,6 +23,8 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
   const buyer = user.role === "BUYER" && user.accountStatus === "APPROVED" && isPro(user);
   if (!owner && !desk && !buyer) return new Response("The memo is part of Pro.", { status: 403 });
   if (!owner && !desk && !listingIsPublic(listing.status)) return new Response("Not found.", { status: 404 });
+  // A private listing, or one whose seller excludes this buyer, is not found (lib/private-listings.ts).
+  if (!owner && !desk && !(await canSeeListing(user, listing))) return new Response("Not found.", { status: 404 });
 
   const search = new URL(request.url).searchParams;
   const bid = Number(search.get("bid"));
@@ -54,6 +57,8 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     lienPosition: lead.lienPosition,
     monthsDelinquent,
     foreclosureFiledAt: lead.foreclosureFiledAt ?? null,
+    // A single junior lien's senior balance from the tape. A pool modelled as one loan keeps the assumption.
+    seniorBalance: notes.length === 1 ? lead.seniorLienBalance ?? null : null,
   };
   const atBid = yieldAtPrice(note, bid);
   const solved = target != null && Number.isFinite(target) && target > 0 && target < 100 ? priceForYield(note, target) : null;

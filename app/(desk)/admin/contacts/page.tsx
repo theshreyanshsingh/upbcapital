@@ -59,7 +59,9 @@ export default async function ContactsPage() {
           <li key={person.id} className="px-5 py-5">
             <div className="flex flex-wrap items-baseline justify-between gap-3">
               <div>
-                <p className="font-semibold tracking-tight text-2xl text-foreground">{person.name}</p>
+                <p className="font-semibold tracking-tight text-2xl text-foreground">
+                  {person.role === "BUYER" ? <Link href={`/admin/buyers/${person.id}`}>{person.name}</Link> : person.name}
+                </p>
                 <p className="text-sm text-muted-foreground">{person.email}{person.companyName ? ` · ${person.companyName}` : ""}</p>
               </div>
               <p className="text-[13px] font-medium text-link">

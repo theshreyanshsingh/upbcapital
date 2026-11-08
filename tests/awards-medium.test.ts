@@ -152,6 +152,7 @@ async function cleanPool(pool: Awaited<ReturnType<typeof makePool>>) {
   await prisma.auditEvent.deleteMany({ where: { entityId: { in: [listingId, ...inquiries.map((row) => row.id)] } } });
   await prisma.deskThread.deleteMany({ where: { OR: [{ listingId }, { closingId: { in: closings.map((row) => row.id) } }] } });
   await prisma.revenueEvent.deleteMany({ where: { listingId } });
+  await prisma.invoice.deleteMany({ where: { closingId: { in: closings.map((row) => row.id) } } });
   await prisma.ofacCheck.deleteMany({ where: { userId: { in: pool.users.map((user) => user.id) } } });
   await prisma.groupBuy.deleteMany({ where: { listingId } });
   await prisma.listing.deleteMany({ where: { id: listingId } });

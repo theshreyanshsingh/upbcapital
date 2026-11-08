@@ -3,6 +3,7 @@ import { money } from "@/lib/format";
 import { docLabel } from "@/lib/labels";
 import { launchPending } from "@/lib/launch-rules";
 import { prisma } from "@/lib/prisma";
+import { audienceOf } from "@/lib/private-listings";
 
 // Buyers who saved a listing hear when something they would act on changes: a new price, a buy-it-now price, a
 // deadline, a withdrawal, new files in the data room, or a published answer. Each notice says what changed and links
@@ -21,7 +22,7 @@ export function watchLink(listingId: string, appUrl = process.env.NEXT_PUBLIC_AP
 // Tells every watcher of a listing, once each, skipping anyone in `except` (the person who made the change, or
 // bidders who already heard through their own bid). Returns how many were told.
 export async function notifyWatchers(input: { listingId: string; event: WatchEvent; subject: string; body: string; except?: string[] }) {
-  const listing = await prisma.listing.findUnique({ where: { id: input.listingId }, select: { id: true, sellerId: true, brokerId: true, launchAt: true } });
+  const listing = await prisma.listing.findUnique({ where: { id: input.listingId }, select: { id: true, sellerId: true, brokerId: true, launchAt: true, visibility: true } });
   if (!listing) return 0;
   // A coming-soon listing hides its price and file, so watchers hear only about its launch (it went live, or the
   // date moved), or that it was withdrawn.
@@ -29,10 +30,12 @@ export async function notifyWatchers(input: { listingId: string; event: WatchEve
   const skip = new Set([listing.sellerId, ...(listing.brokerId ? [listing.brokerId] : []), ...(input.except ?? [])]);
   const watchers = await prisma.favorite.findMany({
     where: { listingId: input.listingId },
-    include: { user: { select: { id: true, email: true, role: true, accountStatus: true, watchAlerts: true } } },
+    include: { user: { select: { id: true, email: true, role: true, accountStatus: true, watchAlerts: true, companyName: true } } },
   });
+  // A watcher the listing is now hidden from, private or excluded, hears nothing more of it (lib/private-listings.ts).
+  const shown = await audienceOf(listing, watchers.map((watcher) => watcher.user));
   let told = 0;
-  for (const { user } of watchers) {
+  for (const user of shown) {
     if (skip.has(user.id) || user.role !== "BUYER" || !watchesOn(user)) continue;
     skip.add(user.id);
     await notify(user.email, input.subject, `${input.body}\n\nOpen the listing: ${watchLink(input.listingId)}`, { category: "watch", userId: user.id });

@@ -127,6 +127,7 @@ async function cleanDeal(deal: Awaited<ReturnType<typeof makeDeal>>) {
   const closings = await prisma.closing.findMany({ where: { listingId: deal.listing.id }, select: { id: true } });
   await prisma.deskThread.deleteMany({ where: { closingId: { in: closings.map((row) => row.id) } } });
   await prisma.revenueEvent.deleteMany({ where: { listingId: deal.listing.id } });
+  await prisma.invoice.deleteMany({ where: { closingId: { in: closings.map((row) => row.id) } } });
   await prisma.buyerHolding.deleteMany({ where: { closingId: { in: closings.map((row) => row.id) } } });
   await prisma.auditEvent.deleteMany({ where: { entityId: { in: [deal.listing.id, ...closings.map((row) => row.id)] } } });
   await prisma.listing.deleteMany({ where: { id: deal.listing.id } });

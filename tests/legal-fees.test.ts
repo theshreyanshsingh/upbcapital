@@ -306,7 +306,9 @@ test("every response carries the security headers, and HSTS only on an https app
   assert.equal(plain["Strict-Transport-Security"], undefined);
   assert.equal(keys(securityHeaders(""))["Strict-Transport-Security"], undefined);
   assert.equal(keys(securityHeaders("https://upb.example.com"))["Strict-Transport-Security"], "max-age=31536000");
+  // Every path but the broker intake widget, which sets its own frame-ancestors (tests/growth.test.ts).
   const rules = (await nextConfig.headers?.()) ?? [];
-  assert.equal(rules.length, 1);
-  assert.equal(rules[0].source, "/:path*");
+  assert.equal(rules.length, 2);
+  assert.equal(rules[0].source, "/:path((?!embed/intake/[^/]+$).*)");
+  assert.equal(rules[1].source, "/embed/intake/:code");
 });

@@ -29,6 +29,7 @@ import {
   CREDIT_SCORE_TYPES,
   LOAN_PURPOSES,
   LOSS_MIT_STAGES,
+  PAYMENT_TYPES,
   SERVICING_KEYS,
   VALUE_TYPES,
   parseMersMin,
@@ -159,6 +160,19 @@ export function NoteWizard({
       }
       if (future(draft.creditScoreDate)) return "The score date can't be in the future.";
       if (draft.mersMin.trim() && !parseMersMin(draft.mersMin)) return "A MERS MIN is 18 digits.";
+      // Tape v3, with the server's wording.
+      const amount = (value: string) => (value.trim() === "" ? null : Number(value));
+      const original = amount(draft.originalBalance);
+      if (original != null && !(original > 0)) return "The original balance must be greater than zero.";
+      if (draft.escrowBalance.trim() && !Number.isFinite(Number(draft.escrowBalance))) return "Enter the escrow balance as an amount.";
+      const arrears = amount(draft.arrearsAmount);
+      if (arrears != null && !(arrears >= 0)) return "Arrears can't be below zero.";
+      const payoff = amount(draft.payoffAmount);
+      if (payoff != null && !(payoff > 0)) return "The payoff must be greater than zero.";
+      if (payoff != null && !draft.payoffAsOf) return "Give the date the payoff is good through.";
+      if (draft.payoffAsOf && payoff == null) return "Enter the payoff amount for that date.";
+      const senior = amount(draft.seniorLienBalance);
+      if (senior != null && !(senior >= 0)) return "The senior lien balance can't be below zero.";
     }
     if (name === "Price" && Number(draft.askingPrice) <= 0) return "Enter an asking price.";
     return "";
@@ -211,6 +225,8 @@ export function NoteWizard({
     const formData = new FormData();
     if (leadId) formData.set("leadId", leadId);
     Object.entries(draft).forEach(([key, value]) => formData.set(key, value));
+    // A first lien has nothing ahead of it, so a senior balance typed before the lien changed isn't sent.
+    if (draft.lienPosition === "FIRST") formData.set("seniorLienBalance", "");
     formData.set("servicingLoaded", servicingLoaded ? "true" : "false");
     Object.entries(files).forEach(([type, group]) => {
       group.forEach((file) => {
@@ -457,6 +473,56 @@ export function NoteWizard({
                 <Textarea className="min-h-20 bg-card" maxLength={600} value={draft.inheritedCovenants} onChange={(event) => set("inheritedCovenants", event.target.value)} />
               </Field>
             </div>
+
+            <p className="eyebrow pt-4 md:col-span-2">Balances and risk flags</p>
+            <Field label="Original balance" hint="The amount on the note when it was made.">
+              <Input className="h-11 bg-card tabular-nums" inputMode="decimal" value={draft.originalBalance} onChange={(event) => set("originalBalance", event.target.value)} />
+            </Field>
+            <Field label="Payment type">
+              <OptionalSelect value={draft.paymentType} options={PAYMENT_TYPES} onChange={(value) => set("paymentType", value)} />
+            </Field>
+            <Field label="Balloon date" hint="For a balloon loan: when the rest of the balance is due.">
+              <Input className="h-11 bg-card" type="date" value={draft.balloonDate} onChange={(event) => set("balloonDate", event.target.value)} />
+            </Field>
+            <Field label="Escrow balance" hint="Taxes and insurance held by the servicer. Below zero if the servicer advanced them.">
+              <Input className="h-11 bg-card tabular-nums" inputMode="decimal" value={draft.escrowBalance} onChange={(event) => set("escrowBalance", event.target.value)} />
+            </Field>
+            <Field label="Arrears" hint="Missed payments, late fees and advances owed.">
+              <Input className="h-11 bg-card tabular-nums" inputMode="decimal" value={draft.arrearsAmount} onChange={(event) => set("arrearsAmount", event.target.value)} />
+            </Field>
+            {draft.lienPosition !== "FIRST" ? (
+              <Field label="Senior lien balance" hint="What is owed on the liens ahead of this one. Buyers use it for the combined LTV.">
+                <Input className="h-11 bg-card tabular-nums" inputMode="decimal" value={draft.seniorLienBalance} onChange={(event) => set("seniorLienBalance", event.target.value)} />
+              </Field>
+            ) : (
+              <div className="hidden md:block" />
+            )}
+            <Field label="Payoff amount" hint="The servicer's payoff quote. Give the date it's good through.">
+              <Input className="h-11 bg-card tabular-nums" inputMode="decimal" value={draft.payoffAmount} onChange={(event) => set("payoffAmount", event.target.value)} />
+            </Field>
+            <Field label="Payoff good through">
+              <Input className="h-11 bg-card" type="date" value={draft.payoffAsOf} onChange={(event) => set("payoffAsOf", event.target.value)} />
+            </Field>
+            <Field label="SCRA protection?" hint="Is the borrower an active-duty servicemember protected by the Servicemembers Civil Relief Act?">
+              <OptionalSelect value={draft.scraFlag} options={YES_NO} onChange={(value) => set("scraFlag", value)} />
+            </Field>
+            <Field label="Borrower deceased?">
+              <OptionalSelect value={draft.borrowerDeceased} options={YES_NO} onChange={(value) => set("borrowerDeceased", value)} />
+            </Field>
+            <Field label="Litigation?" hint="Any lawsuit about the loan or the property, including a contested foreclosure.">
+              <OptionalSelect
+                value={draft.litigationFlag}
+                options={YES_NO}
+                onChange={(value) => setDraft((current) => ({ ...current, litigationFlag: value, litigationNote: value === "true" ? current.litigationNote : "" }))}
+              />
+            </Field>
+            {draft.litigationFlag === "true" ? (
+              <Field label="Litigation note" hint="The court and what the case is about. Kept private, like the street address.">
+                <Input className="h-11 bg-card" maxLength={300} value={draft.litigationNote} onChange={(event) => set("litigationNote", event.target.value)} />
+              </Field>
+            ) : (
+              <div className="hidden md:block" />
+            )}
           </div>
         )}
         {step === 4 && (

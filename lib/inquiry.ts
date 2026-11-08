@@ -3,6 +3,7 @@ import { canOpenListing, openableListingIds } from "@/lib/access";
 import { canSubmitBid, sealedFromSeller } from "@/lib/auction";
 import { audit } from "@/lib/audit";
 import { awardOffer } from "@/lib/awards";
+import { bidCapBlock, bidCapFor, capHint } from "@/lib/bid-caps";
 import { bidderAlias } from "@/lib/bidder-alias";
 import { chosenEntity } from "@/lib/buyer-entities";
 import { buyNowOffer, samePrice } from "@/lib/buy-now";
@@ -15,6 +16,7 @@ import { loanPriceProblem, type LoanPrices } from "@/lib/loan-prices";
 import { launchBlock } from "@/lib/launch-rules";
 import { bidExpired, buyerPrice, readGoodUntil } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
+import { canSeeListing, listingSight } from "@/lib/private-listings";
 import { getSettings, isPro } from "@/lib/settings";
 import { strikeStanding } from "@/lib/strikes";
 import { ensureInquiryThread } from "@/lib/threads";
@@ -33,17 +35,21 @@ import {
 
 type Buyer = Pick<User, "id" | "name" | "email" | "role" | "accountStatus" | "subscriptionTier" | "subscriptionStatus" | "subscriptionCurrentPeriodEnd">;
 // launchAt is optional so a caller's narrower select still type-checks; the selects here all read it.
-type OpenListing = Pick<Listing, "id" | "status" | "approvedAt" | "sellerId" | "brokerId"> & { launchAt?: Date | null };
+type OpenListing = Pick<Listing, "id" | "status" | "approvedAt" | "sellerId" | "brokerId"> & { launchAt?: Date | null; visibility?: string | null };
 type BidListing = OpenListing & Pick<Listing, "kind" | "bidMode" | "bidDeadline">;
 
 // The listing page refuses early-access listings and those outside the free slice. Every action on a listing holds
-// the same line, since listing IDs are in the page bundle.
+// the same line, since listing IDs are in the page bundle. A private listing, or one whose seller excludes this
+// buyer, is refused before any of that (lib/private-listings.ts).
 export async function buyerCanOpen(user: Buyer, listing: OpenListing) {
+  const sight = await listingSight(user, listing);
+  if (!sight.visible) return false;
   const settings = await getSettings();
   const live = isPro(user)
     ? []
-    : await prisma.listing.findMany({ where: { status: { in: ["APPROVED", "PENDING"] } }, select: { id: true, status: true, approvedAt: true } });
+    : await prisma.listing.findMany({ where: { status: { in: ["APPROVED", "PENDING"] } }, select: { id: true, status: true, approvedAt: true, visibility: true } });
   return canOpenListing({
+    invited: sight.invited,
     viewer: user,
     status: listing.status,
     approvedAt: listing.approvedAt,
@@ -61,6 +67,8 @@ export async function inquiryBlock(user: Buyer, listing: OpenListing | null) {
   if (!listing || listing.status !== "APPROVED") return "This listing is not taking new inquiries.";
   const coming = launchBlock(listing, "inquiry");
   if (coming) return coming;
+  // Hidden from this buyer reads as closed, never as hidden.
+  if (!(await canSeeListing(user, listing))) return "This listing is not taking new inquiries.";
   if (!(await buyerCanOpen(user, listing))) return "This listing isn't open on your membership yet.";
   return null;
 }
@@ -111,7 +119,7 @@ export async function fundsExposure(userId: string, premiumBps: number, now = ne
   const [groups, closings, listings, settings] = await Promise.all([
     prisma.groupBuy.findMany({ where: { inquiryId: { in: ids } }, select: { inquiryId: true } }),
     prisma.closing.findMany({ where: { inquiryId: { in: ids } }, select: { id: true, inquiryId: true, status: true, buyerTotalCents: true } }),
-    prisma.listing.findMany({ where: { id: { in: [...new Set(bids.map((bid) => bid.listingId))] } }, select: { id: true, feeBuyerPremiumBps: true, feeSellerCommissionBps: true, feeSchedule: true } }),
+    prisma.listing.findMany({ where: { id: { in: [...new Set(bids.map((bid) => bid.listingId))] } }, select: { id: true, feeBuyerPremiumBps: true, feeSellerCommissionBps: true, feeSchedule: true, feePayer: true } }),
     getSettings(),
   ]);
   // Each bid at the premium its listing went live with, the one its closing would charge.
@@ -143,11 +151,14 @@ export async function bidStanding(userId: string, now = new Date()): Promise<Bid
     strikeStanding(userId),
   ]);
   const credential = fundsCredential(profile, now);
-  if (!credential) return { credential: null, paused: strikes.paused };
+  // A bid cap below the funds, for the line beside each bid box (lib/bid-caps.ts).
+  const cap = capHint(await bidCapFor(userId, { settings, now }));
+  if (!credential) return { credential: null, paused: strikes.paused, cap };
   const byKey = exposureByKey(await fundsExposure(userId, settings.buyerPremiumBps, now));
   return {
     credential: { line: credentialLine(credential, now), amount: credential.amount, expired: credential.expired, byKey, headroom: headroomFor(credential.amount, byKey) },
     paused: strikes.paused,
+    cap,
   };
 }
 
@@ -160,7 +171,7 @@ export async function fundsLimitBlock(input: { userId: string; listingId: string
   if (!credential) return { error: null, headroomAfter: null } as const;
   const [settings, listing] = await Promise.all([
     getSettings(),
-    prisma.listing.findUnique({ where: { id: input.listingId }, select: { feeBuyerPremiumBps: true, feeSellerCommissionBps: true, feeSchedule: true } }),
+    prisma.listing.findUnique({ where: { id: input.listingId }, select: { feeBuyerPremiumBps: true, feeSellerCommissionBps: true, feeSchedule: true, feePayer: true } }),
   ]);
   const byKey = exposureByKey(await fundsExposure(input.userId, settings.buyerPremiumBps, now));
   const limit = bidLimit({ credential, byKey, key: bidTarget(input.listingId, input.noteId), allIn: allInFor(feeTerms(listing, settings), input.amount), now });
@@ -247,6 +258,9 @@ export async function checkOffer(input: {
   // Last, since it needs the price: the bid's all-in with the buyer's other open bids must fit the verified funds.
   const limit = await fundsLimitBlock({ userId: user.id, listingId: listing.id, noteId: noteId || null, amount: input.amount, now });
   if (limit.error !== null) return { error: limit.error, verification: limit.verification };
+  // The bid cap on one bid's price: the desk's own cap for this buyer, and the new-bidder cap (lib/bid-caps.ts).
+  const capped = await bidCapBlock(user.id, input.amount, { now });
+  if (capped) return { error: capped, verification: false };
   return { error: null, expiresAt: goodUntil.expiresAt, eligibility, acknowledgedAt, headroomAfter: limit.headroomAfter, buyerEntityId: entity.entityId };
 }
 

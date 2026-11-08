@@ -83,7 +83,9 @@ export function noteValue(spec: FieldSpec, value: string): Outcome<unknown> {
   if (!text) return fail(`The document shows no ${spec.label.toLowerCase()}. Explain the difference instead.`);
   if (spec.kind === "money" || spec.kind === "percent") {
     const number = Number(text);
-    return Number.isFinite(number) && number >= 0 ? { ok: true, value: number } : fail("The document's value isn't a number the tape can take.");
+    // An escrow account the servicer advanced runs below zero, and the tape keeps it that way.
+    const floorOk = number >= 0 || spec.field === "escrowBalance";
+    return Number.isFinite(number) && floorOk ? { ok: true, value: number } : fail("The document's value isn't a number the tape can take.");
   }
   if (spec.kind === "number") {
     const number = Number(text);

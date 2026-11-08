@@ -4,6 +4,7 @@ import { daysBetween } from "@/lib/closing-clock";
 import { labelOf } from "@/lib/labels";
 import { common } from "@/lib/metrics";
 import { prisma } from "@/lib/prisma";
+import { isPrivateListing } from "@/lib/private-listings";
 import { upbBucket } from "@/lib/strata";
 
 // The venue's public track record, from closings that finished one way or the other. Counts below MIN_SALES read
@@ -23,7 +24,8 @@ export type ResultClosing = {
   noteId: string | null;
   // The loans of a part-pool sale, which closingLoans reads ahead of noteId.
   noteIds?: string[];
-  listing: { kind: string; publishResult: boolean | null; notes: ResultLoan[] };
+  // A private sale never shows its own figures here, whatever its seller agreed (lib/private-listings.ts).
+  listing: { kind: string; publishResult: boolean | null; visibility?: string | null; notes: ResultLoan[] };
 };
 
 export type Tally = { label: string; count: number };
@@ -105,7 +107,7 @@ const MONTH = new Intl.DateTimeFormat("en-US", { month: "long", year: "numeric",
 
 // One closed sale as the public page shows it, or null when its seller didn't agree to publish it.
 export function publishedResult(closing: ResultClosing): PublishedResult | null {
-  if (closing.listing.publishResult !== true || closing.status !== "COMPLETE" || !closing.closedAt) return null;
+  if (closing.listing.publishResult !== true || isPrivateListing(closing.listing) || closing.status !== "COMPLETE" || !closing.closedAt) return null;
   const loans = soldLoans(closing);
   if (!loans.length) return null;
   const upb = loans.reduce((sum, loan) => sum + loan.upb, 0);
@@ -145,6 +147,7 @@ export async function loadResults() {
         select: {
           kind: true,
           publishResult: true,
+          visibility: true,
           notes: { select: { id: true, state: true, lienPosition: true, paymentStatus: true, upb: true } },
         },
       },

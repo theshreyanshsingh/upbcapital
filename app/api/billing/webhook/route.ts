@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import Stripe from "stripe";
 import { prisma } from "@/lib/prisma";
+import { markCardTrial } from "@/lib/trial";
 
 export const runtime = "nodejs";
 
@@ -37,6 +38,8 @@ export async function POST(request: Request) {
           subscriptionCurrentPeriodEnd: new Date(Date.now() + 30 * 86400000),
         },
       }).catch(() => null);
+      // A checkout with a trial uses the account's one trial, and its end goes on the account for the reminders.
+      if (buyer && Number(session.metadata?.trialDays) > 0) await markCardTrial(buyer.id, Number(session.metadata?.trialDays));
       if (buyer && session.metadata?.referralCredit === "1") {
         await prisma.user.updateMany({
           where: { id: userId, referralCredits: { gt: 0 } },

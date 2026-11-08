@@ -6,8 +6,10 @@ import { requireUser } from "@/lib/auth";
 import { requireDesk } from "@/lib/staff";
 import { sellerPage } from "@/lib/awards";
 import { answerDiscrepancy, canAnswer, deskResolveDiscrepancy, raiseDiscrepancy, type Answered } from "@/lib/discrepancies";
+import { reopenDeskTape } from "@/lib/desk-intake";
 import { flagDuplicates } from "@/lib/duplicates";
 import { notifyDesk } from "@/lib/email";
+import { fieldLabel } from "@/lib/loan-file";
 import { rescoreListing } from "@/lib/matching";
 import { prisma } from "@/lib/prisma";
 
@@ -70,6 +72,8 @@ export async function resolveDifference(formData: FormData) {
   const outcome = await deskResolveDiscrepancy(user.id, { id, answer, reason: text(formData, "reason") });
   if (!outcome.ok) deskBack(row.listingId, row.noteId, { ok: false, text: outcome.error });
   await afterAnswer(user.id, outcome.value);
+  // The desk wrote to a desk-filed tape the seller confirmed, so the seller confirms it again (lib/desk-intake.ts).
+  if (outcome.value.tapeChanged) await reopenDeskTape(user.id, outcome.value.listingId, `${fieldLabel(outcome.value.field)} to the document's value`);
   deskBack(row.listingId, row.noteId, { ok: true, text: answer === "ACCEPT" ? "The document's value is on the tape, verified by the desk." : "The difference is waived. Buyers see the reason." });
 }
 

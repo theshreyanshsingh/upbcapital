@@ -9,6 +9,7 @@ import { acknowledgeRoad, announceInquiry, buyerCanOpen, checkOffer, inquiryBloc
 import { launchBlock } from "@/lib/launch-rules";
 import { loanPricesFromForm, type LoanPrices } from "@/lib/loan-prices";
 import { buildNdaPdf, pngFromDataUrl } from "@/lib/nda-pdf";
+import { canSeeListing } from "@/lib/private-listings";
 import { isPro } from "@/lib/settings";
 import { prisma } from "@/lib/prisma";
 import { requestMeta } from "@/lib/request-meta";
@@ -33,6 +34,9 @@ export async function toggleFavorite(formData: FormData) {
   if (existing) {
     await prisma.favorite.delete({ where: { id: existing.id } });
   } else {
+    // A listing hidden from this buyer can't be saved, and nothing says why.
+    const listing = await prisma.listing.findUnique({ where: { id: listingId }, select: { id: true, sellerId: true, brokerId: true, visibility: true } });
+    if (!listing || !(await canSeeListing(user, listing))) return;
     await prisma.favorite.create({ data: { userId: user.id, listingId } });
   }
   revalidatePath("/marketplace");

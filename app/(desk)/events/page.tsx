@@ -6,6 +6,7 @@ import { requireUser } from "@/lib/auth";
 import { money, num } from "@/lib/format";
 import { loansForSale } from "@/lib/metrics";
 import { prisma } from "@/lib/prisma";
+import { listingScope } from "@/lib/private-listings";
 import { advanceSaleEvents, EVENT_STATUS_LABEL, openEvents, roundText, when } from "@/lib/sale-events";
 import { isPro } from "@/lib/settings";
 
@@ -21,10 +22,11 @@ export default async function EventsPage() {
   // A round whose date passed moves before the page prints it. A failure here leaves it for the daily job.
   await advanceSaleEvents().catch(() => null);
   const events = await openEvents();
-  // Only listings on the public book count, so a withdrawn or declined file never shows here.
+  // Only listings on the public book count, so a withdrawn or declined file never shows here. A private listing counts
+  // for its invitees only, and none of an excluding seller's for an excluded buyer (lib/private-listings.ts).
   const listings = events.length
     ? await prisma.listing.findMany({
-        where: { saleEventId: { in: events.map((event) => event.id) }, status: { in: ["APPROVED", "PENDING", "SOLD"] } },
+        where: { saleEventId: { in: events.map((event) => event.id) }, status: { in: ["APPROVED", "PENDING", "SOLD"] }, AND: [await listingScope(user)] },
         select: { saleEventId: true, sellerId: true, brokerId: true, status: true, notes: { select: { upb: true, askingPrice: true, tradeStatus: true } } },
       })
     : [];

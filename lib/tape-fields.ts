@@ -48,6 +48,19 @@ export const TAPE_FIELDS = [
   { key: "lossMitStage", label: "Loss mitigation stage", required: false, group: "terms" },
   { key: "inheritedCovenants", label: "Inherited sale covenants", required: false, group: "terms" },
   { key: "originatorLicense", label: "Originator license (seller financing)", required: false, group: "terms" },
+  // Tape v3: balances, structure and risk flags. Optional like the rest.
+  { key: "originalBalance", label: "Original balance", required: false, group: "risk" },
+  { key: "escrowBalance", label: "Escrow balance", required: false, group: "risk" },
+  { key: "arrearsAmount", label: "Arrears (installments, fees and advances owed)", required: false, group: "risk" },
+  { key: "payoffAmount", label: "Payoff amount", required: false, group: "risk" },
+  { key: "payoffAsOf", label: "Payoff good-through date", required: false, group: "risk" },
+  { key: "balloonDate", label: "Balloon date", required: false, group: "risk" },
+  { key: "paymentType", label: "Payment type (fixed, ARM, interest-only, balloon, other)", required: false, group: "risk" },
+  { key: "seniorLienBalance", label: "Senior lien balance (junior liens)", required: false, group: "risk" },
+  { key: "scraFlag", label: "SCRA protection (yes or no)", required: false, group: "risk" },
+  { key: "borrowerDeceased", label: "Borrower deceased (yes or no)", required: false, group: "risk" },
+  { key: "litigationFlag", label: "Litigation (yes or no)", required: false, group: "risk" },
+  { key: "litigationNote", label: "Litigation note", required: false, group: "risk" },
 ] as const;
 
 export type TapeFieldKey = (typeof TAPE_FIELDS)[number]["key"];
@@ -100,6 +113,18 @@ export const TAPE_HEADERS = [
   "loss_mit_stage",
   "inherited_covenants",
   "originator_license",
+  "original_balance",
+  "escrow_balance",
+  "arrears_amount",
+  "payoff_amount",
+  "payoff_date",
+  "balloon_date",
+  "payment_type",
+  "senior_lien_balance",
+  "scra",
+  "borrower_deceased",
+  "litigation",
+  "litigation_note",
 ];
 
 const SYNONYMS: Record<TapeFieldKey, string[]> = {
@@ -180,6 +205,41 @@ const SYNONYMS: Record<TapeFieldKey, string[]> = {
     "originatorlicense", "originatorlicence", "originatornmls", "originatornmlsid", "nmls", "nmlsid", "lonmls", "mlonmls", "mlolicense",
     "loanoriginatornmls",
   ],
+  originalBalance: [
+    "originalbalance", "origbalance", "origbal", "originalprincipalbalance", "originalupb", "originalloanamount", "origloanamount",
+    "loanamount", "originalamount", "originalprincipal", "noteamount", "originalnoteamount", "origprinbal",
+  ],
+  escrowBalance: ["escrowbalance", "escrowbal", "escrow", "escrowaccountbalance", "impoundbalance", "impound", "escrowamount"],
+  // A reinstatement quote is the arrears with fees, which is what this field holds.
+  arrearsAmount: [
+    "arrears", "arrearsamount", "arrearage", "totalarrears", "pastdueamount", "amountpastdue", "totalpastdue", "delinquentamount",
+    "totaldelinquentamount", "reinstatementamount", "reinstatement", "reinstatementquote",
+  ],
+  payoffAmount: ["payoff", "payoffamount", "payoffamt", "totalpayoff", "payoffbalance", "payoffquote", "totalpayoffamount"],
+  payoffAsOf: [
+    "payoffdate", "payoffasof", "payoffasofdate", "payoffgoodthrough", "payoffgoodthroughdate", "goodthrough", "goodthroughdate",
+    "payoffthroughdate", "payoffquotedate",
+  ],
+  balloonDate: ["balloondate", "balloon", "balloonduedate", "balloondue", "balloonmaturity", "balloonmaturitydate", "balloondt"],
+  // "Loan type" usually means FHA, VA or conventional, so it isn't listed.
+  paymentType: [
+    "paymenttype", "pmttype", "amortizationtype", "amorttype", "amortization", "ratetype", "interestratetype", "paymentstructure",
+    "loanstructure", "producttype",
+  ],
+  seniorLienBalance: [
+    "seniorlienbalance", "seniorbalance", "seniorlien", "seniorlienamount", "seniorupb", "firstlienbalance", "1stlienbalance",
+    "firstmortgagebalance", "1stmortgagebalance", "firstlienupb", "priorlienbalance", "seniordebt",
+  ],
+  scraFlag: [
+    "scra", "scraflag", "scrastatus", "scraprotected", "scraprotection", "scrayn", "sscra", "military", "militarystatus",
+    "activeduty", "activemilitary", "servicemember",
+  ],
+  borrowerDeceased: ["borrowerdeceased", "deceased", "deceasedflag", "deceasedborrower", "borrowerdeceasedflag", "deceasedyn", "mortgagordeceased"],
+  litigationFlag: ["litigation", "litigationflag", "litigationyn", "inlitigation", "litigationstatus", "activelitigation", "contested", "contestedforeclosure", "lawsuit"],
+  litigationNote: [
+    "litigationnote", "litigationnotes", "litigationdetail", "litigationdetails", "litigationcomment", "litigationcomments",
+    "litigationdescription",
+  ],
 };
 
 export function normalizeHeader(header: string) {
@@ -203,9 +263,9 @@ export function suggestMapping(headers: string[]): Partial<Record<TapeFieldKey, 
 }
 
 export const SAMPLE_TAPE_ROWS = [
-  ["100 SAMPLE Banyan Street", "Miami", "FL", "33130", "SFR", "First", "428000", "6.50", "2704", "Performing", "0", "2026-09-01", "2019-06-15", "2049-06-15", "710000", "312000", "Owner occupied", "None", "FICTIONAL BORROWER 01", "Sample row — delete before a live tape", "SAMPLE-0001", "Sample Servicing LLC", "000000000000", "2026-11-01", "No", "", "", "", "", "", "BPO", "2026-08-15", "Purchase", "No", "No", "", "", "", "742", "FICO", "2026-08-15", "", "", "", "", "", ""],
-  ["200 SAMPLE Magnolia Court", "Savannah", "GA", "31401", "Condo", "Second", "86000", "8.25", "690", "Non-performing", "11", "2025-10-01", "2018-03-01", "2048-03-01", "340000", "29000", "Vacant", "Lis pendens", "FICTIONAL BORROWER 02", "Sample row — fictional", "SAMPLE-0002", "Sample Servicing LLC", "999876543210", "2025-12-01", "Yes", "2020-08-01", "Forbearance ended", "", "", "2026-04-10", "BPO", "2026-06-01", "Cash-out refinance", "Yes", "No", "", "", "", "588", "VantageScore 4.0", "2026-06-01", "", "", "", "Decided", "", ""],
-  ["300 SAMPLE Palmetto Lane", "Charlotte", "NC", "28202", "Townhouse", "First", "196500", "7.00", "1310", "Sub-performing", "2", "2026-07-15", "2021-01-20", "2051-01-20", "285000", "151000", "Tenant occupied", "None", "FICTIONAL BORROWER 03", "Sample row — fictional", "SAMPLE-0003", "Sample Servicing LLC", "221100000000", "2026-09-01", "No", "", "Repayment plan", "13", "2026-08-03", "", "AVM", "2026-09-20", "Refinance", "No", "No", "30-day average SOFR", "2.75", "2028-01-20", "691", "FICO", "2026-09-20", "", "", "", "Decided", "", ""],
+  ["100 SAMPLE Banyan Street", "Miami", "FL", "33130", "SFR", "First", "428000", "6.50", "2704", "Performing", "0", "2026-09-01", "2019-06-15", "2049-06-15", "710000", "312000", "Owner occupied", "None", "FICTIONAL BORROWER 01", "Sample row — delete before a live tape", "SAMPLE-0001", "Sample Servicing LLC", "000000000000", "2026-11-01", "No", "", "", "", "", "", "BPO", "2026-08-15", "Purchase", "No", "No", "", "", "", "742", "FICO", "2026-08-15", "", "", "", "", "", "", "520000", "3150.22", "0", "", "", "", "Fixed", "", "No", "No", "No", ""],
+  ["200 SAMPLE Magnolia Court", "Savannah", "GA", "31401", "Condo", "Second", "86000", "8.25", "690", "Non-performing", "11", "2025-10-01", "2018-03-01", "2048-03-01", "340000", "29000", "Vacant", "Lis pendens", "FICTIONAL BORROWER 02", "Sample row — fictional", "SAMPLE-0002", "Sample Servicing LLC", "999876543210", "2025-12-01", "Yes", "2020-08-01", "Forbearance ended", "", "", "2026-04-10", "BPO", "2026-06-01", "Cash-out refinance", "Yes", "No", "", "", "", "588", "VantageScore 4.0", "2026-06-01", "", "", "", "Decided", "", "", "95000", "", "9875", "97210.55", "2026-10-15", "", "Fixed", "212000", "No", "No", "Yes", "Sample: the borrower contests the foreclosure"],
+  ["300 SAMPLE Palmetto Lane", "Charlotte", "NC", "28202", "Townhouse", "First", "196500", "7.00", "1310", "Sub-performing", "2", "2026-07-15", "2021-01-20", "2051-01-20", "285000", "151000", "Tenant occupied", "None", "FICTIONAL BORROWER 03", "Sample row — fictional", "SAMPLE-0003", "Sample Servicing LLC", "221100000000", "2026-09-01", "No", "", "Repayment plan", "13", "2026-08-03", "", "AVM", "2026-09-20", "Refinance", "No", "No", "30-day average SOFR", "2.75", "2028-01-20", "691", "FICO", "2026-09-20", "", "", "", "Decided", "", "", "210000", "1840", "2620", "", "", "", "ARM", "", "No", "No", "No", ""],
 ];
 
 export const VALUE_TYPES = [
@@ -241,6 +301,16 @@ export const LOSS_MIT_STAGES = [
   { value: "DECIDED", label: "Decision made" },
 ] as const;
 
+// Tape v3: how the payment is set. A balloon or interest-only loan can still carry a fixed or adjustable rate, but
+// the payment shape is what a buyer prices first, so it wins on a tape that says both.
+export const PAYMENT_TYPES = [
+  { value: "FIXED", label: "Fixed rate" },
+  { value: "ARM", label: "Adjustable rate (ARM)" },
+  { value: "INTEREST_ONLY", label: "Interest-only" },
+  { value: "BALLOON", label: "Balloon" },
+  { value: "OTHER", label: "Other" },
+] as const;
+
 export const CREDIT_SCORE_MIN = 300;
 export const CREDIT_SCORE_MAX = 850;
 
@@ -249,6 +319,7 @@ export type LoanPurpose = (typeof LOAN_PURPOSES)[number]["value"];
 export type BankruptcyChapter = (typeof BANKRUPTCY_CHAPTERS)[number];
 export type CreditScoreType = (typeof CREDIT_SCORE_TYPES)[number]["value"];
 export type LossMitStage = (typeof LOSS_MIT_STAGES)[number]["value"];
+export type PaymentType = (typeof PAYMENT_TYPES)[number]["value"];
 
 // The optional servicing record a tape or the note wizard can carry. Absent keys stay off the stored note.
 export type ServicingRecord = {
@@ -279,6 +350,18 @@ export type ServicingRecord = {
   lossMitStage?: LossMitStage;
   inheritedCovenants?: string;
   originatorLicense?: string;
+  originalBalance?: number;
+  escrowBalance?: number;
+  arrearsAmount?: number;
+  payoffAmount?: number;
+  payoffAsOf?: Date;
+  balloonDate?: Date;
+  paymentType?: PaymentType;
+  seniorLienBalance?: number;
+  scraFlag?: boolean;
+  borrowerDeceased?: boolean;
+  litigationFlag?: boolean;
+  litigationNote?: string;
 };
 
 // The servicing record's fields, in the order the note wizard and the tape mapping show them.
@@ -310,7 +393,22 @@ export const SERVICING_KEYS = [
   "lossMitStage",
   "inheritedCovenants",
   "originatorLicense",
+  "originalBalance",
+  "escrowBalance",
+  "arrearsAmount",
+  "payoffAmount",
+  "payoffAsOf",
+  "balloonDate",
+  "paymentType",
+  "seniorLienBalance",
+  "scraFlag",
+  "borrowerDeceased",
+  "litigationFlag",
+  "litigationNote",
 ] as const satisfies readonly (keyof ServicingRecord)[];
+
+// Tape v3's own keys, for the wizard's section and the tests.
+export const RISK_KEYS = SERVICING_KEYS.slice(SERVICING_KEYS.indexOf("originalBalance"));
 
 export type ServicingKey = (typeof SERVICING_KEYS)[number];
 
@@ -444,6 +542,20 @@ export function parseCreditScore(raw: string) {
   return Math.round(Number(text));
 }
 
+// "30-year fixed", "5/1 ARM", "IO" and "Fixed balloon" all read. The payment shape is read before the rate, so an
+// interest-only ARM is interest-only and a fixed-rate balloon is a balloon.
+export function parsePaymentType(raw: string): PaymentType | null {
+  const key = raw.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (!key) return null;
+  // "IO", "IO ARM" and "Fixed IO", but not a word that only ends in io, such as portfolio.
+  if (key.includes("interestonly") || /^io(arm|fixed|loan|\d|$)/.test(key) || /(fixed|arm)io$/.test(key)) return "INTEREST_ONLY";
+  if (key.includes("balloon")) return "BALLOON";
+  if (/arm$|arm\d|^\d+arm|^arm/.test(key) || key.includes("adjustable") || key.includes("variable") || key.includes("hybrid")) return "ARM";
+  if (key.includes("fixed") || key === "frm" || key === "fix" || key.includes("fullyamortiz")) return "FIXED";
+  if (key === "other") return "OTHER";
+  return null;
+}
+
 // Registry IDs identify the borrower's loan as the loan number does, so they follow the street address. The
 // originator's license can name the seller or a loan officer, so it follows the same rule.
 export const IDENTITY_TERMS = ["mersMin", "eNoteId", "originatorLicense"] as const;
@@ -484,5 +596,43 @@ export function termsExportColumns(note: TermsNote, open: boolean) {
     originatorLicense: open ? note.originatorLicense ?? "" : "",
     servicerReport: note.servicerSource ?? "",
     servicerReportDate: exportDay(note.servicerSourcedAt),
+  };
+}
+
+// The litigation note can name the borrower or the court case, so it follows the street address like the MIN.
+export const IDENTITY_RISK = ["litigationNote"] as const;
+
+type RiskNote = {
+  originalBalance?: number | null;
+  escrowBalance?: number | null;
+  arrearsAmount?: number | null;
+  payoffAmount?: number | null;
+  payoffAsOf?: Date | null;
+  balloonDate?: Date | null;
+  paymentType?: string | null;
+  seniorLienBalance?: number | null;
+  scraFlag?: boolean | null;
+  borrowerDeceased?: boolean | null;
+  litigationFlag?: boolean | null;
+  litigationNote?: string | null;
+};
+
+const exportFlag = (flag: boolean | null | undefined) => (flag == null ? "" : flag ? "yes" : "no");
+
+// The tape v3 columns of the tape export. `open` is whether this viewer may see the loan's street.
+export function riskExportColumns(note: RiskNote, open: boolean) {
+  return {
+    originalBalance: note.originalBalance ?? "",
+    escrowBalance: note.escrowBalance ?? "",
+    arrearsAmount: note.arrearsAmount ?? "",
+    payoffAmount: note.payoffAmount ?? "",
+    payoffAsOf: exportDay(note.payoffAsOf),
+    balloonDate: exportDay(note.balloonDate),
+    paymentType: note.paymentType ?? "",
+    seniorLienBalance: note.seniorLienBalance ?? "",
+    scra: exportFlag(note.scraFlag),
+    borrowerDeceased: exportFlag(note.borrowerDeceased),
+    litigation: exportFlag(note.litigationFlag),
+    litigationNote: open ? note.litigationNote ?? "" : "",
   };
 }

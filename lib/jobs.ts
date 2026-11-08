@@ -10,6 +10,7 @@ import { advanceSaleEvents } from "@/lib/sale-events";
 import { notify, notifyDesk } from "@/lib/email";
 import { notifyClosedAuctions } from "@/lib/listing-intel";
 import { prisma } from "@/lib/prisma";
+import { listingScope } from "@/lib/private-listings";
 import { bidNeedsReminder, taskNeedsReminder } from "@/lib/schedule";
 import { roundupSearches, sendSearchRoundup } from "@/lib/search-alerts";
 import { reportOwners, sendSellerReport } from "@/lib/seller-report";
@@ -104,6 +105,8 @@ export async function runJobs(now = new Date()) {
     ["Task reminders", () => remindTasks(now)],
     ["Bid reminders", () => remindBidDeadlines(now)],
     ["Bid expiry", () => expireBids(now)],
+    // A seller asked to approve a bid hears once at half their window, and the desk hears once it closes.
+    ["Seller answers", () => import("@/lib/seller-decisions").then((decisions) => decisions.remindSellerAnswers(now))],
     ["Closing reminders", () => remindClosingSteps(now)],
     ["Signature clock", () => import("@/lib/signatures").then((signatures) => signatures.signatureClock(now))],
     // Open closings past their target hear twice, then fail or go to the desk. Backup bids past their date close.
@@ -130,6 +133,8 @@ export async function runJobs(now = new Date()) {
     ["Treasury 10-year", () => import("@/lib/treasury").then((treasury) => treasury.treasuryJob(now))],
     // Each approved buyer hears once, 30 days before their file is due for its yearly re-certification.
     ["Re-certification reminders", () => import("@/lib/buyer-file").then((file) => file.remindRecertifications(now))],
+    // Each Pro trial hears three days before its end and once when it ends.
+    ["Trial reminders", () => import("@/lib/trial").then((trial) => trial.remindTrials(now))],
   ]);
 }
 
@@ -194,7 +199,8 @@ export async function sendDigest(user: { id: string; email: string; digest: stri
   if (claim.count !== 1) return false;
   // Up to this run's start; anything newer opens the next window.
   const matches = await prisma.listingMatch.findMany({
-    where: { userId: user.id, createdAt: { gte: since, lt: now }, listing: { status: "APPROVED" } },
+    // A match on a listing since made private, or from a seller who excludes this buyer, stays out of the digest.
+    where: { userId: user.id, createdAt: { gte: since, lt: now }, listing: { status: "APPROVED", AND: [await listingScope({ id: user.id, role: "BUYER" })] } },
     include: { listing: true },
     orderBy: { score: "desc" },
     take: 12,

@@ -7,6 +7,7 @@ import { DiscrepancyAnswers } from "@/components/discrepancy-answers";
 import { ReaderSummary } from "@/components/document-reader";
 import { QuestionQueue } from "@/components/listing-questions";
 import { RoomAccessPanel } from "@/components/room-access";
+import { PrivateSalePanel } from "@/components/private-sale";
 import { RoomFiles } from "@/components/room-files";
 import { MandateFile } from "@/components/seller-identity";
 import { SubmitButton } from "@/components/submit-button";
@@ -163,6 +164,7 @@ export default async function BrokerDealPage({
         requests={requests.map((request) => ({ ...request, bidder: nameOf(request.user) }))}
         engagement={log.status === 200 ? log.engagement : []}
       />
+      <PrivateSalePanel listingId={listing.id} from="broker" />
       {listing.deskBids.map((bid) => (
         <div key={bid.id} className="mt-6 border border-link/30 bg-link/5 p-4 rounded-xl">
           <p className="eyebrow">The desk bid on this</p>

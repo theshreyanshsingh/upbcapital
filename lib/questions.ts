@@ -4,6 +4,7 @@ import { audit } from "@/lib/audit";
 import { bidderAlias, realName } from "@/lib/bidder-alias";
 import { notify, notifyDesk } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
+import { audienceOf, canSeeListing } from "@/lib/private-listings";
 import { consumeRateLimit } from "@/lib/rate-limit";
 import { qaCutoffBlock } from "@/lib/sale-events";
 import { notifyWatchers, watchLink } from "@/lib/watchers";
@@ -38,21 +39,24 @@ export function ownerPath(listing: { id: string; sellerId: string; brokerId: str
 
 // Buyers whose NDA opens this listing's room: the ones a published answer goes to.
 export async function roomBidders(listingId: string) {
-  const listing = await prisma.listing.findUnique({ where: { id: listingId }, select: { sellerId: true, brokerId: true } });
+  const listing = await prisma.listing.findUnique({ where: { id: listingId }, select: { id: true, sellerId: true, brokerId: true, visibility: true } });
   if (!listing) return [];
   const ndas = await prisma.ndaAcknowledgment.findMany({
     where: { listingId },
     include: { user: { select: { id: true, email: true, role: true, accountStatus: true } } },
   });
-  return ndas
+  const bidders = ndas
     .filter((nda) => ndaOpensRoom(nda) && nda.user.role === "BUYER" && nda.user.accountStatus === "APPROVED")
     .filter((nda) => nda.userId !== listing.sellerId && nda.userId !== listing.brokerId)
     .map((nda) => nda.user);
+  // A bidder the listing is now hidden from hears nothing more of it (lib/private-listings.ts).
+  return audienceOf(listing, bidders);
 }
 
-export async function canAsk(user: { id: string; role: string; accountStatus: string }, listing: { id: string; status: string; sellerId: string; brokerId: string | null }) {
+export async function canAsk(user: { id: string; role: string; accountStatus: string }, listing: { id: string; status: string; sellerId: string; brokerId: string | null; visibility?: string | null }) {
   if (user.role !== "BUYER" || user.accountStatus !== "APPROVED") return false;
   if (listing.status !== "APPROVED" || user.id === listing.sellerId || user.id === listing.brokerId) return false;
+  if (!(await canSeeListing(user, listing))) return false;
   const nda = await prisma.ndaAcknowledgment.findUnique({ where: { userId_listingId: { userId: user.id, listingId: listing.id } } });
   return ndaOpensRoom(nda);
 }

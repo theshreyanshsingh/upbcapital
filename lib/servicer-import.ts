@@ -85,6 +85,17 @@ export const REPORT_FIELDS = [
   "mersMin",
   "eNoteId",
   "originatingPlatform",
+  // Tape v3: what a servicer's export carries. The senior lien and the litigation note come from title and counsel.
+  "originalBalance",
+  "escrowBalance",
+  "arrearsAmount",
+  "payoffAmount",
+  "payoffAsOf",
+  "balloonDate",
+  "paymentType",
+  "scraFlag",
+  "borrowerDeceased",
+  "litigationFlag",
 ] as const satisfies readonly TapeFieldKey[];
 
 export type ReportField = (typeof REPORT_FIELDS)[number];
@@ -222,7 +233,19 @@ export type PriorDifference = { noteId: string; field: string; status: string; t
 // fill: the tape is blank and takes the report's value. confirm: they agree, and the field is badged with the
 // report. differ: a question opens for the seller. held: a question on it is open, or this same difference was
 // already answered.
-export type LineAction = "fill" | "confirm" | "differ" | "held";
+export type LineAction = "fill" | "confirm" | "differ" | "held" | "update";
+
+// Balances that move every month. A report's figure is newer than the tape's, so it replaces it as a servicer-sourced
+// value instead of opening a question. The one exception is a payoff quoted for the same good-through date: two
+// figures for one date is a real difference.
+export const MOVING_FIELDS = new Set<ReportField>(["payoffAmount", "payoffAsOf", "escrowBalance", "arrearsAmount"]);
+
+function sameAsOf(loan: Record<string, unknown>, values: Partial<Record<ReportField, unknown>>) {
+  const spec = fieldSpec("payoffAsOf")!;
+  const tape = exactValue(spec, loan.payoffAsOf);
+  const report = exactValue(spec, values.payoffAsOf);
+  return tape != null && report != null && sameReading(spec, tape, report);
+}
 export type PreviewLine = { field: ReportField; label: string; tape: string | null; report: string; action: LineAction; note?: string };
 export type LoanPreview = {
   noteId: string;
@@ -237,7 +260,7 @@ export type ImportPreview = {
   loans: LoanPreview[];
   unmatched: { row: number; reason: string; label: string }[];
   missing: { noteId: string; label: string }[];
-  totals: { rows: number; matched: number; fill: number; confirm: number; differ: number; held: number };
+  totals: { rows: number; matched: number; fill: number; confirm: number; differ: number; held: number; update: number };
   columns: ServicerReport["columns"];
   unused: string[];
   notes: { row: number; message: string }[];
@@ -255,7 +278,7 @@ export function previewImport(loans: PreviewLoan[], report: ServicerReport, sour
   const { matches, misses, missing } = matchReport(loans, report.rows);
   const byId = new Map(loans.map((loan) => [loan.id, loan]));
   const previews: LoanPreview[] = [];
-  const totals = { rows: report.rows.length, matched: matches.length, fill: 0, confirm: 0, differ: 0, held: 0 };
+  const totals = { rows: report.rows.length, matched: matches.length, fill: 0, confirm: 0, differ: 0, held: 0, update: 0 };
   for (const match of matches) {
     const loan = byId.get(match.noteId)!;
     const values = { ...match.row.values };
@@ -279,6 +302,10 @@ export function previewImport(loans: PreviewLoan[], report: ServicerReport, sour
         continue;
       }
       if (field === "servicerName" && named) continue;
+      if (MOVING_FIELDS.has(field) && !(field === "payoffAmount" && sameAsOf(loan as Record<string, unknown>, values))) {
+        lines.push({ ...line, action: "update", note: "A newer figure from the servicer. It replaces the tape's." });
+        continue;
+      }
       const earlier = prior.filter((row) => row.noteId === loan.id && row.field === field);
       if (earlier.some((row) => row.status === "OPEN")) {
         lines.push({ ...line, action: "held", note: "A question is already open on this field." });
@@ -374,6 +401,8 @@ export type ImportResult = {
   confirmed: number;
   raised: number;
   held: number;
+  // Moving balances the report replaced with its newer figure.
+  updated: number;
   documentId: string;
   // A loan number or MERS MIN arrived, so the duplicate check has something new to compare.
   identified: boolean;
@@ -404,7 +433,7 @@ export async function applyServicerReport(
   const now = input.now ?? new Date();
   const document = await storeReport(listing.id, input.filename, input.bytes);
   const notes = new Map(listing.notes.map((note) => [note.id, note]));
-  const result: ImportResult = { matched: preview.totals.matched, rows: preview.totals.rows, filled: 0, confirmed: 0, raised: 0, held: preview.totals.held, documentId: document.id, identified: false };
+  const result: ImportResult = { matched: preview.totals.matched, rows: preview.totals.rows, filled: 0, confirmed: 0, raised: 0, held: preview.totals.held, updated: 0, documentId: document.id, identified: false };
   for (const loan of preview.loans) {
     const note = notes.get(loan.noteId)!;
     const record = note as unknown as Record<string, unknown>;
@@ -426,6 +455,11 @@ export async function applyServicerReport(
         if (!keep) map[line.field] = stamp(canonical(spec, loan.values[line.field]));
         result.filled += 1;
         if (line.field === "loanNumber" || line.field === "mersMin") result.identified = true;
+      } else if (line.action === "update") {
+        // The figure changed, so a check made against the old one no longer holds. The report's badge replaces it.
+        data[line.field] = loan.values[line.field];
+        map[line.field] = stamp(canonical(spec, loan.values[line.field]));
+        result.updated += 1;
       } else if (line.action === "confirm") {
         if (!keep) map[line.field] = stamp(canonical(spec, record[line.field]));
         result.confirmed += 1;
@@ -448,7 +482,7 @@ export async function applyServicerReport(
     "SERVICER_IMPORT",
     "listing",
     listing.id,
-    `${input.source.name} (${input.source.kind}) · ${result.matched} of ${result.rows} rows matched · ${result.filled} filled · ${result.confirmed} confirmed · ${result.raised} differences raised · ${result.held} held · document ${document.id}`,
+    `${input.source.name} (${input.source.kind}) · ${result.matched} of ${result.rows} rows matched · ${result.filled} filled · ${result.confirmed} confirmed · ${result.raised} differences raised · ${result.held} held · ${result.updated} updated · document ${document.id}`,
   );
   return { ok: true, value: result };
 }

@@ -107,6 +107,24 @@ export async function sendSecret(toEmail: string, subject: string, body: string)
   }
 }
 
+// List mail the sender builds whole, such as a deal announcement with its own unsubscribe link and open pixel, or
+// the list's confirmation email. Email only: no in-app copy and no push, since many readers have no account. False
+// when the send failed; the failure is logged without the body.
+export async function sendListMail(toEmail: string, message: MailMessage) {
+  const transport = deliverable(toEmail) ? resolveMailTransport() : "log";
+  if (transport === "log") {
+    console.info(logLine(toEmail, message));
+    return true;
+  }
+  try {
+    await deliver(transport, toEmail, message);
+    return true;
+  } catch (error) {
+    console.error(`[upb-mail] ${transport} failed for ${toEmail}:`, error instanceof Error ? error.message : "unknown error");
+    return false;
+  }
+}
+
 // What notify takes: the category for mail the user chose to get, and any files to attach.
 export type NoticeOptions = Partial<MailCategory> & { attachments?: MailAttachment[] };
 

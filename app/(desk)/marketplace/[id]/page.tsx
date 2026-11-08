@@ -7,6 +7,7 @@ import { ComingSoonCard } from "@/components/coming-soon-card";
 import { CapitalStack, Donut, HorizontalBars } from "@/components/charts";
 import { CollateralPanel } from "@/components/collateral-panel";
 import { ComplianceNote } from "@/components/compliance-note";
+import { BuyerDiligenceLine } from "@/components/diligence-checklist";
 import { CompsPanel } from "@/components/comps-panel";
 import { IndicativePrice } from "@/components/indicative-price";
 import { DataRoomList } from "@/components/data-room-list";
@@ -25,6 +26,7 @@ import { StatusPill } from "@/components/status-pill";
 import { SellerVerifiedBadge } from "@/components/seller-identity";
 import { StrataPanel } from "@/components/strata-panel";
 import { SubmitButton } from "@/components/submit-button";
+import { PoolRisks, TapeRisks } from "@/components/tape-risk";
 import { TabsContent } from "@/components/ui/tabs";
 import { canManageRoom, canReadDocument, dataRoomOpenTo, isPrivateDocument, loanFileAccess, loanOpenTo, ndaOpensRoom } from "@/lib/acl";
 import { dealAccess } from "@/lib/data-room";
@@ -58,6 +60,7 @@ import { depositTerms } from "@/lib/closing-clock";
 import { diligenceDays } from "@/lib/closing-service";
 import { allInYield, noteMetrics, poolMetrics } from "@/lib/metrics";
 import { prisma } from "@/lib/prisma";
+import { listingSight } from "@/lib/private-listings";
 import { publishedQuestions, questionsAskedBy } from "@/lib/questions";
 import { deskWalled, eventSetsTerms } from "@/lib/auction";
 import { currentSaleEvent, qaClosed, qaClosedText, roundText, when } from "@/lib/sale-events";
@@ -91,12 +94,17 @@ export default async function ListingPage({
     getSettings(),
     prisma.listing.findMany({
       where: { status: { in: ["APPROVED", "PENDING"] } },
-      select: { id: true, status: true, approvedAt: true },
+      select: { id: true, status: true, approvedAt: true, visibility: true },
     }),
   ]);
   if (!listing) notFound();
+  // A private listing is not found for anyone it wasn't shown to, and so is every listing of a seller who excludes
+  // this buyer. Nothing on the page says which (lib/private-listings.ts).
+  const sight = await listingSight(user, listing);
+  if (!sight.visible) notFound();
   const openable = openableListingIds(live, settings.earlyAccessHours, settings.freeBrowseLimit);
   const access = canOpenListing({
+    invited: sight.invited,
     viewer: user,
     status: listing.status,
     approvedAt: listing.approvedAt,
@@ -444,6 +452,10 @@ export default async function ListingPage({
                   longitude: note.longitude as number,
                 }))}
               />
+              {/* SCRA, deceased and litigation flags, and the time to sue on a non-performing loan, ahead of the facts. */}
+              {listing.kind === "SINGLE"
+                ? <TapeRisks note={rawLead} open={lead.open} />
+                : <PoolRisks notes={listing.notes.filter((note) => forSale.some((loan) => loan.id === note.id))} />}
               {listing.kind === "SINGLE" ? (
                 <>
                   <LoanFacts note={rawLead} open={lead.open} pro={pro} withAddress={false} />
@@ -475,6 +487,7 @@ export default async function ListingPage({
                   asking={pro || user.role === "ADMIN" ? asking : null}
                   canStart={listing.status === "APPROVED" && wholeOpen && (user.role === "ADMIN" || (user.role === "BUYER" && verified && unlocked))}
                   viewer={{ id: user.id, role: user.role }}
+                  capLine={standing?.cap?.line ?? null}
                   group={liveGroup ? {
                     id: liveGroup.id,
                     status: liveGroup.status,
@@ -494,9 +507,12 @@ export default async function ListingPage({
                 />
               </div>
               <ComplianceNote states={notes.map((note) => note.state)} sellerFinanced={listing.sellerFinanced} sellerRole={listing.seller.role} />
+              {/* "Diligence set complete", or the waived items. components/diligence-checklist.tsx. */}
+              <BuyerDiligenceLine listingId={listing.id} />
             </TabsContent>
 
             <TabsContent value="file">
+              {listing.kind === "POOL" && <TapeRisks note={fileNote} open={fileOpen} />}
               <LoanFileView
                 note={fileNote}
                 collateral={collateralByNote.get(fileNote.id) ?? []}
@@ -584,6 +600,8 @@ export default async function ListingPage({
                   lienPosition={listing.kind === "POOL" ? null : lead.lienPosition}
                   // A single loan's foreclosure clock and live value estimate. A pool's slice has neither.
                   foreclosureFiledAt={listing.kind === "POOL" ? null : listing.notes[0]?.foreclosureFiledAt?.toISOString() ?? null}
+                  // The tape's senior lien balance, so a junior lien's combined LTV uses it rather than the assumption.
+                  seniorBalance={listing.kind === "POOL" ? null : listing.notes[0]?.seniorLienBalance ?? null}
                   valueEstimate={listing.kind !== "POOL" && lead.avm != null
                     ? { value: lead.avm, provider: listing.notes[0]?.avmProvider ?? null, asOf: listing.notes[0]?.avmAsOf?.toISOString() ?? null }
                     : null}

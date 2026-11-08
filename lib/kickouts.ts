@@ -1,7 +1,7 @@
 import { audit } from "@/lib/audit";
 import { closingIsWhole, closingLoans } from "@/lib/closing";
 import { buyerSideEmails } from "@/lib/closing-service";
-import { chargeFees, flatTerms, readSchedule, type Fees } from "@/lib/fee-schedule";
+import { chargeFees, feePayerOf, flatTerms, readSchedule, type Fees } from "@/lib/fee-schedule";
 import { notify, notifyDesk } from "@/lib/email";
 import { money } from "@/lib/format";
 import { pricesFor } from "@/lib/loan-prices";
@@ -110,7 +110,7 @@ export async function kickOutLoan(input: { closingId: string; noteId: string; re
   // seller pays the commission only if the closing charged one.
   const kept = readSchedule(closing.listing.feeSchedule);
   const graded = kept
-    ? (price: number) => chargeFees({ ...flatTerms(0), schedule: kept }, price, { deskPurchase: Boolean(closing.deskBidId), chargeDeskFees: closing.sellerCommissionCents > 0 })
+    ? (price: number) => chargeFees({ ...flatTerms(0), schedule: kept, payer: feePayerOf(closing.listing.feePayer) }, price, { deskPurchase: Boolean(closing.deskBidId), chargeDeskFees: closing.sellerCommissionCents > 0 })
     : null;
   const terms = kickoutTerms({
     closing: { ...closing, salePrice },
@@ -130,6 +130,8 @@ export async function kickOutLoan(input: { closingId: string; noteId: string; re
       buyerTotalCents: terms.buyerTotalCents,
       netToSellerCents: terms.netToSellerCents,
       ...(terms.depositCents != null ? { depositCents: terms.depositCents } : {}),
+      // A proration covers the loans it was set for, so the desk sets it again for the ones that remain.
+      ...(closing.prorationCents != null ? { prorationCents: null, prorationDetail: null } : {}),
     },
   });
   if (wrote.count !== 1) return { error: "This closing changed a moment ago. Reload it and try again." } as const;

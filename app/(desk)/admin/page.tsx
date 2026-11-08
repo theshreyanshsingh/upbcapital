@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { PageIntro } from "@/components/page-intro";
 import { RevenueBars } from "@/components/charts";
+import { FinanceExports } from "@/components/finance-panels";
 import { requireRole } from "@/lib/auth";
 import { targetDays } from "@/lib/closing-clock";
 import { deskToday } from "@/lib/desk-today";
@@ -11,7 +12,7 @@ import { getSettings } from "@/lib/settings";
 export const metadata = { title: "Revenue" };
 
 export default async function AdminHome() {
-  await requireRole(["ADMIN"]);
+  const viewer = await requireRole(["ADMIN"]);
   const settings = await getSettings();
   const [today, events, subscribers, notices] = await Promise.all([
     deskToday(settings.closingTargetDays),
@@ -55,6 +56,8 @@ export default async function AdminHome() {
         <Figure k="Broker fees posted" v={money(events.filter((event) => event.type === "BROKER_FEE").reduce((total, event) => total + event.amountCents, 0) / 100)} hint="Payable to brokers. Not desk income." />
       </div>
       <p className="mt-4 text-[13px] font-medium"><Link href="/admin/payouts" className="text-link">Payout queue</Link></p>
+      {/* The finance pack's exports, for the desk book and the admin. lib/finance-export.ts. */}
+      <FinanceExports viewer={viewer} />
       <section className="mt-10 glass p-5 sm:p-6">
         <p className="eyebrow">Six months</p>
         <div className="mt-6">

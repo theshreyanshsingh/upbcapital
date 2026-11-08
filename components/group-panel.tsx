@@ -13,12 +13,15 @@ export function GroupPanel({
   canStart,
   viewer,
   group,
+  capLine = null,
 }: {
   listingId: string;
   asking: number | null;
   canStart: boolean;
   viewer: { id: string; role: string };
   group: { id: string; status: string; targetAmount: number; deadline: Date; positions: SeatRow[] } | null;
+  // The buyer's bid cap below their verified funds, which a seat stays under too (lib/bid-caps.ts capHint).
+  capLine?: string | null;
 }) {
   if (!group && !canStart) return null;
   const state = group ? fillState(group.targetAmount, group.positions) : null;
@@ -77,6 +80,7 @@ export function GroupPanel({
           <label className="block text-xs text-muted-foreground">
             Your opening seat (optional)
             <input name="amount" inputMode="decimal" className="desk-input mt-1 tabular-nums" />
+            {capLine && <span className="mt-1 block text-foreground">{capLine}</span>}
           </label>
           <SubmitButton className="h-11 text-[13px] font-medium">Start the group</SubmitButton>
         </form>

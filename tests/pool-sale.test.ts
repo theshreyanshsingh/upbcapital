@@ -210,6 +210,7 @@ async function cleanPool(pool: Pool) {
   await prisma.auditEvent.deleteMany({ where: { OR: [{ entityId: { in: [listingId, ...inquiryIds, ...closingIds, ...userIds] } }, { actorId: { in: userIds } }] } });
   await prisma.deskThread.deleteMany({ where: { OR: [{ listingId }, { inquiryId: { in: inquiryIds } }, { closingId: { in: closingIds } }] } });
   await prisma.revenueEvent.deleteMany({ where: { listingId } });
+  await prisma.invoice.deleteMany({ where: { closingId: { in: closingIds } } });
   await prisma.buyerHolding.deleteMany({ where: { closingId: { in: closingIds } } });
   await prisma.buyerStrike.deleteMany({ where: { userId: { in: userIds } } });
   await prisma.ofacCheck.deleteMany({ where: { userId: { in: userIds } } });

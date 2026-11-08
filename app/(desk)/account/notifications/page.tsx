@@ -22,7 +22,7 @@ export default async function NotificationPrefsPage({
   const [prefs, devices] = await Promise.all([
     prisma.user.findUnique({
       where: { id: user.id },
-      select: { notifyEmail: true, notifyInApp: true, digest: true, dealAlerts: true, marketDispatch: true, watchAlerts: true, sellerReport: true, role: true },
+      select: { notifyEmail: true, notifyInApp: true, digest: true, dealAlerts: true, marketDispatch: true, watchAlerts: true, sellerReport: true, announcements: true, role: true },
     }),
     prisma.pushSubscription.count({ where: { userId: user.id } }),
   ]);
@@ -74,6 +74,13 @@ export default async function NotificationPrefsPage({
           </label>
           <Link href="/market" className="ml-7 mt-1 inline-block text-xs font-medium text-link">Read this month&apos;s issue</Link>
         </div>
+        <label className="flex items-start gap-3 text-sm text-foreground">
+          <input type="checkbox" name="announcements" value="on" defaultChecked={prefs?.announcements === true} className="mt-1" />
+          <span>
+            Deal announcements: new listings the desk sends to its whole list
+            <span className="mt-1 block text-xs text-muted-foreground">It follows the email setting above. The desk counts opens and clicks.</span>
+          </span>
+        </label>
         <label className="block">
           <span className="text-[13px] text-muted-foreground">Match digest</span>
           <select name="digest" defaultValue={prefs?.digest || "WEEKLY"} className="desk-input mt-2" aria-label="Digest frequency">

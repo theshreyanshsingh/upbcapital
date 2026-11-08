@@ -85,6 +85,7 @@ test("closing posts one broker fee and refuses a second pass", async () => {
     assert.equal(events, 1);
     await prisma.revenueEvent.deleteMany({ where: { listingId: listing.id } });
   } finally {
+    await prisma.invoice.deleteMany({ where: { userId: { in: [broker.id, buyer.id] } } });
     await prisma.user.delete({ where: { id: broker.id } });
     await prisma.user.delete({ where: { id: buyer.id } });
   }
@@ -107,6 +108,7 @@ test("a broker who buys the file is not paid", async () => {
     assert.equal(fees, 0);
     await prisma.revenueEvent.deleteMany({ where: { listingId: listing.id } });
   } finally {
+    await prisma.invoice.deleteMany({ where: { userId: broker.id } });
     await prisma.user.delete({ where: { id: broker.id } });
   }
 });

@@ -7,6 +7,7 @@ import { unset } from "@/lib/db-filters";
 import { prisma } from "@/lib/prisma";
 import { getSettings, isPro } from "@/lib/settings";
 import { liveSubscription, portalReturnUrl } from "@/lib/stripe-billing";
+import { checkoutTrialDays, onFreeTrial } from "@/lib/trial";
 
 export const runtime = "nodejs";
 
@@ -15,7 +16,8 @@ export async function POST() {
   if (!user || user.role !== "BUYER" || user.accountStatus !== "APPROVED") {
     return NextResponse.redirect(new URL("/login", appOrigin()));
   }
-  if (isPro(user)) {
+  // A buyer on a no-card trial may subscribe before it ends.
+  if (isPro(user) && !onFreeTrial(user)) {
     return NextResponse.redirect(new URL(`/buyer/subscription?notice=${encodeURIComponent("You are already on Pro.")}`, appOrigin()));
   }
   const settings = await getSettings();
@@ -40,7 +42,10 @@ export async function POST() {
     const portal = await stripe.billingPortal.sessions.create({ customer: customerId, return_url: portalReturnUrl() });
     return NextResponse.redirect(portal.url);
   }
-  const applyCredit = shouldApplyReferralCredit(user.referralCredits);
+  // A first-time buyer gets the desk's trial on Stripe: the card is taken now and billed when it ends. A banked
+  // referral month stays banked for after the trial, so the one-time coupon never lands on the $0 trial invoice.
+  const trialDays = await checkoutTrialDays(user);
+  const applyCredit = !trialDays && shouldApplyReferralCredit(user.referralCredits);
   let couponId = "";
   if (applyCredit) {
     const coupon = await stripe.coupons.create({
@@ -60,8 +65,11 @@ export async function POST() {
     customer: customerId,
     client_reference_id: user.id,
     discounts: couponId ? [{ coupon: couponId }] : undefined,
-    metadata: { userId: user.id, referralCredit: applyCredit ? "1" : "0" },
-    subscription_data: { metadata: { userId: user.id, referralCredit: applyCredit ? "1" : "0" } },
+    metadata: { userId: user.id, referralCredit: applyCredit ? "1" : "0", trialDays: String(trialDays) },
+    subscription_data: {
+      metadata: { userId: user.id, referralCredit: applyCredit ? "1" : "0" },
+      ...(trialDays ? { trial_period_days: trialDays } : {}),
+    },
   });
   if (!session.url) return NextResponse.json({ error: "Stripe did not return a checkout URL." }, { status: 500 });
   return NextResponse.redirect(session.url);

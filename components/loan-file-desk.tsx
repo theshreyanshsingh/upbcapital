@@ -380,6 +380,7 @@ const ACTION_TAGS: Record<LineAction, { tone: "good" | "warn" | "plain" | "sourc
   confirm: { tone: "source", text: "Agrees" },
   differ: { tone: "warn", text: "Differs · opens a question" },
   held: { tone: "plain", text: "Differs · no new question" },
+  update: { tone: "source", text: "Newer figure · replaces the tape's" },
 };
 
 const SHOWN_LOANS = 25;
@@ -460,6 +461,7 @@ function StagedPreview({ staged, hidden, sub: Sub }: { staged: StagedReport; hid
           {[
             ["Rows matched", `${totals.matched} of ${totals.rows}`],
             ["Blanks filled", String(totals.fill)],
+            ["Balances updated", String(totals.update)],
             ["Fields agree", String(totals.confirm)],
             ["Questions opened", String(totals.differ)],
             ["Loans without a row", String(preview.missing.length)],
@@ -536,7 +538,7 @@ function StagedPreview({ staged, hidden, sub: Sub }: { staged: StagedReport; hid
           <input type="hidden" name="token" value={staged.token} />
           <ConfirmSubmit
             title={`Apply the ${source.name} report?`}
-            consequence={`${totals.fill} blank fields are filled and ${totals.confirm} carry the report's badge. ${totals.differ} differences open as questions for the seller. The file is kept with the listing's tape, and the import is logged.`}
+            consequence={`${totals.fill} blank fields are filled and ${totals.confirm} carry the report's badge. ${totals.update} moving balances take the report's newer figure. ${totals.differ} differences open as questions for the seller. The file is kept with the listing's tape, and the import is logged.`}
             confirmLabel="Apply the report"
             pendingLabel="Applying…"
             className="h-9 text-[13px] font-medium"

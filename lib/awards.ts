@@ -12,6 +12,7 @@ import { listingWithdrawBlock } from "@/lib/listing-status";
 import { loanPriceProblem, standingLoanPrices, sumPrices, type LoanPrices } from "@/lib/loan-prices";
 import { bidExpired, buyerPrice, withdrawBlock, type OfferMoney } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
+import { awardBlock } from "@/lib/private-listings";
 import { OFAC_HOLD_MESSAGE, ofacHold } from "@/lib/screening";
 import { strikeStanding } from "@/lib/strikes";
 import { notifyWatchers } from "@/lib/watchers";
@@ -117,6 +118,8 @@ export async function declineLosingBids(winner: Winner, title: string, why?: Dec
     where: { listingId: winner.listingId, status: "OPEN", ...(sold ? { OR: [{ noteId: { in: sold } }, ...unset("noteId").OR] } : {}) },
     data: { status: "WITHDRAWN" },
   });
+  // The seller's counters to bids that stay live, as a backup or for loans still free, close with the round.
+  await import("@/lib/seller-decisions").then((decisions) => decisions.closeOtherCounters(winner, title));
   return declined;
 }
 
@@ -230,6 +233,10 @@ export async function checkAward(inquiryId: string, part?: { noteIds: string[] }
   // The papers name the entity the bid is for, so it must still be one the desk approved.
   const entityBlock = await entityAwardBlock(offer);
   if (entityBlock) return { error: entityBlock } as const;
+  // A buyer or seat holder the seller now excludes, or a private listing no longer shows to, can't win it unless
+  // already a closing party on it. The desk reads why; the buyer is never told (lib/private-listings.ts).
+  const hidden = await awardBlock(offer, seats.map((seat) => seat.userId));
+  if (hidden) return { error: hidden } as const;
   // A strike pause stops awards as well as new bids, so a bid placed before the pause can't win during it. The
   // error reaches the desk only: a seller whose approval stops here sees a pending notice.
   const standings = await Promise.all([offer.buyerId, ...seats.map((seat) => seat.userId)].map((userId) => strikeStanding(userId)));
@@ -350,18 +357,22 @@ export function sellerPage(listing: { id: string; sellerId: string; brokerId: st
 // A question about part of a pool passes the loans, and the seller is told the rest stays on the book.
 export async function askSeller(offer: Offer, price: number, part?: { noteIds: string[]; actorId: string | null }) {
   const askedAt = new Date();
+  // The seller's window to answer runs from the ask, and a new ask starts it again (lib/seller-decisions.ts).
+  const { answerByText, respondByFor } = await import("@/lib/seller-decisions");
+  const respondBy = respondByFor(offer.listing, askedAt);
   await prisma.inquiry.update({
     where: { id: offer.id },
-    data: { sellerAskedAt: askedAt, sellerAskedAmount: price, sellerAnsweredAt: null, sellerDeclined: null, sellerAskedNoteIds: part ? part.noteIds : [] },
+    data: { sellerAskedAt: askedAt, sellerAskedAmount: price, sellerAnsweredAt: null, sellerDeclined: null, sellerAskedNoteIds: part ? part.noteIds : [], sellerRespondBy: respondBy, sellerRemindedAt: null },
   });
   if (part) await recordPartAsk(offer.id, askedAt, part.noteIds, part.actorId);
   const link = `${process.env.NEXT_PUBLIC_APP_URL || ""}${sellerPage(offer.listing, offer.listing.seller.role)}`;
+  const due = ` Please answer by ${answerByText(respondBy)}.`;
   await notify(
     offer.listing.seller.email,
     `Approve a sale · ${offer.listing.title}`,
     part
-      ? `The desk recommends selling ${part.noteIds.length} loan${part.noteIds.length === 1 ? "" : "s"} of the pool for ${dollars(price)} to a verified buyer, at the buyer's own loan prices. The other loans stay on the book. Nothing is sold until you approve. Approve or decline here: ${link}`
-      : `The desk recommends accepting $${price.toLocaleString("en-US")} from a verified buyer${offer.noteId ? " for one loan" : ""}. Nothing is sold until you approve. Approve or decline here: ${link}`,
+      ? `The desk recommends selling ${part.noteIds.length} loan${part.noteIds.length === 1 ? "" : "s"} of the pool for ${dollars(price)} to a verified buyer, at the buyer's own loan prices. The other loans stay on the book. Nothing is sold until you approve.${due} Approve or decline here: ${link}`
+      : `The desk recommends accepting $${price.toLocaleString("en-US")} from a verified buyer${offer.noteId ? " for one loan" : ""}. Nothing is sold until you approve.${due} Approve or decline here: ${link}`,
   );
 }
 

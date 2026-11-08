@@ -1,6 +1,7 @@
 import { answerSaleApproval, pickBid, saveBuyNow, setReserve } from "@/actions/sale-approval";
 import { withdrawListing } from "@/actions/seller-controls";
 import { ConfirmRows, ConfirmSubmit } from "@/components/confirm-submit";
+import { AnswerBy, BidSummaryLinks, CounterBid, SellerTerms, TrackRecordLine } from "@/components/seller-decisions";
 import { SubmitButton } from "@/components/submit-button";
 import { deadlinePassed, sealedFromSeller } from "@/lib/auction";
 import { askedPartPrice, askedPriceStands, awaitingSeller, partAsked, rivalBids } from "@/lib/awards";
@@ -16,6 +17,7 @@ import { feeTerms, feesFor, rateText } from "@/lib/fee-schedule";
 import { getSettings } from "@/lib/settings";
 import { prisma } from "@/lib/prisma";
 import { standingLoanPrices } from "@/lib/loan-prices";
+import { sellerCounterBlock, trackRecordsFor, type TrackRecord } from "@/lib/seller-decisions";
 
 type Offer = {
   id: string;
@@ -39,6 +41,9 @@ type Offer = {
   // The seller's own pick of this bid, and the price they agreed to with it.
   sellerRequestedAt?: Date | null;
   sellerApprovedAmount?: number | null;
+  // When the seller's answer to the desk's ask is due, and the entity the bid is for (lib/seller-decisions.ts).
+  sellerRespondBy?: Date | null;
+  buyerEntityId?: string | null;
 };
 
 type Listing = {
@@ -59,6 +64,9 @@ type Listing = {
   launchAt?: Date | null;
   // The sale event the listing trades in, which names each bid's round.
   saleEventId?: string | null;
+  // The seller's window to answer the desk, and who pays UPB's fees (lib/seller-decisions.ts).
+  sellerResponseHours?: number | null;
+  feePayer?: string | null;
 };
 
 const live = (offer: Offer) => offer.type === "OFFER" && (offer.status === "OPEN" || offer.status === "REVIEWED");
@@ -67,7 +75,12 @@ const live = (offer: Offer) => offer.type === "OFFER" && (offer.status === "OPEN
 // buy-it-now price that sells to the first verified buyer who confirms it. Bidders show by letter until an award;
 // the desk, opening a seller's page, passes revealNames and sees who they are.
 export async function SaleApproval({ listing, offers, canAnswer, revealNames = false }: { listing: Listing; offers: Offer[]; canAnswer: boolean; revealNames?: boolean }) {
-  const [settings, nameOf] = await Promise.all([getSettings(), bidderNamer(listing.id, { role: revealNames ? "ADMIN" : "SELLER" })]);
+  const [settings, nameOf, records] = await Promise.all([
+    getSettings(),
+    bidderNamer(listing.id, { role: revealNames ? "ADMIN" : "SELLER" }),
+    // Each bidder's record beside their letter: funds by band, never a name or a figure.
+    trackRecordsFor(offers.filter((offer) => offer.type === "OFFER")),
+  ]);
   const who = (offer: Offer) => nameOf({ id: offer.buyerId, name: offer.buyer.name, companyName: offer.buyer.companyName });
   const waiting = offers.filter((offer) => live(offer) && awaitingSeller(offer));
   // A counter stands as the seller's approval of that price until the bid is awarded or closed.
@@ -87,6 +100,7 @@ export async function SaleApproval({ listing, offers, canAnswer, revealNames = f
     <section className="mt-10 border border-border p-5 rounded-xl" aria-labelledby="approval-heading">
       <p id="approval-heading" className="eyebrow">Sale approval</p>
       <p className="mt-2 text-sm text-muted-foreground">Nothing sells without your word on the price. Approve each sale the desk recommends or counter it with your own price, or set a reserve and the desk may accept any bid at or above it. A buy-it-now price sells to the first verified buyer who takes it.</p>
+      {offers.some((offer) => offer.type === "OFFER") && <BidSummaryLinks listingId={listing.id} />}
       {waiting.map((offer) => {
         const rest = rivalBids(offer, offers);
         const part = parts.get(offer.id) ?? null;
@@ -110,6 +124,8 @@ export async function SaleApproval({ listing, offers, canAnswer, revealNames = f
               {who(offer)} · {scope}
               {part ? " · the other loans stay on the book" : rest.count ? ` · ${rest.count} other open bid${rest.count === 1 ? "" : "s"} for it${rest.best && !sealed ? `, highest ${money(rest.best)}` : ""}` : " · no other open bids for it"}
             </p>
+            <TrackRecordLine record={records.get(offer.id)} />
+            {!lapsed && <AnswerBy offer={offer} />}
             {part && (
               <ul className="mt-2 space-y-0.5 text-sm text-muted-foreground tabular-nums">
                 {part.map((noteId) => (
@@ -188,11 +204,12 @@ export async function SaleApproval({ listing, offers, canAnswer, revealNames = f
               {who(offer)} · {offer.noteId ? "one loan" : "the whole listing"} ·{" "}
               {taken ? "the buyer accepted it. The desk awards it next." : "waiting on the buyer. If they accept, the desk can award it at this price."}
             </p>
+            <TrackRecordLine record={records.get(offer.id)} />
           </div>
         );
       })}
       {/* The desk reads bids on its own sheet, behind the sealed-bids wall, so this list is the seller's view only. */}
-      {!revealNames && <LiveBids listing={listing} offers={offers} canAnswer={canAnswer} sealed={sealed} who={who} settings={settings} />}
+      {!revealNames && <LiveBids listing={listing} offers={offers} canAnswer={canAnswer} sealed={sealed} who={who} settings={settings} records={records} />}
       {canAnswer && (
         <form action={setReserve} className="mt-5 flex flex-wrap items-end gap-3">
           <input type="hidden" name="listingId" value={listing.id} />
@@ -204,6 +221,7 @@ export async function SaleApproval({ listing, offers, canAnswer, revealNames = f
           <p className="w-full text-xs text-muted-foreground">Buyers never see it. Leave it blank and the desk asks you before every sale.</p>
         </form>
       )}
+      <SellerTerms listing={listing} canAnswer={canAnswer} settings={settings} />
       <BuyNow listing={listing} offers={offers} canAnswer={canAnswer} settings={settings} who={who} />
     </section>
   );
@@ -219,6 +237,7 @@ async function LiveBids({
   sealed,
   who,
   settings,
+  records,
 }: {
   listing: Listing;
   offers: Offer[];
@@ -226,6 +245,7 @@ async function LiveBids({
   sealed: boolean;
   who: (offer: Offer) => string;
   settings: Parameters<typeof feesFor>[1];
+  records: Map<string, TrackRecord>;
 }) {
   const bids = offers.filter((offer) => live(offer) && !bidExpired(offer.expiresAt));
   if (!bids.length) return null;
@@ -268,9 +288,16 @@ async function LiveBids({
                   {scope} · {round(offer)} · {offer.expiresAt ? `good until ${prettyDate(offer.expiresAt)}` : "no end date"}
                   {!sealed && price != null && ` · ${reserve == null ? "no reserve set" : price >= reserve ? "meets your reserve" : "under your reserve"}`}
                 </p>
+                <TrackRecordLine record={records.get(offer.id)} />
                 {picked && <p className="mt-1 text-[13px] font-medium text-good">You asked the desk to award this bid{offer.sellerRequestedAt ? ` on ${prettyDate(offer.sellerRequestedAt)}` : ""}.</p>}
                 {offer.sellerRequestedAt && !picked && <p className="mt-1 text-[13px] text-foreground">You picked this bid, but the buyer has changed it since. Pick it again to agree to the new price.</p>}
                 {asked && <p className="mt-1 text-[13px] text-muted-foreground">The desk asked you about this bid above.</p>}
+                {/* Any bid the seller can see can be countered, under the same sealed rules. The placeholder figure is
+                    above the bid, so only the bid's and the listing's state decide whether the form shows. */}
+                {canAnswer && !asked && price != null && price > 0 &&
+                  !sellerCounterBlock({ type: offer.type, status: offer.status, listing, expiresAt: offer.expiresAt ?? null, current: price, amount: price + 1, picked }) && (
+                  <CounterBid offerId={offer.id} who={who(offer)} price={price} scope={scope} />
+                )}
               </div>
               {canAnswer && !sealed && !asked && !picked && price != null && listing.status === "APPROVED" && (
                 <form action={pickBid}>

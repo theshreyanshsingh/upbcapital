@@ -13,6 +13,7 @@ import { rescoreListing } from "@/lib/matching";
 import { prisma } from "@/lib/prisma";
 import { carriedFileLine, carriedSomething, copyLoanFile, type LoanOverrides } from "@/lib/relist-file";
 import { screenAndRecord } from "@/lib/screening";
+import { carriedSellerTerms } from "@/lib/seller-decisions";
 import { getSettings } from "@/lib/settings";
 
 async function caseFor(holdingId: string) {
@@ -170,7 +171,7 @@ async function relistFrom(input: {
   sellerId: string;
   title: string;
   summary: string;
-  source: { id: string; authorizationKey: string };
+  source: { id: string; authorizationKey: string; feePayer?: string | null; sellerResponseHours?: number | null };
   notes: Note[];
   overrides: (note: Note) => LoanOverrides;
   // The source's room files cover every loan, so they come along only when every loan does.
@@ -181,6 +182,10 @@ async function relistFrom(input: {
 }) {
   // A relist that goes straight onto the book fixes its fees now, as a desk approval does.
   const fees = input.live ? feesAtApproval(await getSettings()) : {};
+  // A relist filed for review starts with the source's fee payer and window, which its seller can change before
+  // go-live. One that goes straight onto the book would lock the earlier seller's choice at once, so it keeps the
+  // defaults.
+  const terms = input.live ? {} : carriedSellerTerms(input.source);
   const listing = await prisma.listing.create({
     data: {
       kind: input.notes.length > 1 ? "POOL" : "SINGLE",
@@ -188,6 +193,7 @@ async function relistFrom(input: {
       status: input.live ? "APPROVED" : "SUBMITTED",
       approvedAt: input.live ? new Date() : null,
       ...fees,
+      ...terms,
       title: input.title,
       summary: input.summary,
     },

@@ -19,6 +19,8 @@ export async function saveNotificationPrefs(formData: FormData) {
       digest: digest as "WEEKLY",
       // The monthly market dispatch is opt-in, for every role.
       marketDispatch: formData.get("marketDispatch") === "on",
+      // The deal-announcement list is opt-in too. lib/announcements.ts.
+      announcements: formData.get("announcements") === "on",
       ...(user.role === "BUYER" ? { dealAlerts: formData.get("dealAlerts") === "on", watchAlerts: formData.get("watchAlerts") === "on" } : {}),
       ...((REPORT_ROLES as readonly string[]).includes(user.role) ? { sellerReport: formData.get("sellerReport") === "on" } : {}),
     },

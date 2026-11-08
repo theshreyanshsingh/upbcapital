@@ -7,11 +7,13 @@ import { BorrowerNotices } from "@/components/borrower-notices";
 import { ClosingMasters } from "@/components/closing-masters";
 import { BackupPanel } from "@/components/backup-panel";
 import { DepositPanel } from "@/components/deposit-panel";
+import { InvoicePanel, PayoutPanel, ProrationPanel, verifiedPayoutChoices } from "@/components/finance-panels";
 import { DealTimeline } from "@/components/deal-timeline";
 import { KickoutForm } from "@/components/kickout-form";
 import { ComplianceNote } from "@/components/compliance-note";
 import { DeskNotes } from "@/components/desk-notes";
 import { SignaturePanel } from "@/components/signature-panel";
+import { TieOutPanel } from "@/components/tie-out";
 import { ConfirmRows, ConfirmSubmit } from "@/components/confirm-submit";
 import { Notice } from "@/components/notice";
 import { SubmitButton } from "@/components/submit-button";
@@ -25,7 +27,7 @@ import { diligenceOpen, loadDealTimeline, timelineView } from "@/lib/closing-ser
 import { brokerRoleLabel } from "@/lib/broker-fees";
 import { isoDate, money, prettyDate, q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
-import { balanceDueCents, buyerFundsCheck, economicsRows, moneyGate, proceedsGate, statementSide, variance, varianceNote, type Variance } from "@/lib/settlement";
+import { balanceDueCents, buyerDueCents, buyerFundsCheck, economicsRows, moneyGate, proceedsGate, sellerNetCents, statementSide, variance, varianceNote, type Variance } from "@/lib/settlement";
 import { getSettings } from "@/lib/settings";
 import { boardingChoices } from "@/lib/servicers";
 import { cn } from "@/lib/utils";
@@ -96,7 +98,9 @@ export default async function ClosingPage({
   const ownPreview = isAdmin ? brokerView.preview : brokerView.preview.filter((fee) => fee.brokerId === user.id);
   const balanceDue = balanceDueCents(closing);
   const funds = buyerFundsCheck(closing);
-  const proceeds = variance(closing.netToSellerCents, closing.proceedsSentCents);
+  // The proration moves what the seller nets, so proceeds are checked against the net with it. lib/proration.ts.
+  const sellerNet = sellerNetCents(closing);
+  const proceeds = variance(sellerNet, closing.proceedsSentCents);
   const deposit = closing.depositCents != null ? variance(closing.depositCents, closing.depositReceivedCents) : null;
   const depositLate = Boolean(closing.depositDueAt && closing.depositReceivedCents == null && closing.status === "OPEN" && closing.depositDueAt.getTime() < Date.now());
   const inDiligence = diligenceOpen(closing);
@@ -113,6 +117,8 @@ export default async function ClosingPage({
     // A buyer through a self-directed IRA: its custodian signs and wires, so both sides know who the money is from.
     fundingParty(closing),
   ]);
+  // The seller's payout accounts verified by call-back, the only ones proceeds can be recorded to.
+  const payoutChoices = runs && closing.status !== "CANCELED" ? await verifiedPayoutChoices(closing.listing.sellerId) : [];
   // The servicer directory for the boarding form, each servicer with the loan states it doesn't list.
   const servicerChoices = party ? await boardingChoices(closingLoans(closing, closing.listing.notes).map((note) => note.state), closing.boarding?.servicerId) : [];
   return (
@@ -285,8 +291,8 @@ export default async function ClosingPage({
                                   <ConfirmRows
                                     rows={[
                                       ["Sale price", money(closing.salePrice)],
-                                      ["Buyer all-in", money(closing.buyerTotalCents / 100)],
-                                      ["Net to seller", money(closing.netToSellerCents / 100)],
+                                      ["Buyer all-in", money(buyerDueCents(closing) / 100)],
+                                      ["Net to seller", money(sellerNet / 100)],
                                     ]}
                                   />
                                 }
@@ -332,6 +338,8 @@ export default async function ClosingPage({
           </section>
         )}
         {party && <SignaturePanel closingId={closing.id} open={closing.status === "OPEN"} viewer={user} />}
+        {/* The bid tape checked against the tape as of closing. components/tie-out.tsx. */}
+        {party && <TieOutPanel closing={closing} canRun={runs} />}
         {party && (
           <BorrowerNotices
             closing={closing}
@@ -427,7 +435,7 @@ export default async function ClosingPage({
                 <WireRow label="Buyer funds received" expected={balanceDue} expectedLabel={closing.depositReceivedCents != null ? "Balance after deposit" : "Expected"} recorded={closing.fundsReceivedCents} at={closing.fundsReceivedAt} reference={closing.fundsReference} check={funds} />
               )}
               {(isAdmin || isSeller) && (
-                <WireRow label="Seller proceeds sent" expected={closing.netToSellerCents} recorded={closing.proceedsSentCents} at={closing.proceedsSentAt} reference={closing.proceedsReference} check={proceeds} />
+                <WireRow label="Seller proceeds sent" expected={sellerNet} recorded={closing.proceedsSentCents} at={closing.proceedsSentAt} reference={closing.proceedsReference} check={proceeds} />
               )}
             </dl>
             <a className="mt-4 inline-block text-[13px] font-medium text-link" href={`/api/closings/${closing.id}/statement`}>Settlement statement (PDF)</a>
@@ -437,11 +445,15 @@ export default async function ClosingPage({
                   <SettlementForm closingId={closing.id} side="deposit" title="Record buyer deposit" amount={closing.depositReceivedCents ?? closing.depositCents} at={closing.depositReceivedAt} reference={closing.depositReference} />
                 )}
                 <SettlementForm closingId={closing.id} side="funds" title="Record buyer funds" amount={closing.fundsReceivedCents ?? balanceDue} at={closing.fundsReceivedAt} reference={closing.fundsReference} />
-                <SettlementForm closingId={closing.id} side="proceeds" title="Record seller proceeds" amount={closing.proceedsSentCents ?? closing.netToSellerCents} at={closing.proceedsSentAt} reference={closing.proceedsReference} gate={proceedsGate(closing, closing.funders, closing.steps)} />
+                <SettlementForm closingId={closing.id} side="proceeds" title="Record seller proceeds" amount={closing.proceedsSentCents ?? sellerNet} at={closing.proceedsSentAt} reference={closing.proceedsReference} gate={proceedsGate(closing, closing.funders, closing.steps)} payout={{ accounts: payoutChoices, chosen: closing.payoutAccountId }} />
               </div>
             )}
           </div>
         )}
+        {/* The proration, the seller's payout account checked by call-back, and the fee invoices. components/finance-panels.tsx. */}
+        {party && (isAdmin || isSeller || isBuyer) && <ProrationPanel closing={closing} loans={closingLoans(closing, closing.listing.notes).map((note) => ({ ...note, upb: Number(note.upb), interestRate: Number(note.interestRate) }))} runs={runs} />}
+        {party && <PayoutPanel closing={closing} sellerId={closing.listing.sellerId} viewer={user} isSeller={isSeller} />}
+        {party && (isAdmin || isSeller || isBuyer) && <InvoicePanel closing={closing} viewer={user} sellerId={closing.listing.sellerId} buyerId={inquiry?.buyerId ?? null} />}
         {/* The deposit's outcome and its four-eyes decision, and the backup bids behind the winner. */}
         {(isAdmin || (party && isBuyer)) && <DepositPanel closing={closing} viewer={user} />}
         {isAdmin && <BackupPanel closing={closing} viewer={user} />}
@@ -673,7 +685,8 @@ function StepGate({ gate, label }: { gate: string | null; label: string }) {
 }
 
 // The seller's proceeds wait on the buyer's money and the note. Paying early takes a typed reason, which is audited.
-function SettlementForm({ closingId, side, title, amount, at, reference, gate = null }: { closingId: string; side: "funds" | "proceeds" | "deposit"; title: string; amount: number; at: Date | null; reference: string | null; gate?: string | null }) {
+// Proceeds name the seller's verified payout account; with none there is nothing to pay to.
+function SettlementForm({ closingId, side, title, amount, at, reference, gate = null, payout }: { closingId: string; side: "funds" | "proceeds" | "deposit"; title: string; amount: number; at: Date | null; reference: string | null; gate?: string | null; payout?: { accounts: { id: string; label: string }[]; chosen: string | null } }) {
   return (
     <form action={recordSettlement} className="space-y-2">
       <input type="hidden" name="closingId" value={closingId} />
@@ -684,6 +697,13 @@ function SettlementForm({ closingId, side, title, amount, at, reference, gate = 
         <input name="at" type="date" defaultValue={isoDate(at) ?? ""} aria-label={`${title} date`} className="desk-input" required />
       </div>
       <input name="reference" defaultValue={reference ?? ""} placeholder="Wire reference" aria-label={`${title} reference`} className="desk-input" />
+      {payout && (payout.accounts.length ? (
+        <select name="payoutAccountId" required defaultValue={payout.accounts.some((account) => account.id === payout.chosen) ? payout.chosen ?? "" : payout.accounts[0].id} aria-label="Seller payout account" className="desk-input">
+          {payout.accounts.map((account) => <option key={account.id} value={account.id}>{account.label}</option>)}
+        </select>
+      ) : (
+        <p className="text-xs text-bad">The seller has no payout account verified by call-back, so proceeds can&apos;t be recorded yet. See Payout account.</p>
+      ))}
       {gate && (
         <div className="space-y-2">
           <p className="text-xs text-bad">{gate} Record those before paying the seller, or say why the desk is going ahead without them.</p>

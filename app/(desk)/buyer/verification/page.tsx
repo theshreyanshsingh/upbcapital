@@ -10,6 +10,7 @@ import { money, prettyDate, q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 import { ELIGIBILITY_INTRO, HOMES_HELP, REO_STRATEGIES } from "@/lib/eligibility";
 import { bidStanding } from "@/lib/inquiry";
+import { bidCapFor, capLine } from "@/lib/bid-caps";
 import { getSettings } from "@/lib/settings";
 import { strikeLimitOf, strikesFor } from "@/lib/strikes";
 import { ACCREDITATION_TEXT, TAX_ID_NOTE, recertLapsed, recertOpen } from "@/lib/verification";
@@ -43,6 +44,8 @@ export default async function VerificationPage({
   ]);
   const strikes = strikeRows.get(user.id) ?? [];
   const strikeLimit = strikeLimitOf(settings.strikeLimit);
+  // A cap below the verified funds: the desk's own for this buyer, or the new-bidder cap (lib/bid-caps.ts).
+  const capNote = capLine(await bidCapFor(user.id, { settings }));
   // The buyer sees who they listed. Screen results stay with the desk.
   const ownersOf = (entityId: string | null) => ownerRows.filter((owner) => fileKey(owner.userId, owner.buyerEntityId) === fileKey(user.id, entityId));
   const mainOwners = ownersOf(null);
@@ -126,6 +129,12 @@ export default async function VerificationPage({
               </p>
             </>
           )}
+        </section>
+      )}
+      {capNote && (
+        <section id="bid-cap" aria-labelledby="bid-cap-heading" className="mt-6 rounded-xl border border-border p-5">
+          <p id="bid-cap-heading" className="eyebrow">Your bid limit</p>
+          <p className="mt-2 text-sm text-foreground">{capNote}</p>
         </section>
       )}
       {strikes.length > 0 && (

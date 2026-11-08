@@ -8,6 +8,7 @@ import { labelOf } from "@/lib/labels";
 import { upbBucket } from "@/lib/strata";
 import { noteMetrics } from "@/lib/metrics";
 import { prisma } from "@/lib/prisma";
+import { publicListing } from "@/lib/private-listings";
 import { getSettings } from "@/lib/settings";
 import { ensureStories } from "@/lib/stories";
 import { bpsToPercent } from "@/lib/money";
@@ -24,13 +25,14 @@ export default async function HomePage() {
   const [user, settings, notes, liveCount, publicListings] = await Promise.all([
     getCurrentUser(),
     getSettings(),
+    // Private listings stay off the public page: its cards, counts and totals are the open book's (lib/private-listings.ts).
     prisma.note.findMany({
-      where: { listing: { status: { in: ["APPROVED", "PENDING"] } } },
+      where: { listing: { status: { in: ["APPROVED", "PENDING"] }, AND: [publicListing()] } },
       include: { listing: true },
     }),
-    prisma.listing.count({ where: { status: { in: ["APPROVED", "PENDING"] } } }),
+    prisma.listing.count({ where: { status: { in: ["APPROVED", "PENDING"] }, AND: [publicListing()] } }),
     prisma.listing.findMany({
-      where: { status: { in: ["APPROVED", "PENDING"] } },
+      where: { status: { in: ["APPROVED", "PENDING"] }, AND: [publicListing()] },
       include: { notes: true },
       orderBy: { approvedAt: "desc" },
       take: 6,

@@ -18,6 +18,16 @@ export function securityHeaders(appUrl = process.env.NEXT_PUBLIC_APP_URL || "") 
   return headers;
 }
 
+// The one page another site may frame: a broker's intake form at /embed/intake/[code]. Next keeps a header set here
+// over one the route sets, so the site-wide rule skips exactly that path, and the route sends frame-ancestors with the
+// broker's own sites, or 'none' (lib/broker-widget.ts). Deeper paths under it, and everything else, keep 'none'.
+export const FRAMED_SOURCE = "/embed/intake/:code";
+export const SITE_SOURCE = "/:path((?!embed/intake/[^/]+$).*)";
+
+export function framedHeaders(appUrl = process.env.NEXT_PUBLIC_APP_URL || "") {
+  return securityHeaders(appUrl).filter((header) => header.key !== "X-Frame-Options" && header.key !== "Content-Security-Policy");
+}
+
 const nextConfig: NextConfig = {
   serverExternalPackages: ["bcryptjs", "xlsx", "@aws-sdk/client-s3", "nodemailer"],
   experimental: {
@@ -26,7 +36,10 @@ const nextConfig: NextConfig = {
     },
   },
   async headers() {
-    return [{ source: "/:path*", headers: securityHeaders() }];
+    return [
+      { source: SITE_SOURCE, headers: securityHeaders() },
+      { source: FRAMED_SOURCE, headers: framedHeaders() },
+    ];
   },
 };
 

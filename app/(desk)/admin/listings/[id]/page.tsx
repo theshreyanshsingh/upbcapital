@@ -7,12 +7,14 @@ import { sendToBuyers } from "@/actions/outreach";
 import { AuctionForm } from "@/components/auction-form";
 import { ComplianceNote } from "@/components/compliance-note";
 import { SellerIdentityLine } from "@/components/seller-identity";
+import { DeskDiligence } from "@/components/diligence-checklist";
 import { DeskNotes } from "@/components/desk-notes";
 import { DiscrepancyDesk } from "@/components/discrepancy-desk";
 import { LaunchControls } from "@/components/launch-controls";
 import { DocumentReaderPanel } from "@/components/document-reader";
 import { QuestionQueue } from "@/components/listing-questions";
 import { RoomAccessPanel } from "@/components/room-access";
+import { PrivateSalePanel } from "@/components/private-sale";
 import { LoanFileDesk } from "@/components/loan-file-desk";
 import { PhotoManager } from "@/components/photo-manager";
 import { ResultConsent } from "@/components/result-consent";
@@ -47,6 +49,7 @@ import { buyerPrice } from "@/lib/offers";
 import { DUPLICATE_REASONS, duplicatesFor } from "@/lib/duplicates";
 import { prisma } from "@/lib/prisma";
 import { feeTerms, rateText } from "@/lib/fee-schedule";
+import { sellerTermsLine } from "@/lib/seller-decisions";
 import { getSettings } from "@/lib/settings";
 import { joinBlock, leaveBlock, roundText, when } from "@/lib/sale-events";
 import { sheetShows, standingSheet } from "@/lib/standing-bids";
@@ -191,6 +194,8 @@ export default async function AdminListingPage({
         <SellerIdentityLine listing={listing} viewer={user} />
         <ComplianceNote states={listing.notes.map((item) => item.state)} sellerFinanced={listing.sellerFinanced} sellerRole={listing.seller.role} />
         <p className="mt-4 text-sm text-foreground">Aggregate ask {money(ask)} · {listing.notes.length} loan{listing.notes.length === 1 ? "" : "s"} · {listing.matches.length} buy-box matches</p>
+        {/* The seller's own terms (lib/seller-decisions.ts): who pays UPB's fees and their window to answer an ask. */}
+        <p className="mt-1 text-sm text-muted-foreground">{sellerTermsLine(listing)}</p>
 
         <section className="mt-6 border border-border p-5 rounded-xl" aria-labelledby="activity-heading">
           <p id="activity-heading" className="eyebrow">Buyer activity</p>
@@ -261,6 +266,7 @@ export default async function AdminListingPage({
           requests={requests.map((request) => ({ ...request, bidder: realName(request.user) }))}
           engagement={log.status === 200 ? log.engagement : []}
         />
+        <PrivateSalePanel listingId={listing.id} from="admin" readOnly={!sells} />
         <QuestionQueue
           rows={questions.map((row) => ({ ...row, asker: realName(row.asker) }))}
           from="admin"
@@ -363,6 +369,13 @@ export default async function AdminListingPage({
               </table>
             </div>
           )}
+          {sells && (
+            <label className="block">
+              <span className="text-[13px] text-muted-foreground">Reason for the edit</span>
+              <input name="reason" required minLength={3} maxLength={200} placeholder="Corrected the ask to match the tape" className="desk-input mt-2" aria-describedby="edit-reason-hint" />
+              <span id="edit-reason-hint" className="mt-1 block text-xs text-muted-foreground">The seller hears which fields changed and why. The audit log keeps each field before and after.</span>
+            </label>
+          )}
           {sells ? <SubmitButton className="h-11 text-[13px] font-medium">Save edits</SubmitButton> : <p className="text-sm text-muted-foreground">Edits are for the sales side of the desk.</p>}
         </form>
 
@@ -389,6 +402,9 @@ export default async function AdminListingPage({
           listingStatus={listing.status}
           readOnly={!sells}
         />
+
+        {/* The diligence set and a desk-filed tape's confirmation. Approval waits on both. components/diligence-checklist.tsx. */}
+        <DeskDiligence listingId={listing.id} viewer={user} />
 
         {fileNote && (
           <LoanFileDesk

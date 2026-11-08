@@ -13,9 +13,25 @@ export type FeeTier = { upTo: number | null; premiumBps: number; commissionBps: 
 
 export type FeeSchedule = { tiers: FeeTier[]; minPremiumCents: number; minCommissionCents: number };
 
+// Who pays UPB's fees on a listing. SPLIT is the default: the buyer pays the premium and the seller the commission.
+// SELLER pays both out of the proceeds, and BUYER pays both on top of the price. Both fees are worked out as for a
+// split, on the same tiers and minimums, and then the one side pays the two. The seller picks before go-live.
+export const FEE_PAYERS = ["SPLIT", "SELLER", "BUYER"] as const;
+export type FeePayer = (typeof FEE_PAYERS)[number];
+
+export function feePayerOf(value: unknown): FeePayer {
+  return value === "SELLER" || value === "BUYER" ? value : "SPLIT";
+}
+
+export const FEE_PAYER_LABELS: Record<FeePayer, string> = {
+  SPLIT: "Split: the buyer pays the premium, the seller the commission",
+  SELLER: "The seller pays both fees",
+  BUYER: "The buyer pays both fees",
+};
+
 // What a listing trades at: a graded schedule, or flat rates when there is none. Plain data, so a server page can
-// hand it to a bid form.
-export type FeeTerms = { schedule: FeeSchedule | null; premiumBps: number; commissionBps: number };
+// hand it to a bid form. payer is left off for a split, which is how every listing traded before the choice.
+export type FeeTerms = { schedule: FeeSchedule | null; premiumBps: number; commissionBps: number; payer?: FeePayer };
 
 export type FeeSettings = {
   buyerPremiumBps: number;
@@ -29,6 +45,8 @@ export type ListingFees = {
   feeBuyerPremiumBps?: number | null;
   feeSellerCommissionBps?: number | null;
   feeSchedule?: unknown;
+  // SPLIT, SELLER or BUYER. Missing means SPLIT.
+  feePayer?: string | null;
 };
 
 export const MAX_TIER_BPS = 1000;
@@ -127,10 +145,13 @@ export function tierFor(schedule: FeeSchedule, price: number): FeeTier {
 export function feeTerms(listing: ListingFees | null | undefined, settings: FeeSettings): FeeTerms {
   const premiumBps = listing?.feeBuyerPremiumBps ?? settings.buyerPremiumBps;
   const commissionBps = listing?.feeSellerCommissionBps ?? settings.sellerCommissionBps;
+  // The seller's choice of who pays, which locks with the rates at go-live.
+  const payer = feePayerOf(listing?.feePayer);
+  const paid = payer === "SPLIT" ? {} : { payer };
   const kept = readSchedule(listing?.feeSchedule);
-  if (kept) return { schedule: kept, premiumBps, commissionBps };
+  if (kept) return { schedule: kept, premiumBps, commissionBps, ...paid };
   const keptFlat = listing?.feeBuyerPremiumBps != null || listing?.feeSellerCommissionBps != null;
-  return { schedule: keptFlat ? null : readSchedule(settings.feeSchedule), premiumBps, commissionBps };
+  return { schedule: keptFlat ? null : readSchedule(settings.feeSchedule), premiumBps, commissionBps, ...paid };
 }
 
 // Flat terms from a single rate, for a caller that has only the premium.
@@ -151,6 +172,8 @@ export type Fees = {
   // Whether the minimum, or the price itself, set the fee rather than the rate.
   premiumFloor: boolean;
   commissionFloor: boolean;
+  // Set when one side pays both fees. A split leaves it off.
+  payer?: FeePayer;
 };
 
 export type ChargeOptions = {
@@ -161,8 +184,27 @@ export type ChargeOptions = {
 
 // The one place a fee is worked out. Flat terms charge exactly what they always have: the rate on the price, with no
 // minimum. A schedule charges the tier's rate on the whole price, then lifts each side to its minimum, and never
-// past the price.
+// past the price. When one side pays both, both fees are worked out as for a split and then move to that side.
 export function chargeFees(terms: FeeTerms, price: number, options: ChargeOptions = {}): Fees {
+  return movePayer(splitFees(terms, price, options), feePayerOf(terms.payer), options.deskPurchase === true);
+}
+
+// One side pays the premium and the commission together, never more than the price. A desk purchase has no premium
+// to move, and with BUYER the desk doesn't pay itself the commission either.
+export function movePayer(fees: Fees, payer: FeePayer, deskPurchase = false): Fees {
+  if (payer === "SPLIT") return fees;
+  const none = deskPurchase && payer === "BUYER";
+  const sum = none ? 0 : fees.premiumCents + fees.commissionCents;
+  const both = Math.min(fees.saleCents, sum);
+  const floor = !none && (fees.premiumFloor || fees.commissionFloor || both !== sum);
+  const bps = none ? 0 : fees.premiumBps + fees.commissionBps;
+  if (payer === "SELLER") {
+    return { ...fees, premiumCents: 0, commissionCents: both, buyerTotalCents: fees.saleCents, netToSellerCents: fees.saleCents - both, premiumBps: 0, commissionBps: bps, premiumFloor: false, commissionFloor: floor, payer };
+  }
+  return { ...fees, premiumCents: both, commissionCents: 0, buyerTotalCents: fees.saleCents + both, netToSellerCents: fees.saleCents, premiumBps: bps, commissionBps: 0, premiumFloor: floor, commissionFloor: false, payer };
+}
+
+function splitFees(terms: FeeTerms, price: number, options: ChargeOptions): Fees {
   const desk = options.deskPurchase === true;
   const chargeCommission = !desk || Boolean(options.chargeDeskFees);
   if (!terms.schedule) {
@@ -228,8 +270,23 @@ function dollars(cents: number) {
   return `$${Math.round(cents / 100).toLocaleString("en-US")}`;
 }
 
-// "2.50%", or for a schedule "0.75% to 3.50% by sale size, at least $750".
-export function rateText(terms: FeeTerms, side: "premium" | "commission") {
+// The terms as one side pays them when it pays both: each tier's two rates added, and the two minimums added.
+function bothSides(terms: FeeTerms): FeeTerms {
+  const schedule = terms.schedule
+    ? {
+        tiers: terms.schedule.tiers.map((tier) => ({ upTo: tier.upTo, premiumBps: tier.premiumBps + tier.commissionBps, commissionBps: 0 })),
+        minPremiumCents: terms.schedule.minPremiumCents + terms.schedule.minCommissionCents,
+        minCommissionCents: 0,
+      }
+    : null;
+  return { schedule, premiumBps: terms.premiumBps + terms.commissionBps, commissionBps: 0 };
+}
+
+// "2.50%", or for a schedule "0.75% to 3.50% by sale size, at least $750". When one side pays both fees, the other
+// side reads 0.00% and the paying side reads the two together.
+export function rateText(terms: FeeTerms, side: "premium" | "commission"): string {
+  const payer = feePayerOf(terms.payer);
+  if (payer !== "SPLIT") return (payer === "BUYER") === (side === "premium") ? rateText(bothSides(terms), "premium") : percent(0);
   if (!terms.schedule) return percent(side === "premium" ? terms.premiumBps : terms.commissionBps);
   const rates = terms.schedule.tiers.map((tier) => (side === "premium" ? tier.premiumBps : tier.commissionBps));
   const low = Math.min(...rates);
@@ -243,8 +300,19 @@ export function rateText(terms: FeeTerms, side: "premium" | "commission") {
 export function chargedText(fees: Fees, side: "premium" | "commission") {
   const floor = side === "premium" ? fees.premiumFloor : fees.commissionFloor;
   const cents = side === "premium" ? fees.premiumCents : fees.commissionCents;
-  if (floor) return cents === fees.saleCents ? "capped at the price" : `the ${dollars(cents)} minimum`;
+  if (floor && cents === fees.saleCents) return "capped at the price";
+  // Both fees on one side: a minimum may have set one of the two, so the sum isn't a single minimum.
+  if (floor && fees.payer && fees.payer !== "SPLIT") return "both fees, minimums included";
+  if (floor) return `the ${dollars(cents)} minimum`;
   return percent(side === "premium" ? fees.premiumBps : fees.commissionBps);
+}
+
+// Who pays UPB's fees on these terms, in the words a bidder reads before they bid.
+export function payerText(terms: FeeTerms) {
+  const payer = feePayerOf(terms.payer);
+  if (payer === "SELLER") return "The seller pays UPB's fees on this listing, so nothing is added to an accepted price.";
+  if (payer === "BUYER") return `The buyer pays UPB's fees on this listing: a premium of ${rateText(terms, "premium")}, added to an accepted price, covers both sides. It is not part of your bid.`;
+  return `A buyer premium of ${rateText(terms, "premium")} is added to an accepted price. It is not part of your bid.`;
 }
 
 // A tier's price band: "Up to $100,000", "$100,001 to $250,000", "Over $250,000".

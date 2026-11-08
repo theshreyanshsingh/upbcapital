@@ -4,6 +4,7 @@ import { requireRole } from "@/lib/auth";
 import { money, num } from "@/lib/format";
 import { launchPending, launchTime } from "@/lib/launch-rules";
 import { prisma } from "@/lib/prisma";
+import { canSee, listingAccess } from "@/lib/private-listings";
 import { isPro } from "@/lib/settings";
 
 export const metadata = { title: "Favorites" };
@@ -11,11 +12,16 @@ export const metadata = { title: "Favorites" };
 export default async function FavoritesPage() {
   const user = await requireRole(["BUYER"]);
   const pro = isPro(user);
-  const favorites = await prisma.favorite.findMany({
-    where: { userId: user.id },
-    include: { listing: { include: { notes: true } } },
-    orderBy: { createdAt: "desc" },
-  });
+  // A saved listing since made private, or from a seller who excludes this buyer, drops off the list.
+  const [saved, access] = await Promise.all([
+    prisma.favorite.findMany({
+      where: { userId: user.id },
+      include: { listing: { include: { notes: true } } },
+      orderBy: { createdAt: "desc" },
+    }),
+    listingAccess(user),
+  ]);
+  const favorites = saved.filter((favorite) => canSee(access, favorite.listing));
   return (
     <div>
       <PageIntro eyebrow="Favorites" title="Paper you kept." />

@@ -9,6 +9,7 @@ import {
   CREDIT_SCORE_TYPES,
   LOAN_PURPOSES,
   LOSS_MIT_STAGES,
+  PAYMENT_TYPES,
   VALUE_TYPES,
   parseMersMin,
   parsePayString,
@@ -134,6 +135,24 @@ export const noteSchema = z.object({
   lossMitStage: optionalEnum(values(LOSS_MIT_STAGES), "Choose the loss mitigation stage."),
   inheritedCovenants: optionalText(600, "Keep the covenants under 600 characters."),
   originatorLicense: optionalText(200, "Keep the originator's license under 200 characters."),
+  // Tape v3.
+  originalBalance: optionalNumber(z.coerce.number({ error: "Enter the original balance as an amount." }).positive("The original balance must be greater than zero.")),
+  // An escrow account the servicer advanced runs negative.
+  escrowBalance: optionalNumber(z.coerce.number({ error: "Enter the escrow balance as an amount." })),
+  arrearsAmount: optionalNumber(z.coerce.number({ error: "Enter the arrears as an amount." }).min(0, "Arrears can't be below zero.")),
+  payoffAmount: optionalNumber(z.coerce.number({ error: "Enter the payoff as an amount." }).positive("The payoff must be greater than zero.")),
+  payoffAsOf: optionalDate,
+  balloonDate: optionalDate,
+  paymentType: optionalEnum(values(PAYMENT_TYPES), "Choose the payment type."),
+  seniorLienBalance: optionalNumber(z.coerce.number({ error: "Enter the senior lien balance as an amount." }).min(0, "The senior lien balance can't be below zero.")),
+  scraFlag: yesNo,
+  borrowerDeceased: yesNo,
+  litigationFlag: yesNo,
+  litigationNote: optionalText(300, "Keep the litigation note under 300 characters."),
+}).superRefine((input, context) => {
+  // A payoff is only a figure with the date it's good through.
+  if (input.payoffAmount != null && !input.payoffAsOf) context.addIssue({ code: "custom", path: ["payoffAsOf"], message: "Give the date the payoff is good through." });
+  if (input.payoffAsOf && input.payoffAmount == null) context.addIssue({ code: "custom", path: ["payoffAmount"], message: "Enter the payoff amount for that date." });
 });
 
 export function firstZodError(error: z.ZodError) {
@@ -151,6 +170,7 @@ export function noteTitle(input: Pick<NoteInput, "lienPosition" | "paymentStatus
 // The note wizard's draft for a stored servicing record, for the edit page's `initial`.
 export function servicingDraft(note: Pick<Note, ServicingKey>): Record<ServicingKey, string> {
   const flag = (value: boolean | null) => (value == null ? "" : value ? "true" : "false");
+  const amount = (value: number | null) => (value == null ? "" : String(value));
   return {
     loanNumber: note.loanNumber ?? "",
     servicerName: note.servicerName ?? "",
@@ -179,5 +199,17 @@ export function servicingDraft(note: Pick<Note, ServicingKey>): Record<Servicing
     lossMitStage: note.lossMitStage ?? "",
     inheritedCovenants: note.inheritedCovenants ?? "",
     originatorLicense: note.originatorLicense ?? "",
+    originalBalance: amount(note.originalBalance),
+    escrowBalance: amount(note.escrowBalance),
+    arrearsAmount: amount(note.arrearsAmount),
+    payoffAmount: amount(note.payoffAmount),
+    payoffAsOf: isoDate(note.payoffAsOf) ?? "",
+    balloonDate: isoDate(note.balloonDate) ?? "",
+    paymentType: note.paymentType ?? "",
+    seniorLienBalance: amount(note.seniorLienBalance),
+    scraFlag: flag(note.scraFlag),
+    borrowerDeceased: flag(note.borrowerDeceased),
+    litigationFlag: flag(note.litigationFlag),
+    litigationNote: note.litigationNote ?? "",
   };
 }

@@ -7,7 +7,7 @@ import { buyItNow } from "@/actions/buy-now";
 import { SubmitButton } from "@/components/submit-button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { flatTerms, premiumOn, rateText, type FeeTerms } from "@/lib/fee-schedule";
+import { flatTerms, payerText, premiumOn, type FeeTerms } from "@/lib/fee-schedule";
 import { ConfirmRows, ConfirmSubmit } from "@/components/confirm-submit";
 import { EntityField, EntityPicker, entityRows, useEntityChoice, type EntityOption } from "@/components/entity-picker";
 import { LoanPriceFields, type LoanPriceSummary, type PricedLoan } from "@/components/loan-price-fields";
@@ -92,7 +92,8 @@ export function OfferPanel({
       <p className="eyebrow">Make a bid</p>
       <h2 className="mt-2 font-semibold tracking-tight text-lg text-foreground">{heading || "Offer or ask for the file"}</h2>
       <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-        A buyer premium of {rateText(terms, "premium")} is added to an accepted price. It is not part of your bid.{" "}
+        {/* Says who pays UPB's fees, which the seller chose before the listing went live. */}
+        {payerText(terms)}{" "}
         <Link href="/fees" className="text-link">See the fee schedule</Link>.
       </p>
       {credential && !credential.expired && canOffer && verified && (
@@ -100,6 +101,8 @@ export function OfferPanel({
           {credential.line} · {money(Math.max(0, credential.headroom))} headroom
         </p>
       )}
+      {/* A cap below the verified funds holds every bid here, buy it now included (lib/bid-caps.ts). */}
+      {bidding && standing?.cap && <p className="mt-2 text-[13px] text-foreground tabular-nums">{standing.cap.line}</p>}
       {/* Loan bids in the pool table carry the same choice, so it shows whenever the buyer can bid at all. */}
       {verified && !stopped && !acknowledgeFirst && <EntityPicker listingId={listingId} options={entities} />}
       {bidding && buyNow && <BuyNowForm listingId={listingId} terms={terms} buyNow={buyNow} deposit={deposit} diligenceDays={diligenceDays} notice={notice} standing={standing} entity={entity} buyingAs={buyingAs} />}
@@ -248,6 +251,7 @@ function BuyNowForm({
         <div className="flex justify-between border-t border-border pt-2 font-semibold tracking-tight text-foreground"><span>All-in</span><span>{money(price + premium)}</span></div>
       </div>
       <p className="text-xs leading-relaxed text-muted-foreground">{BUY_NOW_BUYER_SUMMARY}</p>
+      {standing?.cap && Math.round(price * 100) > standing.cap.cents + 1 && <p className="text-[13px] text-bad tabular-nums">This price is over your cap. {standing.cap.line}</p>}
       <ConfirmSubmit
         title={`Buy it now at ${money(price)}?`}
         consequence={`${buyNowTerms({ pool: buyNow.pool, deposit, diligenceDays })}${notice}`}

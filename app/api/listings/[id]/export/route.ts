@@ -8,9 +8,11 @@ import { isoDate } from "@/lib/format";
 import { dealAccess } from "@/lib/data-room";
 import { showableAvm } from "@/lib/enrichment";
 import { prisma } from "@/lib/prisma";
+import { canSeeListing } from "@/lib/private-listings";
 import { isPro } from "@/lib/settings";
 import { couponBucket, ltvBucket, stratify, upbBucket } from "@/lib/strata";
-import { termsExportColumns } from "@/lib/tape-fields";
+import { mismoTape } from "@/lib/mismo";
+import { riskExportColumns, termsExportColumns } from "@/lib/tape-fields";
 
 export const runtime = "nodejs";
 
@@ -28,11 +30,25 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
   const buyer = user.role === "BUYER" && user.accountStatus === "APPROVED" && isPro(user);
   if (!owner && !desk && !buyer) return new Response("The tape export is part of Pro.", { status: 403 });
   if (!owner && !desk && !listingIsPublic(listing.status)) return new Response("Not found.", { status: 404 });
+  // A private listing, or one whose seller excludes this buyer, is not found (lib/private-listings.ts).
+  if (!owner && !desk && !(await canSeeListing(user, listing))) return new Response("Not found.", { status: 404 });
   // Streets follow the same rule as the data room: closed to losing bidders once a loan or listing is in contract.
   const deal = owner || desk ? null : await dealAccess(listing.id, user.id);
   const open = (note: { id: string; tradeStatus: string }) =>
     !deal || loanOpenTo({ tradeStatus: note.tradeStatus, listingStatus: listing.status, signedNda: ndaOpensRoom(listing.ndas[0]), wholeParty: deal.whole, loanParty: deal.loans.has(note.id) });
-  const format = new URL(request.url).searchParams.get("format") === "xlsx" ? "xlsx" : "csv";
+  const asked = new URL(request.url).searchParams.get("format");
+  const format = asked === "xlsx" ? "xlsx" : asked === "mismo" ? "mismo" : "csv";
+  // The same tape keyed by MISMO names, under the same check. Identifying fields follow the street.
+  if (format === "mismo") {
+    const body = mismoTape({ listingId: listing.id, notes: listing.notes.map((note) => ({ note, open: open(note) })) });
+    await audit(user.id, "TAPE_EXPORT", "listing", listing.id, "Tape export (MISMO JSON)");
+    return new Response(JSON.stringify(body, null, 2), {
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        "Content-Disposition": `attachment; filename="tape-${listing.id.slice(-6)}-mismo.json"`,
+      },
+    });
+  }
   const yesNo = (flag: boolean | null) => (flag == null ? "" : flag ? "yes" : "no");
   const loans = listing.notes.map((note) => {
     const upb = Number(note.upb);
@@ -70,6 +86,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       hoaLien: yesNo(note.hoaLien),
       taxDelinquent: yesNo(note.taxDelinquent),
       ...termsExportColumns(note, visible),
+      ...riskExportColumns(note, visible),
     };
   });
   const strata = stratify(loans.map((loan) => ({

@@ -9,6 +9,7 @@ import { announceInquiry, checkOffer, logEligibility, writeInquiry } from "@/lib
 import { launchBlock } from "@/lib/launch-rules";
 import { ofacBlocks } from "@/lib/ofac";
 import { prisma } from "@/lib/prisma";
+import { canSee, canSeeListing, listingAccess } from "@/lib/private-listings";
 import { OFAC_HOLD_MESSAGE, ofacHold } from "@/lib/screening";
 import { getSettings, isPro } from "@/lib/settings";
 import { headlinePrices, type CashFlowInput } from "@/lib/underwriting";
@@ -403,6 +404,8 @@ export async function inviteToConfirm(matchId: string, listingId: string, actorI
     now,
   });
   if (block || price == null) return { error: block ?? "There is no standing price to send." } as const;
+  // A private listing goes to its invitees only, and never to a buyer its seller excludes. The buyer isn't told.
+  if (!(await canSeeListing(buyer, match.listing))) return { error: "This buyer can't see this listing: it is private, or its seller excludes them." } as const;
   // A buyer couldn't confirm before the launch, so the invite waits for it.
   const coming = launchBlock(match.listing, "invite", now);
   if (coming) return { error: coming } as const;
@@ -476,11 +479,13 @@ export async function passStanding(matchId: string, userId: string, now = new Da
   return { error: null } as const;
 }
 
-// Invitations the buyer hasn't answered, on listings still taking bids.
-export function openInvitations(userId: string) {
-  return prisma.listingMatch.findMany({
+// Invitations the buyer hasn't answered, on listings still taking bids and still shown to them.
+export async function openInvitations(userId: string) {
+  const access = await listingAccess({ id: userId, role: "BUYER" });
+  const rows = await prisma.listingMatch.findMany({
     where: { userId, invitedAt: { not: null }, indicativePrice: { not: null }, listing: { status: "APPROVED" }, ...unset("answeredAt") },
     include: { listing: { include: { notes: { select: { upb: true } } } }, buyBox: true },
     orderBy: { invitedAt: "desc" },
   });
+  return rows.filter((row) => canSee(access, row.listing));
 }

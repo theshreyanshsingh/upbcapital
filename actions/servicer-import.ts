@@ -5,6 +5,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { requireUser } from "@/lib/auth";
 import { secureCookies } from "@/lib/deploy";
+import { reopenDeskTape } from "@/lib/desk-intake";
 import { answerable } from "@/lib/discrepancies";
 import { flagDuplicates } from "@/lib/duplicates";
 import { notifyDesk } from "@/lib/email";
@@ -92,7 +93,7 @@ function appliedNotice(result: ImportResult, source: ServicerSource, seller: boo
   const fields = (count: number, what: string) => `${count} ${count === 1 ? "field" : "fields"} ${what}`;
   const questions = result.raised === 1 ? "1 difference is" : `${result.raised} differences are`;
   const answer = seller ? "for you to fix or explain" : "for the seller to fix or explain";
-  return `The ${source.name} report is applied to ${loans}: ${fields(result.filled, "filled")} and ${fields(result.confirmed, "confirmed")}.${result.raised ? ` ${questions} open ${answer}.` : ""}`;
+  return `The ${source.name} report is applied to ${loans}: ${fields(result.filled, "filled")}, ${result.updated ? `${fields(result.updated, "updated to the report's newer figure")}, ` : ""}and ${fields(result.confirmed, "confirmed")}.${result.raised ? ` ${questions} open ${answer}.` : ""}`;
 }
 
 export async function applyServicerReport(formData: FormData) {
@@ -114,6 +115,9 @@ export async function applyServicerReport(formData: FormData) {
   // A filled field changes how the tape scores against buy boxes, and a new loan number can reveal a duplicate.
   if (result.filled) await rescoreListing(listing.id, false).catch(() => null);
   if (result.identified) await flagDuplicates(listing.id, listing.sellerId);
+  // The desk filled blanks on a desk-filed tape the seller confirmed, so the seller confirms it again (lib/desk-intake.ts).
+  const written = result.filled + (result.updated ?? 0);
+  if (listing.sellerId !== user.id && written) await reopenDeskTape(user.id, listing.id, `${written} field${written === 1 ? "" : "s"} from the ${staged.source.name} report`);
   if (user.role !== "ADMIN") {
     await notifyDesk(
       `Servicer report · ${listing.title}`,

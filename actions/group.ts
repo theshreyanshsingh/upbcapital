@@ -6,11 +6,13 @@ import { ndaOpensRoom } from "@/lib/acl";
 import { audit } from "@/lib/audit";
 import { requireUser } from "@/lib/auth";
 import { canSubmitBid, sealedFromSeller } from "@/lib/auction";
+import { bidCapBlock } from "@/lib/bid-caps";
 import { guardDesk, requireDesk } from "@/lib/staff";
 import { notify, notifyDesk } from "@/lib/email";
 import { fillState, resolvePositionAmount } from "@/lib/group-buy";
 import { notifySeats } from "@/lib/group-events";
 import { prisma } from "@/lib/prisma";
+import { canSeeListing } from "@/lib/private-listings";
 import { lapsedFileBlock } from "@/lib/buyer-file";
 import { canSubmitOffer } from "@/lib/verification";
 
@@ -18,6 +20,12 @@ import { canSubmitOffer } from "@/lib/verification";
 async function seatRecertGate(userId: string) {
   const lapsed = await lapsedFileBlock(userId);
   if (lapsed) redirect(`/buyer/verification?error=${encodeURIComponent(lapsed)}`);
+}
+
+// A seat is the buyer's own pledge, so it stays under their bid cap as one bid does (lib/bid-caps.ts).
+async function seatCapGate(userId: string, amount: number, back: string) {
+  const capped = await bidCapBlock(userId, amount);
+  if (capped) redirect(`${back}?error=${encodeURIComponent(capped)}`);
 }
 
 const OPEN_GROUP = ["GATHERING", "OFFERED", "COUNTERED", "CLOSING"] as const;
@@ -28,13 +36,16 @@ function dollars(raw: FormDataEntryValue | null) {
 }
 
 async function buyerReady(userId: string, listingId: string) {
-  const [user, profile, nda] = await Promise.all([
+  const [user, profile, nda, listing] = await Promise.all([
     prisma.user.findUnique({ where: { id: userId } }),
     prisma.buyerProfile.findUnique({ where: { userId } }),
     prisma.ndaAcknowledgment.findUnique({ where: { userId_listingId: { userId, listingId } } }),
+    prisma.listing.findUnique({ where: { id: listingId }, select: { id: true, sellerId: true, brokerId: true, visibility: true } }),
   ]);
   if (!user) return "Sign in again.";
   if (user.role === "ADMIN") return null;
+  // A private listing seats its invitees only, and an excluded buyer finds the group closed (lib/private-listings.ts).
+  if (!listing || !(await canSeeListing(user, listing))) return "This group is not taking seats.";
   const gate = canSubmitOffer({ role: user.role, accountStatus: user.accountStatus, verificationStatus: profile?.status ?? null });
   if (!gate.ok) return gate.reason === "verification" ? "Verify the buyer file before joining a group." : "This account cannot join a group.";
   if (!nda) return "Sign the confidentiality agreement before taking a seat.";
@@ -142,6 +153,8 @@ export async function openGroup(formData: FormData) {
   if (structure === "SENIOR_JUNIOR" && (seniorYield == null || seniorYield <= 0 || seniorYield > 20)) {
     redirect(`${back}?error=Set the senior yield between 0 and 20%.`);
   }
+  const pledge = dollars(formData.get("amount"));
+  if (user.role !== "ADMIN" && pledge && pledge > 0) await seatCapGate(user.id, pledge, back);
   const group = await prisma.groupBuy.create({
     data: {
       listingId,
@@ -191,6 +204,7 @@ export async function joinGroup(formData: FormData) {
     remaining: state.remaining,
   });
   if (sized == null) redirect(`${back}?error=That seat is below the minimum or larger than what is left.`);
+  await seatCapGate(user.id, sized, back);
   const slice = group.structure === "SENIOR_JUNIOR" ? (formData.get("slice") === "JUNIOR" ? "JUNIOR" : "SENIOR") : "PARI";
   const seatNo = group.positions.reduce((max, seat) => Math.max(max, seat.seat), 0) + 1;
   const dropped = group.positions.find((seat) => seat.userId === user.id && seat.status === "DROPPED");
@@ -216,6 +230,7 @@ export async function reconfirmSeat(formData: FormData) {
   if (!seat) redirect(`/groups/${groupId}?error=There is nothing to reconfirm.`);
   // Reconfirming holds the seat to the counter's price.
   await seatRecertGate(user.id);
+  await seatCapGate(user.id, Number(seat.amount), `/groups/${groupId}`);
   await prisma.groupPosition.update({ where: { id: seat.id }, data: { status: "PLEDGED" } });
   const group = await prisma.groupBuy.findUnique({ where: { id: groupId }, include: { positions: true } });
   const waiting = group?.positions.some((row) => row.id !== seat.id && row.status === "RECONFIRM");

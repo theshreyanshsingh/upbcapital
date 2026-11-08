@@ -143,7 +143,9 @@ test("values read the same in any spelling, and compare with the tape the way th
   assert.equal(compareWithTape("maturityDate", "2049-07-01", tape), "match");
   assert.equal(compareWithTape("lienPosition", "SECOND", tape), "mismatch");
   assert.equal(compareWithTape("borrowerName", "Dana Whitfield", tape), "blank");
-  assert.equal(compareWithTape("originalBalance", "350000", tape), "none");
+  // Tape v3 gave the original balance a column, so it compares like any field; one the tape leaves empty reads blank.
+  assert.equal(compareWithTape("originalBalance", "350000", tape), "blank");
+  assert.equal(compareWithTape("memo", "anything", tape), "none");
   assert.equal(readingModeOf(undefined), "SHADOW");
   assert.equal(readingModeOf("ON"), "ON");
   assert.equal(readingModeOf("on"), "SHADOW");
@@ -362,11 +364,12 @@ test("a match never verifies a field until the desk confirms it, and confirming 
     // "418 Candela Avenue" against the tape's own spelling verifies the tape as it stands, without a difference.
     const street = await prisma.aiFinding.findFirstOrThrow({ where: { documentId: note.id, field: "streetAddress" } });
     assert.ok((await confirmFinding(room.desk.id, street.id)).ok);
-    // The original balance has no tape column, so confirming it notes it and verifies nothing.
+    // The original balance is a tape column since tape v3, and this tape leaves it empty. Confirming the note's figure
+    // verifies the field and asks the seller to fill it in, as the gate does for any blank field.
     const original = await prisma.aiFinding.findFirstOrThrow({ where: { documentId: note.id, field: "originalBalance" } });
     const noted = await confirmFinding(room.desk.id, original.id);
-    assert.ok(noted.ok && !noted.value.verified);
-    assert.equal(await prisma.fieldDiscrepancy.count({ where: { listingId: room.listing.id } }), 0);
+    assert.ok(noted.ok && noted.value.verified && noted.value.raised);
+    assert.equal(await prisma.fieldDiscrepancy.count({ where: { listingId: room.listing.id } }), 1);
 
     // Reading the file again keeps what the desk decided and doesn't propose it again.
     assert.ok((await readDocument(note.id, { reader: rulesReader(), mode: "SHADOW" })).ok);

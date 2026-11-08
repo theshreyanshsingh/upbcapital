@@ -3,6 +3,7 @@ import { loanOpenTo, ndaOpensRoom } from "@/lib/acl";
 import { audit } from "@/lib/audit";
 import { dealAccess } from "@/lib/data-room";
 import { prisma } from "@/lib/prisma";
+import { listingSight } from "@/lib/private-listings";
 import { getSettings } from "@/lib/settings";
 import { extensionOf, mimeFor, putBytes, safeBasename } from "@/lib/storage";
 import { uploadProblem } from "@/lib/uploads";
@@ -79,17 +80,21 @@ export async function photoViewer(user: ViewerUser, listing: { id: string; selle
 export async function photoForViewer(user: ViewerUser, photoId: string) {
   const photo = await prisma.document.findUnique({
     where: { id: photoId },
-    include: { listing: { select: { id: true, status: true, approvedAt: true, sellerId: true, brokerId: true, launchAt: true } } },
+    include: { listing: { select: { id: true, status: true, approvedAt: true, sellerId: true, brokerId: true, launchAt: true, visibility: true } } },
   });
   if (!photo || !isPhoto(photo)) return { photo: null, status: 404 } as const;
   const { listing } = photo;
   const viewer = await photoViewer(user, listing);
   if (!viewer.admin && !viewer.owner) {
+    // A listing hidden from this buyer has no photos for them either (lib/private-listings.ts).
+    const sight = await listingSight(user, listing);
+    if (!sight.visible) return { photo: null, status: 404 } as const;
     const [settings, live] = await Promise.all([
       getSettings(),
-      prisma.listing.findMany({ where: { status: { in: ["APPROVED", "PENDING"] } }, select: { id: true, status: true, approvedAt: true } }),
+      prisma.listing.findMany({ where: { status: { in: ["APPROVED", "PENDING"] } }, select: { id: true, status: true, approvedAt: true, visibility: true } }),
     ]);
     const access = canOpenListing({
+      invited: sight.invited,
       viewer: user,
       status: listing.status,
       approvedAt: listing.approvedAt,

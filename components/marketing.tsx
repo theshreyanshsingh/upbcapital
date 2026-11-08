@@ -7,6 +7,7 @@ import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 
 const links = [
   { href: "/#how", label: "How it works" },
+  { href: "/open", label: "Listings" },
   { href: "/sell", label: "Sell a note" },
   { href: "/#pricing", label: "Pricing" },
   { href: "/learn", label: "Learn" },
@@ -83,12 +84,15 @@ export function MarketingFooter() {
         <div className="flex flex-wrap gap-x-8 gap-y-3 text-sm font-medium text-muted-foreground">
           <Link href="/login" className="transition-colors hover:text-foreground">Sign in</Link>
           <Link href="/signup" className="transition-colors hover:text-foreground">Request access</Link>
+          <Link href="/open" className="transition-colors hover:text-foreground">Listings</Link>
+          <Link href="/announcements" className="transition-colors hover:text-foreground">Deal announcements</Link>
           <Link href="/results" className="transition-colors hover:text-foreground">Results</Link>
           <Link href="/fees" className="transition-colors hover:text-foreground">Fees</Link>
           <Link href="/servicers" className="transition-colors hover:text-foreground">Servicers</Link>
           <Link href="/terms" className="transition-colors hover:text-foreground">Terms</Link>
           <Link href="/privacy" className="transition-colors hover:text-foreground">Privacy</Link>
           <Link href="/security" className="transition-colors hover:text-foreground">Security</Link>
+          <Link href="/tape-standard" className="transition-colors hover:text-foreground">Tape standard</Link>
           {desk && <a href={`mailto:${desk}`} className="transition-colors hover:text-foreground">{desk}</a>}
         </div>
       </div>

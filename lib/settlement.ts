@@ -1,5 +1,6 @@
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import { closingLoans } from "@/lib/closing";
+import { prorationDirection, readProration } from "@/lib/proration";
 
 export type Variance = { state: "none" | "match" | "short" | "over"; diffCents: number };
 
@@ -37,7 +38,38 @@ type StatementClosing = {
   depositStatus?: string | null;
   depositResolvedAt?: Date | null;
   depositRefundReference?: string | null;
+  // The proration between the cut-off and closing, owed to the seller when positive. lib/proration.ts.
+  prorationCents?: number | null;
+  prorationDetail?: unknown;
 };
+
+// The proration moves what the buyer wires and what the seller nets by the same cents. The stored price and fees
+// stay as they are, so every expected total reads through these.
+export function buyerDueCents(closing: { buyerTotalCents: number; prorationCents?: number | null }) {
+  return closing.buyerTotalCents + (closing.prorationCents ?? 0);
+}
+
+export function sellerNetCents(closing: { netToSellerCents: number; prorationCents?: number | null }) {
+  return closing.netToSellerCents + (closing.prorationCents ?? 0);
+}
+
+// The proration as its own lines, the same on each side: principal paid down since the cut-off at the price-to-UPB
+// ratio, and interest to closing per diem. A stored figure without its detail still shows as one line.
+function prorationLines(closing: StatementClosing): StatementLine[] {
+  if (closing.prorationCents == null) return [];
+  const detail = readProration(closing.prorationDetail);
+  if (!detail) return [{ label: "Proration", cents: closing.prorationCents, detail: prorationDirection(closing.prorationCents) }];
+  const loans = detail.loans.length;
+  const paidDown = detail.loans.reduce((sum, loan) => sum + loan.paidDownCents, 0);
+  return [
+    {
+      label: "Proration, principal since cut-off",
+      cents: detail.principalCents,
+      detail: `${detail.cutoffDate} to ${detail.closingDate} · ${paidDown >= 0 ? "paid down" : "balance up"} ${dollars(Math.abs(paidDown))}${loans > 1 ? ` across ${loans} loans` : ""}`,
+    },
+    { label: "Proration, interest to closing", cents: detail.interestCents, detail: "Per diem at the note rate, actual/365" },
+  ];
+}
 
 // The deposit's outcome as a statement line, once the deal ended. The refund reference is the buyer's wire, so the
 // seller's line leaves it out.
@@ -78,11 +110,12 @@ export function statementSide(input: { role: string; userId: string; sellerId: s
 }
 
 // The deposit counts toward what the buyer owes, so the balance wire is checked against the total less the deposit.
-export function balanceDueCents(closing: { buyerTotalCents: number; depositReceivedCents?: number | null }) {
-  return closing.buyerTotalCents - (closing.depositReceivedCents ?? 0);
+// The proration counts too.
+export function balanceDueCents(closing: { buyerTotalCents: number; depositReceivedCents?: number | null; prorationCents?: number | null }) {
+  return buyerDueCents(closing) - (closing.depositReceivedCents ?? 0);
 }
 
-export function buyerFundsCheck(closing: { buyerTotalCents: number; fundsReceivedCents: number | null; depositReceivedCents?: number | null }) {
+export function buyerFundsCheck(closing: { buyerTotalCents: number; fundsReceivedCents: number | null; depositReceivedCents?: number | null; prorationCents?: number | null }) {
   return variance(balanceDueCents(closing), closing.fundsReceivedCents);
 }
 
@@ -90,7 +123,7 @@ export function buyerFundsCheck(closing: { buyerTotalCents: number; fundsReceive
 // for its own book has no buyer wire to wait for.
 export function moneyGate(
   stepKey: string,
-  closing: { deskBidId?: string | null; buyerTotalCents: number; fundsReceivedCents: number | null; depositCents?: number | null; depositReceivedCents?: number | null },
+  closing: { deskBidId?: string | null; buyerTotalCents: number; fundsReceivedCents: number | null; depositCents?: number | null; depositReceivedCents?: number | null; prorationCents?: number | null },
   funders: { status: string }[],
 ) {
   if (closing.deskBidId) return null;
@@ -120,7 +153,7 @@ const DELIVERY_STEPS = [
 // full, every group share funded, and the collateral and assignment steps marked done. Returns what is missing,
 // or null. A desk purchase has no buyer wire to wait for, but its collateral still has to arrive.
 export function proceedsGate(
-  closing: { deskBidId?: string | null; buyerTotalCents: number; fundsReceivedCents: number | null; depositCents?: number | null; depositReceivedCents?: number | null },
+  closing: { deskBidId?: string | null; buyerTotalCents: number; fundsReceivedCents: number | null; depositCents?: number | null; depositReceivedCents?: number | null; prorationCents?: number | null },
   funders: { status: string }[],
   steps: { key: string; status: string }[],
 ) {
@@ -165,7 +198,7 @@ function shareSection(share: FunderShare) {
 
 // The price and fee rows each side sees on the closing page, the same figures as its statement.
 export function economicsRows(
-  closing: { salePrice: number; buyerPremiumCents: number; sellerCommissionCents: number; buyerTotalCents: number; netToSellerCents: number },
+  closing: { salePrice: number; buyerPremiumCents: number; sellerCommissionCents: number; buyerTotalCents: number; netToSellerCents: number; prorationCents?: number | null },
   side: StatementSide | "observer",
   share: FunderShare | null = null,
 ): { label: string; cents: number }[] {
@@ -178,14 +211,17 @@ export function economicsRows(
       { label: "Your all-in", cents: mine + share.premiumCents },
     ];
   }
+  const prorated = closing.prorationCents != null ? [{ label: "Proration", cents: closing.prorationCents }] : [];
   const buyer = [
     { label: "Sale price", cents: price },
     { label: "Buyer premium", cents: closing.buyerPremiumCents },
-    { label: "Buyer all-in", cents: closing.buyerTotalCents },
+    ...prorated,
+    { label: "Buyer all-in", cents: buyerDueCents(closing) },
   ];
   const seller = [
     { label: "Seller commission", cents: closing.sellerCommissionCents },
-    { label: "Net to seller", cents: closing.netToSellerCents },
+    ...(side === "seller" ? prorated : []),
+    { label: "Net to seller", cents: sellerNetCents(closing) },
   ];
   if (side === "buyer") return buyer;
   if (side === "seller") return [buyer[0], ...seller];
@@ -250,7 +286,8 @@ export function statementLines(
     lines: [
       { label: "Purchase price", cents: price },
       { label: "Buyer premium", cents: closing.buyerPremiumCents },
-      { label: "Due from buyer", cents: closing.buyerTotalCents },
+      ...prorationLines(closing),
+      { label: "Due from buyer", cents: buyerDueCents(closing) },
       ...(hasDeposit
         ? [
             {
@@ -270,8 +307,9 @@ export function statementLines(
     lines: [
       { label: "Sale price", cents: price },
       { label: "Seller commission", cents: -closing.sellerCommissionCents },
-      { label: "Net proceeds to seller", cents: closing.netToSellerCents },
-      { label: "Proceeds sent", cents: closing.proceedsSentCents, detail: wireDetail(closing.proceedsSentAt, closing.proceedsReference, variance(closing.netToSellerCents, closing.proceedsSentCents)) },
+      ...prorationLines(closing),
+      { label: "Net proceeds to seller", cents: sellerNetCents(closing) },
+      { label: "Proceeds sent", cents: closing.proceedsSentCents, detail: wireDetail(closing.proceedsSentAt, closing.proceedsReference, variance(sellerNetCents(closing), closing.proceedsSentCents)) },
       ...depositOutcomeLines(closing, true),
     ],
   };
@@ -297,7 +335,7 @@ function dollars(cents: number | null) {
 
 export async function buildStatementPdf(input: { title: string; parties: string; closing: StatementClosing; sections: { heading: string; lines: StatementLine[] }[] }) {
   const pdf = await PDFDocument.create();
-  const page = pdf.addPage([612, 792]);
+  let page = pdf.addPage([612, 792]);
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
   const ink = rgb(0.1, 0.1, 0.12);
@@ -315,6 +353,11 @@ export async function buildStatementPdf(input: { title: string; parties: string;
     page.drawText(section.heading, { x: 48, y, size: 12, font: bold, color: ink });
     y -= 20;
     for (const line of section.lines) {
+      // A long statement (a deposit, a proration and kick-outs) runs on to a next page before the footer.
+      if (y < 110) {
+        page = pdf.addPage([612, 792]);
+        y = 744;
+      }
       page.drawText(clean(line.label), { x: 60, y, size: 10, font, color: ink });
       const amount = dollars(line.cents);
       page.drawText(amount, { x: 548 - font.widthOfTextAtSize(amount, 10), y, size: 10, font, color: ink });

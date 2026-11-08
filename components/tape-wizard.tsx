@@ -21,8 +21,9 @@ type Mapping = Partial<Record<TapeFieldKey, string>>;
 const CORE_FIELDS = TAPE_FIELDS.filter((field) => field.group === "core");
 const RECORD_FIELDS = TAPE_FIELDS.filter((field) => field.group === "servicing");
 const TERMS_FIELDS = TAPE_FIELDS.filter((field) => field.group === "terms");
-// Both optional groups count as the servicing record on the confirm step.
-const SERVICING_FIELDS = [...RECORD_FIELDS, ...TERMS_FIELDS];
+const RISK_FIELDS = TAPE_FIELDS.filter((field) => field.group === "risk");
+// The optional groups count as the servicing record on the confirm step.
+const SERVICING_FIELDS = [...RECORD_FIELDS, ...TERMS_FIELDS, ...RISK_FIELDS];
 
 type Preview = {
   token: string;
@@ -187,6 +188,7 @@ export function TapeWizard({
           <div className="flex flex-wrap gap-4 text-[13px] font-medium">
             <a className="text-link" href="/api/tapes/template?format=csv">Download CSV template</a>
             <a className="text-link" href="/api/tapes/template?format=xlsx">Download Excel template</a>
+            <a className="text-link" href="/tape-standard">Read the tape standard</a>
           </div>
           <p className="max-w-xl text-sm text-muted-foreground">
             The template includes three fictional loans so you can try the mapper. Seller commission on a sale is {bpsToPercent(commissionBps).toFixed(2)}% of the accepted price. Buyers also pay a {bpsToPercent(premiumBps).toFixed(2)}% premium.
@@ -229,6 +231,19 @@ export function TapeWizard({
             </div>
             <div className="grid gap-3 md:grid-cols-2">
               {TERMS_FIELDS.map((field) => (
+                <MapField key={field.key} field={field} required={false} preview={preview} mapping={mapping} setMapping={setMapping} />
+              ))}
+            </div>
+          </section>
+          <section className="space-y-3 border-t border-border pt-6">
+            <div>
+              <p className="eyebrow">Balances and risk flags</p>
+              <p className="mt-2 max-w-xl text-sm text-muted-foreground">
+                Optional. A payoff needs its good-through date. The senior lien balance is for a second or third lien. The litigation note stays private, like the street address.
+              </p>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              {RISK_FIELDS.map((field) => (
                 <MapField key={field.key} field={field} required={false} preview={preview} mapping={mapping} setMapping={setMapping} />
               ))}
             </div>

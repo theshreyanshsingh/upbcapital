@@ -1,6 +1,7 @@
 import { getApiUser } from "@/lib/auth";
 import { toCsv } from "@/lib/csv";
 import { deskWalled } from "@/lib/auction";
+import { financeRows, isFinanceExport } from "@/lib/finance-export";
 import { prisma } from "@/lib/prisma";
 import { DESK_DENIED, deskCan } from "@/lib/staff";
 
@@ -10,6 +11,14 @@ export async function GET(request: Request) {
   const user = await getApiUser();
   if (!user || user.role !== "ADMIN") return new Response("The desk only.", { status: 403 });
   const kind = new URL(request.url).searchParams.get("kind") || "listings";
+  // The finance pack (closings, payouts, invoices, credit notes, revenue) is the desk book's and the admin's.
+  // lib/finance-export.ts.
+  if (isFinanceExport(kind)) {
+    if (!deskCan(user, "deskBook") && !deskCan(user, "admin")) return new Response(DESK_DENIED, { status: 403 });
+    return new Response(toCsv(await financeRows(kind)), {
+      headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="${kind}.csv"`, "Cache-Control": "private, no-store" },
+    });
+  }
   // Account lists are compliance records; bids and the book are sales.
   if (!deskCan(user, kind === "users" ? "compliance" : "sales")) return new Response(DESK_DENIED, { status: 403 });
   let rows: Record<string, string | number | null>[] = [];

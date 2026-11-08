@@ -1,13 +1,15 @@
 import Link from "next/link";
 import { mockActivatePro, mockCancelPro } from "@/actions/billing";
+import { startProTrial } from "@/actions/trial";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { SubmitButton } from "@/components/submit-button";
 import { requireRole } from "@/lib/auth";
 import { checkoutUnavailableNote, simulatedCheckout, stripeConfigured } from "@/lib/billing";
-import { q } from "@/lib/format";
+import { prettyDate, q } from "@/lib/format";
 import { ensureReferralCode } from "@/lib/referral";
 import { getSettings, isPro } from "@/lib/settings";
+import { onFreeTrial, trialOffer } from "@/lib/trial";
 
 export const metadata = { title: "Membership" };
 
@@ -20,6 +22,10 @@ export default async function SubscriptionPage({
   const params = await searchParams;
   const settings = await getSettings();
   const pro = isPro(user);
+  // A no-card trial is Pro on the book, but checkout stays open so the buyer can keep it.
+  const freeTrial = onFreeTrial(user);
+  const offer = user.role === "BUYER" ? await trialOffer(user) : null;
+  const trialDays = offer && !offer.problem ? offer.days : 0;
   const stripe = stripeConfigured(settings.stripePriceId);
   const simulated = simulatedCheckout();
   const code = user.role === "BUYER" ? await ensureReferralCode(user.id, user.name) : user.referralCode;
@@ -28,7 +34,7 @@ export default async function SubscriptionPage({
     <div>
       <PageIntro
         eyebrow="Membership"
-        title={pro ? "You are on Pro." : "The free desk, and the full one."}
+        title={freeTrial ? "You are trying Pro." : pro ? "You are on Pro." : "The free desk, and the full one."}
         lede={stripe ? "Checkout runs through Stripe in test mode." : simulated ? "Stripe keys are not set. Checkout is simulated and written to the revenue ledger as a mock charge." : checkoutUnavailableNote()}
       />
       <Notice notice={q(params, "notice")} error={q(params, "error")} />
@@ -36,6 +42,30 @@ export default async function SubscriptionPage({
       {q(params, "reason") === "alerts" && <p className="mt-4 text-sm text-foreground">Saved-search alerts are part of Pro.</p>}
       {(q(params, "reason") === "access" || q(params, "reason") === "early" || q(params, "reason") === "limit") && (
         <p className="mt-4 text-sm text-foreground">That listing is outside the free book.</p>
+      )}
+      {freeTrial && user.trialEndsAt && (
+        <section className="mt-6 glass p-6">
+          <p className="eyebrow">Pro trial</p>
+          <p className="mt-2 text-sm leading-relaxed text-foreground">
+            Pro is on until {prettyDate(user.trialEndsAt)}. Nothing is charged. After that the account goes back to the free desk, unless you subscribe below.
+          </p>
+        </section>
+      )}
+      {trialDays > 0 && offer?.mode === "free" && (
+        <section className="mt-6 glass p-6">
+          <p className="eyebrow">Try Pro</p>
+          <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+            Try every Pro feature for {trialDays} day{trialDays === 1 ? "" : "s"}, once. No card. Access ends on the last day and nothing is charged.
+          </p>
+          <form action={startProTrial} className="mt-4">
+            <SubmitButton className="h-11 text-[13px] font-medium" pendingLabel="Starting…">Start the {trialDays}-day trial</SubmitButton>
+          </form>
+        </section>
+      )}
+      {trialDays > 0 && offer?.mode === "card" && stripe && (
+        <p className="mt-6 text-sm leading-relaxed text-foreground">
+          The first {trialDays} day{trialDays === 1 ? " is" : "s are"} free. Stripe takes the card at checkout and bills ${price.toLocaleString("en-US")} a month after the trial, unless you cancel first.
+        </p>
       )}
       <div className="mt-8 grid gap-4 md:grid-cols-2">
         <article className="border border-border p-7 rounded-xl">
@@ -60,7 +90,7 @@ export default async function SubscriptionPage({
           <div className="mt-6">
             {user.role !== "BUYER" ? (
               <p className="text-sm text-muted-foreground">Membership is for buyer accounts.</p>
-            ) : pro ? (
+            ) : pro && !freeTrial ? (
               !simulated ? (
                 <div className="space-y-3">
                   <p className="text-sm text-muted-foreground">Manage the card, invoices, and cancellation in Stripe.</p>
@@ -99,7 +129,7 @@ export default async function SubscriptionPage({
         </section>
       )}
       <p className="mt-8 text-sm text-muted-foreground">
-        Current plan: {pro ? "Pro" : "Free"}{user.subscriptionComped ? " · comped by the desk" : ""}. <Link href="/marketplace" className="text-link">Return to the book</Link>
+        Current plan: {freeTrial ? "Pro trial" : pro ? "Pro" : "Free"}{user.subscriptionComped ? " · comped by the desk" : ""}. <Link href="/marketplace" className="text-link">Return to the book</Link>
       </p>
     </div>
   );

@@ -41,7 +41,7 @@ export function isReadField(field: string): field is ReadField {
   return (READ_FIELDS as readonly string[]).includes(field);
 }
 
-// The original balance isn't a tape column. The reader notes it for the desk and never compares it.
+// The original balance names the note as its source. Since tape v3 it is a tape column, compared like any other.
 const ORIGINAL_BALANCE: FieldSpec = { field: "originalBalance", label: "Original balance", kind: "money", pro: true, source: "Original note" };
 
 export function readSpec(field: string): FieldSpec | null {

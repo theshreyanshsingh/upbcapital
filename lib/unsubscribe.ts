@@ -7,7 +7,9 @@ import { prisma } from "@/lib/prisma";
 // signing in and can't be edited to turn off someone else's mail. It never expires, since a link in an old email has
 // to keep working. Transactional mail (closings, awards, security, codes) never carries one.
 
-export const UNSUBSCRIBE_CATEGORIES = ["watch", "search", "deals", "dispatch", "report", "digest"] as const;
+// "announcements" is a member's place on the deal-announcement list. Someone on the list without an account leaves
+// with their own subscriber link instead (lib/announcements.ts).
+export const UNSUBSCRIBE_CATEGORIES = ["watch", "search", "deals", "dispatch", "report", "digest", "announcements"] as const;
 export type UnsubscribeCategory = (typeof UNSUBSCRIBE_CATEGORIES)[number];
 
 // What a sender passes to notify: whose mail this is and which kind. A search alert can name its one saved search.
@@ -66,6 +68,7 @@ export function categoryText(found: Pick<Unsubscribe, "category" | "searchId">) 
     dispatch: "the monthly market dispatch",
     report: "the weekly report on your listings",
     digest: "the buy box digest",
+    announcements: "deal announcements",
   };
   return text[found.category];
 }
@@ -84,6 +87,8 @@ export async function applyUnsubscribe(found: Unsubscribe) {
     await prisma.user.updateMany({ where: user, data: { marketDispatch: false } });
   } else if (found.category === "report") {
     await prisma.user.updateMany({ where: user, data: { sellerReport: false } });
+  } else if (found.category === "announcements") {
+    await prisma.user.updateMany({ where: user, data: { announcements: false } });
   } else {
     await prisma.user.updateMany({ where: user, data: { digest: "OFF" } });
   }

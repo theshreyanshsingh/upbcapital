@@ -2,6 +2,7 @@ import { pushReady } from "@/lib/push";
 import { stripeConfigured } from "@/lib/billing";
 import { aiMode } from "@/lib/desk-ai";
 import { isReleaseBuild } from "@/lib/deploy";
+import { deskFiledWaiting } from "@/lib/desk-intake";
 import { deliverable, resolveMailTransport } from "@/lib/mail-config";
 import { ofacMode } from "@/lib/ofac";
 import { participationsOpen } from "@/lib/participation";
@@ -21,6 +22,7 @@ export async function launchReadiness(settings: { stripePriceId?: string | null;
   const users = await prisma.user.findMany({ select: { email: true } });
   const demo = users.filter((user) => !deliverable(user.email)).length;
   const unmandated = await brokerListingsWithoutMandate();
+  const deskFiled = await deskFiledWaiting();
   const mail = resolveMailTransport(env);
   const storage = storageMode(env);
   const ofac = ofacMode(env);
@@ -76,6 +78,8 @@ export async function launchReadiness(settings: { stripePriceId?: string | null;
     unmandated > 0
       ? { label: "Broker mandates", state: "off", detail: `${unmandated} broker-filed listing${unmandated === 1 ? " is" : "s are"} in review with no mandate from the note holder. With the seller identity gate on, the desk can't approve ${unmandated === 1 ? "it" : "them"} until the broker adds one.` }
       : { label: "Broker mandates", state: "live", detail: "Every broker-filed listing in review has the note holder's mandate on file." },
+    // The gate is always on, so this reads live either way and says how many desk-filed tapes wait on a seller.
+    { label: "Desk-filed tapes", state: "live", detail: deskFiled > 0 ? `${deskFiled} listing${deskFiled === 1 ? "" : "s"} the desk filed for a seller wait${deskFiled === 1 ? "s" : ""} for the seller to confirm the tape. None can be approved before then.` : "A tape the desk files for a seller can't be approved until the seller confirms it is theirs and correct." },
     demo > 0
       ? { label: "Demo accounts", state: "standin", detail: `${demo} account${demo === 1 ? "" : "s"} on undeliverable addresses, including the public demo seats. Remove them before real users.` }
       : { label: "Demo accounts", state: "live", detail: "None left." },

@@ -392,6 +392,7 @@ export type LoaderNote = {
   avmAsOf: Date | null;
   valueType?: string | null;
   valueAsOf?: Date | null;
+  seniorLienBalance?: number | null;
   tradeStatus: string;
 };
 
@@ -441,6 +442,8 @@ export async function loadIndicatives(listings: LoaderListing[], now = new Date(
       monthsDelinquent: note.monthsDelinquent,
       maturityDate: note.maturityDate,
       foreclosureFiledAt: note.foreclosureFiledAt ?? null,
+      // A junior lien's combined LTV uses the tape's senior balance when it carries one.
+      seniorBalance: note.seniorLienBalance ?? null,
       avm: { value: showableAvm({ avmValue: note.avmValue, avmProvider: note.avmProvider }), provider: note.avmProvider, asOf: note.avmAsOf },
       valueType: note.valueType ?? null,
       valueAsOf: note.valueAsOf ?? null,

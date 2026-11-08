@@ -8,9 +8,11 @@ import { audit } from "@/lib/audit";
 import { requireUser } from "@/lib/auth";
 import { guardDesk } from "@/lib/staff";
 import { unset } from "@/lib/db-filters";
+import { reopenDeskTape } from "@/lib/desk-intake";
 import { notifyDesk } from "@/lib/email";
 import { sendAudience, sendListing } from "@/lib/outreach";
 import { prisma } from "@/lib/prisma";
+import { carriedSellerTerms } from "@/lib/seller-decisions";
 import { watchReprice } from "@/lib/watchers";
 
 async function ownerOrDesk(listingId: string) {
@@ -101,6 +103,8 @@ export async function duplicateListing(formData: FormData) {
       clientSellerName: listing.clientSellerName,
       clientRelationship: listing.clientRelationship,
       reservePrice: listing.reservePrice,
+      // Who pays the fees and the seller's window, as the copy's defaults; the seller can change both before go-live.
+      ...carriedSellerTerms(listing),
       notes: {
         create: listing.notes.map((note) => ({
           streetAddress: note.streetAddress,
@@ -174,6 +178,8 @@ export async function bulkReprice(formData: FormData) {
     loans: moved.length,
     actorId: user.id,
   });
+  // The desk repriced a desk-filed tape the seller confirmed, so the seller confirms it again (lib/desk-intake.ts).
+  if (user.id !== listing.sellerId && moved.length) await reopenDeskTape(user.id, listingId, `the asking price on ${moved.length} loan${moved.length === 1 ? "" : "s"} to ${percent}% of UPB`);
   revalidatePath(`/seller/listings/${listingId}`);
   revalidatePath(`/marketplace/${listingId}`);
   redirect(`/seller/listings/${listingId}?notice=repriced`);

@@ -205,6 +205,7 @@ async function cleanDeal(deal: Deal) {
   await prisma.auditEvent.deleteMany({ where: { entityId: { in: [listingId, ...userIds, ...inquiries.map((row) => row.id), ...closingIds] } } });
   await prisma.deskThread.deleteMany({ where: { OR: [{ listingId }, { closingId: { in: closingIds } }] } });
   await prisma.revenueEvent.deleteMany({ where: { listingId } });
+  await prisma.invoice.deleteMany({ where: { closingId: { in: closingIds } } });
   await prisma.buyerHolding.deleteMany({ where: { closingId: { in: closingIds } } });
   await prisma.buyerStrike.deleteMany({ where: { userId: { in: userIds } } });
   await prisma.listing.deleteMany({ where: { id: listingId } });

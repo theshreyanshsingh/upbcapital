@@ -2,7 +2,7 @@ import { canReadClosingFile } from "@/lib/acl";
 import { getApiUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { sellerOnTitle } from "@/lib/seller-identity";
-import { buildStatementPdf, statementLines, statementScope, statementSide } from "@/lib/settlement";
+import { buildStatementPdf, buyerDueCents, statementLines, statementScope, statementSide } from "@/lib/settlement";
 import { CUSTODIAN_FUNDS, fundingParty, namesOnTitle } from "@/lib/vesting";
 
 export const runtime = "nodejs";
@@ -43,7 +43,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       // An IRA buyer's money comes from its custodian, so the buyer's and the desk's statements name them with what
       // they wire. The seller's statement carries only the seller's own figures.
       ...(funding && side !== "seller"
-        ? [{ heading: "Funding party", lines: [{ label: `Due from ${funding.custodian}, IRA custodian`, cents: closing.buyerTotalCents, detail: CUSTODIAN_FUNDS }] }]
+        ? [{ heading: "Funding party", lines: [{ label: `Due from ${funding.custodian}, IRA custodian`, cents: buyerDueCents(closing), detail: CUSTODIAN_FUNDS }] }]
         : []),
     ],
   });

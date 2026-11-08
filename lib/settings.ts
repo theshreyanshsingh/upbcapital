@@ -27,10 +27,12 @@ export function clearSettingsCache() {
 const PRO_GRACE_MS = 3 * 24 * 60 * 60 * 1000;
 
 export function isPro(
-  user: { subscriptionTier: string; subscriptionStatus: string; subscriptionCurrentPeriodEnd?: Date | null },
+  user: { subscriptionTier: string; subscriptionStatus: string; subscriptionCurrentPeriodEnd?: Date | null; trialEndsAt?: Date | null },
   now = new Date(),
   expire = isReleaseBuild(process.env),
 ) {
+  // A Pro trial counts until its end, on the demo desk too, and then simply stops. No grace. lib/trial.ts.
+  if (user.trialEndsAt && user.trialEndsAt.getTime() > now.getTime()) return true;
   if (user.subscriptionTier !== "PRO" || user.subscriptionStatus !== "ACTIVE") return false;
   const end = user.subscriptionCurrentPeriodEnd;
   return !expire || !end || end.getTime() + PRO_GRACE_MS > now.getTime();

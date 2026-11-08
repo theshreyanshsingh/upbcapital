@@ -5,6 +5,7 @@ import { dealAccess } from "@/lib/data-room";
 import { notify } from "@/lib/email";
 import { launchPending } from "@/lib/launch-rules";
 import { prisma } from "@/lib/prisma";
+import { canSeeListing } from "@/lib/private-listings";
 import { isPro } from "@/lib/settings";
 
 // A seller can ask to approve each bidder before the room opens. The NDA is signed as always; with approval on, it
@@ -139,6 +140,8 @@ export async function documentGate(user: DocumentViewer, documentId: string) {
     prisma.ndaAcknowledgment.findFirst({ where: { userId: user.id, documentId: document.id } }),
     prisma.ndaAcknowledgment.findUnique({ where: { userId_listingId: { userId: user.id, listingId: document.listingId } } }),
   ]);
+  // A room on a listing hidden from this buyer is shut, whatever they signed; their own signed NDA still comes back.
+  if (!owner && !admin && !ownNda && !(await canSeeListing(user, document.listing))) return { document, allowed: false, buyerCopy: false };
   const deal = owner || admin ? { whole: false, loans: new Set<string>() } : await dealAccess(document.listingId, user.id);
   // A loan's own file follows that loan: sold out of a pool, it closes to everyone but its buyer.
   const note = document.noteId

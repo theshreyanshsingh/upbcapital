@@ -6,7 +6,7 @@ import { FORECLOSURES, LIEN_POSITIONS, OCCUPANCIES, PAYMENT_STATUSES, PROPERTY_T
 import { typedNumber } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
 import { extensionOf, mimeFor, putBytes, safeBasename } from "@/lib/storage";
-import { CREDIT_SCORE_TYPES, LOSS_MIT_STAGES } from "@/lib/tape-fields";
+import { CREDIT_SCORE_TYPES, LOSS_MIT_STAGES, PAYMENT_TYPES } from "@/lib/tape-fields";
 import { uploadProblem } from "@/lib/uploads";
 import { watchNewFiles } from "@/lib/watchers";
 
@@ -435,6 +435,19 @@ export const LOAN_FIELDS: FieldSpec[] = [
   { field: "originatingPlatform", label: "Originating platform", kind: "text", optional: true, source: "Original note" },
   { field: "inheritedCovenants", label: "Inherited sale covenants", kind: "text", optional: true, source: "Other" },
   { field: "originatorLicense", label: "Originator license", kind: "text", identity: true, optional: true, source: "Original note" },
+  // Tape v3. Balances sit behind Pro like the UPB; the litigation note can name the borrower, so it follows the street.
+  { field: "paymentType", label: "Payment type", kind: "choice", options: PAYMENT_TYPES, optional: true, source: "Original note" },
+  { field: "originalBalance", label: "Original balance", kind: "money", pro: true, optional: true, source: "Original note" },
+  { field: "balloonDate", label: "Balloon date", kind: "date", optional: true, source: "Original note" },
+  { field: "escrowBalance", label: "Escrow balance", kind: "money", pro: true, optional: true, source: "Servicer statement" },
+  { field: "arrearsAmount", label: "Arrears", kind: "money", pro: true, optional: true, source: "Servicer statement" },
+  { field: "payoffAmount", label: "Payoff", kind: "money", pro: true, optional: true, source: "Servicer statement" },
+  { field: "payoffAsOf", label: "Payoff good through", kind: "date", optional: true, source: "Servicer statement" },
+  { field: "seniorLienBalance", label: "Senior lien balance", kind: "money", pro: true, optional: true, source: "O&E report" },
+  { field: "scraFlag", label: "SCRA protection", kind: "bool", optional: true, source: "Servicer statement" },
+  { field: "borrowerDeceased", label: "Borrower deceased", kind: "bool", optional: true, source: "Servicer statement" },
+  { field: "litigationFlag", label: "Litigation", kind: "bool", optional: true, source: "Court records" },
+  { field: "litigationNote", label: "Litigation note", kind: "text", identity: true, optional: true, source: "Court records" },
 ];
 
 const FIELD_BY_NAME = new Map(LOAN_FIELDS.map((spec) => [spec.field, spec]));
@@ -471,7 +484,9 @@ export const VERIFY_SOURCES = [
 export function canonical(spec: FieldSpec, raw: unknown): string | null {
   if (raw == null) return null;
   if (spec.kind === "money" || spec.kind === "percent" || spec.kind === "number") {
-    const value = typeof raw === "number" ? raw : typedNumber(raw);
+    // An escrow balance the servicer advanced reads below zero, typed as "-120.50" or "(120.50)". Nothing else may.
+    const negative = spec.field === "escrowBalance" && typeof raw === "string" && /^\s*[-(]/.test(raw);
+    const value = typeof raw === "number" ? raw : negative ? -typedNumber(raw.replace(/[-()]/g, "")) : typedNumber(raw);
     return Number.isFinite(value) ? String(Math.round(value * 100) / 100) : null;
   }
   if (spec.kind === "date") {

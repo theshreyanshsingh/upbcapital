@@ -95,7 +95,7 @@ export async function openClosing(input: {
   }
   const [settings, listingFees] = await Promise.all([
     getSettings(),
-    prisma.listing.findUnique({ where: { id: input.listingId }, select: { feeBuyerPremiumBps: true, feeSellerCommissionBps: true, feeSchedule: true, deskOwnerId: true } }),
+    prisma.listing.findUnique({ where: { id: input.listingId }, select: { feeBuyerPremiumBps: true, feeSellerCommissionBps: true, feeSchedule: true, feePayer: true, deskOwnerId: true } }),
   ]);
   // The fees fixed when the desk approved the listing, graded on this price when it went live with a schedule. The
   // desk buying for its own book pays no premium, and the seller's commission is still the one the listing went
@@ -264,6 +264,8 @@ export async function finalizeClosing(closingId: string) {
   // The deposit goes toward the price, and the backup bids behind this sale are released. A repeat call finds both done.
   await import("@/lib/deposits").then((deposits) => deposits.recordDepositOutcome(closing.id));
   await import("@/lib/backup-bids").then((backups) => backups.releaseBackups(closing.id));
+  // The numbered fee invoices for what this sale charged, once each. lib/invoices.ts.
+  await import("@/lib/invoices").then((invoices) => invoices.issueClosingInvoicesSafely(closing.id));
   return prisma.closing.findUnique({ where: { id: closingId } });
 }
 

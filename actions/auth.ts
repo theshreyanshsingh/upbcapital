@@ -16,6 +16,7 @@ import { prisma } from "@/lib/prisma";
 import { consumeRateLimit } from "@/lib/rate-limit";
 import { referralCodeFor } from "@/lib/referral";
 import { requestMeta } from "@/lib/request-meta";
+import { safeNext } from "@/lib/safe-next";
 import { firstZodError } from "@/lib/validators";
 
 const signupSchema = z.object({
@@ -29,10 +30,6 @@ const signupSchema = z.object({
   referral: z.string().trim().optional().or(z.literal("")),
 });
 
-function safeNext(value: string, fallback: string) {
-  if (value.startsWith("/") && !value.startsWith("//")) return value;
-  return fallback;
-}
 
 async function uniqueReferralCode(name: string) {
   for (let attempt = 0; attempt < 6; attempt += 1) {
@@ -124,6 +121,9 @@ export async function signup(_prev: { error: string; field?: string }, formData:
     });
   }
   await setSession({ sub: user.id, email: user.email, role: user.role, name: user.name });
+  // A page that sent them here to sign up, such as a private-sale invitation, gets them back. Same-site paths only.
+  const next = safeNext(formData.get("next"), "");
+  if (next) redirect(next);
   if (user.role === "BUYER") redirect("/buyer/pending");
   if (user.role === "BROKER") redirect("/broker/onboarding");
   if (user.role === "INDIVIDUAL_SELLER") redirect(leadId ? `/seller/notes/new?lead=${leadId}` : "/seller/notes/new");
@@ -157,7 +157,9 @@ export async function login(_prev: { error: string }, formData: FormData) {
   }
   if (user.totpEnabled && user.totpSecret) {
     await setPending(user.id);
-    redirect("/login/verify");
+    // The second factor keeps the page they were going to.
+    const next = safeNext(formData.get("next"), "");
+    redirect(next ? `/login/verify?next=${encodeURIComponent(next)}` : "/login/verify");
   }
   await setSession({ sub: user.id, email: user.email, role: user.role, name: user.name });
   await audit(user.id, "LOGIN", "user", user.id, meta.ipAddress);

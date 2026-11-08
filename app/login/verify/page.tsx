@@ -5,6 +5,7 @@ import { Notice } from "@/components/notice";
 import { SubmitButton } from "@/components/submit-button";
 import { pendingUserId } from "@/lib/auth";
 import { q } from "@/lib/format";
+import { safeNext } from "@/lib/safe-next";
 import { redirect } from "next/navigation";
 
 export const metadata = { title: "Verify" };
@@ -28,6 +29,7 @@ export default async function VerifyLoginPage({
         <Notice notice={q(params, "notice")} error={q(params, "error")} />
       </div>
       <form action={verifyLoginTotp} className="mt-6 space-y-4">
+        <input type="hidden" name="next" value={safeNext(q(params, "next"), "")} />
         <label className="block">
           <span className="text-[13px] text-muted-foreground">Code</span>
           <input name="code" inputMode="numeric" autoComplete="one-time-code" aria-label="Authenticator code" className="desk-input mt-2" required />

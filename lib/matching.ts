@@ -4,6 +4,7 @@ import { unset } from "@/lib/db-filters";
 import { notify, notifyDesk } from "@/lib/email";
 import { launchPending } from "@/lib/launch-rules";
 import { prisma } from "@/lib/prisma";
+import { audienceOf, canSee, listingAccess } from "@/lib/private-listings";
 import { marketRate, type MarketRate, type StandingPoint } from "@/lib/indicative";
 import { getSettings } from "@/lib/settings";
 import {
@@ -177,6 +178,9 @@ export async function rescoreListing(listingId: string, alert: boolean, now = ne
   const coming = launchPending(listing, now);
   const mail = alert && !coming;
   const boxes = await boxesWithOwners({ active: true });
+  // A private listing matches its invitees' boxes only, and none of a buyer its seller excludes. Their open matches
+  // go, so neither the buyer nor the desk's standing-bid sheet keeps them (lib/private-listings.ts).
+  const shown = new Set((await audienceOf(listing, [...new Map(boxes.map((box) => [box.userId, box.user])).values()])).map((user) => user.id));
   // Yield and spread rules hold on what the buyer pays, premium included. Spread rules price on the desk's rate.
   const settings = await getSettings();
   const premiumBps = settings.buyerPremiumBps;
@@ -186,6 +190,10 @@ export async function rescoreListing(listingId: string, alert: boolean, now = ne
   const mailed = new Map<string, { email: string; score: number; name: string }>();
   const standing: { userId: string; ofUpb: number | null }[] = [];
   for (const box of boxes) {
+    if (!shown.has(box.userId)) {
+      await prisma.listingMatch.deleteMany({ where: { listingId: listing.id, buyBoxId: box.id, ...unset("answeredAt") } });
+      continue;
+    }
     const result = await writeMatch(listing, box, notes, now, premiumBps, rate);
     if (result?.price != null) standing.push({ userId: box.userId, ofUpb: upb > 0 ? (result.price / upb) * 100 : null });
     if (!result || !mail || listing.status !== "APPROVED") continue;
@@ -217,8 +225,14 @@ export async function rescoreBox(boxId: string, options: { quiet?: boolean } = {
   const settings = await getSettings();
   const premiumBps = settings.buyerPremiumBps;
   const rate = marketRate(settings);
+  // Listings hidden from the box's owner don't match it, as in rescoreListing.
+  const access = await listingAccess(box.user);
   let live = 0;
   for (const listing of listings) {
+    if (!canSee(access, listing)) {
+      await prisma.listingMatch.deleteMany({ where: { listingId: listing.id, buyBoxId: box.id, ...unset("answeredAt") } });
+      continue;
+    }
     const result = await writeMatch(listing, box, notesOf(listing.notes, now), now, premiumBps, rate);
     if (result && listing.status === "APPROVED" && !launchPending(listing, now)) live += 1;
   }

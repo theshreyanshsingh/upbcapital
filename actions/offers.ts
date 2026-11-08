@@ -7,6 +7,7 @@ import { onGroupCounter } from "@/lib/group-events";
 import { deadlinePassed, sealedFromSeller } from "@/lib/auction";
 import { audit } from "@/lib/audit";
 import { bidderAlias } from "@/lib/bidder-alias";
+import { bidCapBlock } from "@/lib/bid-caps";
 import { requireUser } from "@/lib/auth";
 import { guardDesk } from "@/lib/staff";
 import { notify, notifyDesk } from "@/lib/email";
@@ -59,8 +60,9 @@ export async function postOfferMessage(formData: FormData) {
   const priced = inquiry.messages.map((message) => ({ kind: message.kind, amount: message.amount, createdAt: message.createdAt, authorId: message.authorId }));
   const counter = openCounter(priced, inquiry.buyerId);
   const accepting = buyer && amount != null && counter != null && Math.abs(counter - amount) < 0.005;
-  // The seller's own counter is already their approval, so the desk hears the bid is ready to award.
-  const sellerCounter = accepting && counterFrom(priced, inquiry.buyerId, inquiry.listing.sellerId) === "seller";
+  // The seller's own counter is already their approval, so the desk hears the bid is ready to award. One that closed
+  // when another bid was awarded (lib/seller-decisions.ts closeOtherCounters) no longer stands as their approval.
+  const sellerCounter = accepting && counterFrom(priced, inquiry.buyerId, inquiry.listing.sellerId) === "seller" && inquiry.sellerCounterAmount != null;
   if (buyer && amount != null && !accepting && inquiry.listing.bidMode !== "NONE") {
     if (deadlinePassed(inquiry.listing.bidDeadline)) {
       redirect(`${back.split("?")[0]}?error=${encodeURIComponent("The bid deadline has passed. You can accept a desk counter, but not name a new price.")}`);
@@ -78,6 +80,9 @@ export async function postOfferMessage(formData: FormData) {
   if (buyer && amount != null) {
     const limit = await fundsLimitBlock({ userId: user.id, listingId: inquiry.listingId, noteId: inquiry.noteId, amount });
     if (limit.error) redirect(`${limit.verification ? "/buyer/verification" : back.split("?")[0]}?error=${encodeURIComponent(limit.error)}`);
+    // And under the buyer's bid cap, as a new bid is (lib/bid-caps.ts).
+    const capped = await bidCapBlock(user.id, amount);
+    if (capped) redirect(`${back.split("?")[0]}?error=${encodeURIComponent(capped)}`);
   }
   // A counter is a price for the whole bid, so loan prices under the old total clear, unless the buyer prices each
   // loan again with their own price.

@@ -10,9 +10,12 @@ import { AuctionForm } from "@/components/auction-form";
 import { ComplianceNote } from "@/components/compliance-note";
 import { Countdown } from "@/components/countdown";
 import { DiscrepancyAnswers } from "@/components/discrepancy-answers";
+import { IntakeConfirm } from "@/components/desk-intake";
+import { SellerDiligence } from "@/components/diligence-checklist";
 import { ReaderSummary } from "@/components/document-reader";
 import { QuestionQueue } from "@/components/listing-questions";
 import { RoomAccessPanel } from "@/components/room-access";
+import { PrivateSalePanel } from "@/components/private-sale";
 import { RoomFiles } from "@/components/room-files";
 import { ServicerReportPanel } from "@/components/loan-file-desk";
 import { Notice } from "@/components/notice";
@@ -106,7 +109,10 @@ export default async function SellerListingPage({
           </p>
         )}
         <p className="mt-4 max-w-2xl text-sm leading-relaxed text-muted-foreground">{listing.summary}</p>
+        {/* A tape the desk filed for the seller, to confirm, and the diligence set. components/desk-intake.tsx, components/diligence-checklist.tsx. */}
+        <IntakeConfirm listing={listing} viewerId={user.id} />
         <ComplianceNote states={listing.notes.map((note) => note.state)} sellerFinanced={listing.sellerFinanced} sellerRole={listing.seller.role} />
+        <SellerDiligence listingId={listing.id} />
         <DiscrepancyAnswers
           rows={differences}
           loanLabels={Object.fromEntries(listing.notes.map((note) => [note.id, `${note.streetAddress || "No street"}, ${note.city}, ${note.state}`]))}
@@ -151,6 +157,7 @@ export default async function SellerListingPage({
           requests={requests.map((request) => ({ ...request, bidder: nameOf(request.user) }))}
           engagement={log.status === 200 ? log.engagement : []}
         />
+        <PrivateSalePanel listingId={listing.id} from="seller" readOnly={user.role === "ADMIN" && !deskCan(user, "sales")} />
         <section className="mt-10">
           {listing.deskBids.map((bid) => (
             <div key={bid.id} className="mb-6 border border-link/30 bg-link/5 p-4 rounded-xl">

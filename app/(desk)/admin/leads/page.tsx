@@ -21,6 +21,10 @@ export default async function LeadsPage({
   const sells = deskCan(await requireRole(["ADMIN"]), "sales");
   const params = await searchParams;
   const leads = await prisma.sellerLead.findMany({ orderBy: { createdAt: "desc" }, take: 100 });
+  // A lead from a broker's embedded form names the broker. lib/broker-widget.ts.
+  const brokerIds = [...new Set(leads.map((lead) => lead.brokerId).filter((id): id is string => Boolean(id)))];
+  const brokers = brokerIds.length ? await prisma.user.findMany({ where: { id: { in: brokerIds } }, select: { id: true, name: true } }) : [];
+  const brokerName = (id: string | null) => (id ? brokers.find((broker) => broker.id === id)?.name ?? "a broker" : null);
   return (
     <div>
       <PageIntro eyebrow="Acquisitions" title="People who want to sell." lede="Each quote is an indicative range. Move a lead when you have spoken, when they file, or when you pass." />
@@ -31,6 +35,7 @@ export default async function LeadsPage({
           <li key={lead.id} className="grid gap-4 px-5 py-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
             <div className="min-w-0">
               <p className="font-semibold tracking-tight text-2xl text-foreground">{lead.name}</p>
+              {lead.brokerId && <p className="mt-1 text-xs font-medium text-link">{lead.source === "WIDGET" ? "Intake form" : "Broker"} · {brokerName(lead.brokerId)}</p>}
               <p className="mt-1 text-sm text-muted-foreground">
                 {lead.email}{lead.city ? ` · ${lead.city}` : ""}, {lead.state} · {labelOf("payment", lead.paymentStatus)} · {labelOf("lien", lead.lienPosition)}
               </p>

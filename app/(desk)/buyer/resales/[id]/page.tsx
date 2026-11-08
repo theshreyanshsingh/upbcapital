@@ -6,6 +6,7 @@ import { SubmitButton } from "@/components/submit-button";
 import { DiscrepancyAnswers } from "@/components/discrepancy-answers";
 import { QuestionQueue } from "@/components/listing-questions";
 import { RoomAccessPanel } from "@/components/room-access";
+import { PrivateSalePanel } from "@/components/private-sale";
 import { Notice } from "@/components/notice";
 import { SaleApproval, WithdrawListing } from "@/components/sale-approval";
 import { accessLog } from "@/lib/access-log";
@@ -125,6 +126,7 @@ export default async function ResalePage({
         requests={requests.map((request) => ({ ...request, bidder: nameOf(request.user) }))}
         engagement={log.status === 200 ? log.engagement : []}
       />
+      <PrivateSalePanel listingId={listing.id} from="resale" />
       <WithdrawListing listing={listing} offers={listing.inquiries} ask={ask} openClosings={openClosings} canWithdraw />
     </div>
   );

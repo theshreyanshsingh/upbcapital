@@ -74,6 +74,7 @@ test("accepting a price opens a closing and closing it posts the ledger once", a
     assert.equal(premiums, 1);
   } finally {
     await prisma.revenueEvent.deleteMany({ where: { listingId: listing.id } });
+    await prisma.invoice.deleteMany({ where: { userId: { in: [seller.id, buyer.id] } } });
     await prisma.user.delete({ where: { id: seller.id } });
     await prisma.user.delete({ where: { id: buyer.id } });
     await prisma.$disconnect();
