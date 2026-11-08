@@ -16,6 +16,7 @@ import {
   CreditCard,
   FilePen,
   FilePlus,
+  FileWarning,
   FileStack,
   FolderOpen,
   Gavel,
@@ -29,6 +30,7 @@ import {
   Megaphone,
   Newspaper,
   Percent,
+  Presentation,
   ScrollText,
   Search,
   Star,
@@ -37,10 +39,13 @@ import {
   UserRound,
   UserX,
   Users,
+  UsersRound,
   Wallet,
   Waypoints,
+  Truck,
   type LucideIcon,
   Receipt,
+  Repeat,
   TrendingUp,
 } from "lucide-react";
 import type { DeskCapability } from "@/lib/desk-roles";
@@ -54,6 +59,8 @@ export type ShellUser = {
   unread: number;
   // A desk account's capabilities, from lib/desk-roles.ts. Missing shows every desk page.
   can?: readonly DeskCapability[];
+  // A firm's seat signed in: the firm, and the person (lib/seats.ts).
+  seat?: { firm: string; person: string };
 };
 
 // needs: a desk page that only writes, hidden from a role that can't use it. Pages that show records stay for all.
@@ -132,7 +139,9 @@ export function navFor(user: ShellUser): NavItem[] {
       { href: "/market", label: "Market dispatch", icon: TrendingUp, section: "Desk" },
       { href: "/closings", label: "Closings", icon: FolderOpen, section: "Desk" },
       { href: "/admin/servicers", label: "Servicers", icon: Waypoints, section: "Desk" },
+      { href: "/admin/trailing", label: "Trailing docs", icon: Truck, section: "Desk" },
       { href: "/admin/book", label: "Desk book", icon: Library, section: "Desk" },
+      { href: "/admin/flow", label: "Forward flow", icon: Repeat, section: "Desk", needs: "sales" },
       { href: "/admin/verification", label: "Buyer files", icon: BadgeCheck, section: "People" },
       { href: "/admin/users", label: "Accounts", icon: Users, section: "People" },
       { href: "/admin/brokers", label: "Brokers", icon: Briefcase, section: "People" },
@@ -145,7 +154,9 @@ export function navFor(user: ShellUser): NavItem[] {
       { href: "/admin/capital", label: "Capital", icon: Landmark, section: "Money" },
       { href: "/admin/settings", label: "Fee schedule", icon: Percent, section: "Money" },
       { href: "/admin/costs", label: "Unit costs", icon: Calculator, section: "Money" },
+      { href: "/admin/board", label: "Board pack", icon: Presentation, section: "Money", needs: "admin" },
       { href: "/admin/compliance", label: "Compliance", icon: Gavel, section: "Records" },
+      { href: "/admin/claims", label: "Claims", icon: FileWarning, section: "Records" },
       { href: "/admin/filings", label: "Filings", icon: FileStack, section: "Records" },
       { href: "/admin/templates", label: "Forms", icon: FilePen, section: "Records" },
       { href: "/admin/audit", label: "Audit log", icon: ScrollText, section: "Records" },
@@ -164,6 +175,7 @@ export function navFor(user: ShellUser): NavItem[] {
       notices,
       { href: "/broker/deals/new", label: "File a deal", icon: FilePlus },
       { href: "/broker/profile", label: "Profile", icon: UserRound },
+      { href: "/account/team", label: "Team", icon: UsersRound },
       { href: "/broker/widget", label: "Intake form", icon: Code },
       { href: "/seller/verification", label: "Verification", icon: BadgeCheck },
       { href: "/account/finance", label: "Payouts and invoices", icon: Banknote },
@@ -183,12 +195,16 @@ export function navFor(user: ShellUser): NavItem[] {
       { href: "/buyer/favorites", label: "Favorites", icon: Star, section: "Deals" },
       { href: "/buyer/offers", label: "Inquiries", icon: Handshake, section: "Deals" },
       { href: "/buyer/groups", label: "Groups", icon: Users, section: "Deals" },
+      { href: "/buyer/flow", label: "Programmes", icon: Repeat, section: "Deals" },
       { href: "/closings", label: "Closings", icon: FolderOpen, section: "Deals" },
       { href: "/buyer/portfolio", label: "Portfolio", icon: Wallet, section: "Deals" },
       { href: "/buyer/buy-box", label: "Buy box", icon: Target, section: "Account" },
       { href: "/buyer/alerts", label: "Alerts", icon: Search, section: "Account" },
       { href: "/buyer/verification", label: "Verification", icon: BadgeCheck, section: "Account" },
       { href: "/buyer/subscription", label: "Membership", icon: CreditCard, section: "Account" },
+      // Shown on the free desk too. The page says the API is Pro.
+      { href: "/buyer/api", label: "Buyer API", icon: Code, section: "Account" },
+      { href: "/account/team", label: "Team", icon: UsersRound, section: "Account" },
       { href: "/account/finance", label: "Invoices", icon: Receipt, section: "Account" },
       { href: "/fees", label: "Fee schedule", icon: Receipt, section: "Account" },
     ];
@@ -207,7 +223,10 @@ export function navFor(user: ShellUser): NavItem[] {
   ];
   if (user.role === "INSTITUTIONAL_SELLER") {
     items.push({ href: "/seller/pools/new", label: "Upload a tape", icon: Upload });
+    items.push({ href: "/seller/flow", label: "Forward flow", icon: Repeat });
     items.push({ href: "/seller/api", label: "Seller API", icon: Code });
+    // Seats are for firms, so an individual seller has no team (lib/seats.ts).
+    items.push({ href: "/account/team", label: "Team", icon: UsersRound });
   }
   return items;
 }

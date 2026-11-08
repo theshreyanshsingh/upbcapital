@@ -15,6 +15,7 @@ import { endSessions } from "@/lib/auth";
 import { notify, sendAlert } from "@/lib/email";
 import { DEFAULT_CLOSING_DAYS, DEFAULT_DEPOSIT_BPS, DEFAULT_DEPOSIT_DAYS } from "@/lib/closing-clock";
 import { onGroupDeclined } from "@/lib/group-events";
+import { startFirstLook } from "@/lib/flow-programs";
 import { approvalFields, launchTime, readLaunchAt } from "@/lib/launch-rules";
 import { rescoreListing } from "@/lib/matching";
 import { postRevenueOnce } from "@/lib/ledger";
@@ -107,6 +108,8 @@ export async function reviewListing(formData: FormData) {
     // The fees in force now go on the listing, so bids and the closing use them whatever the settings say later.
     // A graded schedule goes on with them. A listing approved again after changes takes the fees of the new approval.
     await moveTo({ status: "APPROVED", ...approvalFields(launch.at), ...feesAtApproval(await getSettings()) });
+    // A forward-flow tranche goes to its programme's committed buyers first. The market's alerts wait for the release.
+    const firstLook = await startFirstLook(listingId);
     if (launch.at) {
       const opens = launchTime(launch.at);
       await record(user.id, listingId, "APPROVE", comment || `Approved. Coming soon until ${opens}.`);
@@ -120,10 +123,13 @@ export async function reviewListing(formData: FormData) {
       back(listingId, `Coming soon until ${opens}`);
     }
     await record(user.id, listingId, "APPROVE", comment || "Approved for the book.");
-    await notify(listing.seller.email, `Live · ${listing.title}`, comment || "Your listing is live to approved buyers.");
-    await alertMatchingSearches(listingId);
-    await rescoreListing(listingId, true);
-    back(listingId, "Listing is live");
+    const live = firstLook ? `Your tranche is live to your programme's committed buyers until ${launchTime(firstLook.endsAt)}, then to the market.` : "Your listing is live to approved buyers.";
+    await notify(listing.seller.email, `Live · ${listing.title}`, comment || live);
+    if (!firstLook) {
+      await alertMatchingSearches(listingId);
+      await rescoreListing(listingId, true);
+    }
+    back(listingId, firstLook ? `First look for programme buyers until ${launchTime(firstLook.endsAt)}` : "Listing is live");
   }
 
   if (action === "REJECT") {

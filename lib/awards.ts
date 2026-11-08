@@ -430,6 +430,8 @@ export async function awardOffer(inquiryId: string, actorId: string, options: { 
     }
   }
   const closing = await openClosing({ listingId: offer.listingId, inquiryId: offer.id, noteId: offer.noteId, salePrice: price, title: offer.listing.title });
+  // A forward-flow tranche in contract is marked awarded, which ends its first look (lib/flow-programs.ts).
+  await import("@/lib/flow-programs").then((flow) => flow.syncTranche(offer.listingId)).catch(() => undefined);
   await onGroupAccepted(offer.id, closing.id, closing.buyerPremiumCents);
   const { emitWebhook } = await import("@/lib/webhooks");
   await emitWebhook(offer.listing.sellerId, "offer.accepted", { inquiryId: offer.id, listingId: offer.listingId, closingId: closing.id, amount: price });
@@ -840,6 +842,7 @@ export async function withdrawListing(listingId: string, actorId: string, now = 
   const bids = declined ? ` ${declined} open bid${declined === 1 ? " was" : "s were"} declined.` : "";
   await prisma.reviewComment.create({ data: { listingId, authorId: actorId, action: "WITHDRAW", comment: `Withdrawn by the ${who}.${bids}` } });
   await audit(actorId, "LISTING_WITHDRAWN", "listing", listingId, `${listing.title} · was ${listing.status.replaceAll("_", " ").toLowerCase()}${bids}`);
+  await import("@/lib/flow-programs").then((flow) => flow.syncTranche(listingId)).catch(() => undefined);
   await notifyDesk(`Listing withdrawn · ${listing.title}`, `The ${who} withdrew ${listing.title}.${bids || " It had no open bids."}`);
   if (listing.sellerId !== actorId) {
     await notify(listing.seller.email, `Listing withdrawn · ${listing.title}`, `Your broker withdrew ${listing.title} from the book.${bids}`);

@@ -5,6 +5,7 @@ import { BoardingForm } from "@/components/boarding-form";
 import { cancelClosing, completeClosingStep, recordSettlement, saveWireInstructions, setClosingDates, uploadClosingFile, walkAway } from "@/actions/closing";
 import { BorrowerNotices } from "@/components/borrower-notices";
 import { ClosingMasters } from "@/components/closing-masters";
+import { ClaimsPanel } from "@/components/claims-panel";
 import { BackupPanel } from "@/components/backup-panel";
 import { DepositPanel } from "@/components/deposit-panel";
 import { InvoicePanel, PayoutPanel, ProrationPanel, verifiedPayoutChoices } from "@/components/finance-panels";
@@ -14,6 +15,7 @@ import { ComplianceNote } from "@/components/compliance-note";
 import { DeskNotes } from "@/components/desk-notes";
 import { SignaturePanel } from "@/components/signature-panel";
 import { TieOutPanel } from "@/components/tie-out";
+import { TrailingDocsPanel } from "@/components/trailing-docs";
 import { ConfirmRows, ConfirmSubmit } from "@/components/confirm-submit";
 import { Notice } from "@/components/notice";
 import { SubmitButton } from "@/components/submit-button";
@@ -21,6 +23,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { closingAccess } from "@/lib/acl";
 import { requireUser } from "@/lib/auth";
 import { closingLoans, stepLabel } from "@/lib/closing";
+import { isENote } from "@/lib/enotes";
 import { STEP_OWNER, closingClock, effectiveDue, nextSettlementDay, settlementWeekdays, settlesOn, stepClock, targetDays } from "@/lib/closing-clock";
 import { closingBrokerView } from "@/lib/broker-pay";
 import { diligenceOpen, loadDealTimeline, timelineView } from "@/lib/closing-service";
@@ -330,8 +333,13 @@ export default async function ClosingPage({
             <div className="mt-4 flex flex-wrap gap-4 text-[13px] font-medium">
               <a className="text-link" href={`/api/closings/${closing.id}/packet?kind=PSA`}>Purchase agreement</a>
               <a className="text-link" href={`/api/closings/${closing.id}/packet?kind=ASSIGNMENT`}>Assignment</a>
-              <a className="text-link" href={`/api/closings/${closing.id}/packet?kind=ALLONGE`}>Allonge</a>
-              <a className="text-link" href={`/api/closings/${closing.id}/packet?kind=LOST_NOTE_AFFIDAVIT`}>Lost note affidavit</a>
+              {/* An eNote has no allonge and can't be a lost note. lib/enotes.ts. */}
+              {closingLoans(closing, closing.listing.notes).some((note) => !isENote(note)) && (
+                <>
+                  <a className="text-link" href={`/api/closings/${closing.id}/packet?kind=ALLONGE`}>Allonge</a>
+                  <a className="text-link" href={`/api/closings/${closing.id}/packet?kind=LOST_NOTE_AFFIDAVIT`}>Lost note affidavit</a>
+                </>
+              )}
               {closing.depositCents != null && <a className="text-link" href={`/api/closings/${closing.id}/packet?kind=DEPOSIT_AGREEMENT`}>Deposit agreement</a>}
             </div>
             <ClosingMasters closingId={closing.id} viewerId={user.id} />
@@ -375,6 +383,10 @@ export default async function ClosingPage({
             />
           </section>
         )}
+        {/* What arrives after the close, for each side's own part. components/trailing-docs.tsx. */}
+        {party && <TrailingDocsPanel closing={closing} buyerId={inquiry?.buyerId ?? null} viewer={user} />}
+        {/* Each side's answers after close, and repurchase claims on the seller's representations. components/claims-panel.tsx. */}
+        {party && <ClaimsPanel closing={closing} viewer={user} leadBuyerId={inquiry?.buyerId ?? null} loanPrices={inquiry?.loanPrices} />}
       </div>
       <aside className="space-y-4 lg:sticky lg:top-8 lg:self-start">
         <div className="glass p-6">

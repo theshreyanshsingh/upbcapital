@@ -9,6 +9,7 @@ import { deskWalled } from "@/lib/auction";
 import { average, daysBetween, funnelSteps } from "@/lib/analytics";
 import { q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
+import { ownAccounts } from "@/lib/seats";
 import { deskCan } from "@/lib/staff";
 
 export const metadata = { title: "Analytics" };
@@ -22,7 +23,8 @@ export default async function AnalyticsPage({
   const params = await searchParams;
   const [visits, signups, verified, offers, closings, closed, sold, buyers, listings] = await Promise.all([
     prisma.pageHit.count(),
-    prisma.user.count(),
+    // A firm's seats aren't signups of their own (lib/seats.ts).
+    prisma.user.count({ where: ownAccounts() }),
     prisma.buyerProfile.count({ where: { status: "APPROVED" } }),
     prisma.inquiry.count({ where: { type: "OFFER" } }),
     prisma.closing.count(),

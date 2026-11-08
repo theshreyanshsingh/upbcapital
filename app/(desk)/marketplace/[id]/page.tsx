@@ -27,6 +27,7 @@ import { SellerVerifiedBadge } from "@/components/seller-identity";
 import { StrataPanel } from "@/components/strata-panel";
 import { SubmitButton } from "@/components/submit-button";
 import { PoolRisks, TapeRisks } from "@/components/tape-risk";
+import { ENoteLine } from "@/components/enote-line";
 import { TabsContent } from "@/components/ui/tabs";
 import { canManageRoom, canReadDocument, dataRoomOpenTo, isPrivateDocument, loanFileAccess, loanOpenTo, ndaOpensRoom } from "@/lib/acl";
 import { dealAccess } from "@/lib/data-room";
@@ -61,10 +62,13 @@ import { diligenceDays } from "@/lib/closing-service";
 import { allInYield, noteMetrics, poolMetrics } from "@/lib/metrics";
 import { prisma } from "@/lib/prisma";
 import { listingSight } from "@/lib/private-listings";
+import { firstLookView } from "@/lib/flow-programs";
+import { FirstLookBanner } from "@/components/flow-banner";
 import { publishedQuestions, questionsAskedBy } from "@/lib/questions";
 import { deskWalled, eventSetsTerms } from "@/lib/auction";
 import { currentSaleEvent, qaClosed, qaClosedText, roundText, when } from "@/lib/sale-events";
 import { EventPaperLinks } from "@/components/event-papers";
+import { SellerRecordCard } from "@/components/track-record";
 import { chargeFees, effectiveBps, feeTerms } from "@/lib/fee-schedule";
 import { getSettings, isPro } from "@/lib/settings";
 import { canSubmitOffer } from "@/lib/verification";
@@ -245,6 +249,8 @@ export default async function ListingPage({
   // A pool sold loan by loan prices only what's left, and can't be bid whole once any loan has traded.
   const forSale = listing.kind === "POOL" && notes.some((note) => note.tradeStatus === "AVAILABLE") ? notes.filter((note) => note.tradeStatus === "AVAILABLE") : notes;
   const wholeOpen = forSale.length === notes.length;
+  // A forward-flow tranche: the first-look line, and the bid a committed buyer's price grid suggests (lib/flow-programs.ts).
+  const flow = await firstLookView(listing.id, user, forSale);
   const pool = poolMetrics(forSale);
   const economics = listing.kind === "POOL" ? pool : noteMetrics(notes[0]);
   const asking = listing.kind === "POOL" ? pool.totalAsk : notes[0].askingPrice;
@@ -349,6 +355,7 @@ export default async function ListingPage({
             Coming soon. Buyers see a teaser until it goes live on {launchTime(listing.launchAt)}, when the room and bids open.
           </p>
         )}
+        {flow?.endsAt && <FirstLookBanner endsAt={flow.endsAt} programName={flow.programName} />}
         {event && (
           <p className="mt-3 max-w-3xl border border-link/30 bg-link/5 px-3 py-2 text-sm leading-relaxed text-foreground rounded-lg tabular-nums">
             In the sale event <Link href={`/events#${event.id}`} className="font-medium text-link">{event.name}</Link>. Indications due {when(event.indicationsAt)}. Best and final due {when(event.bestFinalAt)}. {roundText(event)}
@@ -456,6 +463,8 @@ export default async function ListingPage({
               {listing.kind === "SINGLE"
                 ? <TapeRisks note={rawLead} open={lead.open} />
                 : <PoolRisks notes={listing.notes.filter((note) => forSale.some((loan) => loan.id === note.id))} />}
+              {/* An eNote moves by eRegistry transfer, not endorsement and courier. lib/enotes.ts. */}
+              <ENoteLine notes={listing.kind === "SINGLE" ? [rawLead] : listing.notes.filter((note) => forSale.some((loan) => loan.id === note.id))} />
               {listing.kind === "SINGLE" ? (
                 <>
                   <LoanFacts note={rawLead} open={lead.open} pro={pro} withAddress={false} />
@@ -699,11 +708,14 @@ export default async function ListingPage({
             acknowledgeFirst={acknowledgeFirst}
             standing={standing}
             entities={entities}
+            suggested={flow?.suggestion && wholeOpen ? { amount: flow.suggestion.amount, line: flow.suggestion.line } : undefined}
             heading={listing.kind === "POOL" ? "Bid the whole pool" : undefined}
             loans={listing.kind === "POOL" && canOffer ? notes.map((note, index) => ({ id: note.id, label: `Loan ${index + 1} · ${note.open && note.streetAddress ? `${note.streetAddress}, ` : ""}${note.city}, ${note.state}`, ask: pro ? note.askingPrice : null })) : []}
             closedText={listing.status === "APPROVED" && !wholeOpen ? "Some loans in this pool have traded, so it can't be bid whole. Bid the loans still for sale in the table." : undefined}
           />
           <p className="text-xs leading-relaxed text-muted-foreground">Listed by {listing.seller.companyName || listing.seller.name}. An accepted bid opens a closing checklist with the premium and commission on the all-in total.</p>
+          {/* The page names the seller above, so their record adds no identity. components/track-record.tsx. */}
+          <SellerRecordCard sellerId={listing.sellerId} />
         </aside>
       </div>
       {user.role === "BUYER" && (

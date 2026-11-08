@@ -9,6 +9,7 @@ import { paletteCommands } from "@/lib/command-search";
 import { prisma } from "@/lib/prisma";
 import { unset } from "@/lib/db-filters";
 import { currentLegalVersion, legalDue } from "@/lib/legal";
+import { confirmationDue } from "@/lib/email-confirm";
 import { deskPowers } from "@/lib/desk-roles";
 
 export const dynamic = "force-dynamic";
@@ -40,6 +41,7 @@ export default async function DeskLayout({ children }: { children: React.ReactNo
     <>
       <AppShell
         termsDue={termsDue}
+        emailDue={await confirmationDue(user)}
         user={{
           name: user.name,
           email: user.email,
@@ -47,6 +49,7 @@ export default async function DeskLayout({ children }: { children: React.ReactNo
           tier: user.subscriptionTier,
           unread,
           ...(user.role === "ADMIN" ? { can: deskPowers(user) } : {}),
+          ...(user.actor ? { seat: { firm: user.companyName || user.name, person: user.actor.name } } : {}),
         }}
       >
         {children}

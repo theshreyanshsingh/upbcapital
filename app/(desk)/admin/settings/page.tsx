@@ -16,6 +16,8 @@ import { launchReadiness } from "@/lib/readiness";
 import { strikeLimitOf } from "@/lib/strikes";
 import { decideWires } from "@/actions/wires";
 import { BackstopSettings } from "@/components/backstop-settings";
+import { TrailingDocSettings } from "@/components/trailing-docs";
+import { ClaimSettings } from "@/components/claims-panel";
 import { ConfirmSubmit } from "@/components/confirm-submit";
 import { ReaderSettings } from "@/components/document-reader";
 import { FeeScheduleForm } from "@/components/fee-schedule-form";
@@ -23,6 +25,7 @@ import { RecertifySettings } from "@/components/recertify-settings";
 import { TrialSettings } from "@/components/trial-settings";
 import { BidCapSettings } from "@/components/bid-cap-settings";
 import { SellerIdentitySetting } from "@/components/seller-identity";
+import { EmailConfirmSetting } from "@/components/email-confirm";
 import { SignatureSettings } from "@/components/signature-panel";
 import { deskCan } from "@/lib/staff";
 import { pendingWireChanges } from "@/lib/wire-changes";
@@ -275,12 +278,15 @@ export default async function SettingsPage({
         {owns ? <SubmitButton className="h-11 text-[13px] font-medium" pendingLabel="Saving…">Save settlement</SubmitButton> : <p className="text-sm text-muted-foreground">Only an owner changes settlement days.</p>}
       </form>
       <BackstopSettings owns={owns} stallDays={settings.stallDays} />
+      <TrailingDocSettings owns={owns} days={settings.trailingDocDays} />
+      <ClaimSettings owns={owns} survivalDays={settings.repSurvivalDays} responseDays={settings.claimResponseDays} />
       <RecertifySettings owns={owns} months={settings.recertifyMonths} />
       <TrialSettings owns={owns} days={settings.proTrialDays} stripe={Boolean(process.env.STRIPE_SECRET_KEY)} />
       <BidCapSettings owns={owns} capCents={settings.newBidderCapCents} closes={settings.newBidderCloses} />
       <SignatureSettings owns={owns} setting={settings.psaSignHours} />
       <ReaderSettings owns={owns} />
       <SellerIdentitySetting value={settings.requireSellerIdentity} owns={owns} />
+      <EmailConfirmSetting value={settings.requireEmailConfirmation} owns={owns} />
     </div>
   );
 }

@@ -7,6 +7,7 @@ import { deletedAccountRefusal } from "@/lib/account-deletion";
 import { audit } from "@/lib/audit";
 import { clearSession, getCurrentUser, setPending, setSession } from "@/lib/auth";
 import { demoAddress, isReleaseBuild } from "@/lib/deploy";
+import { sendConfirmation } from "@/lib/email-confirm";
 import { notifyDesk } from "@/lib/email";
 import { screenInBackground, screenUser } from "@/lib/screening";
 import { homeFor } from "@/lib/labels";
@@ -65,7 +66,7 @@ export async function signup(_prev: { error: string; field?: string }, formData:
   const consent = await signupConsent(formData.get("terms"));
   if (consent.error !== null) return { error: consent.error, field: "terms" };
   // The demo domain belongs to the seeded seats. A release mails codes, resets and alerts, so the address has to take
-  // mail. Whether the signer owns it is not confirmed yet.
+  // mail. Whether the signer owns it is confirmed by the link sent below.
   if (demoAddress(data.email)) return { error: "That address is for the demo desk. Sign up with your own email.", field: "email" };
   if (isReleaseBuild(process.env) && !deliverable(data.email)) {
     return { error: "That address can't receive mail. Sign up with your own email.", field: "email" };
@@ -103,6 +104,8 @@ export async function signup(_prev: { error: string; field?: string }, formData:
   if (data.role === "BROKER") {
     await prisma.brokerProfile.create({ data: { userId: user.id, company: data.companyName || "" } });
   }
+  // The link proves the signer owns the address. Until it is used, lib/email-confirm.ts holds back bids and listings.
+  await sendConfirmation(user.id, user.email);
 
   screenInBackground(() => screenUser(user.id, "Sign-up"));
 

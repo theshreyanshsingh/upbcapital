@@ -168,6 +168,10 @@ const SPECS: Record<TapeFieldKey, Spec> = {
   borrowerDeceased: { type: "yes or no", mismo: extension("BorrowerDeceasedIndicator", "No MISMO data point UPB is sure of.") },
   litigationFlag: { type: "yes or no", allowed: "Yes when a case touches the loan or the property", mismo: extension("LitigationIndicator", "No MISMO data point UPB is sure of.") },
   litigationNote: { type: "text", allowed: "Up to 300 characters", mismo: extension("LitigationNoteText", "Free text with no MISMO data point.") },
+  eNote: { type: "yes or no", allowed: "Yes when the note is an eNote on the MERS eRegistry", mismo: extension("ENoteIndicator", "No MISMO data point UPB is sure of.") },
+  eRegistryController: { type: "text", allowed: "A 7-digit MERS Org ID", mismo: extension("ERegistryControllerOrganizationIdentifier", "No MISMO data point UPB is sure of.") },
+  eRegistryLocation: { type: "text", allowed: "A 7-digit MERS Org ID", mismo: extension("ERegistryLocationOrganizationIdentifier", "No MISMO data point UPB is sure of.") },
+  eVaultProvider: { type: "text", mismo: extension("EVaultProviderName", "No MISMO data point UPB is sure of.") },
 };
 
 export type StandardField = {

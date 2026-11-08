@@ -54,6 +54,8 @@ export async function saveBoarding(formData: FormData) {
     update: fields,
     create: { closingId, ...fields },
   });
+  // A boarding date or the old servicer's letter receives its trailing document. lib/trailing-docs.ts.
+  await import("@/lib/trailing-docs").then((docs) => docs.syncTrailingDocs(closingId));
   revalidatePath(`/closings/${closingId}`);
   redirect(`/closings/${closingId}?notice=boarded`);
 }

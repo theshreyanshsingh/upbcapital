@@ -3,10 +3,12 @@ import { stripeConfigured } from "@/lib/billing";
 import { aiMode } from "@/lib/desk-ai";
 import { isReleaseBuild } from "@/lib/deploy";
 import { deskFiledWaiting } from "@/lib/desk-intake";
+import { emailConfirmationRequired } from "@/lib/email-confirm";
 import { deliverable, resolveMailTransport } from "@/lib/mail-config";
 import { ofacMode } from "@/lib/ofac";
 import { participationsOpen } from "@/lib/participation";
 import { prisma } from "@/lib/prisma";
+import { ownAccounts } from "@/lib/seats";
 import { limitStore } from "@/lib/rate-limit";
 import { brokerListingsWithoutMandate, sellerIdentityRequired } from "@/lib/seller-identity";
 import { storageMode } from "@/lib/storage";
@@ -17,9 +19,10 @@ export type ReadinessItem = { label: string; state: ReadinessState; detail: stri
 
 // What runs for real and what runs on a stand-in, read from the environment the server is running with.
 // Stand-ins are fine for the demo desk; each one is a decision to make before real users arrive.
-export async function launchReadiness(settings: { stripePriceId?: string | null; requireTwoStep?: boolean | null; requireSellerIdentity?: boolean | null }, env: Record<string, string | undefined> = process.env) {
+export async function launchReadiness(settings: { stripePriceId?: string | null; requireTwoStep?: boolean | null; requireSellerIdentity?: boolean | null; requireEmailConfirmation?: boolean | null }, env: Record<string, string | undefined> = process.env) {
   const release = isReleaseBuild(env);
-  const users = await prisma.user.findMany({ select: { email: true } });
+  // Seats are people on a firm's account, not accounts of their own (lib/seats.ts).
+  const users = await prisma.user.findMany({ where: ownAccounts(), select: { email: true } });
   const demo = users.filter((user) => !deliverable(user.email)).length;
   const unmandated = await brokerListingsWithoutMandate();
   const deskFiled = await deskFiledWaiting();
@@ -75,6 +78,9 @@ export async function launchReadiness(settings: { stripePriceId?: string | null;
     sellerIdentityRequired(settings, env)
       ? { label: "Seller identity", state: "live", detail: "A seller's identity and signing authority are approved before the desk approves their listing." }
       : { label: "Seller identity", state: release ? "off" : "standin", detail: "Listings can be approved before the desk has checked who is selling. Turn the gate on below before real sellers." },
+    emailConfirmationRequired(settings, env)
+      ? { label: "Email confirmation", state: "live", detail: "An account confirms it owns its email before it bids, lists, signs or messages." }
+      : { label: "Email confirmation", state: release ? "off" : "standin", detail: "Accounts can bid and list before proving they own their email. Turn the gate on below before real users." },
     unmandated > 0
       ? { label: "Broker mandates", state: "off", detail: `${unmandated} broker-filed listing${unmandated === 1 ? " is" : "s are"} in review with no mandate from the note holder. With the seller identity gate on, the desk can't approve ${unmandated === 1 ? "it" : "them"} until the broker adds one.` }
       : { label: "Broker mandates", state: "live", detail: "Every broker-filed listing in review has the note holder's mandate on file." },

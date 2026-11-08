@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { DiscrepancyLog } from "@/components/discrepancy-log";
 import { changeLog, type DiscrepancyRow } from "@/lib/discrepancies";
+import { isENote } from "@/lib/enotes";
 import { prettyDate } from "@/lib/format";
 import { docLabel } from "@/lib/labels";
 import {
@@ -166,7 +167,7 @@ export async function LoanFileView({
   ]);
   // A chain that ends with someone other than the seller counts for everyone. Only the names stay hidden.
   const file = completeness(note, collateral, risks, { holder });
-  const lines = collateralLines(note.lienPosition, collateral);
+  const lines = collateralLines(note.lienPosition, collateral, { eNote: isENote(note) });
   const chain = chainOfTitle(collateral, holder, { listedAt: filed });
   const latest = latestChecks(risks);
   const flag = superLien(note);
@@ -213,8 +214,8 @@ export async function LoanFileView({
             {lines.map((line) =>
               line.items.length === 0 ? (
                 <li key={line.kind} className="flex flex-wrap items-center justify-between gap-2 py-2">
-                  <span className="text-foreground">{line.label}{line.required ? "" : " · optional"}</span>
-                  <Tag tone="plain">Not reviewed</Tag>
+                  <span className="text-foreground">{line.label}{line.required || line.reason ? "" : " · optional"}</span>
+                  <Tag tone="plain" title={line.reason}>{line.reason ? "Not required for an eNote" : "Not reviewed"}</Tag>
                 </li>
               ) : (
                 line.items.map((item) => (

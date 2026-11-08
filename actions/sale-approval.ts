@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { actionGate } from "@/lib/action-gates";
 import { audit } from "@/lib/audit";
 import { requireUser } from "@/lib/auth";
 import { askedPartPrice, askedPriceStands, awaitingSeller, awardOffer, awardPartial, partAsked, recordSellerCounter, sameQuestion, sellerPage, sellerPickBid, setBuyNow } from "@/lib/awards";
@@ -18,6 +19,9 @@ export async function answerSaleApproval(formData: FormData) {
   const offer = await prisma.inquiry.findUnique({ where: { id: inquiryId }, include: { listing: true, messages: true } });
   if (!offer || offer.listing.sellerId !== user.id) redirect(user.role === "BROKER" ? "/broker" : user.role === "BUYER" ? "/buyer/portfolio" : "/seller");
   const back = sellerPage(offer.listing, user.role);
+  // Approving, declining or countering the sale is the seller's award decision (lib/seats.ts).
+  const gated = await actionGate(user, "award");
+  if (gated) redirect(`${back}?error=${encodeURIComponent(gated)}`);
   if (!awaitingSeller(offer) || offer.sellerAskedAmount == null || (offer.status !== "OPEN" && offer.status !== "REVIEWED")) {
     redirect(`${back}?error=${encodeURIComponent("Nothing on this listing is waiting for your answer.")}`);
   }
@@ -75,6 +79,8 @@ export async function pickBid(formData: FormData) {
   const offer = await prisma.inquiry.findUnique({ where: { id: inquiryId }, include: { listing: true } });
   if (!offer || offer.listing.sellerId !== user.id) redirect(user.role === "BROKER" ? "/broker" : user.role === "BUYER" ? "/buyer/portfolio" : "/seller");
   const back = sellerPage(offer.listing, user.role);
+  const gated = await actionGate(user, "award");
+  if (gated) redirect(`${back}?error=${encodeURIComponent(gated)}#approval-heading`);
   const result = await sellerPickBid({ inquiryId, sellerId: user.id, price: Number(String(formData.get("price") || "").replace(/[$,\s]/g, "")) });
   if (result.error !== null) redirect(`${back}?error=${encodeURIComponent(result.error)}#approval-heading`);
   revalidatePath(back);
@@ -90,6 +96,9 @@ export async function setReserve(formData: FormData) {
   const listing = await prisma.listing.findUnique({ where: { id: listingId } });
   if (!listing || listing.sellerId !== user.id) redirect(user.role === "BROKER" ? "/broker" : user.role === "BUYER" ? "/buyer/portfolio" : "/seller");
   const back = sellerPage(listing, user.role);
+  // A reserve is a standing approval of any bid above it.
+  const gated = await actionGate(user, "award");
+  if (gated) redirect(`${back}?error=${encodeURIComponent(gated)}`);
   const raw = String(formData.get("reservePrice") || "").replace(/[$,\s]/g, "");
   const reserve = raw ? Number(raw) : null;
   if (reserve !== null && !(Number.isFinite(reserve) && reserve > 0)) redirect(`${back}?error=${encodeURIComponent("Enter a reserve in dollars, or leave it blank.")}`);
@@ -107,6 +116,9 @@ export async function saveBuyNow(formData: FormData) {
   const listing = await prisma.listing.findUnique({ where: { id: listingId }, select: { id: true, sellerId: true, brokerId: true } });
   if (!listing || (listing.sellerId !== user.id && listing.brokerId !== user.id)) redirect(user.role === "BROKER" ? "/broker" : user.role === "BUYER" ? "/buyer/portfolio" : "/seller");
   const back = sellerPage(listing, user.role);
+  // A buy-it-now price is an award agreed in advance.
+  const gated = await actionGate(user, "award");
+  if (gated) redirect(`${back}?error=${encodeURIComponent(gated)}#buy-now`);
   const clearing = String(formData.get("intent") || "") === "clear";
   const raw = String(formData.get("buyNowPrice") || "").replace(/[$,\s]/g, "");
   const price = clearing ? null : raw ? Number(raw) : NaN;

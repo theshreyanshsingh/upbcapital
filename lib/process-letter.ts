@@ -1,5 +1,6 @@
 import type { SaleEvent } from "@prisma/client";
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from "pdf-lib";
+import { fold, icsText, icsTime } from "@/lib/calendar-feed";
 import { depositTerms } from "@/lib/closing-clock";
 import { diligenceDays } from "@/lib/closing-service";
 import { prisma } from "@/lib/prisma";
@@ -214,33 +215,6 @@ export async function buildLetterPdf(content: LetterContent) {
 
 // ---------------------------------------------------------------------------------------------------------------
 // The calendar file: one entry per date the event has set, so a buyer's calendar carries the whole sale.
-
-function icsText(text: string) {
-  return text.replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
-}
-
-function icsTime(date: Date) {
-  return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
-}
-
-// Lines over 75 octets fold onto a continuation line that starts with a space, as RFC 5545 asks.
-function fold(line: string) {
-  const out: string[] = [];
-  let current = "";
-  let octets = 0;
-  for (const char of line) {
-    const size = Buffer.byteLength(char, "utf8");
-    if (octets + size > (out.length ? 74 : 75)) {
-      out.push(current);
-      current = "";
-      octets = 0;
-    }
-    current += char;
-    octets += size;
-  }
-  out.push(current);
-  return out.join("\r\n ");
-}
 
 export function buildCalendar(event: Pick<SaleEvent, "id" | "name" | "status" | "indicationsAt" | "bestFinalAt" | "ndaDueAt" | "qaCutoffAt" | "awardTargetAt" | "closingTargetAt" | "createdAt" | "updatedAt">, options: { appUrl?: string; now?: Date } = {}) {
   const base = (options.appUrl ?? process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "");

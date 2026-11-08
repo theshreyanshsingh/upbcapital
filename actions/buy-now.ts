@@ -2,8 +2,10 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { actionGate } from "@/lib/action-gates";
 import { requireUser } from "@/lib/auth";
 import { placeBuyNow } from "@/lib/inquiry";
+import { seatLimitBlock } from "@/lib/seats";
 
 // Binding: a verified buyer takes the seller's buy-it-now price. Every check and the award live in lib/inquiry.ts.
 export async function buyItNow(formData: FormData) {
@@ -12,10 +14,14 @@ export async function buyItNow(formData: FormData) {
   if (user.accountStatus !== "APPROVED") redirect("/buyer/pending");
   const listingId = String(formData.get("listingId") || "");
   const back = `/marketplace/${listingId}`;
+  const price = Number(String(formData.get("price") || "").replace(/[$,\s]/g, ""));
+  // Buy it now can't wait for an approver, so a trading seat takes it only inside its limit (lib/seats.ts).
+  const gated = (await actionGate(user, "bid")) ?? seatLimitBlock(user, price);
+  if (gated) redirect(`${back}?error=${encodeURIComponent(gated)}#offer`);
   const result = await placeBuyNow({
     user,
     listingId,
-    price: Number(String(formData.get("price") || "").replace(/[$,\s]/g, "")),
+    price,
     buyerEntityId: String(formData.get("buyerEntityId") || ""),
   });
   if (result.error !== null) {

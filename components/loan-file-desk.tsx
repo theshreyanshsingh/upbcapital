@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { isENote } from "@/lib/enotes";
 import { cookies } from "next/headers";
 import { clearField, logRisk, moveCollateral, removeCollateral, saveCollateral, uploadLoanReport, verifyField } from "@/actions/loan-file";
 import { applyServicerReport, discardServicerReport, previewServicerReport } from "@/actions/servicer-import";
@@ -89,7 +90,7 @@ export function LoanFileDesk({
   readOnly?: boolean;
 }) {
   const file = completeness(note, collateral, risks, { holder });
-  const lines = collateralLines(note.lienPosition, collateral);
+  const lines = collateralLines(note.lienPosition, collateral, { eNote: isENote(note) });
   const chain = chainOfTitle(collateral, holder, { listedAt });
   const openFields = new Set(discrepancies.filter((row) => row.noteId === note.id && row.status === "OPEN").map((row) => row.field));
   const latest = latestChecks(risks);
@@ -136,8 +137,8 @@ export function LoanFileDesk({
         {lines.map((line) => (
           <div key={line.kind} className="border-t border-border py-3">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
-              <p className="text-sm font-medium text-foreground">{line.label}{line.required ? "" : " · optional for this lien"}</p>
-              {line.items.length === 0 && <Tag tone="plain">Not reviewed</Tag>}
+              <p className="text-sm font-medium text-foreground">{line.label}{line.required ? "" : line.reason ? " · not required for an eNote" : " · optional for this lien"}</p>
+              {line.items.length === 0 && <Tag tone="plain">{line.reason ? "Not required" : "Not reviewed"}</Tag>}
             </div>
             <p className="text-xs text-muted-foreground">{line.hint}</p>
             {line.items.map((item, index) => (

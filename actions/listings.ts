@@ -4,15 +4,18 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import type { DocType } from "@prisma/client";
 import { readInBackground } from "@/lib/ai-reading";
+import { actionGate } from "@/lib/action-gates";
 import { requireUser } from "@/lib/auth";
 import { settleByEdit } from "@/lib/discrepancies";
 import { flagDuplicates } from "@/lib/duplicates";
 import { notifyDesk } from "@/lib/email";
+import { addTranche, tapeProgram } from "@/lib/flow-programs";
 import { typedNumber } from "@/lib/money";
 import { rescoreListing } from "@/lib/matching";
 import { addPoolFiles } from "@/lib/room-files";
 import { screenInBackground, screenListing } from "@/lib/screening";
 import { prisma } from "@/lib/prisma";
+import { seatGate } from "@/lib/seats";
 import { DESK_DENIED, deskDenied } from "@/lib/staff";
 import { extensionOf, mimeFor, putBytes, safeBasename } from "@/lib/storage";
 import { deleteTapeDraft, readTapeDraft } from "@/lib/tape-draft";
@@ -171,6 +174,9 @@ async function requireNoteSeller() {
   if (user.role === "INSTITUTIONAL_SELLER" && user.accountStatus !== "APPROVED") {
     return { user, error: "Your institutional account is still in review." as const };
   }
+  // Filing or resubmitting puts the listing to the desk for the firm (lib/action-gates.ts).
+  const gated = await actionGate(user, "list");
+  if (gated) return { user, error: gated };
   return { user, error: null };
 }
 
@@ -268,6 +274,8 @@ export async function updateOwnListingMeta(formData: FormData) {
   const listingId = String(formData.get("listingId") || "");
   const listing = await prisma.listing.findUnique({ where: { id: listingId } });
   if (!listing || listing.sellerId !== user.id) redirect("/seller?error=That listing is not yours.");
+  const gated = await actionGate(user, "list");
+  if (gated) redirect(`/seller/listings/${listingId}?error=${encodeURIComponent(gated)}`);
   if (listing.status !== "SUBMITTED" && listing.status !== "CHANGES_REQUESTED") {
     redirect(`/seller/listings/${listingId}?error=${encodeURIComponent("This listing can no longer be edited.")}`);
   }
@@ -292,6 +300,8 @@ export async function addPoolDocuments(formData: FormData) {
     if (file instanceof File && file.size > 0) files.push({ name: file.name, bytes: Buffer.from(await file.arrayBuffer()), mime: file.type, type: String(formData.get("documentType") || "OTHER") });
   }
   if (!files.length) redirect(`${page}?error=${encodeURIComponent("Choose a file to add.")}#room-files`);
+  const gated = await seatGate(user, "list");
+  if (gated) redirect(`${page}?error=${encodeURIComponent(gated)}#room-files`);
   const result = await addPoolFiles(user, { listingId, noteId: String(formData.get("noteId") || "") || null, files });
   if (result.error) redirect(`${page}?error=${encodeURIComponent(result.error)}#room-files`);
   for (const path of [page, `/marketplace/${listingId}`, `/admin/listings/${listingId}`]) revalidatePath(path);
@@ -311,12 +321,17 @@ export async function createPoolListing(formData: FormData) {
   if (user.role === "INSTITUTIONAL_SELLER" && user.accountStatus !== "APPROVED") {
     return { error: "Your institutional account is still in review." };
   }
+  const gated = await actionGate(user, "list");
+  if (gated) return { error: gated };
   const token = String(formData.get("token") || "");
   if (!/^[0-9a-f-]{36}$/i.test(token)) return { error: "Upload the tape again." };
   const title = String(formData.get("title") || "").trim();
   const summary = String(formData.get("summary") || "").trim();
   const priceMode = String(formData.get("priceMode") || "COLUMN") as "COLUMN" | "PERCENT" | "POOL_TOTAL";
   if (title.length < 3) return { error: "Name the pool." };
+  // A tape uploaded into a forward-flow programme joins it as its next tranche (lib/flow-programs.ts).
+  const flowProgramId = String(formData.get("flowProgramId") || "");
+  if (flowProgramId && !(await tapeProgram(user.id, flowProgramId))) return { error: "That programme isn't taking tranches." };
   let mapping: Partial<Record<TapeFieldKey, string>>;
   try {
     const parsed: unknown = JSON.parse(String(formData.get("mapping") || "{}"));
@@ -371,8 +386,10 @@ export async function createPoolListing(formData: FormData) {
   await deleteTapeDraft(token);
   await flagDuplicates(listing.id, user.id);
   screenInBackground(() => screenListing(listing.id, user.id));
+  // Tagged before it is scored, so only the programme's committed buyers match it until the release.
+  const tranche = flowProgramId ? await addTranche(user, { programId: flowProgramId, listingId: listing.id }) : null;
   await rescoreListing(listing.id, false);
   revalidatePath("/admin/queue");
-  redirect(`/seller/listings/${listing.id}?notice=submitted`);
+  redirect(`/seller/listings/${listing.id}?notice=submitted${tranche && !tranche.ok ? `&error=${encodeURIComponent(`The pool is filed but didn't join the programme: ${tranche.error}`)}` : ""}`);
 }
 

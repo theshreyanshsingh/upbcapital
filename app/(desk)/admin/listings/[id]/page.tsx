@@ -10,6 +10,7 @@ import { SellerIdentityLine } from "@/components/seller-identity";
 import { DeskDiligence } from "@/components/diligence-checklist";
 import { DeskNotes } from "@/components/desk-notes";
 import { DiscrepancyDesk } from "@/components/discrepancy-desk";
+import { FlowTrancheNote } from "@/components/flow-tranche-note";
 import { LaunchControls } from "@/components/launch-controls";
 import { DocumentReaderPanel } from "@/components/document-reader";
 import { QuestionQueue } from "@/components/listing-questions";
@@ -160,6 +161,7 @@ export default async function AdminListingPage({
         </div>
         <h1 className="mt-3 font-semibold tracking-tight text-[28px] text-foreground">{listing.title}</h1>
         <p className="mt-3 max-w-2xl text-sm text-muted-foreground">{listing.summary}</p>
+        <FlowTrancheNote listingId={listing.id} />
         {listing.broker && (
           <p className="mt-3 text-sm text-foreground">
             {listing.brokerRole === "AFFILIATE" ? "Referring affiliate" : "Seller's broker"} {listing.broker.name}

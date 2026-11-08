@@ -10,6 +10,8 @@ const to = (path: string, key: "notice" | "error", text: string, anchor: string)
 // From the account's security page. The box is required in the form too; this is for a form posted without it.
 export async function requestAccountDeletion(formData: FormData) {
   const user = await requireUser({ secondFactorSetup: true });
+  // A seat acts for the firm, and the firm's account isn't a seat's to delete (lib/seats.ts).
+  if (user.actor) redirect(to("/account/security", "error", "A seat can't delete the firm's account. The account owner can.", "delete"));
   if (formData.get("confirm") !== "yes") redirect(to("/account/security", "error", "Tick the box to confirm you want the account deleted.", "delete"));
   const result = await requestDeletion(user, String(formData.get("reason") || ""));
   if (result.error) redirect(to("/account/security", "error", result.error, "delete"));

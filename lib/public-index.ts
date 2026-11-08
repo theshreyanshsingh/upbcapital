@@ -2,7 +2,7 @@ import type { Prisma } from "@prisma/client";
 import { unset } from "@/lib/db-filters";
 import { labelOf, LIEN_POSITIONS, PAYMENT_STATUSES, US_STATES } from "@/lib/labels";
 import { prisma } from "@/lib/prisma";
-import { publicListing } from "@/lib/private-listings";
+import { outsideFirstLook, publicListing } from "@/lib/private-listings";
 import { upbBucket } from "@/lib/strata";
 
 // The public inventory index at /open, and the listings a deal announcement may name: live, public, and past any
@@ -21,11 +21,12 @@ export const BALANCE_BANDS = [
   { value: "500k-up", label: upbBucket(500_000) },
 ] as const;
 
-// Approved, public, and not waiting on a launch time. Merged with AND, so a caller's own OR stays its own.
-export function liveListingWhere(now = new Date()): Prisma.ListingWhereInput {
+// Approved, public, and not waiting on a launch time. Merged with AND, so a caller's own OR stays its own. `released`
+// is outsideFirstLook's filter, which keeps forward-flow tranches off until their first look ends.
+export function liveListingWhere(now = new Date(), released: Prisma.ListingWhereInput = {}): Prisma.ListingWhereInput {
   return {
     status: "APPROVED",
-    AND: [publicListing(), { OR: [...unset("launchAt").OR, { launchAt: { lte: now } }] }],
+    AND: [publicListing(), { OR: [...unset("launchAt").OR, { launchAt: { lte: now } }] }, released],
   };
 }
 
@@ -99,7 +100,7 @@ export async function loadIndex(filters: IndexFilters, now = new Date()): Promis
     ...(filters.performance ? { paymentStatus: filters.performance as "PERFORMING" } : {}),
   };
   const rows = await prisma.listing.findMany({
-    where: { ...liveListingWhere(now), notes: { some: loan } },
+    where: { ...liveListingWhere(now, await outsideFirstLook()), notes: { some: loan } },
     select: CARD_SELECT,
     orderBy: { approvedAt: "desc" },
     take: INDEX_SCAN,
@@ -114,7 +115,7 @@ export async function loadIndex(filters: IndexFilters, now = new Date()): Promis
 // Live public listings by id, as cards. Ids that aren't live and public drop out.
 export async function liveCards(ids: string[] | null, now = new Date(), take = 100) {
   const rows = await prisma.listing.findMany({
-    where: { ...liveListingWhere(now), ...(ids ? { id: { in: ids } } : {}), notes: { some: {} } },
+    where: { ...liveListingWhere(now, await outsideFirstLook()), ...(ids ? { id: { in: ids } } : {}), notes: { some: {} } },
     select: CARD_SELECT,
     orderBy: { approvedAt: "desc" },
     take,

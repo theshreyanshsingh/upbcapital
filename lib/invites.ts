@@ -162,7 +162,8 @@ export async function acceptInvite(input: { token: string; password: string; con
   if (consent.error !== null) return { error: consent.error };
   const opened = await prisma.user.updateMany({
     where: { id: user.id, passwordHash: user.passwordHash },
-    data: { passwordHash: await bcrypt.hash(input.password, 10), ...consent.data },
+    // The link went to the address, so opening it proves the person owns it (lib/email-confirm.ts).
+    data: { passwordHash: await bcrypt.hash(input.password, 10), ...consent.data, emailConfirmedAt: user.emailConfirmedAt ?? now },
   });
   if (opened.count !== 1) return expired;
   await prisma.passwordReset.deleteMany({ where: { userId: user.id } });

@@ -35,6 +35,7 @@ export function OfferPanel({
   standing = null,
   loans = [],
   entities = [],
+  suggested,
 }: {
   listingId: string;
   premiumBps: number;
@@ -63,8 +64,10 @@ export function OfferPanel({
   loans?: PricedLoan[];
   // The buying entities a bid can be for. With more than one, the buyer picks once for every bid on the page.
   entities?: EntityOption[];
+  // A forward-flow buyer's price grid pre-fills the bid, with a line saying how (lib/flow-programs.ts). They still confirm.
+  suggested?: { amount: number; line: string };
 }) {
-  const [amount, setAmount] = useState("");
+  const [amount, setAmount] = useState(suggested ? String(suggested.amount) : "");
   const [entity] = useEntityChoice(listingId, entities);
   const buyingAs = entityRows(entity, entities);
   const [priced, setPriced] = useState<LoanPriceSummary>({ priced: 0, sum: 0, allowPartial: false });
@@ -132,6 +135,7 @@ export function OfferPanel({
               onChange={(event) => setAmount(event.target.value)}
               className="mt-1 h-11 bg-card tabular-nums"
             />
+            {suggested && <span className="mt-1 block text-xs leading-relaxed">{suggested.line}</span>}
           </label>
           {offer > 0 && (
             <div className="space-y-1 text-sm text-muted-foreground tabular-nums">

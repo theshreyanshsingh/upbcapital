@@ -217,6 +217,8 @@ export async function finalizeClosing(closingId: string) {
         },
       });
     }
+    // Each side is asked once for its yes-or-no answers on the deal, from the write that closed it. lib/track-record.ts.
+    await import("@/lib/track-record").then((record) => record.promptAttestationsSafely(closing.id));
   }
   await ensureBuyerHolding(closing.id);
   if (closing.deskBidId) {
@@ -266,6 +268,8 @@ export async function finalizeClosing(closingId: string) {
   await import("@/lib/backup-bids").then((backups) => backups.releaseBackups(closing.id));
   // The numbered fee invoices for what this sale charged, once each. lib/invoices.ts.
   await import("@/lib/invoices").then((invoices) => invoices.issueClosingInvoicesSafely(closing.id));
+  // What still arrives after the close: the recorded assignment, the note by courier, the letters. lib/trailing-docs.ts.
+  await import("@/lib/trailing-docs").then((docs) => docs.scheduleTrailingDocsSafely(closing.id));
   return prisma.closing.findUnique({ where: { id: closingId } });
 }
 

@@ -64,6 +64,8 @@ export async function saveBorrowerNotices(formData: FormData) {
       sentAt ? `sale notice sent ${sentAt.toISOString().slice(0, 10)}` : "sale notice not sent",
     ].join(" · "),
   );
+  // The sale notice is the hello letter on the trailing documents. lib/trailing-docs.ts.
+  await import("@/lib/trailing-docs").then((docs) => docs.syncTrailingDocs(closingId));
   revalidatePath(back);
   redirect(`${back}?notice=notices`);
 }

@@ -3,6 +3,7 @@
 import type { Note } from "@prisma/client";
 import { redirect } from "next/navigation";
 import { alertMatchingSearches } from "@/lib/search-alerts";
+import { actionGate } from "@/lib/action-gates";
 import { audit } from "@/lib/audit";
 import { requireUser } from "@/lib/auth";
 import { requireDesk } from "@/lib/staff";
@@ -255,6 +256,9 @@ export async function relistBuyerNote(formData: FormData) {
   const price = Number(String(formData.get("askingPrice") || "").replace(/[$,\s]/g, ""));
   const holding = await prisma.buyerHolding.findUnique({ where: { id: holdingId }, include: { payments: true } });
   if (!holding || holding.userId !== user.id) redirect("/buyer/portfolio?error=That note is not on your book.");
+  // Relisting files a listing for the firm, so a seat needs a role that lists (lib/action-gates.ts).
+  const gated = await actionGate(user, "list");
+  if (gated) redirect(`/buyer/portfolio?error=${encodeURIComponent(gated)}`);
   if (!(price > 0)) redirect("/buyer/portfolio?error=Enter an asking price.");
   if (partialShare(holding.sharePercent == null ? null : Number(holding.sharePercent)) && !participationsOpen()) {
     redirect(`/buyer/portfolio?error=${encodeURIComponent(PARTICIPATIONS_PAUSED)}`);

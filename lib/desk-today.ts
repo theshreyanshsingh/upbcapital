@@ -1,5 +1,6 @@
 import { closingClock, closingStats, targetDays } from "@/lib/closing-clock";
 import { prisma } from "@/lib/prisma";
+import { ownAccounts } from "@/lib/seats";
 import { openReviewWhere, reviewKey } from "@/lib/screening";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -16,7 +17,7 @@ export async function deskToday(closingDays: number | null | undefined, now = ne
       select: { id: true, inquiries: { where: { type: "OFFER", status: { in: ["OPEN", "REVIEWED"] } }, select: { id: true } } },
     }),
     prisma.buyerProfile.count({ where: { status: "SUBMITTED" } }),
-    prisma.user.count({ where: { accountStatus: "PENDING" } }),
+    prisma.user.count({ where: { accountStatus: "PENDING", ...ownAccounts() } }),
     prisma.closing.findMany({ where: { status: "OPEN" }, include: { steps: true } }),
     prisma.closing.findMany({ where: { status: { in: ["COMPLETE", "CANCELED"] }, openedAt: { gte: since } }, select: { status: true, openedAt: true, closedAt: true } }),
     prisma.ofacCheck.findMany({ where: openReviewWhere, select: { id: true, name: true, matched: true, userId: true, listingId: true } }),

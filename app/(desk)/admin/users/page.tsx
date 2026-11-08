@@ -3,12 +3,14 @@ import { saveDeskRole } from "@/actions/staff";
 import { clearBuyerStrike } from "@/actions/strikes";
 import { ConfirmSubmit } from "@/components/confirm-submit";
 import { InvitePanel } from "@/components/invite-panel";
+import { EmailConfirmState } from "@/components/email-confirm";
 import { SubmitButton } from "@/components/submit-button";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { requireRole } from "@/lib/auth";
 import { prettyDate, q } from "@/lib/format";
 import { invitePending } from "@/lib/invites";
+import { deskSeatLines, seatsUnderFirms } from "@/lib/seats";
 import { roleLabel } from "@/lib/labels";
 import { ofacBlocks } from "@/lib/ofac";
 import { prisma } from "@/lib/prisma";
@@ -36,6 +38,10 @@ export default async function UsersPage({
     prisma.ofacCheck.findMany({ where: { result: "REVIEW" }, select: { userId: true, result: true, status: true } }),
   ]);
   const held = new Set(reviews.filter(ofacBlocks).map((row) => row.userId));
+  // A firm lists its seats and their roles, and a seat names its firm (lib/seats.ts).
+  const seatLines = await deskSeatLines(users);
+  // Seats sit indented under their firm and aren't counted as accounts of their own.
+  const listed = seatsUnderFirms(users);
   const [strikes, settings] = await Promise.all([strikesFor(users.filter((user) => user.role === "BUYER").map((user) => user.id)), getSettings()]);
   const limit = strikeLimitOf(settings.strikeLimit);
   // Forms show only for the part of the desk this account runs. The actions check the same capabilities.
@@ -82,7 +88,7 @@ export default async function UsersPage({
         <input name="q" type="search" defaultValue={filter} aria-label="Filter accounts" placeholder="Name, email, or company" className="desk-input" />
         <button type="submit" className="h-11 shrink-0 rounded-lg border border-border px-4 text-[13px] font-medium">Filter</button>
       </form>
-      {filter && <p className="mt-2 text-sm text-muted-foreground">{users.length} account{users.length === 1 ? "" : "s"} match “{filter}”. <a href="/admin/users" className="text-link">Show all</a></p>}
+      {filter && <p className="mt-2 text-sm text-muted-foreground">{listed.accounts} account{listed.accounts === 1 ? "" : "s"} match “{filter}”. <a href="/admin/users" className="text-link">Show all</a></p>}
       <div className="mt-6 relative overflow-x-auto border border-border rounded-xl">
         <table className="min-w-full text-left text-sm">
           <thead className="text-xs font-medium text-muted-foreground">
@@ -91,14 +97,16 @@ export default async function UsersPage({
             </tr>
           </thead>
           <tbody>
-            {users.map((user) => (
+            {listed.rows.map((user) => (
               <tr key={user.id} className="border-t border-border align-top">
-                <td className="px-4 py-4">
+                <td className={user.principalId ? "py-4 pr-4 pl-10" : "px-4 py-4"}>
                   <p className="text-foreground">{user.name}</p>
                   <p className="text-xs text-muted-foreground">{user.email}</p>
                   {user.companyName && <p className="text-xs text-muted-foreground">{user.companyName}</p>}
                   {held.has(user.id) && <p className="mt-1 text-xs text-bad">OFAC review open</p>}
                   {invitePending(user) && <p className="mt-1 text-xs text-link">Invited · password not set yet</p>}
+                  {seatLines.has(user.id) && <p className="mt-1 text-xs text-muted-foreground">{seatLines.get(user.id)}</p>}
+                  {!invitePending(user) && <EmailConfirmState user={user} canResend={owns} />}
                   <Strikes rows={strikes.get(user.id) ?? []} limit={limit} canClear={vets} />
                 </td>
                 <td className="px-4 py-4">{roleLabel(user.role)}</td>

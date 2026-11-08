@@ -12,6 +12,7 @@ import { money, num, prettyDate, q } from "@/lib/format";
 import { standingLoanPrices } from "@/lib/loan-prices";
 import { bidExpired, buyerPrice, canCounter, counterFrom, openCounter, withdrawBlock } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
+import { seatBylines } from "@/lib/seats";
 
 export const metadata = { title: "Inquiries" };
 
@@ -31,6 +32,8 @@ export default async function OffersPage({
   // A group's counter is answered seat by seat on the group page, and its bid is withdrawn there too, not by the lead here.
   const groupFor = new Map((await prisma.groupBuy.findMany({ where: { inquiryId: { in: inquiries.map((item) => item.id) } }, select: { id: true, inquiryId: true } })).map((group) => [group.inquiryId, group.id]));
   const closingFor = new Map(closings.map((closing) => [closing.inquiryId, closing.id]));
+  // Which of the firm's seats placed each bid, and who approved it when it waited (lib/seats.ts).
+  const bylines = await seatBylines(user.id, inquiries.map((item) => item.id));
   return (
     <div>
       <PageIntro eyebrow="Inquiries" title="What you have asked for." />
@@ -62,6 +65,7 @@ export default async function OffersPage({
                 {inquiry.type.replaceAll("_", " ").toLowerCase()}
                 {inquiry.note ? ` · ${inquiry.note.city}` : ""}
                 {amount != null ? ` · ${money(amount)}` : ""} · {prettyDate(inquiry.createdAt)}
+                {bylines.has(inquiry.id) ? ` · ${bylines.get(inquiry.id)}` : ""}
                 {inquiry.type === "OFFER" && inquiry.expiresAt ? ` · ${inquiry.status === "EXPIRED" || lapsed ? "lapsed" : "good until"} ${prettyDate(inquiry.expiresAt)}` : ""}
                 {inquiry.status === "WITHDRAWN" && inquiry.withdrawnAt ? ` · withdrawn ${prettyDate(inquiry.withdrawnAt)}` : ""}
               </p>

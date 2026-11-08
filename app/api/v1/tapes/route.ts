@@ -4,7 +4,7 @@ import { ingestTape } from "@/lib/ingest";
 import { DESK_DENIED, deskCan } from "@/lib/staff";
 
 export async function POST(request: Request) {
-  const caller = await apiCaller(request);
+  const caller = await apiCaller(request, "tapes:write");
   if (caller.response) return caller.response;
   const user = caller.user;
   if (user.role !== "INSTITUTIONAL_SELLER" && user.role !== "ADMIN") {

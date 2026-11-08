@@ -46,7 +46,7 @@ import { labelOf, LIEN_POSITIONS, PAYMENT_STATUSES, US_STATES } from "@/lib/labe
 import { comingSoonCard, launchPending } from "@/lib/launch-rules";
 import { bookVeil, common, listingFigures, loansForSale } from "@/lib/metrics";
 import { prisma } from "@/lib/prisma";
-import { isPrivateListing, listingScope } from "@/lib/private-listings";
+import { isPrivateListing, listingAccess, visibleWhere } from "@/lib/private-listings";
 import { advanceSaleEvents, openEvents, roundText, when } from "@/lib/sale-events";
 import { getSettings, isEarlyAccess, isPro } from "@/lib/settings";
 
@@ -72,12 +72,13 @@ export default async function MarketplacePage({
   const view = VIEWS.find((option) => option.value === q(params, "view"))?.value ?? "cards";
   // A sale event whose date passed moves first, so the book shows each listing on its current round's terms.
   await advanceSaleEvents().catch(() => null);
+  const access = await listingAccess(user);
   const [settings, everything, saved, events] = await Promise.all([
     getSettings(),
     prisma.listing.findMany({
       // Private listings show to their invitees only, and a seller's excluded buyers see none of theirs, in the
       // book and in every count and filter built from it (lib/private-listings.ts).
-      where: { status: { in: ["APPROVED", "PENDING", "SOLD"] }, AND: [await listingScope(user)] },
+      where: { status: { in: ["APPROVED", "PENDING", "SOLD"] }, AND: [visibleWhere(access)] },
       include: { notes: true, favorites: { where: { userId: user.id } } },
       orderBy: { approvedAt: "desc" },
     }),
@@ -117,8 +118,9 @@ export default async function MarketplacePage({
     }));
     // A live pool's row shows the loans still for sale.
     const forSale = loansForSale(listing.status, notes);
-    // A private listing on this book is one the buyer was invited to, which no early or free-slice hold covers.
-    const invited = isPrivateListing(listing);
+    // A private listing on this book is one the buyer was invited to, which no early or free-slice hold covers. So
+    // is a forward-flow tranche they see in its first look as a committed buyer.
+    const invited = isPrivateListing(listing) || Boolean(access.firstLookOpen?.has(listing.id));
     const veil = bookVeil({
       sold: listing.status === "SOLD",
       pro,

@@ -61,6 +61,11 @@ export const TAPE_FIELDS = [
   { key: "borrowerDeceased", label: "Borrower deceased (yes or no)", required: false, group: "risk" },
   { key: "litigationFlag", label: "Litigation (yes or no)", required: false, group: "risk" },
   { key: "litigationNote", label: "Litigation note", required: false, group: "risk" },
+  // An eNote on the MERS eRegistry, the Org IDs holding its control and location, and its eVault. lib/enotes.ts.
+  { key: "eNote", label: "eNote on the MERS eRegistry (yes or no)", required: false, group: "terms" },
+  { key: "eRegistryController", label: "eRegistry controller (MERS Org ID)", required: false, group: "terms" },
+  { key: "eRegistryLocation", label: "eRegistry location (MERS Org ID)", required: false, group: "terms" },
+  { key: "eVaultProvider", label: "eVault provider", required: false, group: "terms" },
 ] as const;
 
 export type TapeFieldKey = (typeof TAPE_FIELDS)[number]["key"];
@@ -125,6 +130,10 @@ export const TAPE_HEADERS = [
   "borrower_deceased",
   "litigation",
   "litigation_note",
+  "is_enote",
+  "eregistry_controller",
+  "eregistry_location",
+  "evault_provider",
 ];
 
 const SYNONYMS: Record<TapeFieldKey, string[]> = {
@@ -240,6 +249,11 @@ const SYNONYMS: Record<TapeFieldKey, string[]> = {
     "litigationnote", "litigationnotes", "litigationdetail", "litigationdetails", "litigationcomment", "litigationcomments",
     "litigationdescription",
   ],
+  // "eNote" alone already maps to the eNote ID, so the flag answers to the longer names.
+  eNote: ["isenote", "enoteflag", "enoteyn", "enoteindicator", "enoteyesno", "electronicnote", "enotemers"],
+  eRegistryController: ["eregistrycontroller", "controllerorgid", "eregistrycontrollerorgid", "enotecontroller", "mersorgidcontroller", "controllermersorgid"],
+  eRegistryLocation: ["eregistrylocation", "locationorgid", "eregistrylocationorgid", "enotelocation", "mersorgidlocation", "locationmersorgid"],
+  eVaultProvider: ["evaultprovider", "evault", "evaultname", "evaultvendor", "enotevault"],
 };
 
 export function normalizeHeader(header: string) {
@@ -263,9 +277,9 @@ export function suggestMapping(headers: string[]): Partial<Record<TapeFieldKey, 
 }
 
 export const SAMPLE_TAPE_ROWS = [
-  ["100 SAMPLE Banyan Street", "Miami", "FL", "33130", "SFR", "First", "428000", "6.50", "2704", "Performing", "0", "2026-09-01", "2019-06-15", "2049-06-15", "710000", "312000", "Owner occupied", "None", "FICTIONAL BORROWER 01", "Sample row — delete before a live tape", "SAMPLE-0001", "Sample Servicing LLC", "000000000000", "2026-11-01", "No", "", "", "", "", "", "BPO", "2026-08-15", "Purchase", "No", "No", "", "", "", "742", "FICO", "2026-08-15", "", "", "", "", "", "", "520000", "3150.22", "0", "", "", "", "Fixed", "", "No", "No", "No", ""],
-  ["200 SAMPLE Magnolia Court", "Savannah", "GA", "31401", "Condo", "Second", "86000", "8.25", "690", "Non-performing", "11", "2025-10-01", "2018-03-01", "2048-03-01", "340000", "29000", "Vacant", "Lis pendens", "FICTIONAL BORROWER 02", "Sample row — fictional", "SAMPLE-0002", "Sample Servicing LLC", "999876543210", "2025-12-01", "Yes", "2020-08-01", "Forbearance ended", "", "", "2026-04-10", "BPO", "2026-06-01", "Cash-out refinance", "Yes", "No", "", "", "", "588", "VantageScore 4.0", "2026-06-01", "", "", "", "Decided", "", "", "95000", "", "9875", "97210.55", "2026-10-15", "", "Fixed", "212000", "No", "No", "Yes", "Sample: the borrower contests the foreclosure"],
-  ["300 SAMPLE Palmetto Lane", "Charlotte", "NC", "28202", "Townhouse", "First", "196500", "7.00", "1310", "Sub-performing", "2", "2026-07-15", "2021-01-20", "2051-01-20", "285000", "151000", "Tenant occupied", "None", "FICTIONAL BORROWER 03", "Sample row — fictional", "SAMPLE-0003", "Sample Servicing LLC", "221100000000", "2026-09-01", "No", "", "Repayment plan", "13", "2026-08-03", "", "AVM", "2026-09-20", "Refinance", "No", "No", "30-day average SOFR", "2.75", "2028-01-20", "691", "FICO", "2026-09-20", "", "", "", "Decided", "", "", "210000", "1840", "2620", "", "", "", "ARM", "", "No", "No", "No", ""],
+  ["100 SAMPLE Banyan Street", "Miami", "FL", "33130", "SFR", "First", "428000", "6.50", "2704", "Performing", "0", "2026-09-01", "2019-06-15", "2049-06-15", "710000", "312000", "Owner occupied", "None", "FICTIONAL BORROWER 01", "Sample row — delete before a live tape", "SAMPLE-0001", "Sample Servicing LLC", "000000000000", "2026-11-01", "No", "", "", "", "", "", "BPO", "2026-08-15", "Purchase", "No", "No", "", "", "", "742", "FICO", "2026-08-15", "", "", "", "", "", "", "520000", "3150.22", "0", "", "", "", "Fixed", "", "No", "No", "No", "", "No", "", "", ""],
+  ["200 SAMPLE Magnolia Court", "Savannah", "GA", "31401", "Condo", "Second", "86000", "8.25", "690", "Non-performing", "11", "2025-10-01", "2018-03-01", "2048-03-01", "340000", "29000", "Vacant", "Lis pendens", "FICTIONAL BORROWER 02", "Sample row — fictional", "SAMPLE-0002", "Sample Servicing LLC", "999876543210", "2025-12-01", "Yes", "2020-08-01", "Forbearance ended", "", "", "2026-04-10", "BPO", "2026-06-01", "Cash-out refinance", "Yes", "No", "", "", "", "588", "VantageScore 4.0", "2026-06-01", "", "", "", "Decided", "", "", "95000", "", "9875", "97210.55", "2026-10-15", "", "Fixed", "212000", "No", "No", "Yes", "Sample: the borrower contests the foreclosure", "No", "", "", ""],
+  ["300 SAMPLE Palmetto Lane", "Charlotte", "NC", "28202", "Townhouse", "First", "196500", "7.00", "1310", "Sub-performing", "2", "2026-07-15", "2021-01-20", "2051-01-20", "285000", "151000", "Tenant occupied", "None", "FICTIONAL BORROWER 03", "Sample row — fictional", "SAMPLE-0003", "Sample Servicing LLC", "221100000000", "2026-09-01", "No", "", "Repayment plan", "13", "2026-08-03", "", "AVM", "2026-09-20", "Refinance", "No", "No", "30-day average SOFR", "2.75", "2028-01-20", "691", "FICO", "2026-09-20", "", "", "", "Decided", "", "", "210000", "1840", "2620", "", "", "", "ARM", "", "No", "No", "No", "", "Yes", "1000123", "1000456", "Sample eVault Co"],
 ];
 
 export const VALUE_TYPES = [
@@ -362,6 +376,11 @@ export type ServicingRecord = {
   borrowerDeceased?: boolean;
   litigationFlag?: boolean;
   litigationNote?: string;
+  // Read from the tape only. The note wizard doesn't ask for them, so they aren't servicing keys.
+  eNote?: boolean;
+  eRegistryController?: string;
+  eRegistryLocation?: string;
+  eVaultProvider?: string;
 };
 
 // The servicing record's fields, in the order the note wizard and the tape mapping show them.
@@ -575,6 +594,10 @@ type TermsNote = {
   originatorLicense?: string | null;
   servicerSource?: string | null;
   servicerSourcedAt?: Date | null;
+  eNote?: boolean | null;
+  eRegistryController?: string | null;
+  eRegistryLocation?: string | null;
+  eVaultProvider?: string | null;
 };
 
 const exportDay = (date: Date | null | undefined) => (date && !Number.isNaN(date.getTime()) ? date.toISOString().slice(0, 10) : "");
@@ -596,6 +619,12 @@ export function termsExportColumns(note: TermsNote, open: boolean) {
     originatorLicense: open ? note.originatorLicense ?? "" : "",
     servicerReport: note.servicerSource ?? "",
     servicerReportDate: exportDay(note.servicerSourcedAt),
+    // An Org ID names the holder's MERS member, not the borrower, so these export either way. "isENote" rather than
+    // "eNote", which an import reads as the eNote ID.
+    isENote: note.eNote == null ? "" : note.eNote ? "yes" : "no",
+    eRegistryController: note.eRegistryController ?? "",
+    eRegistryLocation: note.eRegistryLocation ?? "",
+    eVaultProvider: note.eVaultProvider ?? "",
   };
 }
 

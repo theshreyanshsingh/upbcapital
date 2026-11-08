@@ -29,6 +29,7 @@ import {
   type ServicingRecord,
   type TapeFieldKey,
 } from "@/lib/tape-fields";
+import { parseMersOrgId } from "@/lib/enotes";
 
 export type TapeMatrix = {
   headers: string[];
@@ -425,6 +426,7 @@ function readTerms(
   if (eNote && parseYesNo(eNote) != null) warn("eNoteId", `eNote “${clip(eNote)}” is a yes or no, not an eNote ID, and will be left off.`);
   else put(record, "eNoteId", eNote.slice(0, 60) || null);
   put(record, "originatingPlatform", get("originatingPlatform").slice(0, 120) || null);
+  readENote(record, get, warn);
 
   const stageRaw = get("lossMitStage");
   if (stageRaw) {
@@ -440,6 +442,28 @@ function readTerms(
   }
   put(record, "inheritedCovenants", get("inheritedCovenants").slice(0, 600) || null);
   put(record, "originatorLicense", get("originatorLicense").slice(0, 200) || null);
+}
+
+// An eNote and its place on the MERS eRegistry, under the same rule. An Org ID is 7 digits. An Org ID or an eVault
+// with the flag left blank says the note is electronic. lib/enotes.ts.
+function readENote(record: ServicingRecord, get: (key: TapeFieldKey) => string, warn: (field: TapeFieldKey, message: string) => void) {
+  const flagRaw = get("eNote");
+  if (flagRaw) {
+    const flag = parseYesNo(flagRaw);
+    if (flag == null) warn("eNote", `eNote “${clip(flagRaw)}” wasn't read as yes or no and will be left off.`);
+    put(record, "eNote", flag);
+  }
+  const orgId = (key: "eRegistryController" | "eRegistryLocation", label: string) => {
+    const raw = get(key);
+    if (!raw) return;
+    const id = parseMersOrgId(raw);
+    if (!id) warn(key, `${label} “${clip(raw)}” isn't a 7-digit MERS Org ID and will be left off.`);
+    put(record, key, id);
+  };
+  orgId("eRegistryController", "eRegistry controller");
+  orgId("eRegistryLocation", "eRegistry location");
+  put(record, "eVaultProvider", get("eVaultProvider").slice(0, 120) || null);
+  if (!flagRaw && (record.eRegistryController || record.eRegistryLocation || record.eVaultProvider)) record.eNote = true;
 }
 
 export function tapePayWidth(rows: Record<string, string>[], mapping: Partial<Record<TapeFieldKey, string>>) {

@@ -2,12 +2,14 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { actionGate } from "@/lib/action-gates";
 import { audit } from "@/lib/audit";
 import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { requestMeta } from "@/lib/request-meta";
 import { clearSettingsCache, getSettings } from "@/lib/settings";
 import { MAX_SIGN_HOURS, declineRequest, sendForSignatures, signHours, signRequest, vendorName, voidRequest } from "@/lib/signatures";
+import { seatGate } from "@/lib/seats";
 import { requireDesk } from "@/lib/staff";
 import { isTemplateKey } from "@/lib/templates";
 
@@ -57,6 +59,9 @@ export async function signSignature(formData: FormData) {
   if (!closingId || !requestId) redirect("/closings");
   const user = await requireUser();
   const page = `/closings/${closingId}/sign/${requestId}`;
+  // A firm signs through its approving and managing seats, or its owner (lib/seats.ts).
+  const gated = await actionGate(user, "sign");
+  if (gated) back(page, "error", gated, "#sign");
   const request = await prisma.signatureRequest.findUnique({ where: { id: requestId }, select: { closingId: true } });
   if (!request || request.closingId !== closingId) redirect(`/closings/${closingId}`);
   const meta = await requestMeta();
@@ -72,6 +77,9 @@ export async function declineSignature(formData: FormData) {
   if (!closingId || !requestId) redirect("/closings");
   const user = await requireUser();
   const page = `/closings/${closingId}/sign/${requestId}`;
+  // Declining answers for the firm as signing does, so the same seats can.
+  const gated = await seatGate(user, "sign");
+  if (gated) back(page, "error", gated, "#sign");
   const request = await prisma.signatureRequest.findUnique({ where: { id: requestId }, select: { closingId: true } });
   if (!request || request.closingId !== closingId) redirect(`/closings/${closingId}`);
   const declined = await declineRequest(requestId, user, String(formData.get("reason") || ""));

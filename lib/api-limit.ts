@@ -1,6 +1,6 @@
 import type { User } from "@prisma/client";
 import { NextResponse } from "next/server";
-import { hashKey, userForApiKey } from "@/lib/api-keys";
+import { checkApiKey, hashKey, keyRefusal, tokenOf, type ApiScope } from "@/lib/api-keys";
 import { consumeRateLimit } from "@/lib/rate-limit";
 
 // Each key's allowance on /api/v1. The developers page and the Seller API page quote these figures.
@@ -11,15 +11,16 @@ export function retryAfterSeconds(now: number, windowMs = API_LIMIT.windowMs) {
   return Math.max(1, Math.ceil((windowMs - (now % windowMs)) / 1000));
 }
 
-type Caller = { user: User; response: null } | { user: null; response: NextResponse };
+type Caller = { user: User; scopes: ApiScope[]; response: null } | { user: null; response: NextResponse };
 
 // Every /api/v1 route starts here: the key's account, or the response to send instead. The count is per key and
-// starts once the key checks out, so nobody can spend a real key's allowance with made-up ones.
-export async function apiCaller(request: Request, now = Date.now()): Promise<Caller> {
+// starts once the key checks out, so nobody can spend a real key's allowance with made-up ones. A route that names a
+// scope turns away a key without it, and a buyer's key is turned away, saying why, once the account's Pro lapses.
+export async function apiCaller(request: Request, scope?: ApiScope, now = Date.now()): Promise<Caller> {
   const header = request.headers.get("authorization");
-  const user = await userForApiKey(header);
-  if (!user) return { user: null, response: NextResponse.json({ error: "Unknown API key." }, { status: 401 }) };
-  const token = header?.replace(/^Bearer\s+/i, "").trim() ?? "";
+  const check = await checkApiKey(header);
+  if (!check.ok) return { user: null, response: NextResponse.json({ error: check.error }, { status: check.status }) };
+  const token = tokenOf(header);
   if (!(await consumeRateLimit(`api:${hashKey(token).slice(0, 32)}`, API_LIMIT.requests, API_LIMIT.windowMs, now))) {
     const wait = retryAfterSeconds(now);
     return {
@@ -30,5 +31,7 @@ export async function apiCaller(request: Request, now = Date.now()): Promise<Cal
       ),
     };
   }
-  return { user, response: null };
+  const refused = keyRefusal(check, scope, new Date(now));
+  if (refused) return { user: null, response: NextResponse.json(refused, { status: 403 }) };
+  return { user: check.user, scopes: check.scopes, response: null };
 }

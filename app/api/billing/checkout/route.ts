@@ -4,6 +4,7 @@ import { getApiUser } from "@/lib/auth";
 import { appOrigin, checkoutUnavailableNote, simulatedCheckout, stripeConfigured } from "@/lib/billing";
 import { shouldApplyReferralCredit } from "@/lib/acl";
 import { unset } from "@/lib/db-filters";
+import { billingBlock } from "@/lib/seats";
 import { prisma } from "@/lib/prisma";
 import { getSettings, isPro } from "@/lib/settings";
 import { liveSubscription, portalReturnUrl } from "@/lib/stripe-billing";
@@ -16,6 +17,9 @@ export async function POST() {
   if (!user || user.role !== "BUYER" || user.accountStatus !== "APPROVED") {
     return NextResponse.redirect(new URL("/login", appOrigin()));
   }
+  // A firm's membership is the owner's or a managing seat's to buy (lib/seats.ts).
+  const blocked = billingBlock(user);
+  if (blocked) return NextResponse.redirect(new URL(`/buyer/subscription?error=${encodeURIComponent(blocked)}`, appOrigin()));
   // A buyer on a no-card trial may subscribe before it ends.
   if (isPro(user) && !onFreeTrial(user)) {
     return NextResponse.redirect(new URL(`/buyer/subscription?notice=${encodeURIComponent("You are already on Pro.")}`, appOrigin()));

@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import type { BrokerDealRole, DocType, FeeBasis } from "@prisma/client";
 import { payoutNoteProblem, splitStates } from "@/lib/broker-fees";
+import { actionGate } from "@/lib/action-gates";
 import { endSessions, requireRole } from "@/lib/auth";
 import { requireDesk } from "@/lib/staff";
 import { notify, notifyDesk } from "@/lib/email";
@@ -118,6 +119,9 @@ export async function markBrokerWelcomed() {
 export async function submitBrokerDeal(formData: FormData) {
   const { user, profile } = await brokerUser();
   if (user.accountStatus !== "APPROVED") return { error: "The desk approves your seat before you can file a deal." };
+  // Filing puts a listing to the desk for the firm (lib/action-gates.ts).
+  const gated = await actionGate(user, "list");
+  if (gated) return { error: gated };
   if (!profile?.company || !profile.states || !profile.payoutNote) return { error: "Finish your profile before filing a deal." };
   if (!profile.w9Key) return { error: "Upload a W-9 on your profile before a fee can be owed." };
 
@@ -311,6 +315,8 @@ export async function resubmitBrokerDeal(formData: FormData) {
   const listing = await prisma.listing.findUnique({ where: { id: listingId }, select: { id: true, title: true, brokerId: true, status: true } });
   if (!listing || listing.brokerId !== user.id) redirect("/broker");
   if (listing.status !== "CHANGES_REQUESTED") redirect(`${back}?error=${encodeURIComponent("The desk hasn't asked for changes on this file, so there is nothing to resubmit.")}`);
+  const gated = await actionGate(user, "list");
+  if (gated) redirect(`${back}?error=${encodeURIComponent(gated)}`);
   const summary = String(formData.get("summary") || "").trim().slice(0, 4000);
   const changes = String(formData.get("changes") || "").replace(/\s+/g, " ").trim().slice(0, 1000);
   if (summary.length < 10) redirect(`${back}?error=${encodeURIComponent("Write a summary the desk can review.")}`);

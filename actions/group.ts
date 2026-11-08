@@ -1,8 +1,10 @@
 "use server";
 
+import type { User } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { ndaOpensRoom } from "@/lib/acl";
+import { actionGate, type GatedAction } from "@/lib/action-gates";
 import { audit } from "@/lib/audit";
 import { requireUser } from "@/lib/auth";
 import { canSubmitBid, sealedFromSeller } from "@/lib/auction";
@@ -13,6 +15,7 @@ import { fillState, resolvePositionAmount } from "@/lib/group-buy";
 import { notifySeats } from "@/lib/group-events";
 import { prisma } from "@/lib/prisma";
 import { canSeeListing } from "@/lib/private-listings";
+import { seatGate, seatLimitBlock, type ActingUser } from "@/lib/seats";
 import { lapsedFileBlock } from "@/lib/buyer-file";
 import { canSubmitOffer } from "@/lib/verification";
 
@@ -26,6 +29,19 @@ async function seatRecertGate(userId: string) {
 async function seatCapGate(userId: string, amount: number, back: string) {
   const capped = await bidCapBlock(userId, amount);
   if (capped) redirect(`${back}?error=${encodeURIComponent(capped)}`);
+}
+
+// A group seat is a pledge the account makes, so a firm's seat needs a role that bids, and its pledge fits a trading
+// seat's limit (lib/seats.ts). Stepping back from one asks only the role, so nothing holds a buyer in. The desk has
+// no seats, so it passes.
+async function firmSeatGate(user: User | ActingUser, back: string, amount: number | null = null, action: GatedAction = "bid") {
+  const gated = (await actionGate(user, action)) ?? seatLimitBlock(user, amount);
+  if (gated) redirect(`${back}?error=${encodeURIComponent(gated)}`);
+}
+
+async function firmSeatRole(user: User | ActingUser, back: string) {
+  const gated = await seatGate(user, "bid");
+  if (gated) redirect(`${back}?error=${encodeURIComponent(gated)}`);
 }
 
 const OPEN_GROUP = ["GATHERING", "OFFERED", "COUNTERED", "CLOSING"] as const;
@@ -155,6 +171,7 @@ export async function openGroup(formData: FormData) {
   }
   const pledge = dollars(formData.get("amount"));
   if (user.role !== "ADMIN" && pledge && pledge > 0) await seatCapGate(user.id, pledge, back);
+  await firmSeatGate(user, back, pledge && pledge > 0 ? pledge : null);
   const group = await prisma.groupBuy.create({
     data: {
       listingId,
@@ -205,6 +222,7 @@ export async function joinGroup(formData: FormData) {
   });
   if (sized == null) redirect(`${back}?error=That seat is below the minimum or larger than what is left.`);
   await seatCapGate(user.id, sized, back);
+  await firmSeatGate(user, back, sized);
   const slice = group.structure === "SENIOR_JUNIOR" ? (formData.get("slice") === "JUNIOR" ? "JUNIOR" : "SENIOR") : "PARI";
   const seatNo = group.positions.reduce((max, seat) => Math.max(max, seat.seat), 0) + 1;
   const dropped = group.positions.find((seat) => seat.userId === user.id && seat.status === "DROPPED");
@@ -231,6 +249,7 @@ export async function reconfirmSeat(formData: FormData) {
   // Reconfirming holds the seat to the counter's price.
   await seatRecertGate(user.id);
   await seatCapGate(user.id, Number(seat.amount), `/groups/${groupId}`);
+  await firmSeatGate(user, `/groups/${groupId}`, Number(seat.amount));
   await prisma.groupPosition.update({ where: { id: seat.id }, data: { status: "PLEDGED" } });
   const group = await prisma.groupBuy.findUnique({ where: { id: groupId }, include: { positions: true } });
   const waiting = group?.positions.some((row) => row.id !== seat.id && row.status === "RECONFIRM");
@@ -248,6 +267,7 @@ export async function dropSeat(formData: FormData) {
   const seat = group.positions.find((row) => row.userId === user.id && row.status !== "DROPPED");
   if (!seat && user.role !== "ADMIN") redirect(`/groups/${groupId}?error=That seat is not yours.`);
   if (!seat) guardDesk(user, "sales", `/groups/${groupId}`);
+  await firmSeatRole(user, `/groups/${groupId}`);
   const targetId = seat?.id || String(formData.get("positionId") || "");
   await prisma.groupPosition.update({ where: { id: targetId }, data: { status: "DROPPED" } });
   if (group.inquiryId && (group.status === "OFFERED" || group.status === "COUNTERED")) {
@@ -267,6 +287,7 @@ export async function extendGroup(formData: FormData) {
   const group = await prisma.groupBuy.findUnique({ where: { id: groupId }, include: { listing: true } });
   if (!group || (group.openedById !== user.id && user.role !== "ADMIN")) redirect(`/groups/${groupId}?error=Only the opener or the desk can extend.`);
   guardDesk(user, "sales", `/groups/${groupId}`);
+  await firmSeatRole(user, `/groups/${groupId}`);
   const deadline = new Date(String(formData.get("deadline") || ""));
   if (Number.isNaN(deadline.getTime()) || deadline.getTime() < Date.now()) redirect(`/groups/${groupId}?error=Pick a future deadline.`);
   await prisma.groupBuy.update({ where: { id: groupId }, data: { deadline, status: group.status === "DISSOLVED" ? "GATHERING" : group.status } });
@@ -280,6 +301,7 @@ export async function allowPartialGroup(formData: FormData) {
   const group = await prisma.groupBuy.findUnique({ where: { id: groupId }, include: { listing: true } });
   if (!group || (user.role !== "ADMIN" && user.id !== group.listing.sellerId)) redirect(`/groups/${groupId}?error=Only the seller or the desk can allow a partial bid.`);
   guardDesk(user, "sales", `/groups/${groupId}`);
+  await firmSeatGate(user, `/groups/${groupId}`, null, "award");
   await prisma.groupBuy.update({ where: { id: groupId }, data: { allowPartial: formData.get("allowPartial") === "on" } });
   redirect(`/groups/${groupId}?notice=partial`);
 }
@@ -290,6 +312,7 @@ export async function bidPartial(formData: FormData) {
   const group = await prisma.groupBuy.findUnique({ where: { id: groupId }, include: { positions: true, listing: true } });
   if (!group || (group.openedById !== user.id && user.role !== "ADMIN")) redirect(`/groups/${groupId}?error=Only the opener or the desk can send a partial bid.`);
   guardDesk(user, "sales", `/groups/${groupId}`);
+  await firmSeatGate(user, `/groups/${groupId}`);
   if (!group.allowPartial) redirect(`/groups/${groupId}?error=The seller has not allowed a partial bid.`);
   if (group.status !== "GATHERING") redirect(`/groups/${groupId}?error=${encodeURIComponent("A partial bid goes out only while the group is gathering.")}`);
   // A seat waiting to reconfirm a counter hasn't agreed to it, so it can't be signed up on its behalf.
@@ -316,6 +339,7 @@ export async function dissolveGroup(formData: FormData) {
   const group = await prisma.groupBuy.findUnique({ where: { id: groupId }, include: { listing: true } });
   if (!group || (group.openedById !== user.id && user.role !== "ADMIN")) redirect(`/groups/${groupId}?error=Only the opener or the desk can dissolve the group.`);
   guardDesk(user, "sales", `/groups/${groupId}`);
+  await firmSeatRole(user, `/groups/${groupId}`);
   if (group.status === "CLOSING" || group.status === "CLOSED") redirect(`/groups/${groupId}?error=The closing has started.`);
   if (group.inquiryId) {
     await prisma.inquiry.update({ where: { id: group.inquiryId }, data: { status: "DECLINED" } });

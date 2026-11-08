@@ -6,7 +6,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { accountLocked, needsSecondFactor } from "@/lib/access";
 import { audit } from "@/lib/audit";
-import { clearPending, currentSessionId, endSessions, pendingUserId, requireUser, setSession, twoStepRequired } from "@/lib/auth";
+import { clearPending, currentSessionId, endSessions, pendingUserId, requirePerson, setSession, twoStepRequired } from "@/lib/auth";
 import { demoSeat } from "@/lib/deploy";
 import { sendAlert, sendSecret } from "@/lib/email";
 import { homeFor } from "@/lib/labels";
@@ -14,11 +14,14 @@ import { prisma } from "@/lib/prisma";
 import { consumeRateLimit } from "@/lib/rate-limit";
 import { newRecoveryCodes, packHashes, takeRecoveryCode } from "@/lib/recovery";
 import { safeNext } from "@/lib/safe-next";
+import { secondFactorSubject } from "@/lib/seats";
 import { generateTotpSecret, verifyTotp } from "@/lib/totp";
 import { unset } from "@/lib/db-filters";
 
+// Each action works on the person signed in. A firm's seat has its own password, authenticator and devices, so
+// it never touches the firm's (lib/seats.ts).
 export async function beginTotp() {
-  const user = await requireUser({ secondFactorSetup: true });
+  const { person: user } = await requirePerson({ secondFactorSetup: true });
   if (user.totpEnabled) redirect("/account/security");
   const secret = generateTotpSecret();
   await prisma.user.update({ where: { id: user.id }, data: { totpSecret: secret, totpEnabled: false } });
@@ -26,7 +29,7 @@ export async function beginTotp() {
 }
 
 export async function confirmTotp(formData: FormData) {
-  const user = await requireUser({ secondFactorSetup: true });
+  const { person: user } = await requirePerson({ secondFactorSetup: true });
   const code = String(formData.get("code") || "");
   if (!user.totpSecret || !verifyTotp(user.totpSecret, code)) {
     redirect("/account/security?error=" + encodeURIComponent("That code does not match the secret on this account."));
@@ -41,14 +44,15 @@ export async function confirmTotp(formData: FormData) {
 }
 
 export async function acknowledgeRecovery() {
-  const user = await requireUser({ secondFactorSetup: true });
+  const { person: user } = await requirePerson({ secondFactorSetup: true });
   await prisma.user.update({ where: { id: user.id }, data: { recoveryReveal: "" } });
   redirect("/account/security?notice=totp_on");
 }
 
 export async function disableTotp(formData: FormData) {
-  const user = await requireUser({ secondFactorSetup: true });
-  if (needsSecondFactor({ ...user, totpEnabled: false }, await twoStepRequired())) {
+  const account = await requirePerson({ secondFactorSetup: true });
+  const user = account.person;
+  if (needsSecondFactor({ ...secondFactorSubject(account), totpEnabled: false }, await twoStepRequired())) {
     redirect("/account/security?error=" + encodeURIComponent("The desk requires two-step sign-in on this account, so it stays on."));
   }
   if (!(await consumeRateLimit(`totp:${user.id}`, 5, 15 * 60 * 1000))) {
@@ -69,7 +73,7 @@ export async function disableTotp(formData: FormData) {
 }
 
 export async function setEmailFallback(formData: FormData) {
-  const user = await requireUser({ secondFactorSetup: true });
+  const { person: user } = await requirePerson({ secondFactorSetup: true });
   if (!user.totpEnabled) redirect("/account/security");
   await prisma.user.update({ where: { id: user.id }, data: { emailOtpFallback: formData.get("enabled") === "yes" } });
   redirect("/account/security?notice=email_otp");
@@ -136,7 +140,7 @@ export async function sendEmailCode() {
 }
 
 export async function changePassword(formData: FormData) {
-  const user = await requireUser({ secondFactorSetup: true });
+  const { person: user } = await requirePerson({ secondFactorSetup: true });
   const back = (message: string) => redirect(`/account/security?error=${encodeURIComponent(message)}`);
   if (demoSeat(user.email)) back("Demo accounts keep the shared password.");
   if (!(await consumeRateLimit(`password:${user.id}`, 5, 15 * 60 * 1000))) back("Too many tries. Wait fifteen minutes.");
@@ -154,7 +158,7 @@ export async function changePassword(formData: FormData) {
 }
 
 export async function revokeSession(formData: FormData) {
-  const user = await requireUser({ secondFactorSetup: true });
+  const { person: user } = await requirePerson({ secondFactorSetup: true });
   const id = String(formData.get("id") || "");
   await prisma.serverSession.deleteMany({ where: { id, userId: user.id } });
   await audit(user.id, "SESSION_ENDED", "user", user.id);
@@ -163,7 +167,7 @@ export async function revokeSession(formData: FormData) {
 }
 
 export async function revokeOtherSessions() {
-  const user = await requireUser({ secondFactorSetup: true });
+  const { person: user } = await requirePerson({ secondFactorSetup: true });
   await endSessions(user.id, await currentSessionId());
   await audit(user.id, "SESSIONS_ENDED", "user", user.id, "All other devices");
   revalidatePath("/account/security");

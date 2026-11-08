@@ -14,6 +14,7 @@ import { payoutLabel, proceedsAccount } from "@/lib/payout-accounts";
 import { OFAC_HOLD_MESSAGE, ofacHold } from "@/lib/screening";
 import { moneyGate, proceedsGate } from "@/lib/settlement";
 import { emitWebhook } from "@/lib/webhooks";
+import { seatGate } from "@/lib/seats";
 import { extensionOf, mimeFor, putBytes, safeBasename } from "@/lib/storage";
 import { guardDesk } from "@/lib/staff";
 import { faultLabel, isCancelFault, strikeStanding } from "@/lib/strikes";
@@ -188,6 +189,9 @@ export async function walkAway(formData: FormData) {
   const closingId = String(formData.get("closingId") || "");
   const reason = String(formData.get("reason") || "");
   const { user } = await participant(closingId);
+  // Walking away undoes the award, so a firm's seat needs the role that accepts one (lib/seats.ts).
+  const gated = await seatGate(user, "award");
+  if (gated) redirect(`/closings/${closingId}?error=${encodeURIComponent(gated)}`);
   const result = await walkAwayFromClosing(closingId, user.id, reason);
   if (result.error !== null) redirect(`/closings/${closingId}?error=${encodeURIComponent(result.error)}`);
   revalidatePath(`/closings/${closingId}`);

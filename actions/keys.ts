@@ -6,6 +6,7 @@ import { requireUser } from "@/lib/auth";
 import { guardDesk } from "@/lib/staff";
 import { mintKey } from "@/lib/api-keys";
 import { prisma } from "@/lib/prisma";
+import { canManageSeats } from "@/lib/seats";
 import { cleanEvents, redeliver, webhookUrlProblem } from "@/lib/webhooks";
 
 async function seller() {
@@ -13,6 +14,8 @@ async function seller() {
   if (user.role !== "INSTITUTIONAL_SELLER" && user.role !== "ADMIN") redirect("/");
   // A desk key reads and pushes as the desk, so minting one is an owner's call.
   guardDesk(user, "admin", "/seller/api");
+  // A key acts as the whole firm, with nobody signed in to stop it, so only the owner or a managing seat mints one.
+  if (!canManageSeats(user)) redirect(`/seller/api?error=${encodeURIComponent("Only a managing seat or the account owner can change API keys and webhooks.")}`);
   return user;
 }
 

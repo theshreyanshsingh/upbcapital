@@ -89,6 +89,7 @@ const DESK_KEYWORDS: Record<string, string> = {
   "/admin/audit": "history events",
   "/admin/blog": "blog posts",
   "/admin/analytics": "metrics digest",
+  "/admin/board": "board investors monthly kpi lock",
   "/admin/jobs": "cron runs history failures",
   "/admin/assistant": "ai",
   "/seller/api": "keys developers",

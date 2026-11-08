@@ -1,10 +1,11 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { accountLocked, needsSecondFactor } from "@/lib/access";
+import { needsSecondFactor } from "@/lib/access";
 import { secureCookies } from "@/lib/deploy";
 import { prisma } from "@/lib/prisma";
 import { requestMeta } from "@/lib/request-meta";
 import { getSettings } from "@/lib/settings";
+import { resolveSessionUser, secondFactorSubject, type ActingUser } from "@/lib/seats";
 import { PENDING_COOKIE, SESSION_COOKIE, signPending, signSession, verifyPending, verifySession, type SessionToken } from "@/lib/session";
 import type { Role } from "@prisma/client";
 
@@ -58,7 +59,9 @@ export async function pendingUserId() {
   return verifyPending(token);
 }
 
-export async function getCurrentUser() {
+// The session's account and the person signed in. They are one row, unless a firm's seat is acting for the firm
+// (lib/seats.ts resolveSessionUser). A locked or deleted account stays out even if its lock were lifted.
+async function currentAccount() {
   const jar = await cookies();
   const token = jar.get(SESSION_COOKIE)?.value;
   if (!token) return null;
@@ -66,10 +69,12 @@ export async function getCurrentUser() {
   if (!session?.sid) return null;
   const row = await prisma.serverSession.findUnique({ where: { id: session.sid } });
   if (!row || row.userId !== session.sub || row.expiresAt.getTime() < Date.now()) return null;
-  const user = await prisma.user.findUnique({ where: { id: session.sub } });
-  // A deleted account stays out even if its lock were lifted.
-  if (!user || accountLocked(user.accountStatus) || user.deletedAt) return null;
-  return user;
+  return resolveSessionUser(session.sub);
+}
+
+// The account the session acts for. A seat gets its firm's account, with `actor` naming the person.
+export async function getCurrentUser(): Promise<ActingUser | null> {
+  return (await currentAccount())?.user ?? null;
 }
 
 export async function currentSessionId() {
@@ -90,18 +95,24 @@ export async function twoStepRequired() {
 }
 
 // secondFactorSetup is only for the security page and its actions, the one place an account that must enroll
-// can go before it has.
+// can go before it has. The second factor asked for is the person's own: a seat enrolls its own authenticator.
 export async function requireUser(options?: { secondFactorSetup?: boolean }) {
-  const user = await getCurrentUser();
-  if (!user) redirect("/login");
-  if (!options?.secondFactorSetup && needsSecondFactor(user, await twoStepRequired())) redirect("/account/security?setup=1");
-  return user;
+  return (await requirePerson(options)).user;
+}
+
+// The account and the person signed in, for the person's own password, second factor and devices. A seat's are its
+// own, never the firm's.
+export async function requirePerson(options?: { secondFactorSetup?: boolean }) {
+  const account = await currentAccount();
+  if (!account) redirect("/login");
+  if (!options?.secondFactorSetup && needsSecondFactor(secondFactorSubject(account), await twoStepRequired())) redirect("/account/security?setup=1");
+  return account;
 }
 
 // For API routes, which answer 401 rather than redirect: an account that must enroll gets nothing until it has.
 export async function getApiUser() {
-  const user = await getCurrentUser();
-  return user && needsSecondFactor(user, await twoStepRequired()) ? null : user;
+  const account = await currentAccount();
+  return account && needsSecondFactor(secondFactorSubject(account), await twoStepRequired()) ? null : (account?.user ?? null);
 }
 
 export async function requireRole(roles: Role[]) {

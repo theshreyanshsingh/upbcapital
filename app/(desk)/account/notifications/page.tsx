@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { saveNotificationPrefs } from "@/actions/prefs";
+import { CalendarFeedSection } from "@/components/calendar-feed";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { PushControl } from "@/components/pwa";
@@ -8,6 +9,7 @@ import { requireUser } from "@/lib/auth";
 import { q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 import { pushPublicKey } from "@/lib/push";
+import { personId } from "@/lib/seats";
 import { REPORT_ROLES } from "@/lib/seller-report";
 
 export const metadata = { title: "Notices" };
@@ -24,7 +26,8 @@ export default async function NotificationPrefsPage({
       where: { id: user.id },
       select: { notifyEmail: true, notifyInApp: true, digest: true, dealAlerts: true, marketDispatch: true, watchAlerts: true, sellerReport: true, announcements: true, role: true },
     }),
-    prisma.pushSubscription.count({ where: { userId: user.id } }),
+    // Devices are the person's own, a seat's included (lib/seats.ts).
+    prisma.pushSubscription.count({ where: { userId: personId(user) } }),
   ]);
   return (
     <div className="max-w-xl">
@@ -99,6 +102,7 @@ export default async function NotificationPrefsPage({
         </p>
         <PushControl publicKey={pushPublicKey()} devices={devices} />
       </section>
+      <CalendarFeedSection />
     </div>
   );
 }

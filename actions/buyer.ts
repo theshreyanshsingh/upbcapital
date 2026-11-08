@@ -5,11 +5,13 @@ import { redirect } from "next/navigation";
 import { audit } from "@/lib/audit";
 import { requireUser } from "@/lib/auth";
 import { notify } from "@/lib/email";
-import { acknowledgeRoad, announceInquiry, buyerCanOpen, checkOffer, inquiryBlock, logEligibility, writeInquiry, type OfferCheck } from "@/lib/inquiry";
+import { actionGate } from "@/lib/action-gates";
+import { placeInquiry } from "@/lib/bid-form";
+import { acknowledgeRoad, buyerCanOpen } from "@/lib/inquiry";
 import { launchBlock } from "@/lib/launch-rules";
-import { loanPricesFromForm, type LoanPrices } from "@/lib/loan-prices";
 import { buildNdaPdf, pngFromDataUrl } from "@/lib/nda-pdf";
 import { canSeeListing } from "@/lib/private-listings";
+import { seatGate } from "@/lib/seats";
 import { isPro } from "@/lib/settings";
 import { prisma } from "@/lib/prisma";
 import { requestMeta } from "@/lib/request-meta";
@@ -48,6 +50,9 @@ export async function signNda(formData: FormData) {
   const user = await requireBuyer();
   const listingId = String(formData.get("listingId") || "");
   const back = `/marketplace/${listingId}`;
+  // The confidentiality agreement binds the firm, so it is signed as any paper is (lib/action-gates.ts).
+  const gated = await actionGate(user, "sign");
+  if (gated) redirect(`${back}?error=${encodeURIComponent(gated)}`);
   if (String(formData.get("agreed") || "") !== "yes") {
     redirect(`${back}?error=${encodeURIComponent("Sign the confidentiality terms first.")}`);
   }
@@ -145,44 +150,18 @@ export async function signNda(formData: FormData) {
   redirect(pending ? `${back}?notice=${encodeURIComponent("The agreement is signed. The seller approves each bidder here, so the room opens once they do.")}` : `${back}?notice=nda`);
 }
 
+// The bid form and the information and data room requests. The work is in lib/bid-form.ts, which an approving seat
+// also uses to place a bid that waited for approval (lib/seats.ts).
 export async function submitInquiry(formData: FormData) {
   const user = await requireBuyer();
-  const listingId = String(formData.get("listingId") || "");
-  const type = String(formData.get("type") || "INFO_REQUEST");
-  const message = String(formData.get("message") || "").trim();
-  const back = `/marketplace/${listingId}`;
-  const listing = await prisma.listing.findUnique({ where: { id: listingId }, include: { seller: true } });
-  const noteId = String(formData.get("noteId") || "");
-  let amount: number | null = null;
-  let expiresAt: Date | null = null;
-  let passed: Extract<OfferCheck, { error: null }> | null = null;
-  let loanPrices: LoanPrices | null = null;
-  let allowPartial = false;
-  let buyerEntityId: string | null = null;
-  if (type === "OFFER") {
-    // The same checks a confirmed standing bid runs, in lib/inquiry.ts.
-    amount = Number(String(formData.get("amount") || "").replace(/[$,]/g, ""));
-    // A whole-pool bid may price each loan. The check holds the prices to the bid.
-    const priced = loanPricesFromForm(formData);
-    if (priced.error) redirect(`${back}?error=${encodeURIComponent(priced.error)}#offer`);
-    loanPrices = priced.prices;
-    allowPartial = priced.allowPartial;
-    const check = await checkOffer({ user, listing, noteId, amount, goodUntil: String(formData.get("goodUntil") || ""), loanPrices, allowPartial, buyerEntityId: String(formData.get("buyerEntityId") || "") });
-    if (check.error !== null) redirect(check.verification ? `/buyer/verification?error=${encodeURIComponent(check.error)}` : `${back}?error=${encodeURIComponent(check.error)}`);
-    expiresAt = check.expiresAt;
-    passed = check;
-    buyerEntityId = check.buyerEntityId;
-  } else {
-    const blocked = await inquiryBlock(user, listing);
-    if (blocked) redirect(`${back}?error=${encodeURIComponent(blocked)}`);
-    if (type === "DATA_ROOM" && !isPro(user)) redirect("/buyer/subscription?reason=dataroom");
-  }
-  if (!listing) redirect(back);
-  const input = { user, listing, type, noteId, amount, message, expiresAt, loanPrices, allowPartial, buyerEntityId };
-  const inquiry = await writeInquiry(input);
-  await announceInquiry(inquiry, input);
-  if (passed) await logEligibility(user.id, inquiry.id, passed);
+  const back = `/marketplace/${String(formData.get("listingId") || "")}`;
+  const result = await placeInquiry(user, formData);
+  if (result.error !== null) redirect(result.redirect);
   revalidatePath("/admin/offers");
+  if (result.heldId) {
+    revalidatePath("/account/team");
+    redirect(`${back}?notice=${encodeURIComponent("Your bid is above your limit, so it is waiting for an approving seat. Nothing is placed until one approves it.")}#offer`);
+  }
   redirect(`${back}?notice=inquiry`);
 }
 
@@ -192,6 +171,9 @@ export async function acknowledgeRoadNotice(formData: FormData) {
   const user = await requireBuyer();
   const listingId = String(formData.get("listingId") || "");
   const back = `/marketplace/${listingId}`;
+  // The acknowledgement is the firm's statement before it bids, so a seat needs a role that bids (lib/seats.ts).
+  const gated = await seatGate(user, "bid");
+  if (gated) redirect(`${back}?error=${encodeURIComponent(gated)}#eligibility`);
   if (String(formData.get("acknowledged") || "") !== "yes") redirect(`${back}?error=${encodeURIComponent("Tick the box to acknowledge the notice.")}#eligibility`);
   const result = await acknowledgeRoad(user, listingId);
   if (result.error !== null) redirect(`${back}?error=${encodeURIComponent(result.error)}`);
@@ -203,6 +185,9 @@ export async function acknowledgeRoadNotice(formData: FormData) {
 export async function withdrawInquiry(formData: FormData) {
   const user = await requireBuyer();
   const inquiryId = String(formData.get("inquiryId") || "");
+  // Taking a bid back asks only the seat's role, so nothing stops an account stepping back (lib/seats.ts).
+  const gated = await seatGate(user, "bid");
+  if (gated) redirect(`/buyer/offers?error=${encodeURIComponent(gated)}`);
   const result = await withdrawBid(inquiryId, user.id);
   if (result.error !== null) {
     redirect(result.groupId ? `/groups/${result.groupId}?error=${encodeURIComponent(result.error)}` : `/buyer/offers?error=${encodeURIComponent(result.error)}`);

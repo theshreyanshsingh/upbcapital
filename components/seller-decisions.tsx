@@ -19,7 +19,13 @@ import {
 // The bidder's record beside their letter. Never a name, an email, a company or the funds figure.
 export function TrackRecordLine({ record }: { record: TrackRecord | undefined }) {
   if (!record) return null;
-  return <p className="mt-0.5 text-[13px] text-muted-foreground tabular-nums">{trackLine(record)}</p>;
+  return (
+    <>
+      <p className="mt-0.5 text-[13px] text-muted-foreground tabular-nums">{trackLine(record)}</p>
+      {/* The rest of the record from what happened on their closings, counts only. lib/track-record.ts. */}
+      {record.facts?.length ? <p className="mt-0.5 text-[13px] text-muted-foreground tabular-nums">{record.facts.join(" · ")}</p> : null}
+    </>
+  );
 }
 
 // The date the desk's ask is due, under the ask.

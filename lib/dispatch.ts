@@ -541,7 +541,8 @@ export async function loadDispatch(now = new Date()): Promise<Dispatch> {
 // Approved accounts that turned the dispatch on. A missing setting is off.
 export async function dispatchRecipients(userIds?: string[]) {
   return prisma.user.findMany({
-    where: { marketDispatch: true, accountStatus: "APPROVED", ...(userIds ? { id: { in: userIds } } : {}) },
+    // A firm's seats read the firm's copy (lib/seats.ts).
+    where: { marketDispatch: true, accountStatus: "APPROVED", ...unset("principalId"), ...(userIds ? { id: { in: userIds } } : {}) },
     select: { id: true, email: true },
   });
 }

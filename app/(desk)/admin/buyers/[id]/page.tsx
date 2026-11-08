@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { setBuyerBidCap } from "@/actions/desk-tools";
 import { DeskNotes } from "@/components/desk-notes";
+import { DeskRecord } from "@/components/track-record";
 import { FileOwners } from "@/components/file-owners";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
@@ -16,6 +17,7 @@ import { money, prettyDate, q } from "@/lib/format";
 import { entityLabel } from "@/lib/labels";
 import { DESK_DENIED, deskCan, deskWrites } from "@/lib/staff";
 import { recertLapsed } from "@/lib/verification";
+import { deskSeatLines } from "@/lib/seats";
 
 export const metadata = { title: "Buyer" };
 
@@ -41,6 +43,8 @@ export default async function BuyerDeskPage({
   const back = `/admin/buyers/${buyer.id}`;
   const sealedBids = profile.bids.filter((bid) => bid.sealed).length;
   const limit = capLine(cap);
+  // The firm's seats and their roles, when colleagues sign in for it (lib/seats.ts).
+  const seatLine = (await deskSeatLines([{ id: buyer.id }])).get(buyer.id);
   return (
     <div>
       <PageIntro
@@ -53,6 +57,7 @@ export default async function BuyerDeskPage({
         <Link className="text-link" href={`/admin/verification#buyer-${buyer.id}`}>Open in buyer files</Link>
         <Link className="text-link" href={`/admin/audit?${new URLSearchParams({ entityType: "user", entityId: buyer.id }).toString()}`}>Account in the audit log</Link>
       </div>
+      {seatLine && <p className="mt-3 text-sm text-muted-foreground">{seatLine}</p>}
 
       <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Stat label="Bids" value={<span className="tabular-nums">{rates.bids}</span>} basis={`${rates.decided} decided`} />
@@ -60,6 +65,8 @@ export default async function BuyerDeskPage({
         <Stat label="Close rate" value={rateText(rates.closeRate)} basis={`${rates.closed} closed of ${rates.finished} finished`} />
         <Stat label="Strikes" value={<span className="tabular-nums">{profile.activeStrikes}</span>} basis={`Bidding pauses at ${profile.strikeLimit}`} />
       </div>
+      {/* The factual record sellers read beside this buyer's bids, with open and withdrawn claims. components/track-record.tsx. */}
+      <DeskRecord userId={buyer.id} className="mt-6" />
 
       <div className="mt-8 grid gap-6 lg:grid-cols-2">
         <section aria-labelledby="file-heading" className="rounded-xl border border-border p-5">

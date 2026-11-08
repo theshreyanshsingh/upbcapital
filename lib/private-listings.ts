@@ -53,7 +53,7 @@ export function excludes(row: ExclusionRow, person: Person) {
 }
 
 // The names a buyer goes by: the account's company, the vetted entity on their file, and their buying entities.
-async function peopleOf(users: { id: string; email: string; companyName?: string | null }[]): Promise<Person[]> {
+export async function peopleOf(users: { id: string; email: string; companyName?: string | null }[]): Promise<Person[]> {
   if (!users.length) return [];
   const ids = users.map((user) => user.id);
   const [profiles, entities] = await Promise.all([
@@ -91,7 +91,7 @@ async function withVisibility<T extends Shown>(listing: T): Promise<T & { visibi
   return { ...listing, visibility: row?.visibility ?? null };
 }
 
-export type HiddenReason = "excluded" | "private";
+export type HiddenReason = "excluded" | "private" | "first_look";
 type Audience = { id: string; email: string; role?: string; companyName?: string | null };
 
 // Why each of `people` can't see this listing, for those who can't: the seller excludes them, or it is private and
@@ -102,8 +102,11 @@ export async function hiddenReasons(input: Shown, people: Audience[]): Promise<M
   const listing = await withVisibility(input);
   const owner = (person: Audience) => person.role === "ADMIN" || person.id === listing.sellerId || (Boolean(listing.brokerId) && person.id === listing.brokerId);
   const hidden = isPrivateListing(listing);
-  const exclusions = await prisma.sellerExclusion.findMany({ where: { sellerId: listing.sellerId }, select: { sellerId: true, buyerId: true, email: true, company: true } });
-  if (!hidden && !exclusions.length) return reasons;
+  const [exclusions, firstLook] = await Promise.all([
+    prisma.sellerExclusion.findMany({ where: { sellerId: listing.sellerId }, select: { sellerId: true, buyerId: true, email: true, company: true } }),
+    firstLookBuyers(listing.id),
+  ]);
+  if (!hidden && !exclusions.length && !firstLook) return reasons;
   const others = people.filter((person) => !owner(person));
   const persons = new Map((exclusions.some((row) => row.company) ? await peopleOf(others) : others.map((person) => ({ id: person.id, email: person.email, companies: [] }))).map((person) => [person.id, person]));
   const [invites, parties] = hidden
@@ -118,6 +121,7 @@ export async function hiddenReasons(input: Shown, people: Audience[]): Promise<M
   for (const person of others) {
     const known = persons.get(person.id);
     if (known && exclusions.some((row) => excludes(row, known))) reasons.set(person.id, "excluded");
+    else if (firstLook && !firstLook.has(person.id)) reasons.set(person.id, "first_look");
     else if (hidden && !invited(person)) reasons.set(person.id, "private");
   }
   return reasons;
@@ -137,12 +141,13 @@ export type ListingSight = { visible: boolean; invited: boolean };
 export async function listingSight(viewer: ListingViewer, input: Shown): Promise<ListingSight> {
   const listing = await withVisibility(input);
   const hidden = isPrivateListing(listing);
-  if (!viewer) return { visible: !hidden, invited: false };
+  if (!viewer) return { visible: !hidden && !(await firstLookBuyers(listing.id)), invited: false };
   if (viewer.role === "ADMIN" || viewer.id === listing.sellerId || (Boolean(listing.brokerId) && viewer.id === listing.brokerId)) return { visible: true, invited: false };
   const user = await prisma.user.findUnique({ where: { id: viewer.id }, select: { id: true, email: true, role: true, companyName: true } });
   if (!user) return { visible: false, invited: false };
   const visible = (await audienceOf(listing, [user])).length > 0;
-  return { visible, invited: visible && hidden };
+  // A committed buyer's first look lifts the same holds: the programme asked them in.
+  return { visible, invited: visible && (hidden || Boolean(await firstLookBuyers(listing.id))) };
 }
 
 export async function canSeeListing(viewer: ListingViewer, listing: Shown) {
@@ -157,6 +162,9 @@ export type ListingAccess = {
   invited: Set<string>;
   // Sellers who exclude this viewer.
   excludedBy: Set<string>;
+  // Listings in a forward-flow first look this viewer can't see, and those they see as a committed buyer.
+  firstLook?: Set<string>;
+  firstLookOpen?: Set<string>;
 };
 
 function noAccess(userId: string | null = null): ListingAccess {
@@ -164,13 +172,13 @@ function noAccess(userId: string | null = null): ListingAccess {
 }
 
 export async function listingAccess(viewer: ListingViewer): Promise<ListingAccess> {
-  if (!viewer) return noAccess();
+  if (!viewer) return { ...noAccess(), ...(await firstLookFor(null)) };
   if (viewer.role === "ADMIN") return { ...noAccess(viewer.id), desk: true };
   const user = await prisma.user.findUnique({ where: { id: viewer.id }, select: { id: true, email: true, companyName: true } });
-  if (!user) return noAccess();
+  if (!user) return { ...noAccess(), ...(await firstLookFor(null)) };
   const [person] = await peopleOf([user]);
   const email = normalEmail(user.email);
-  const [exclusions, invites, won, funded] = await Promise.all([
+  const [exclusions, invites, won, funded, flow] = await Promise.all([
     prisma.sellerExclusion.findMany({
       where: { OR: [{ buyerId: user.id }, { email }, ...(person.companies.length ? [{ company: { not: null } }] : [])] },
       select: { sellerId: true, buyerId: true, email: true, company: true },
@@ -181,12 +189,14 @@ export async function listingAccess(viewer: ListingViewer): Promise<ListingAcces
     }),
     prisma.inquiry.findMany({ where: { buyerId: user.id, status: "ACCEPTED" }, select: { listingId: true } }),
     prisma.closingFunder.findMany({ where: { userId: user.id }, select: { closing: { select: { listingId: true } } } }),
+    firstLookFor(user.id),
   ]);
   return {
     desk: false,
     userId: user.id,
     invited: new Set([...invites.map((row) => row.listingId), ...won.map((row) => row.listingId), ...funded.map((row) => row.closing.listingId)]),
     excludedBy: new Set(exclusions.filter((row) => excludes(row, person)).map((row) => row.sellerId)),
+    ...flow,
   };
 }
 
@@ -194,12 +204,14 @@ export function canSee(access: ListingAccess, listing: Shown) {
   if (access.desk) return true;
   if (access.userId && (listing.sellerId === access.userId || (Boolean(listing.brokerId) && listing.brokerId === access.userId))) return true;
   if (access.excludedBy.has(listing.sellerId)) return false;
+  if (access.firstLook?.has(listing.id)) return false;
   return !isPrivateListing(listing) || access.invited.has(listing.id);
 }
 
-// A private listing this viewer sees only because they were asked in, for canOpenListing's invited flag.
+// A private listing or a first-look tranche this viewer sees only because they were asked in, for canOpenListing's
+// invited flag.
 export function invitedTo(access: ListingAccess, listing: Shown) {
-  if (access.desk || !isPrivateListing(listing)) return false;
+  if (access.desk || (!isPrivateListing(listing) && !access.firstLookOpen?.has(listing.id))) return false;
   if (access.userId && (listing.sellerId === access.userId || listing.brokerId === access.userId)) return false;
   return canSee(access, listing);
 }
@@ -207,18 +219,54 @@ export function invitedTo(access: ListingAccess, listing: Shown) {
 // The same rule as a where-fragment for listing queries. Merge it with AND.
 export function visibleWhere(access: ListingAccess): Prisma.ListingWhereInput {
   if (access.desk) return {};
-  if (!access.userId) return publicListing();
+  const closed = access.firstLook?.size ? [...access.firstLook] : [];
+  if (!access.userId) return closed.length ? { AND: [publicListing(), { id: { notIn: closed } }] } : publicListing();
   const me = access.userId;
   return {
     AND: [
       { OR: [publicListing(), { sellerId: me }, { brokerId: me }, ...(access.invited.size ? [{ id: { in: [...access.invited] } }] : [])] },
       ...(access.excludedBy.size ? [{ OR: [{ sellerId: { notIn: [...access.excludedBy] } }, { sellerId: me }, { brokerId: me }] }] : []),
+      ...(closed.length ? [{ OR: [{ id: { notIn: closed } }, { sellerId: me }, { brokerId: me }] }] : []),
     ],
   };
 }
 
 export async function listingScope(viewer: ListingViewer) {
   return visibleWhere(await listingAccess(viewer));
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Forward-flow first look. Until a programme's tranche is released, only the programme's active committed buyers,
+// its seller and broker, and the desk see it (lib/flow-programs.ts). It narrows the rules above and never widens
+// them: an excluded buyer stays out, and a private tranche still needs an invitation. Few tranches are in a first
+// look at once, so the book's filter is a short list of ids.
+
+const FIRST_LOOK = "FIRST_LOOK";
+
+// The buyers who see this listing in its first look, or null when it isn't in one.
+async function firstLookBuyers(listingId: string) {
+  const tranche = await prisma.flowTranche.findUnique({ where: { listingId }, select: { programId: true, status: true } });
+  if (tranche?.status !== FIRST_LOOK) return null;
+  const rows = await prisma.flowCommitment.findMany({ where: { programId: tranche.programId, status: "ACTIVE" }, select: { buyerId: true } });
+  return new Set(rows.map((row) => row.buyerId));
+}
+
+async function firstLookFor(userId: string | null): Promise<Pick<ListingAccess, "firstLook" | "firstLookOpen">> {
+  const tranches = await prisma.flowTranche.findMany({ where: { status: FIRST_LOOK }, select: { listingId: true, programId: true } });
+  if (!tranches.length) return {};
+  const programIds = [...new Set(tranches.map((row) => row.programId))];
+  const active = userId ? await prisma.flowCommitment.findMany({ where: { buyerId: userId, status: "ACTIVE", programId: { in: programIds } }, select: { programId: true } }) : [];
+  const mine = new Set(active.map((row) => row.programId));
+  return {
+    firstLook: new Set(tranches.filter((row) => !mine.has(row.programId)).map((row) => row.listingId)),
+    firstLookOpen: new Set(tranches.filter((row) => mine.has(row.programId)).map((row) => row.listingId)),
+  };
+}
+
+// For the public pages that list with publicListing alone: nothing in a first look.
+export async function outsideFirstLook(): Promise<Prisma.ListingWhereInput> {
+  const rows = await prisma.flowTranche.findMany({ where: { status: FIRST_LOOK }, select: { listingId: true } });
+  return rows.length ? { id: { notIn: rows.map((row) => row.listingId) } } : {};
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -464,6 +512,8 @@ export const AWARD_EXCLUDED = "The seller excludes this buyer, so this bid can't
 export const AWARD_UNINVITED = "This listing is private and this buyer isn't invited, so this bid can't be awarded. The seller can invite them.";
 export const AWARD_SEAT_EXCLUDED = "The seller excludes a group seat holder, so this bid can't be awarded.";
 export const AWARD_SEAT_UNINVITED = "This listing is private and a group seat holder isn't invited, so this bid can't be awarded.";
+export const AWARD_FIRST_LOOK = "This tranche is in its programme's first look and this buyer isn't an active committed buyer, so this bid can't be awarded until the release.";
+export const AWARD_SEAT_FIRST_LOOK = "This tranche is in its programme's first look and a group seat holder isn't an active committed buyer, so this bid can't be awarded until the release.";
 
 // Buyers on an open or finished closing on each listing, by its own bid or as a funder.
 async function dealParties(listingIds: string[]) {
@@ -503,8 +553,8 @@ export async function awardBlocks(bids: AwardBid[], seats: Map<string, Audience[
     for (const bid of rows) {
       const own = reason(bid.buyer);
       const seat = (seats.get(bid.id) ?? []).map(reason).find(Boolean);
-      if (own) blocks.set(bid.id, own === "excluded" ? AWARD_EXCLUDED : AWARD_UNINVITED);
-      else if (seat) blocks.set(bid.id, seat === "excluded" ? AWARD_SEAT_EXCLUDED : AWARD_SEAT_UNINVITED);
+      if (own) blocks.set(bid.id, own === "excluded" ? AWARD_EXCLUDED : own === "first_look" ? AWARD_FIRST_LOOK : AWARD_UNINVITED);
+      else if (seat) blocks.set(bid.id, seat === "excluded" ? AWARD_SEAT_EXCLUDED : seat === "first_look" ? AWARD_SEAT_FIRST_LOOK : AWARD_SEAT_UNINVITED);
     }
   }
   return blocks;

@@ -2,6 +2,7 @@ import type { Prisma } from "@prisma/client";
 import { audit } from "@/lib/audit";
 import { isReleaseBuild } from "@/lib/deploy";
 import { showableAvm } from "@/lib/enrichment";
+import { isENote } from "@/lib/enotes";
 import { chainOfTitle, groupByNote, type CollateralRow, type Outcome } from "@/lib/loan-file";
 import { prisma } from "@/lib/prisma";
 import { deskCan, DESK_DENIED, type Staff } from "@/lib/staff";
@@ -69,6 +70,7 @@ export type DiligenceNote = {
   avmProvider?: string;
   avmAsOf?: Date | null;
   servicerSourcedAt?: Date | null;
+  eNote?: boolean | null;
 };
 
 export type DiligenceDocument = { type: string; noteId?: string | null; originalName: string };
@@ -97,6 +99,8 @@ function held(rows: CollateralRow[], kind: string, docs: DiligenceDocument[], do
 function requiredFor(key: DiligenceKey, note: DiligenceNote) {
   // A loan that is paying is priced off its history. A non-performing loan's history says little the status doesn't.
   if (key === "PAY_HISTORY") return note.paymentStatus === "PERFORMING" || note.paymentStatus === "SUB_PERFORMING";
+  // An eNote has no endorsements: control moves on the MERS eRegistry. lib/enotes.ts.
+  if (key === "ENDORSEMENTS") return !isENote(note);
   return true;
 }
 
@@ -229,7 +233,7 @@ export async function loadDiligence(listingId: string) {
       diligenceWaivers: true,
       clientSellerName: true,
       seller: { select: { name: true, companyName: true } },
-      notes: { select: { id: true, streetAddress: true, city: true, state: true, lienPosition: true, paymentStatus: true, avmValue: true, avmProvider: true, avmAsOf: true, servicerSourcedAt: true } },
+      notes: { select: { id: true, streetAddress: true, city: true, state: true, lienPosition: true, paymentStatus: true, avmValue: true, avmProvider: true, avmAsOf: true, servicerSourcedAt: true, eNote: true } },
       documents: { where: { type: { notIn: ["PHOTO", "NDA", "MANDATE"] } }, select: { type: true, noteId: true, originalName: true } },
     },
   });

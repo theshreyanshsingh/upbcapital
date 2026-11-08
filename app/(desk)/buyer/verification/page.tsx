@@ -3,6 +3,7 @@ import { submitEntity } from "@/actions/buyer-entities";
 import { kycMode } from "@/lib/vendors";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
+import { YourRecord } from "@/components/track-record";
 import { SubmitButton } from "@/components/submit-button";
 import { Input } from "@/components/ui/input";
 import { requireUser } from "@/lib/auth";
@@ -137,6 +138,8 @@ export default async function VerificationPage({
           <p className="mt-2 text-sm text-foreground">{capNote}</p>
         </section>
       )}
+      {/* What sellers read beside this buyer's bids, from what happened on their closings. components/track-record.tsx. */}
+      <YourRecord user={user} className="mt-6" />
       {strikes.length > 0 && (
         <section aria-labelledby="strikes-heading" className="mt-6 rounded-xl border border-border p-5">
           <p id="strikes-heading" className="eyebrow">Closings that didn&apos;t complete</p>

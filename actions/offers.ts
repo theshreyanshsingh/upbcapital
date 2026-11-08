@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { counterLoanPrices } from "@/lib/awards";
 import { onGroupCounter } from "@/lib/group-events";
 import { deadlinePassed, sealedFromSeller } from "@/lib/auction";
+import { actionGate } from "@/lib/action-gates";
 import { audit } from "@/lib/audit";
 import { bidderAlias } from "@/lib/bidder-alias";
 import { bidCapBlock } from "@/lib/bid-caps";
@@ -15,6 +16,7 @@ import { fundsLimitBlock } from "@/lib/inquiry";
 import { loanPricesFromForm } from "@/lib/loan-prices";
 import { bidExpired, canCounter, counterFrom, openCounter } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
+import { seatLimitBlock } from "@/lib/seats";
 import { recertBlock } from "@/lib/verification";
 import { emitWebhook } from "@/lib/webhooks";
 
@@ -39,6 +41,10 @@ export async function postOfferMessage(formData: FormData) {
   // A desk counter is a sales decision, and a desk reply quotes the bid, so both sit behind the sales role.
   guardDesk(user, "sales", "/admin/offers");
   const back = desk ? `/admin/offers?notice=message` : `/buyer/offers?notice=message`;
+  // A counter commits the firm to a price and a note speaks for it, so a seat needs the role, and a counter fits
+  // a trading seat's limit (lib/seats.ts).
+  const gated = (await actionGate(user, amount != null ? "bid" : "message")) ?? (buyer ? seatLimitBlock(user, amount) : null);
+  if (gated) redirect(`${back.split("?")[0]}?error=${encodeURIComponent(gated)}`);
   if (amount != null && (!Number.isFinite(amount) || amount <= 0)) {
     redirect(`${back.split("?")[0]}?error=${encodeURIComponent("Enter a counter amount.")}`);
   }

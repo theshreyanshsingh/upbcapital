@@ -112,7 +112,11 @@ export async function runJobs(now = new Date()) {
     // Open closings past their target hear twice, then fail or go to the desk. Backup bids past their date close.
     ["Stalled closings", () => import("@/lib/backstop").then((backstop) => backstop.runBackstop(now))],
     ["Backup bids", () => import("@/lib/backup-bids").then((backups) => backups.lapseBackups(now))],
+    // A seat's bid held for approval closes at the listing's deadline, and the seat that asked hears.
+    ["Seat approvals", () => import("@/lib/seats").then((seats) => seats.expireSeatApprovals(now))],
     ["Sale notice reminders", () => remindSaleNotices(now)],
+    // Trailing documents after a close: three days out, on the day, weekly while late, and the desk at 14 days.
+    ["Trailing documents", () => import("@/lib/trailing-docs").then((docs) => docs.runTrailingDocs(now))],
     ["Closed auctions", () => notifyClosedAuctions().then(() => "closed auctions checked")],
     ["Retention", () => cleanRetention(now)],
     ["Abandoned tapes", () => purgeTapeDrafts(now).then((count) => `abandoned tapes ${count}`)],
@@ -122,6 +126,8 @@ export async function runJobs(now = new Date()) {
     ["Sale events", () => advanceSaleEvents(now)],
     // Daily and weekly saved searches send one roundup each when their period is up.
     ["Launches", () => import("@/lib/launch").then((launch) => launch.runLaunches(now))],
+    // Forward-flow tranches whose first look has ended open to the market, with the alerts approval held back.
+    ["Flow releases", () => import("@/lib/flow-programs").then((flow) => flow.runFlowReleases(now))],
     ["Search roundups", () => sendSearchRoundups(now)],
     // Each seller or broker with a live listing hears how it did, once a week.
     ["Seller reports", () => sendSellerReports(now)],
@@ -135,6 +141,8 @@ export async function runJobs(now = new Date()) {
     ["Re-certification reminders", () => import("@/lib/buyer-file").then((file) => file.remindRecertifications(now))],
     // Each Pro trial hears three days before its end and once when it ends.
     ["Trial reminders", () => import("@/lib/trial").then((trial) => trial.remindTrials(now))],
+    // A seller hears once two days before a repurchase claim's answer is due; with no answer, the claim goes to the desk.
+    ["Repurchase claims", () => import("@/lib/claims").then((claims) => claims.claimClock(now))],
   ]);
 }
 
@@ -186,7 +194,8 @@ export async function jobHistory(take = 50): Promise<JobRunRow[]> {
 
 export async function sendDueDigests(now = new Date()) {
   const users = await prisma.user.findMany({
-    where: { role: "BUYER", accountStatus: "APPROVED", digest: { not: "OFF" } },
+    // The firm gets the digest. Its seats read it there, so none gets its own (lib/seats.ts).
+    where: { role: "BUYER", accountStatus: "APPROVED", digest: { not: "OFF" }, ...unset("principalId") },
     select: { id: true, email: true, digest: true, lastDigestAt: true },
   });
   return eachItem("digest", users, (user) => `user ${user.id}`, (user) => sendDigest(user, now));
@@ -328,6 +337,8 @@ export async function expireBids(now = new Date(), options: { inquiryIds?: strin
       data: { status: "EXPIRED" },
     });
     if (claim.count !== 1) return false;
+    // The buyer's own endpoints hear it as offer.status. Sellers have no webhook event for an expiry.
+    await (await import("@/lib/webhooks")).emitOfferStatus(bid.id, "expired");
     const day = bid.expiresAt?.toISOString().slice(0, 10) ?? "";
     const title = bid.listing.title;
     await notify(bid.buyer.email, `Bid expired · ${title}`, `Your bid on ${title} reached its good-until date of ${day}, so it is closed. You can send a new one while the listing is live.`);

@@ -4,6 +4,7 @@ import { useRef, useState, useTransition } from "react";
 import { createPoolListing } from "@/actions/listings";
 import { checkTapeMarket } from "@/actions/market-rates";
 import { PriceAgainstTime } from "@/components/indicative-price";
+import { FlowTapeCheck } from "@/components/flow-tape-check";
 import { Field } from "@/components/page-intro";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -39,9 +40,12 @@ type Preview = {
 export function TapeWizard({
   premiumBps,
   commissionBps,
+  flow,
 }: {
   premiumBps: number;
   commissionBps: number;
+  // A forward-flow programme this tape joins as a tranche. The confirm step checks it against the criteria.
+  flow?: { id: string; name: string };
 }) {
   const [step, setStep] = useState(0);
   const [title, setTitle] = useState("");
@@ -129,6 +133,7 @@ export function TapeWizard({
     formData.set("pricePercent", pricePercent);
     formData.set("poolTotal", poolTotal);
     formData.set("mapping", JSON.stringify(mapping));
+    if (flow) formData.set("flowProgramId", flow.id);
     start(async () => {
       const result = await createPoolListing(formData);
       if (result?.error) setError(result.error);
@@ -297,6 +302,7 @@ export function TapeWizard({
           <div className="mt-6">
             <PriceAgainstTime ladder={market.ladder} loading={market.loading} error={market.error} />
           </div>
+          {flow && <FlowTapeCheck program={flow} check={{ token: preview.token, mapping, priceMode, pricePercent, poolTotal }} />}
           <div className="mt-8 flex justify-between">
             <Button type="button" variant="ghost" onClick={() => setStep(2)}>Back</Button>
             <Button type="button" className="h-11 px-5 text-[13px] font-medium" disabled={pending} onClick={submit}>

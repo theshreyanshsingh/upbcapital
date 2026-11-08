@@ -6,6 +6,7 @@ import { FORECLOSURES, LIEN_POSITIONS, OCCUPANCIES, PAYMENT_STATUSES, PROPERTY_T
 import { typedNumber } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
 import { extensionOf, mimeFor, putBytes, safeBasename } from "@/lib/storage";
+import { ENOTE_NOT_REQUIRED, isENote } from "@/lib/enotes";
 import { CREDIT_SCORE_TYPES, LOSS_MIT_STAGES, PAYMENT_TYPES } from "@/lib/tape-fields";
 import { uploadProblem } from "@/lib/uploads";
 import { watchNewFiles } from "@/lib/watchers";
@@ -45,11 +46,12 @@ export function isChainKind(kind: string): kind is ChainKind {
   return (CHAIN_KINDS as readonly string[]).includes(kind);
 }
 
-export type ChecklistLine = { kind: CollateralKind; label: string; required: boolean; chain: boolean; hint: string };
+// reason: why the line doesn't apply to this loan at all, as for an eNote's paper original.
+export type ChecklistLine = { kind: CollateralKind; label: string; required: boolean; chain: boolean; hint: string; reason?: string };
 
 // What a buyer's custodian expects in the file. A junior lien rarely closed with its own lender's policy, so
-// there the O&E report carries the title work and shows what sits ahead.
-export function standardChecklist(lienPosition: string): ChecklistLine[] {
+// there the O&E report carries the title work and shows what sits ahead. An eNote has no paper original or allonge.
+export function standardChecklist(lienPosition: string, options: { eNote?: boolean } = {}): ChecklistLine[] {
   const junior = lienPosition !== "FIRST";
   const lines: Omit<ChecklistLine, "label">[] = [
     { kind: "ORIGINAL_NOTE", required: true, chain: false, hint: "The signed note, endorsed to the holder or in blank." },
@@ -71,7 +73,10 @@ export function standardChecklist(lienPosition: string): ChecklistLine[] {
     { kind: "PAY_HISTORY", required: true, chain: false, hint: "The servicer's payment history." },
     { kind: "BPO", required: true, chain: false, hint: "A broker price opinion or appraisal." },
   ];
-  return lines.map((line) => ({ ...line, label: COLLATERAL_LABELS[line.kind] }));
+  return lines.map((line) => {
+    const reason = options.eNote ? ENOTE_NOT_REQUIRED[line.kind] : undefined;
+    return { ...line, label: COLLATERAL_LABELS[line.kind], ...(reason ? { required: false, hint: reason, reason } : {}) };
+  });
 }
 
 export type CollateralRow = {
@@ -128,8 +133,8 @@ export function sortChain<T extends { sequence: number; createdAt?: Date }>(rows
 }
 
 // The checklist with what the desk has on file under each line. A line with nothing under it hasn't been reviewed.
-export function collateralLines<T extends CollateralRow>(lienPosition: string, items: T[]) {
-  return standardChecklist(lienPosition).map((line) => ({ ...line, items: sortChain(items.filter((item) => item.kind === line.kind)) }));
+export function collateralLines<T extends CollateralRow>(lienPosition: string, items: T[], options: { eNote?: boolean } = {}) {
+  return standardChecklist(lienPosition, options).map((line) => ({ ...line, items: sortChain(items.filter((item) => item.kind === line.kind)) }));
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -435,6 +440,11 @@ export const LOAN_FIELDS: FieldSpec[] = [
   { field: "originatingPlatform", label: "Originating platform", kind: "text", optional: true, source: "Original note" },
   { field: "inheritedCovenants", label: "Inherited sale covenants", kind: "text", optional: true, source: "Other" },
   { field: "originatorLicense", label: "Originator license", kind: "text", identity: true, optional: true, source: "Original note" },
+  // An eNote on the MERS eRegistry. The desk checks these against the eVault's confirmation. lib/enotes.ts.
+  { field: "eNote", label: "eNote on the MERS eRegistry", kind: "bool", optional: true, source: "eVault confirmation" },
+  { field: "eRegistryController", label: "eRegistry controller (MERS Org ID)", kind: "text", optional: true, source: "eVault confirmation" },
+  { field: "eRegistryLocation", label: "eRegistry location (MERS Org ID)", kind: "text", optional: true, source: "eVault confirmation" },
+  { field: "eVaultProvider", label: "eVault", kind: "text", optional: true, source: "eVault confirmation" },
   // Tape v3. Balances sit behind Pro like the UPB; the litigation note can name the borrower, so it follows the street.
   { field: "paymentType", label: "Payment type", kind: "choice", options: PAYMENT_TYPES, optional: true, source: "Original note" },
   { field: "originalBalance", label: "Original balance", kind: "money", pro: true, optional: true, source: "Original note" },
@@ -466,6 +476,7 @@ export const KEY_FIELDS = LOAN_FIELDS.filter((spec) => spec.key).map((spec) => s
 export const VERIFY_SOURCES = [
   "Original note",
   "Allonge",
+  "eVault confirmation",
   "Mortgage or deed of trust",
   "Assignment",
   "Title policy",
@@ -707,7 +718,7 @@ export function completeness(
   options: { holder?: string | null } = {},
 ): Completeness {
   const counts = { present: 0, required: 0, missing: 0, defective: 0, unreviewed: 0 };
-  for (const line of collateralLines(note.lienPosition, collateral)) {
+  for (const line of collateralLines(note.lienPosition, collateral, { eNote: isENote(note) })) {
     if (!line.items.length) {
       // An empty chain still needs a look: either the links are on file or the desk says none are needed.
       if (line.required) {

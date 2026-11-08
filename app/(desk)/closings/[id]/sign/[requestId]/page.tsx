@@ -6,6 +6,7 @@ import { Notice } from "@/components/notice";
 import { SignerList, statusLine } from "@/components/signature-panel";
 import { SubmitButton } from "@/components/submit-button";
 import { canReadClosingFile } from "@/lib/acl";
+import { actionGate } from "@/lib/action-gates";
 import { requireUser } from "@/lib/auth";
 import { q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
@@ -39,6 +40,8 @@ export default async function SignPage({
   });
   if (!allowed) redirect("/closings");
   const view = requestView(request, user);
+  // A firm's seat signs only with a role that may (lib/seats.ts). The others read the page.
+  const refusal = await actionGate(user, "sign");
   const me = view.signers.find((signer) => signer.mine);
   const label = kindLabel(view.kind);
   return (
@@ -64,7 +67,8 @@ export default async function SignPage({
         <p className="eyebrow">Parties</p>
         <SignerList signers={view.signers} />
       </section>
-      {view.canSign && me && (
+      {view.canSign && me && refusal && <p id="sign" className="mt-6 scroll-mt-6 text-sm text-muted-foreground">{refusal}</p>}
+      {view.canSign && me && !refusal && (
         <section id="sign" aria-labelledby="sign-heading" className="mt-6 scroll-mt-6 glass p-6">
           <p id="sign-heading" className="eyebrow">Sign</p>
           <p className="mt-2 text-sm text-muted-foreground">

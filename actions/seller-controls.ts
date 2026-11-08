@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireUser } from "@/lib/auth";
 import { sellerPage, withdrawListing as withdrawListingNow } from "@/lib/awards";
+import { seatGate } from "@/lib/seats";
 import { prisma } from "@/lib/prisma";
 
 // Where the person withdrawing reads the result: the filing broker on the deal page, the seller of record on theirs.
@@ -21,6 +22,9 @@ export async function withdrawListing(formData: FormData) {
     redirect(user.role === "BROKER" ? "/broker" : user.role === "BUYER" ? "/buyer/portfolio" : "/seller");
   }
   const back = pageFor(listing, user);
+  // Taking a listing down is the seller's call, so a firm's seat needs a role that lists (lib/seats.ts).
+  const gated = await seatGate(user, "list");
+  if (gated) redirect(`${back}?error=${encodeURIComponent(gated)}`);
   const result = await withdrawListingNow(listing.id, user.id);
   if (result.error !== null) redirect(`${back}?error=${encodeURIComponent(result.error)}`);
   revalidatePath(back);

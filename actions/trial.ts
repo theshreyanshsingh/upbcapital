@@ -6,6 +6,7 @@ import { audit } from "@/lib/audit";
 import { requireUser } from "@/lib/auth";
 import { prettyDate } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
+import { billingBlock } from "@/lib/seats";
 import { clearSettingsCache, getSettings } from "@/lib/settings";
 import { requireDesk } from "@/lib/staff";
 import { MAX_TRIAL_DAYS, startFreeTrial, trialDaysOf } from "@/lib/trial";
@@ -15,6 +16,8 @@ export async function startProTrial() {
   const user = await requireUser();
   if (user.role !== "BUYER") redirect("/");
   if (user.accountStatus !== "APPROVED") redirect("/buyer/pending");
+  const blocked = billingBlock(user);
+  if (blocked) redirect(`/buyer/subscription?error=${encodeURIComponent(blocked)}`);
   const result = await startFreeTrial(user.id);
   if (result.error !== null) redirect(`/buyer/subscription?error=${encodeURIComponent(result.error)}`);
   revalidatePath("/buyer/subscription");

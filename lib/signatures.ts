@@ -4,6 +4,7 @@ import { canReadClosingFile } from "@/lib/acl";
 import { audit } from "@/lib/audit";
 import { TEMPLATE_KEYS, type TemplateKey } from "@/lib/closing-docs";
 import { closingPacket } from "@/lib/closing-packet";
+import { ENOTE_NO_PAPER } from "@/lib/enotes";
 import { completeStepOnRecord, timelineStamp } from "@/lib/closing-service";
 import { unset } from "@/lib/db-filters";
 import { deskCan } from "@/lib/desk-roles";
@@ -264,7 +265,7 @@ async function dispatch(closingId: string, kind: TemplateKey, actor: Actor | nul
   if (!(TEMPLATE_KEYS as readonly string[]).includes(kind)) return { error: "Choose a form to send." } as const;
   const packet = await closingPacket(closingId, kind, actor ?? { id: "", role: "ADMIN" });
   if (!packet) return { error: "That closing no longer exists." } as const;
-  if (!packet.allowed) return { error: "Only the parties and the desk read this closing." } as const;
+  if (!packet.allowed) return { error: "eNote" in packet ? ENOTE_NO_PAPER : "Only the parties and the desk read this closing." } as const;
   if (packet.closing.status !== "OPEN") return { error: "This closing is already finished." } as const;
   const signers = await signersFor(packet, deskSignerId);
   if (signers.some((signer) => signer.role === "DESK" && !signer.userId)) return { error: "Name a deal owner who runs closings to sign for the desk." } as const;

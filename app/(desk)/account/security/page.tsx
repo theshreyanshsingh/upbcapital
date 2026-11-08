@@ -1,14 +1,16 @@
 import QRCode from "qrcode";
 import { acknowledgeRecovery, beginTotp, changePassword, confirmTotp, disableTotp, revokeOtherSessions, revokeSession, setEmailFallback } from "@/actions/security";
 import { AccountDeletion } from "@/components/account-deletion";
+import { EmailAddressSection } from "@/components/email-confirm";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { SubmitButton } from "@/components/submit-button";
 import { needsSecondFactor } from "@/lib/access";
-import { currentSessionId, requireUser, twoStepRequired } from "@/lib/auth";
+import { currentSessionId, requirePerson, twoStepRequired } from "@/lib/auth";
 import { prettyDate, q } from "@/lib/format";
 import { demoSeat } from "@/lib/deploy";
 import { prisma } from "@/lib/prisma";
+import { firmName, secondFactorSubject } from "@/lib/seats";
 import { otpauthUrl } from "@/lib/totp";
 
 export const metadata = { title: "Security" };
@@ -18,14 +20,16 @@ export default async function SecurityPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const user = await requireUser({ secondFactorSetup: true });
+  // The person signed in. A firm's seat sees its own authenticator, password and devices, never the firm's.
+  const account = await requirePerson({ secondFactorSetup: true });
+  const user = account.person;
   const required = await twoStepRequired();
   const params = await searchParams;
   const [sessions, thisSession] = await Promise.all([
     prisma.serverSession.findMany({ where: { userId: user.id, expiresAt: { gt: new Date() } }, orderBy: { createdAt: "desc" } }),
     currentSessionId(),
   ]);
-  const setupRequired = needsSecondFactor(user, required);
+  const setupRequired = needsSecondFactor(secondFactorSubject(account), required);
   const pending = Boolean(user.totpSecret) && !user.totpEnabled;
   const qr = pending ? await QRCode.toString(otpauthUrl(user.totpSecret, user.email), { type: "svg", margin: 1, width: 180, color: { dark: "#111111", light: "#ffffff" } }) : "";
   const codes = user.recoveryReveal.split("\n").filter(Boolean);
@@ -111,6 +115,8 @@ export default async function SecurityPage({
         </form>
       )}
 
+      <EmailAddressSection user={user} />
+
       <section className="mt-8 border border-border p-5 rounded-xl">
         <p className="eyebrow">Signed-in devices</p>
         <ul className="mt-3 divide-y divide-border">
@@ -138,7 +144,11 @@ export default async function SecurityPage({
         )}
       </section>
 
-      <AccountDeletion user={user} />
+      {account.user.actor ? (
+        <p className="mt-8 text-sm text-muted-foreground">Your seat is on {firmName(account.user)}&apos;s account. The account owner or a managing seat can remove it.</p>
+      ) : (
+        <AccountDeletion user={user} />
+      )}
     </div>
   );
 }

@@ -8,7 +8,7 @@ import { labelOf } from "@/lib/labels";
 import { upbBucket } from "@/lib/strata";
 import { noteMetrics } from "@/lib/metrics";
 import { prisma } from "@/lib/prisma";
-import { publicListing } from "@/lib/private-listings";
+import { outsideFirstLook, publicListing } from "@/lib/private-listings";
 import { getSettings } from "@/lib/settings";
 import { ensureStories } from "@/lib/stories";
 import { bpsToPercent } from "@/lib/money";
@@ -22,17 +22,19 @@ const sectionHead = "mt-3 font-display text-[2.375rem] font-medium leading-[1.08
 
 export default async function HomePage() {
   await recordHit("/");
+  // So are forward-flow tranches still in their first look.
+  const released = await outsideFirstLook();
   const [user, settings, notes, liveCount, publicListings] = await Promise.all([
     getCurrentUser(),
     getSettings(),
     // Private listings stay off the public page: its cards, counts and totals are the open book's (lib/private-listings.ts).
     prisma.note.findMany({
-      where: { listing: { status: { in: ["APPROVED", "PENDING"] }, AND: [publicListing()] } },
+      where: { listing: { status: { in: ["APPROVED", "PENDING"] }, AND: [publicListing(), released] } },
       include: { listing: true },
     }),
-    prisma.listing.count({ where: { status: { in: ["APPROVED", "PENDING"] }, AND: [publicListing()] } }),
+    prisma.listing.count({ where: { status: { in: ["APPROVED", "PENDING"] }, AND: [publicListing(), released] } }),
     prisma.listing.findMany({
-      where: { status: { in: ["APPROVED", "PENDING"] }, AND: [publicListing()] },
+      where: { status: { in: ["APPROVED", "PENDING"] }, AND: [publicListing(), released] },
       include: { notes: true },
       orderBy: { approvedAt: "desc" },
       take: 6,

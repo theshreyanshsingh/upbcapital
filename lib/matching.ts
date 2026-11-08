@@ -187,7 +187,7 @@ export async function rescoreListing(listingId: string, alert: boolean, now = ne
   const rate = marketRate(settings);
   const notes = notesOf(listing.notes, now);
   const upb = notes.reduce((sum, note) => sum + note.upb, 0);
-  const mailed = new Map<string, { email: string; score: number; name: string }>();
+  const mailed = new Map<string, { email: string; score: number; name: string; boxId: string }>();
   const standing: { userId: string; ofUpb: number | null }[] = [];
   for (const box of boxes) {
     if (!shown.has(box.userId)) {
@@ -199,7 +199,7 @@ export async function rescoreListing(listingId: string, alert: boolean, now = ne
     if (!result || !mail || listing.status !== "APPROVED") continue;
     if (box.user.role !== "BUYER" || box.user.accountStatus !== "APPROVED") continue;
     const prior = mailed.get(box.userId);
-    if (!prior || result.score > prior.score) mailed.set(box.userId, { email: box.user.email, score: result.score, name: box.name });
+    if (!prior || result.score > prior.score) mailed.set(box.userId, { email: box.user.email, score: result.score, name: box.name, boxId: box.id });
   }
   for (const hit of mailed.values()) {
     await notify(
@@ -207,6 +207,21 @@ export async function rescoreListing(listingId: string, alert: boolean, now = ne
       `Buy box match · ${listing.title}`,
       `${listing.title} is live and scores ${hit.score} against “${hit.name}”. ${hit.score >= 80 ? "It sits close to the box." : "Open the book to underwrite it."}`,
     );
+  }
+  // Buyers on Pro hear the same match on their own webhooks, with ids and the listing's public terms only.
+  if (mailed.size) {
+    const { emitBuyerWebhook } = await import("@/lib/webhooks");
+    for (const [userId, hit] of mailed) {
+      await emitBuyerWebhook(userId, "listing.matched", {
+        listingId: listing.id,
+        title: listing.title,
+        buyBoxId: hit.boxId,
+        score: hit.score,
+        saleFormat: listing.bidMode,
+        bidDeadline: listing.bidMode !== "NONE" && listing.bidDeadline ? listing.bidDeadline.toISOString() : null,
+        webUrl: `${process.env.NEXT_PUBLIC_APP_URL || ""}/marketplace/${listing.id}`,
+      });
+    }
   }
   if (!coming) await tellDeskOfStandingBids(listing, standing, now);
 }

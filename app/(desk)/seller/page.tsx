@@ -4,6 +4,7 @@ import { MasterAgreementBanner } from "@/components/master-agreement-banner";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { SellerIdentityBanner } from "@/components/seller-identity";
+import { YourRecord } from "@/components/track-record";
 import { StatusPill } from "@/components/status-pill";
 import { requireRole } from "@/lib/auth";
 import { compsFor, loadClosedTrades, marketView, suggestedPrice } from "@/lib/comps";
@@ -75,6 +76,8 @@ export default async function SellerHome({
         <Figure k="Offers" v={String(offers)} />
         <Figure k="Inquiries" v={String(listings.reduce((sum, listing) => sum + listing.inquiries.length, 0))} />
       </div>
+      {/* Built from what happened on the seller's closings. components/track-record.tsx. */}
+      {user.role !== "ADMIN" && <YourRecord user={user} className="mt-8" />}
       <div className="mt-8 flex flex-wrap gap-3">
         <Link href="/seller/notes/new" className="inline-flex h-11 items-center bg-primary px-5 text-[13px] font-medium text-primary-foreground rounded-lg">List a note</Link>
         {user.role === "INSTITUTIONAL_SELLER" && (

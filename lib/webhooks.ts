@@ -2,6 +2,8 @@ import { createHmac } from "node:crypto";
 import { lookup, type LookupAddress } from "node:dns";
 import { request } from "node:https";
 import { BlockList, isIP, type LookupFunction } from "node:net";
+import { buyerApiProblem } from "@/lib/api-keys";
+import { unset } from "@/lib/db-filters";
 import { prisma } from "@/lib/prisma";
 
 export function signWebhook(secret: string, body: string) {
@@ -91,6 +93,17 @@ export const WEBHOOK_EVENTS = [
   { event: "offer.declined", label: "A bid is declined, withdrawn or loses" },
 ] as const;
 
+// A Pro buyer's events, for the Buyer API page. Each body carries ids and public fields only: never a street, a
+// borrower, a data-room file or anyone else's bid.
+export const BUYER_WEBHOOK_EVENTS = [
+  { event: "listing.matched", label: "A new listing fits a buy box" },
+  { event: "listing.repriced", label: "A saved listing has a new price" },
+  { event: "listing.deadline", label: "Bids on a saved listing close within a day" },
+  { event: "offer.status", label: "One of your bids or requests changes status" },
+] as const;
+
+export type BuyerEvent = (typeof BUYER_WEBHOOK_EVENTS)[number]["event"];
+
 export function endpointEvents(events: string) {
   return events.split(",").map((item) => item.trim()).filter(Boolean);
 }
@@ -100,9 +113,9 @@ export function wantsEvent(endpoint: { events: string }, event: string) {
 }
 
 // Only events the desk sends, in a fixed order, so a forged form can't store anything else.
-export function cleanEvents(picked: unknown[]) {
+export function cleanEvents(picked: unknown[], events: readonly { event: string }[] = WEBHOOK_EVENTS) {
   const chosen = new Set(picked.map(String));
-  return WEBHOOK_EVENTS.map((item) => item.event).filter((event) => chosen.has(event)).join(",");
+  return events.map((item) => item.event).filter((event) => chosen.has(event)).join(",");
 }
 
 const MINUTE = 60 * 1000;
@@ -184,6 +197,49 @@ export async function emitWebhook(userId: string, event: string, payload: Record
     });
     await settle(endpoint, delivery, 1, send);
   }
+  // The bidder hears the same change as offer.status, on their own endpoints.
+  if (SELLER_OFFER_EVENTS.has(event) && typeof payload.inquiryId === "string") await emitOfferStatus(payload.inquiryId, event.slice("offer.".length), payload, send);
+}
+
+const SELLER_OFFER_EVENTS = new Set<string>(WEBHOOK_EVENTS.map((item) => item.event));
+
+// Sends a buyer event to each of these buyers who has an endpoint for it and is on Pro now, a trial included. It never
+// throws: a buyer's webhook doesn't hold up the alert, award or job it rides on. Returns how many buyers it went to.
+export async function emitBuyerWebhook(userIds: string | string[], event: BuyerEvent, payload: Record<string, unknown>, send: WebhookSender = post) {
+  try {
+    const ids = [...new Set(typeof userIds === "string" ? [userIds] : userIds)];
+    if (!ids.length) return 0;
+    const endpoints = await prisma.webhookEndpoint.findMany({ where: { userId: { in: ids } }, select: { userId: true, events: true } });
+    const wanting = [...new Set(endpoints.filter((endpoint) => wantsEvent(endpoint, event)).map((endpoint) => endpoint.userId))];
+    if (!wanting.length) return 0;
+    const users = await prisma.user.findMany({ where: { id: { in: wanting }, ...unset("deletedAt") } });
+    let sent = 0;
+    for (const user of users) {
+      if (buyerApiProblem(user)) continue;
+      await emitWebhook(user.id, event, payload, send);
+      sent += 1;
+    }
+    return sent;
+  } catch (error) {
+    console.error("[upb-webhooks] buyer event failed:", error instanceof Error ? error.message : error);
+    return 0;
+  }
+}
+
+// The buyer's side of an offer event: the inquiry, its listing, its status now, and what changed. No amount: the buyer
+// reads their own figures from GET /api/v1/offers.
+export async function emitOfferStatus(inquiryId: string, change: string, extra: { reason?: unknown; closingId?: unknown } = {}, send: WebhookSender = post) {
+  const inquiry = await prisma.inquiry.findUnique({ where: { id: inquiryId }, select: { id: true, buyerId: true, listingId: true, type: true, status: true } }).catch(() => null);
+  if (!inquiry) return 0;
+  return emitBuyerWebhook(inquiry.buyerId, "offer.status", {
+    inquiryId: inquiry.id,
+    listingId: inquiry.listingId,
+    type: inquiry.type,
+    status: inquiry.status,
+    change,
+    ...(typeof extra.reason === "string" ? { reason: extra.reason } : {}),
+    ...(typeof extra.closingId === "string" ? { closingId: extra.closingId } : {}),
+  }, send);
 }
 
 // Prisma on MongoDB compares a stored null as earlier than any date, so a plain lte would also match every delivery

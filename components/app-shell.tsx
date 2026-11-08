@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import { BellRing, ChevronsUpDown, Lock, LogOut, ScrollText, Search, type LucideIcon } from "lucide-react";
 import { logout } from "@/actions/auth";
 import { OnboardingTour } from "@/components/tour";
+import { EmailConfirmBanner } from "@/components/email-confirm-banner";
 import { Logo } from "@/components/logo";
 import { DeskSearch, MobileDock } from "@/components/mobile-dock";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -17,7 +18,8 @@ import { cn } from "@/lib/utils";
 export type { ShellUser };
 
 // termsDue: the account hasn't accepted the current terms and privacy policy. A slim line asks, and blocks nothing.
-export function AppShell({ user, termsDue = false, children }: { user: ShellUser; termsDue?: boolean; children: React.ReactNode }) {
+// emailDue: the address the account has yet to confirm, when the desk requires it.
+export function AppShell({ user, termsDue = false, emailDue = null, children }: { user: ShellUser; termsDue?: boolean; emailDue?: string | null; children: React.ReactNode }) {
   const items = navFor(user);
   return (
     <div className="min-h-screen">
@@ -59,6 +61,7 @@ export function AppShell({ user, termsDue = false, children }: { user: ShellUser
               <Link href="/terms#accept" className="font-medium text-link">Read and accept</Link>
             </p>
           )}
+          {emailDue && <EmailConfirmBanner email={emailDue} />}
           {children}
         </main>
         <MobileDock user={user} items={items} />
@@ -172,7 +175,7 @@ function Account({ user }: { user: ShellUser }) {
         <span className="grid size-7 shrink-0 place-items-center rounded-full bg-card text-[10px] font-semibold text-foreground ring-1 ring-border">{initials(user.name)}</span>
         <span className="min-w-0 flex-1">
           <strong className="block truncate text-[13px] font-semibold">{user.name}</strong>
-          <em className="block truncate text-xs not-italic text-muted-foreground">{user.email}</em>
+          <em className="block truncate text-xs not-italic text-muted-foreground">{user.seat ? `${user.seat.firm} · signed in as ${user.seat.person}` : user.email}</em>
         </span>
         <ChevronsUpDown className="size-4 shrink-0 text-muted-foreground" />
       </button>

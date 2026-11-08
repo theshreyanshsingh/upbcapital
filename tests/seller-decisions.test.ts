@@ -276,10 +276,15 @@ test("the track record shows funds by band, the entity, the record and the year,
     companyName: "Hidden Capital LLC",
   };
   const record = trackRecord(input, now);
-  assert.deepEqual(record, { funds: "verified $250k–$1M", entity: "Limited liability company", closed: 3, closeRate: "75%", strikes: 1, memberSince: 2023 });
+  assert.deepEqual(record, { funds: "verified $250k–$1M", entity: "Limited liability company", closed: 3, closeRate: "3 of 4 closed", strikes: 1, memberSince: 2023 });
   const shown = JSON.stringify(record) + trackLine(record);
   for (const secret of ["Jane", "Hidden", "jane.hidden", "400000", "400,000", "400k"]) assert.ok(!shown.includes(secret), secret);
-  assert.equal(trackLine(record), "Verified $250k–$1M · Limited liability company · 3 closed on UPB · 75% close rate · 1 strike · member since 2023");
+  assert.equal(trackLine(record), "Verified $250k–$1M · Limited liability company · 3 closed on UPB · 3 of 4 closed · 1 strike · member since 2023");
+  // Under five closes the rate is its counts, never a percentage. From five it is the percentage.
+  assert.equal(trackRecord({ ...input, record: { closed: 4, canceled: 1 } }, now).closeRate, "4 of 5 closed");
+  const seasoned = trackRecord({ ...input, record: { closed: 6, canceled: 2 } }, now);
+  assert.equal(seasoned.closeRate, "75%");
+  assert.match(trackLine(seasoned), / · 6 closed on UPB · 75% close rate · /);
   // The entity the bid is for wins over the main file.
   assert.equal(trackRecord({ ...input, entityType: "IRA" }, now).entity, "Self-directed IRA");
   assert.equal(trackRecord({ ...input, record: { closed: 0, canceled: 0 }, strikes: 0 }, now).closeRate, "no closings yet");

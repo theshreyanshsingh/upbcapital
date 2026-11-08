@@ -342,6 +342,20 @@ model User {
   // The desk member who created this account by invitation, and when.
   invitedById                  String?
   invitedAt                    DateTime?
+  // A seat on a firm's account. A seat signs in with its own email, password and second factor, then acts for the
+  // account named in principalId: VIEW, TRADE, APPROVE or MANAGE. A trading seat's bids above seatBidLimitCents wait
+  // for an approving seat. Missing principalId means the account is its own. lib/seats.ts.
+  principalId                  String?
+  seatRole                     String?
+  seatBidLimitCents            Int?
+  seatAddedById                String?
+  seatAddedAt                  DateTime?
+  // When the holder proved they own the address, and an address they asked to change to, awaiting the same proof.
+  // lib/email-confirm.ts.
+  emailConfirmedAt             DateTime?
+  pendingEmail                 String?
+  // The hash of the private calendar feed link, so a deadline lands in the holder's own calendar. lib/calendar-feed.ts.
+  calendarTokenHash            String?               @unique
   lastDigestAt                 DateTime?
   createdAt                    DateTime           @default(now())
   sessions                     ServerSession[]
@@ -445,6 +459,15 @@ model PlatformSettings {
   newBidderCloses      Int?
   // Days of Pro a new buyer may try once. Missing or 0 means no trial. lib/trial.ts.
   proTrialDays         Int?
+  // Whether an account must confirm its email before it bids, lists or signs. Missing means on when UPB_RELEASE=1.
+  // lib/email-confirm.ts.
+  requireEmailConfirmation Boolean?
+  // Days after closing a buyer may file a repurchase claim against the seller's representations, and days the seller
+  // has to answer one. Missing means the defaults in lib/claims.ts.
+  repSurvivalDays          Int?
+  claimResponseDays        Int?
+  // Days after closing each trailing document is due by default. Missing means the defaults in lib/trailing-docs.ts.
+  trailingDocDays          Int?
   updatedAt            DateTime @updatedAt
 }
 
@@ -568,6 +591,9 @@ model Listing {
   diligenceWaivers     Json?
   launchNotifiedAt     DateTime?
   notes                Note[]
+  // A tranche of a seller's forward-flow programme. Committed buyers get a first look before it opens to all.
+  // lib/flow-programs.ts.
+  flowProgramId          String?
   documents            Document[]
   inquiries            Inquiry[]
   favorites            Favorite[]
@@ -680,6 +706,12 @@ model Note {
   borrowerDeceased   Boolean?
   litigationFlag     Boolean?
   litigationNote     String?
+  // An electronic note held on the MERS eRegistry, not paper. Control and location move by eRegistry transfer, not by
+  // endorsement and courier. lib/enotes.ts.
+  eNote               Boolean?
+  eRegistryController String?
+  eRegistryLocation   String?
+  eVaultProvider      String?
   inquiries          Inquiry[]
   filings            CourtFiling[]
   collateral         CollateralItem[]
@@ -1281,16 +1313,21 @@ model Closing {
   tieOut                Json?
   tieOutAt              DateTime?
   tieOutById            String?
+  // When every trailing document was received or waived, so the file is complete. lib/trailing-docs.ts.
+  postCloseCompleteAt    DateTime?
+  trailingDocs           TrailingDoc[]
+  claims                 RepurchaseClaim[]
+  attestations           CloseAttestation[]
   steps                 ClosingStep[]
   signatures            SignatureRequest[]
   boarding              ServicerBoarding?
   funders               ClosingFunder[]
   brokerFees            BrokerFee[]
+  kickouts               ClosingKickout[]
+  wireChanges            WireChange[]
 
   @@index([listingId])
   @@index([status])
-  kickouts              ClosingKickout[]
-  wireChanges           WireChange[]
 }
 
 model ClosingStep {
@@ -2086,6 +2123,10 @@ model ApiKey {
   name       String
   prefix     String
   hash       String    @unique
+  // What the key may do, comma-separated, such as "listings:read,matches:read,offers:read". Missing means the seller
+  // scopes keys had before buyers got them. lib/api-keys.ts.
+  scopes     String?
+  revokedAt  DateTime?
   lastUsedAt DateTime?
   createdAt  DateTime  @default(now())
 
@@ -2179,6 +2220,8 @@ model AuditEvent {
   id         String   @id @default(cuid()) @map("_id")
   actorId    String?
   actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  // The seat that acted, when someone acted for a firm's account. actorId stays the account. lib/seats.ts.
+  seatId     String?
   action     String
   entityType String
   entityId   String
@@ -2397,4 +2440,244 @@ model EmailEvent {
   createdAt      DateTime     @default(now())
 
   @@index([announcementId, kind])
+}
+
+// An invitation to take a seat on a firm's account. The link proves the invitee owns the address. lib/seats.ts.
+model SeatInvite {
+  id            String    @id @default(cuid()) @map("_id")
+  principalId   String
+  email         String
+  name          String    @default("")
+  seatRole      String
+  bidLimitCents Int?
+  tokenHash     String    @unique
+  invitedById   String
+  expiresAt     DateTime
+  acceptedAt    DateTime?
+  acceptedById  String?
+  revokedAt     DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@index([principalId])
+  @@index([email])
+}
+
+// A trading seat's bid above its limit, held until an approving seat on the same account approves or declines it.
+// Approval places the bid as if the approver had. lib/seats.ts.
+model SeatApproval {
+  id            String    @id @default(cuid()) @map("_id")
+  principalId   String
+  requestedById String
+  // BID for now. payload holds the form fields the bid would have been placed with.
+  kind          String    @default("BID")
+  listingId     String?
+  noteId        String?
+  amountCents   Int
+  payload       Json
+  // PENDING, APPROVED, DECLINED, WITHDRAWN or EXPIRED.
+  status        String    @default("PENDING")
+  decidedById   String?
+  decidedAt     DateTime?
+  reason        String?
+  inquiryId     String?
+  expiresAt     DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@index([principalId, status])
+  @@index([requestedById])
+}
+
+// A one-time link that proves someone owns an email address, at signup or on a change of address.
+model EmailConfirmation {
+  id        String    @id @default(cuid()) @map("_id")
+  userId    String
+  email     String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+// A seller's forward-flow programme: loans sold in recurring tranches to buyers who signed its terms once. Each
+// tranche is a listing that committed buyers see first, for firstLookHours, before it opens to the market. Buyers
+// confirm every bid; a price grid only pre-fills it. lib/flow-programs.ts.
+model FlowProgram {
+  id                  String           @id @default(cuid()) @map("_id")
+  sellerId            String
+  name                String
+  // DRAFT, OPEN, PAUSED or CLOSED. The desk approves a programme before it opens.
+  status              String           @default("DRAFT")
+  // MONTHLY, QUARTERLY or AD_HOC.
+  cadence             String           @default("MONTHLY")
+  // What qualifies a loan: { lienPositions, paymentStatuses, states, maxUpb, minSeasoningMonths, ... }.
+  criteria            Json?
+  firstLookHours      Int              @default(72)
+  expectedVolumeCents Int?
+  terms               String           @default("")
+  startsAt            DateTime?
+  endsAt              DateTime?
+  approvedById        String?
+  approvedAt          DateTime?
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+  commitments         FlowCommitment[]
+  tranches            FlowTranche[]
+
+  @@index([sellerId])
+  @@index([status])
+}
+
+// A buyer's standing place in a programme: the terms accepted once, and a price grid that pre-fills each bid.
+model FlowCommitment {
+  id                 String      @id @default(cuid()) @map("_id")
+  programId          String
+  program            FlowProgram @relation(fields: [programId], references: [id], onDelete: Cascade)
+  buyerId            String
+  // INVITED, ACTIVE, PAUSED or ENDED.
+  status             String      @default("INVITED")
+  // Percent of unpaid balance by bucket: [{ paymentStatus, lienPosition, maxLtv, pct }].
+  grid               Json?
+  maxPerTrancheCents Int?
+  acceptedAt         DateTime?
+  termsVersion       String?
+  invitedById        String?
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+
+  @@unique([programId, buyerId])
+  @@index([buyerId])
+}
+
+// One tranche of a programme, as a listing.
+model FlowTranche {
+  id              String      @id @default(cuid()) @map("_id")
+  programId       String
+  program         FlowProgram @relation(fields: [programId], references: [id], onDelete: Cascade)
+  listingId       String      @unique
+  sequence        Int
+  firstLookEndsAt DateTime?
+  releasedAt      DateTime?
+  // FIRST_LOOK, RELEASED, AWARDED or WITHDRAWN.
+  status          String      @default("FIRST_LOOK")
+  createdAt       DateTime    @default(now())
+
+  @@index([programId])
+  @@index([status])
+}
+
+// A document that arrives after closing: the recorded assignment back from the county, the original note by courier,
+// a title endorsement, the borrower letters, or an eRegistry transfer for an eNote. Each has an owner, a due date and
+// a receipt the other side confirms. lib/trailing-docs.ts.
+model TrailingDoc {
+  id             String    @id @default(cuid()) @map("_id")
+  closingId      String
+  closing        Closing   @relation(fields: [closingId], references: [id], onDelete: Cascade)
+  noteId         String?
+  // RECORDED_ASSIGNMENT, ORIGINAL_NOTE, ALLONGE, TITLE_ENDORSEMENT, GOODBYE_LETTER, HELLO_LETTER, SERVICER_BOARDED,
+  // ENOTE_CONTROL or ENOTE_LOCATION.
+  kind           String
+  // Who must deliver it: SELLER, BUYER, DESK or SERVICER.
+  owner          String
+  // DUE, SENT, RECEIVED or WAIVED. Overdue is computed from dueAt.
+  status         String    @default("DUE")
+  dueAt          DateTime
+  sentAt         DateTime?
+  receivedAt     DateTime?
+  confirmedById  String?
+  carrier        String?
+  trackingNumber String?
+  // An instrument or book and page for a recording, or the eRegistry transfer ID.
+  reference      String    @default("")
+  documentId     String?
+  note           String    @default("")
+  remindedAt     DateTime?
+  escalatedAt    DateTime?
+  waivedById     String?
+  waivedReason   String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([closingId])
+  @@index([status, dueAt])
+}
+
+// A buyer's claim after closing that a seller representation was untrue, with the seller's answer and the desk's
+// decision. Outcomes feed both sides' factual record. lib/claims.ts.
+model RepurchaseClaim {
+  id                String      @id @default(cuid()) @map("_id")
+  closingId         String
+  closing           Closing     @relation(fields: [closingId], references: [id], onDelete: Cascade)
+  noteId            String?
+  filedById         String
+  sellerId          String
+  // Which representation: TITLE, LIEN_POSITION, BALANCE, PAY_HISTORY, DOCUMENTS, OCCUPANCY, LITIGATION or OTHER.
+  rep               String
+  description       String
+  // REPURCHASE, PRICE_ADJUSTMENT or CURE.
+  remedy            String
+  amountCents       Int?
+  // FILED, ANSWERED, UNDER_REVIEW, UPHELD, PARTLY_UPHELD, DENIED, CURED, SETTLED or WITHDRAWN.
+  status            String      @default("FILED")
+  respondBy         DateTime
+  sellerResponse    String?
+  sellerRespondedAt DateTime?
+  decidedById       String?
+  decidedAt         DateTime?
+  decision          String?
+  outcomeCents      Int?
+  resolvedAt        DateTime?
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+  files             ClaimFile[]
+
+  @@index([closingId])
+  @@index([sellerId])
+  @@index([filedById])
+  @@index([status])
+}
+
+model ClaimFile {
+  id           String          @id @default(cuid()) @map("_id")
+  claimId      String
+  claim        RepurchaseClaim @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  uploadedById String
+  originalName String
+  storageKey   String
+  mime         String
+  size         Int
+  createdAt    DateTime        @default(now())
+
+  @@index([claimId])
+}
+
+// What one side says, in facts and not stars, once a closing is confirmed: did the money arrive on time, did the file
+// match what was described, did the collateral arrive complete. lib/track-record.ts.
+model CloseAttestation {
+  id                 String   @id @default(cuid()) @map("_id")
+  closingId          String
+  closing            Closing  @relation(fields: [closingId], references: [id], onDelete: Cascade)
+  byId               String
+  // BUYER or SELLER: the side answering.
+  side               String
+  fundedOnTime       Boolean?
+  fileAsDescribed    Boolean?
+  collateralComplete Boolean?
+  note               String   @default("")
+  createdAt          DateTime @default(now())
+
+  @@unique([closingId, side])
+}
+
+// A month's board figures as the desk locked them, so a later recount doesn't change what the board was shown.
+// lib/board-pack.ts.
+model BoardSnapshot {
+  id         String   @id @default(cuid()) @map("_id")
+  // YYYY-MM.
+  month      String   @unique
+  data       Json
+  lockedById String
+  note       String   @default("")
+  createdAt  DateTime @default(now())
 }

@@ -2,6 +2,7 @@ import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from "pdf
 import { audit } from "@/lib/audit";
 import { closingLoans, stepLabel } from "@/lib/closing";
 import { isReleaseBuild } from "@/lib/deploy";
+import { isENote } from "@/lib/enotes";
 import { money, prettyDate } from "@/lib/format";
 import { labelOf } from "@/lib/labels";
 import {
@@ -198,9 +199,9 @@ export function lenderPackSections(pack: PackInput): PackSection[] {
     }
 
     collateral.push(heading);
-    for (const line of collateralLines(note.lienPosition, items)) {
+    for (const line of collateralLines(note.lienPosition, items, { eNote: isENote(note) })) {
       if (!line.items.length) {
-        collateral.push({ text: `${line.label}: ${line.required ? "not yet reviewed" : "not reviewed, not required for this lien"}`, indent: true });
+        collateral.push({ text: `${line.label}: ${line.required ? "not yet reviewed" : line.reason ? "not required for an eNote" : "not reviewed, not required for this lien"}`, indent: true });
         continue;
       }
       line.items.forEach((item, position) => {

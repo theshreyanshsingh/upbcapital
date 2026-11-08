@@ -1,6 +1,7 @@
 import { canReadClosingFile } from "@/lib/acl";
 import { CURE_DAYS, FEE_TAIL_MONTHS, REPURCHASE_DAYS, masterLines, masterStatus, masterTermsText } from "@/lib/agreements";
 import { closingLoans } from "@/lib/closing";
+import { isPaperForm, paperLoans } from "@/lib/enotes";
 import { PER_LOAN_TEMPLATES, buildClosingPdf, fillTemplate, formBody, type TemplateKey } from "@/lib/closing-docs";
 import { money } from "@/lib/format";
 import { pricesFor } from "@/lib/loan-prices";
@@ -31,8 +32,10 @@ export async function closingPacket(closingId: string, kind: TemplateKey, viewer
     funderIds: funders.map((funder) => funder.userId),
   });
   if (!allowed) return { allowed: false as const, closing, inquiry, funders };
-  // Every loan the closing covers, not just the first one on the listing.
-  const loans = closingLoans(closing, closing.listing.notes);
+  // Every loan the closing covers, not just the first one on the listing. An eNote has no paper to endorse or lose,
+  // so the allonge and the lost note affidavit leave it out, and with only eNotes there is no form to draw.
+  const loans = paperLoans(kind, closingLoans(closing, closing.listing.notes));
+  if (!loans.length && isPaperForm(kind)) return { allowed: false as const, closing, inquiry, funders, eNote: true as const };
   const pool = loans.length > 1;
   // A bid priced loan by loan names each loan's price on its own papers, while those prices add up to the sale.
   const loanPrices = pool ? pricesFor(inquiry?.loanPrices, loans.map((note) => note.id), Number(closing.salePrice)) : null;

@@ -2,13 +2,16 @@ import { NextResponse } from "next/server";
 import { apiCaller } from "@/lib/api-limit";
 import { sealedFromSeller } from "@/lib/auction";
 import { bidderNamer } from "@/lib/bidder-alias";
+import { buyerOfferResponse } from "@/lib/buyer-api";
 import { prisma } from "@/lib/prisma";
 import { DESK_DENIED, deskCan } from "@/lib/staff";
 
 export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
-  const caller = await apiCaller(request);
+  const caller = await apiCaller(request, "offers:read");
   if (caller.response) return caller.response;
   const user = caller.user;
+  // A buyer's key reads one of the holder's own inquiries. Everything below is the seller's view.
+  if (user.role === "BUYER") return buyerOfferResponse(user.id, (await context.params).id);
   // A desk key reads bids only when its desk role may see sealed ones.
   if (user.role === "ADMIN" && !deskCan(user, "sealedBids")) return NextResponse.json({ error: DESK_DENIED }, { status: 403 });
   const { id } = await context.params;

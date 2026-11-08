@@ -18,6 +18,7 @@ import { standingLoanPrices } from "@/lib/loan-prices";
 import { pdfSafe, wrap } from "@/lib/memo-pdf";
 import { bidExpired, buyerPrice, type OfferMoney } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
+import { RECORD_MIN_CLOSES, bidderFacts } from "@/lib/track-record";
 
 // The seller's decision tools: a dated window to answer the desk, counters to any bid they can see, a bid summary
 // to download, each bidder's track record, and who pays UPB's fees. The sealed rules in lib/auction.ts hold
@@ -273,7 +274,8 @@ export type TrackInput = {
   memberSince: Date;
 };
 
-export type TrackRecord = { funds: string; entity: string; closed: number; closeRate: string; strikes: number; memberSince: number };
+// facts are the factual lines from lib/track-record.ts, counts only, set by trackRecordsFor.
+export type TrackRecord = { funds: string; entity: string; closed: number; closeRate: string; strikes: number; memberSince: number; facts?: string[] };
 
 const FUNDS_BANDS: [number, string][] = [
   [100_000, "under $100k"],
@@ -290,9 +292,11 @@ export function fundsBand(file: TrackInput["file"], now = new Date()) {
   return `verified ${FUNDS_BANDS.find(([top]) => amount < top)?.[1] ?? "over $5M"}`;
 }
 
+// Under RECORD_MIN_CLOSES closes the rate is its counts, "3 of 4 closed", since a percentage of a few deals says nothing.
 function closeRate(record: { closed: number; canceled: number }) {
   const decided = record.closed + record.canceled;
-  return decided ? `${Math.round((record.closed * 100) / decided)}%` : "no closings yet";
+  if (!decided) return "no closings yet";
+  return record.closed < RECORD_MIN_CLOSES ? `${record.closed} of ${decided} closed` : `${Math.round((record.closed * 100) / decided)}%`;
 }
 
 // The one place a bidder's record is put together for a seller. It reads only the fields named here, so a name, an
@@ -350,6 +354,12 @@ export async function trackRecordsFor(offers: { id: string; buyerId: string; buy
         now,
       ),
     );
+  }
+  // What else happened on each bidder's closings: days to close, deposits, failures by fault, sellers' answers.
+  const facts = await bidderFacts(buyerIds, now);
+  for (const offer of offers) {
+    const row = out.get(offer.id);
+    if (row) row.facts = facts.get(offer.buyerId) ?? [];
   }
   return out;
 }
@@ -494,7 +504,7 @@ export async function bidSummaryPdf(summary: BidSummary, generatedAt = new Date(
     line(`${row.scope} · ${row.status} · good until ${row.good_until === "No end date" ? "no end date" : prettyDate(`${row.good_until}T00:00:00Z`)}${row.reserve_met ? ` · meets reserve: ${row.reserve_met.toLowerCase()}` : ""}`, { gap: 1 });
     if (row.loan_prices) line(`Loan prices: ${row.loan_prices.replaceAll(/(\d+\.\d{2})/g, (value) => money(Number(value), 2))}`, { gap: 1 });
     line(
-      `Track record: ${row.verified_funds} · ${row.entity} · ${row.closed_on_upb} closed on UPB · close rate ${row.close_rate} · ${row.strikes} strike${row.strikes === "1" ? "" : "s"} · member since ${row.member_since}`,
+      `Track record: ${row.verified_funds} · ${row.entity} · ${row.closed_on_upb} closed on UPB · ${row.close_rate.endsWith("%") ? `close rate ${row.close_rate}` : row.close_rate} · ${row.strikes} strike${row.strikes === "1" ? "" : "s"} · member since ${row.member_since}`,
       { color: soft, gap: 8 },
     );
   }

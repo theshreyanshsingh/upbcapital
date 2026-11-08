@@ -7,6 +7,7 @@ import { targetDays } from "@/lib/closing-clock";
 import { deskToday } from "@/lib/desk-today";
 import { money } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
+import { ownAccounts } from "@/lib/seats";
 import { getSettings } from "@/lib/settings";
 
 export const metadata = { title: "Revenue" };
@@ -17,7 +18,8 @@ export default async function AdminHome() {
   const [today, events, subscribers, notices] = await Promise.all([
     deskToday(settings.closingTargetDays),
     prisma.revenueEvent.findMany({ orderBy: { occurredAt: "desc" } }),
-    prisma.user.findMany({ where: { subscriptionTier: "PRO", subscriptionStatus: "ACTIVE" } }),
+    // Seats share their firm's membership, so only accounts of their own subscribe (lib/seats.ts).
+    prisma.user.findMany({ where: { subscriptionTier: "PRO", subscriptionStatus: "ACTIVE", ...ownAccounts() } }),
     prisma.notification.findMany({ orderBy: { createdAt: "desc" }, take: 6 }),
   ]);
   const sum = (type: "BUYER_PREMIUM" | "SELLER_COMMISSION" | "SUBSCRIPTION") =>

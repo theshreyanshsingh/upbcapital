@@ -1,6 +1,7 @@
 import { getApiUser } from "@/lib/auth";
 import type { TemplateKey } from "@/lib/closing-docs";
 import { closingPacket } from "@/lib/closing-packet";
+import { ENOTE_NO_PAPER } from "@/lib/enotes";
 import { sentCopy } from "@/lib/signatures";
 import { isTemplateKey } from "@/lib/templates";
 
@@ -26,7 +27,8 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
   if (!isTemplateKey(kind)) return new Response("Unknown form.", { status: 400 });
   const packet = await closingPacket(id, kind as TemplateKey, user);
   if (!packet) return new Response("Not found.", { status: 404 });
-  if (!packet.allowed) return new Response("Closed.", { status: 403 });
+  // An eNote closing has no allonge or lost note affidavit to draw. lib/enotes.ts.
+  if (!packet.allowed) return "eNote" in packet ? new Response(ENOTE_NO_PAPER, { status: 409 }) : new Response("Closed.", { status: 403 });
   const { pdf } = packet;
   return new Response(new Uint8Array(pdf), {
     headers: {

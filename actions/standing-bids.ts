@@ -2,7 +2,9 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { actionGate } from "@/lib/action-gates";
 import { requireUser } from "@/lib/auth";
+import { seatGate, seatLimitBlock } from "@/lib/seats";
 import { requireDesk } from "@/lib/staff";
 import { confirmStanding, inviteToConfirm, passStanding } from "@/lib/standing-bids";
 
@@ -28,10 +30,14 @@ export async function inviteStandingBid(formData: FormData) {
 // Binding: the buyer's standing price becomes an offer, after every check the bid form runs.
 export async function confirmStandingBid(formData: FormData) {
   const user = await requireBuyer();
+  // A seat confirms only as far as its role and limit go (lib/seats.ts).
+  const price = Number(String(formData.get("price") || "").replace(/[$,]/g, ""));
+  const gated = (await actionGate(user, "bid")) ?? seatLimitBlock(user, price);
+  if (gated) redirect(`/buyer/buy-box?error=${encodeURIComponent(gated)}#invitations`);
   const result = await confirmStanding({
     matchId: String(formData.get("matchId") || ""),
     user,
-    price: Number(String(formData.get("price") || "").replace(/[$,]/g, "")),
+    price,
     goodUntil: String(formData.get("goodUntil") || ""),
     buyerEntityId: String(formData.get("buyerEntityId") || ""),
   });
@@ -47,6 +53,8 @@ export async function confirmStandingBid(formData: FormData) {
 
 export async function passStandingBid(formData: FormData) {
   const user = await requireBuyer();
+  const gated = await seatGate(user, "bid");
+  if (gated) redirect(`/buyer/buy-box?error=${encodeURIComponent(gated)}#invitations`);
   const result = await passStanding(String(formData.get("matchId") || ""), user.id);
   if (result.error !== null) redirect(`/buyer/buy-box?error=${encodeURIComponent(result.error)}#invitations`);
   revalidatePath("/buyer/buy-box");

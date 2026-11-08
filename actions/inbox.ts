@@ -1,6 +1,7 @@
 "use server";
 
 import { redirect } from "next/navigation";
+import { actionGate } from "@/lib/action-gates";
 import { requireUser } from "@/lib/auth";
 import { deskWrites } from "@/lib/staff";
 import { prisma } from "@/lib/prisma";
@@ -25,6 +26,9 @@ export async function postThread(formData: FormData) {
   const threadId = String(formData.get("threadId") || "");
   const body = String(formData.get("body") || "").trim();
   if (!(await canPost(user.id, user.role, threadId, user.deskRole))) redirect("/inbox?error=That thread is closed to this account.");
+  // A post speaks for the account, so a firm's seat needs a role that writes (lib/seats.ts).
+  const gated = await actionGate(user, "message");
+  if (gated) redirect(`/inbox/${threadId}?error=${encodeURIComponent(gated)}`);
   const file = formData.get("file");
   const hasFile = file instanceof File && file.size > 0;
   if (body.length < 1 && !hasFile) redirect(`/inbox/${threadId}?error=Write a note or attach a file.`);

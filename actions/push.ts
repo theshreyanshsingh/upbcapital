@@ -8,6 +8,7 @@ import { getApiUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { PUSH_DEVICE_LIMIT, pushEndpointAllowed, pushReady, readPushSubscription, sendPush } from "@/lib/push";
 import { consumeRateLimit } from "@/lib/rate-limit";
+import { personId } from "@/lib/seats";
 
 // Every signed-in role can take notices on a device. Each export below is a public endpoint, so each checks.
 const PUSH_ROLES: Role[] = ["ADMIN", "BUYER", "INDIVIDUAL_SELLER", "INSTITUTIONAL_SELLER", "BROKER"];
@@ -15,10 +16,12 @@ const WINDOW_MS = 10 * 60 * 1000;
 
 export type PushActionResult = { ok: true; message: string } | { ok: false; error: string };
 
+// A device belongs to the person holding it, so a firm's seat keeps its own devices, and they go when the seat is
+// removed (lib/seats.ts). The seat's own notices, such as a bid to approve, reach them.
 async function pushUser() {
   const user = await getApiUser();
   if (!user || !PUSH_ROLES.includes(user.role)) return null;
-  return user;
+  return { ...user, id: personId(user) };
 }
 
 async function syncEnabled(userId: string) {

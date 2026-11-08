@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireUser } from "@/lib/auth";
 import { simulatedCheckout } from "@/lib/billing";
+import { billingBlock } from "@/lib/seats";
 import { prisma } from "@/lib/prisma";
 import { getSettings } from "@/lib/settings";
 
@@ -11,6 +12,8 @@ async function requireApprovedBuyer() {
   const user = await requireUser();
   if (user.role !== "BUYER") redirect("/");
   if (user.accountStatus !== "APPROVED") redirect("/buyer/pending");
+  const blocked = billingBlock(user);
+  if (blocked) redirect(`/buyer/subscription?error=${encodeURIComponent(blocked)}`);
   return user;
 }
 

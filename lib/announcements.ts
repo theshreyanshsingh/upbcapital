@@ -122,7 +122,8 @@ export async function announcementRecipients(scope: { emails?: string[] } = {}):
   const only = scope.emails?.map((email) => email.trim().toLowerCase());
   const [members, subscribers] = await Promise.all([
     prisma.user.findMany({
-      where: { announcements: true, notifyEmail: true, accountStatus: "APPROVED", ...unset("deletedAt"), ...(only ? { email: { in: only } } : {}) },
+      // A firm's seat reads the firm's mail, so it isn't a member of its own (lib/seats.ts).
+      where: { announcements: true, notifyEmail: true, accountStatus: "APPROVED", AND: [unset("deletedAt"), unset("principalId")], ...(only ? { email: { in: only } } : {}) },
       select: { id: true, email: true },
     }),
     prisma.subscriber.findMany({
