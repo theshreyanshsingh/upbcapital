@@ -409,7 +409,7 @@ export async function remindSaleNotices(now = new Date()) {
     const late = plan.sale.state === "late";
     const link = `${process.env.NEXT_PUBLIC_APP_URL || ""}/closings/${closing.id}`;
     const subject = `Sale notice ${late ? "late" : "due"} · ${closing.listing.title}`;
-    const body = `The new owner's notice of sale to the borrower ${late ? "was due" : "is due"} ${due}, 30 days after the transfer (12 CFR 1026.39). Send it, then record the date in the closing room. A draft is there too: ${link}
+    const body = `The new owner's notice of sale to the borrower ${late ? "was due" : "is due"} ${due}, 30 days after the transfer (12 CFR 1026.39). Send it, then record the date and its proof of mailing in the closing room, or the exemption that applies. A draft is there too: ${link}
 
 UPB doesn't send borrower notices. This is a reminder, not legal advice.`;
     if (closing.deskBidId) await notifyDesk(subject, body);
@@ -424,7 +424,7 @@ UPB doesn't send borrower notices. This is a reminder, not legal advice.`;
 
 export async function cleanRetention(now = new Date()) {
   const settings = await prisma.platformSettings.findUnique({ where: { id: "default" } });
-  const cutoff = retentionCutoff(settings?.retentionYears ?? 7, now);
+  const cutoff = retentionCutoff(settings?.retentionYears ?? 10, now);
   const [hits, notices] = await Promise.all([
     prisma.pageHit.deleteMany({ where: { createdAt: { lt: cutoff } } }),
     prisma.notification.deleteMany({ where: { createdAt: { lt: cutoff }, readAt: { not: null } } }),

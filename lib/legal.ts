@@ -1,4 +1,5 @@
 import { audit } from "@/lib/audit";
+import { SANCTIONS_RECORD_YEARS } from "@/lib/ofac";
 import { prisma } from "@/lib/prisma";
 import { clearSettingsCache, getSettings } from "@/lib/settings";
 
@@ -112,7 +113,7 @@ export const DEFAULT_LEGAL: Record<LegalKey, { title: string; body: string }> = 
         "- A buyer of UPB's business, under this policy.",
       ].join("\n"),
       "## How long we keep it",
-      "We keep account, deal and compliance records for at least {{retentionYears}} years after an account closes or a trade finishes, because tax, sanctions and lending rules require it. Site visit logs and notices you have read are deleted once they are {{retentionYears}} years old.",
+      `We keep account and deal records, with the compliance file behind each trade, for at least {{retentionYears}} years after an account closes or a trade finishes, because tax and lending rules require it. We keep sanctions screening records for at least ${SANCTIONS_RECORD_YEARS} years even when that period is shorter, because we read OFAC's recordkeeping rule to require it. [Counsel to confirm both periods.] Site visit logs and notices you have read are deleted once they are {{retentionYears}} years old.`,
       "## How we protect it",
       "Data travels encrypted. Passwords are stored only as a hash. Two-step sign-in is available on every account, and the desk can require it. Data-room files open only to approved parties, and every download is logged. No system is perfectly secure, and we will tell you of a breach that affects you as the law requires.",
       "## Your rights",

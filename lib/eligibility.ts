@@ -2,8 +2,8 @@ import { prettyDate } from "@/lib/format";
 
 // The buyer-eligibility screen. A federal notice on non-performing loans against one- and two-unit homes, an
 // acknowledgement for a buyer who says they control 350 or more homes, and a Maryland licensing prompt. Each one
-// informs and is logged. None refuses a buyer; the acknowledgement only has to be given before a bid. All the
-// wording waits on counsel, as does the reading of the law behind it.
+// informs and is logged. None refuses a buyer; the acknowledgement only has to be given before a bid or a group
+// seat. All the wording waits on counsel, as does the reading of the law behind it.
 
 export const ROAD_THRESHOLD = 350;
 
@@ -50,6 +50,11 @@ export function roadLoan(loan: EligibilityLoan) {
   return loan.paymentStatus === "NON_PERFORMING" && ONE_TWO_UNIT.has(loan.propertyType);
 }
 
+// A Maryland loan, which a holder other than a passive trust may need a Maryland license to hold.
+export function marylandLoan(loan: Pick<EligibilityLoan, "state">) {
+  return loan.state.trim().toUpperCase() === "MD";
+}
+
 // What the screen shows this buyer for these loans. A viewer with no buyer file is treated as not a trust.
 export function eligibilityFor(loans: EligibilityLoan[], buyer: EligibilityBuyer) {
   const road = loans.some(roadLoan);
@@ -64,7 +69,7 @@ export function eligibilityFor(loans: EligibilityLoan[], buyer: EligibilityBuyer
     unanswered: road && homes == null,
     homes,
     // Only a passive trust keeps Maryland's exemption, and the file can't say whether a trust is passive.
-    maryland: loans.some((loan) => loan.state.trim().toUpperCase() === "MD") && buyer?.entityType !== "TRUST",
+    maryland: loans.some(marylandLoan) && buyer?.entityType !== "TRUST",
   };
 }
 
@@ -115,6 +120,9 @@ export const MARYLAND_PROMPT = [
 
 export const ACKNOWLEDGE_FIRST = "Read and acknowledge the ROAD Act notice on this listing before you bid.";
 
+// Counsel: the Maryland prompt in brief.
+export const MARYLAND_BRIEF = "Maryland: a buyer that isn't a passive trust may need a Maryland license to hold this loan.";
+
 // The short form the bid confirmation adds, after the price and the terms.
 export function confirmNotices(eligibility: Eligibility) {
   const lines: string[] = [];
@@ -123,10 +131,7 @@ export function confirmNotices(eligibility: Eligibility) {
     lines.push("Federal notice: from 7 January 2027 the ROAD to Housing Act bars investors with 350 or more single-family homes from buying more, and a home taken by foreclosure is exempt only for loss mitigation or servicing.");
   }
   if (eligibility.holdToRent) lines.push(ROAD_RENT);
-  if (eligibility.maryland) {
-    // Counsel: the Maryland prompt in brief.
-    lines.push("Maryland: a buyer that isn't a passive trust may need a Maryland license to hold this loan.");
-  }
+  if (eligibility.maryland) lines.push(MARYLAND_BRIEF);
   return lines;
 }
 
@@ -139,4 +144,16 @@ export function eligibilityLog(eligibility: Eligibility, acknowledgedAt: Date | 
   if (eligibility.unanswered) parts.push("homes not stated");
   if (eligibility.maryland) parts.push("Maryland prompt shown");
   return parts.join(" · ");
+}
+
+// The desk bids and buys for UPB's own book, which is no passive trust, so it sees the Maryland prompt on any
+// Maryland loan, as a buyer does, and the prompt is logged with the bid or the purchase. Like the buyer's screen,
+// it informs and refuses nothing. The ROAD notice turns on a buyer's own home count, so it isn't asked of the
+// desk here. Counsel: whether UPB needs a Maryland license to hold the loans it buys.
+export function deskMaryland(loans: Pick<EligibilityLoan, "state">[]) {
+  return loans.some(marylandLoan);
+}
+
+export function deskEligibilityLog(loans: Pick<EligibilityLoan, "state">[], step: "bid" | "purchase") {
+  return deskMaryland(loans) ? `Maryland prompt shown · desk ${step}` : "";
 }

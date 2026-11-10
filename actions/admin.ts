@@ -10,6 +10,7 @@ import { editDetail, listingChanges, readEditReason, sellerEditNotice } from "@/
 import { approvalHold } from "@/lib/discrepancies";
 import { clearSellerConfirmation, deskIntakeHold, RECONFIRM_LINE } from "@/lib/desk-intake";
 import { diligenceHold } from "@/lib/diligence-checklist";
+import { duplicateHold } from "@/lib/duplicates";
 import { askSeller, awardOffer, checkAward, declineLosingBids } from "@/lib/awards";
 import { endSessions } from "@/lib/auth";
 import { notify, sendAlert } from "@/lib/email";
@@ -100,6 +101,9 @@ export async function reviewListing(formData: FormData) {
     // The diligence set: each required item on file, or waived by compliance with a reason.
     const diligence = await diligenceHold(listingId);
     if (diligence) redirect(`/admin/listings/${listingId}?error=${encodeURIComponent(diligence)}#diligence`);
+    // A loan that looks like one on another open listing waits until the desk compares them and clears the match.
+    const duplicate = await duplicateHold(listingId);
+    if (duplicate) redirect(`/admin/listings/${listingId}?error=${encodeURIComponent(duplicate)}#duplicates`);
     const screened = await screenListing(listingId, user.id);
     if (screened.unavailable) redirect(`/admin/listings/${listingId}?error=${encodeURIComponent(OFAC_DOWN_MESSAGE)}`);
     if (await ofacHold({ listingId, userIds: [listing.sellerId] })) {

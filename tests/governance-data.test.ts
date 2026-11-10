@@ -469,13 +469,13 @@ test("each API key gets 120 requests a minute, then a 429 with Retry-After", asy
 
 test("the security page lists each kind of outside service as in use or not, without a secret", () => {
   const none = subprocessors({ stripePriceId: "" }, {});
-  assert.deepEqual(none.map((row) => row.category), ["Email", "File storage", "Payments", "Identity", "E-signature", "Sanctions list", "Property data", "AI"]);
+  assert.deepEqual(none.map((row) => row.category), ["Hosting", "Database", "Email", "File storage", "Payments", "Identity", "E-signature", "Sanctions list", "Property data", "AI"]);
   const mail = none.find((row) => row.category === "Email");
   assert.equal(mail?.inUse, false);
   const env = { RESEND_API_KEY: "re_secret_value", EMAIL_FROM: "desk@upb.example", S3_BUCKET: "bucket-name", S3_ACCESS_KEY_ID: "AKIASECRET", S3_SECRET_ACCESS_KEY: "s3secret", OFAC_SDN_URL: "https://example.org/SDN.CSV", AVM_PROVIDER: "attom", ATTOM_API_KEY: "attomsecret", LLM_API_KEY: "sk-secret" };
   const live = subprocessors({ stripePriceId: "" }, env);
   const used = Object.fromEntries(live.map((row) => [row.category, row.inUse]));
-  assert.deepEqual(used, { Email: true, "File storage": true, Payments: false, Identity: false, "E-signature": false, "Sanctions list": true, "Property data": true, AI: true });
+  assert.deepEqual(used, { Hosting: true, Database: true, Email: true, "File storage": true, Payments: false, Identity: false, "E-signature": false, "Sanctions list": true, "Property data": true, AI: true });
   const text = JSON.stringify(live);
   for (const secret of ["re_secret_value", "bucket-name", "AKIASECRET", "s3secret", "attomsecret", "sk-secret", "desk@upb.example"]) assert.ok(!text.includes(secret), secret);
 });

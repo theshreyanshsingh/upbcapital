@@ -406,7 +406,7 @@ model PlatformSettings {
   stripePriceId        String   @default("")
   wireInstructions     String   @default("")
   chargeDeskFees       Boolean  @default(true)
-  retentionYears       Int      @default(7)
+  retentionYears       Int      @default(10)
   brokerFeeBasis       FeeBasis @default(PERCENT)
   brokerFeeBps         Int      @default(2000)
   brokerFeeCents       Int      @default(50000)
@@ -507,6 +507,12 @@ model BrokerFee {
   basis       FeeBasis
   status      BrokerFeeStatus @default(OWED)
   paidAt      DateTime?
+  // A fee is paid in two steps by two desk members: one approves it to the broker's verified payout account, after a
+  // fresh sanctions screen, and another records it paid. lib/broker-fees.ts.
+  payoutAccountId String?
+  approvedById    String?
+  approvedAt      DateTime?
+  paidById        String?
   createdAt   DateTime        @default(now())
 
   @@unique([closingId, brokerId, role])
@@ -530,6 +536,11 @@ model Listing {
   sellerCommissionCents Int?
   buyerTotalCents      Int?
   netToSellerCents     Int?
+  // A possible duplicate holds approval until a desk member compares the loans and clears it, with a note.
+  // lib/duplicates.ts.
+  duplicateClearedAt   DateTime?
+  duplicateClearedById String?
+  duplicateClearNote   String?
   acceptedInquiryId    String?
   brokerId             String?
   broker               User?         @relation("BrokeredListings", fields: [brokerId], references: [id], onDelete: SetNull)
@@ -1287,6 +1298,17 @@ model Closing {
   recordingNote         String?
   ownerNoticeSentAt     DateTime?
   ownerNoticeRemindedAt DateTime?
+  // How the sale notice was sent and the proof of it: a certified-mail or tracking number, or a certificate of
+  // mailing reference. Required with the sent date. lib/borrower-notices.ts.
+  ownerNoticeProof      String?
+  // Why no sale notice is owed, when one isn't: ONE_LOAN (the owner acquired no other mortgage loan in the 12 months,
+  // so it isn't a covered person), RESOLD_30 (it transferred the loan within 30 days of acquiring it) or PARTIAL
+  // (it acquired a partial interest and the party handling the borrower's payments didn't change). 12 CFR 1026.39.
+  // Counsel confirms each reading.
+  ownerNoticeExemption  String?
+  // The new owner's answer to whether it acquired any other mortgage loan, on UPB or elsewhere, in the 12 months up
+  // to this transfer. Missing means not answered.
+  ownerOtherLoans       Boolean?
   // What became of the deposit: HELD, APPLIED, REFUND_DUE, REFUNDED or FORFEITED. Missing means none recorded
   // beyond the fields above. A refund or forfeit is proposed by one desk member and approved by another.
   // lib/deposits.ts.
@@ -1986,6 +2008,9 @@ model OfacCheck {
   reviewedById String?
   reviewedAt   DateTime?
   reviewNote   String?
+  // Which copy of the list this screen ran against: the provider and when that copy was read, as
+  // "treasury 2026-11-09T04:00:00Z" or "local stand-in". lib/ofac.ts. Rows from before this field have none.
+  listVersion  String?
 
   @@index([name])
   @@index([result, createdAt])
@@ -2373,6 +2398,10 @@ model PayoutAccount {
   verifiedById   String?
   verifiedAt     DateTime?
   retiredAt      DateTime?
+  // The sanctions screen on the account holder's name: CLEAR or REVIEW, and when it ran. A REVIEW holds the
+  // account until the desk clears the match. lib/payout-accounts.ts.
+  screenResult   String?
+  screenedAt     DateTime?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 

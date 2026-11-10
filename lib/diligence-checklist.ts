@@ -3,14 +3,15 @@ import { audit } from "@/lib/audit";
 import { isReleaseBuild } from "@/lib/deploy";
 import { showableAvm } from "@/lib/enrichment";
 import { isENote } from "@/lib/enotes";
-import { chainOfTitle, groupByNote, type CollateralRow, type Outcome } from "@/lib/loan-file";
+import { chainOfTitle, fieldState, groupByNote, type CollateralRow, type Outcome } from "@/lib/loan-file";
 import { prisma } from "@/lib/prisma";
 import { deskCan, DESK_DENIED, type Staff } from "@/lib/staff";
+import { parseMersMin } from "@/lib/tape-fields";
 
 // The diligence set a pool room expects before a trade: the paper, the pay history, title work, a dated value, the
-// endorsements and the servicer's own record. Each item reads what the loan file and the documents already hold, so
-// nothing here is entered twice. A missing item holds the approval until it is on file or compliance waives it with
-// a reason, and buyers see which items were waived.
+// endorsements, the recorded assignments and the servicer's own record. Each item reads what the loan file and the
+// documents already hold, so nothing here is entered twice. A missing item holds the approval until it is on file or
+// compliance waives it with a reason, and buyers see which items were waived.
 
 export const DILIGENCE_ITEMS = [
   { key: "NOTE", label: "Note or lost-note affidavit", scope: "loan", hint: "The signed note, or a lost-note affidavit where the original is gone." },
@@ -19,6 +20,12 @@ export const DILIGENCE_ITEMS = [
   { key: "TITLE", label: "Title policy or O&E report", scope: "loan", hint: "The lender's title policy, or an owner and encumbrances report." },
   { key: "VALUE", label: "Dated value", scope: "loan", hint: "A BPO or appraisal on file, or an AVM with its date." },
   { key: "ENDORSEMENTS", label: "Endorsement chain", scope: "loan", hint: "Each endorsement from the originator to the seller with no break, or marked not required." },
+  {
+    key: "ASSIGNMENTS",
+    label: "Assignment chain",
+    scope: "loan",
+    hint: "Each recorded assignment from the originating lender to the seller with no break, or marked not required. A loan MERS holds as original mortgagee needs none once the desk checks its MIN against the mortgage.",
+  },
   { key: "SERVICER_REPORT", label: "Servicer's report", scope: "listing", hint: "The servicer's export for the pool, applied through the servicer report." },
 ] as const;
 
@@ -71,6 +78,8 @@ export type DiligenceNote = {
   avmAsOf?: Date | null;
   servicerSourcedAt?: Date | null;
   eNote?: boolean | null;
+  mersMin?: string | null;
+  verifiedFields?: unknown;
 };
 
 export type DiligenceDocument = { type: string; noteId?: string | null; originalName: string };
@@ -96,11 +105,25 @@ function held(rows: CollateralRow[], kind: string, docs: DiligenceDocument[], do
   return docs.some((doc) => doc.type === docType);
 }
 
-function requiredFor(key: DiligenceKey, note: DiligenceNote) {
+// MERS is the mortgagee of record on a MOM loan: the mortgage names MERS as nominee and carries the MIN, and sales
+// between MERS members are tracked on the MERS System by MIN, so nothing is recorded at the county. An 18-digit MIN
+// on the tape only says the loan is registered, which anyone can type, so it counts once the desk has checked the MIN
+// against the mortgage (lib/loan-file.ts fieldState). A MIN that has since changed reads as unchecked again.
+function mersOriginalMortgagee(note: DiligenceNote) {
+  return parseMersMin(note.mersMin ?? "") !== null && fieldState(note, "mersMin").state === "verified";
+}
+
+function requiredFor(key: DiligenceKey, note: DiligenceNote, rows: CollateralRow[]) {
   // A loan that is paying is priced off its history. A non-performing loan's history says little the status doesn't.
   if (key === "PAY_HISTORY") return note.paymentStatus === "PERFORMING" || note.paymentStatus === "SUB_PERFORMING";
   // An eNote has no endorsements: control moves on the MERS eRegistry. lib/enotes.ts.
   if (key === "ENDORSEMENTS") return !isENote(note);
+  // The mortgage travels by recorded assignment whether the note is paper or an eNote, so an eNote is still asked.
+  // A MOM loan with no assignment recorded on file isn't: MERS still holds the lien. Once the desk records a link,
+  // the chain is read like any other, so an assignment out of MERS has to reach the seller. A loan assigned into MERS
+  // later carries the recorded link to MERS, which the chain reads as unbroken. Anything else, such as a MIN the desk
+  // can't check, goes through a compliance waiver.
+  if (key === "ASSIGNMENTS") return !(mersOriginalMortgagee(note) && !rows.some((row) => row.kind === "ASSIGNMENT" && row.status !== "NOT_REQUIRED"));
   return true;
 }
 
@@ -125,6 +148,16 @@ function onFile(key: DiligenceKey, note: DiligenceNote, rows: CollateralRow[], d
     if (chain.links.length) return chain.breaks.length === 0;
     // An allonge on file stands until the desk records the chain and finds a break.
     return docs.some((doc) => doc.type === "ALLONGE");
+  }
+  if (key === "ASSIGNMENTS") {
+    // The same reading as the endorsements. Marked not required (the seller originated the loan) counts. Recorded
+    // links count only with no break: a gap between links, a link missing a party, one the desk marked missing or
+    // defective, or a last assignee who isn't the seller and isn't MERS (lib/loan-file.ts buildChain).
+    const chain = chainOfTitle(rows, holder).assignments;
+    if (chain.waived !== null) return true;
+    if (chain.links.length) return chain.breaks.length === 0;
+    // A recorded assignment on file stands until the desk records the chain and finds a break.
+    return docs.some((doc) => doc.type === "ASSIGNMENT");
   }
   return false;
 }
@@ -169,9 +202,10 @@ export function diligenceChecklist(input: DiligenceInput): Diligence {
       }
     } else {
       input.notes.forEach((note, index) => {
-        if (!requiredFor(item.key, note)) return;
+        const rows = byNote.get(note.id) ?? [];
+        if (!requiredFor(item.key, note, rows)) return;
         required += 1;
-        if (!onFile(item.key, note, byNote.get(note.id) ?? [], docsFor(note.id), holder, release)) gaps.push({ noteId: note.id, label: loanLabel(note, index, pool) });
+        if (!onFile(item.key, note, rows, docsFor(note.id), holder, release)) gaps.push({ noteId: note.id, label: loanLabel(note, index, pool) });
       });
     }
     const missing: DiligenceGap[] = [];
@@ -233,7 +267,7 @@ export async function loadDiligence(listingId: string) {
       diligenceWaivers: true,
       clientSellerName: true,
       seller: { select: { name: true, companyName: true } },
-      notes: { select: { id: true, streetAddress: true, city: true, state: true, lienPosition: true, paymentStatus: true, avmValue: true, avmProvider: true, avmAsOf: true, servicerSourcedAt: true, eNote: true } },
+      notes: { select: { id: true, streetAddress: true, city: true, state: true, lienPosition: true, paymentStatus: true, avmValue: true, avmProvider: true, avmAsOf: true, servicerSourcedAt: true, eNote: true, mersMin: true, verifiedFields: true } },
       documents: { where: { type: { notIn: ["PHOTO", "NDA", "MANDATE"] } }, select: { type: true, noteId: true, originalName: true } },
     },
   });

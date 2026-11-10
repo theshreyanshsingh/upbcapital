@@ -4,6 +4,7 @@ import { PageIntro } from "@/components/page-intro";
 import { SubmitButton } from "@/components/submit-button";
 import { requireRole } from "@/lib/auth";
 import { money, q } from "@/lib/format";
+import { capitalAllocationBlock } from "@/lib/participation";
 import { prisma } from "@/lib/prisma";
 import { deskCan } from "@/lib/staff";
 
@@ -17,6 +18,8 @@ export default async function CapitalPage({
   // Every desk role reads the capital. The desk's capital is desk book work, and the actions check the same.
   const books = deskCan(await requireRole(["ADMIN"]), "deskBook");
   const params = await searchParams;
+  // New allocations wait on counsel while the participations freeze holds. What is already allocated stays below.
+  const paused = capitalAllocationBlock();
   const [investors, holdings] = await Promise.all([
     prisma.investor.findMany({
       include: { commitments: true, allocations: { include: { holding: { include: { payments: true } } } } },
@@ -34,6 +37,7 @@ export default async function CapitalPage({
       <Notice notice={q(params, "notice")} error={q(params, "error")} />
       <a className="text-[13px] font-medium text-link" href="/api/admin/capital/statement">Download statements</a>
       {!books && <p className="mt-3 text-sm text-muted-foreground">Your desk role reads this page. Changes are for the desk book.</p>}
+      {paused && <p className="mt-3 text-sm text-muted-foreground">{paused} Set UPB_PARTICIPATIONS=1 once counsel signs off.</p>}
 
       <section className="mt-8 space-y-4">
         {investors.length === 0 && <p className="border border-dashed border-link/30 px-5 py-8 text-sm text-muted-foreground rounded-xl">No investors yet.{books ? " Add the first commitment below." : ""}</p>}
@@ -82,21 +86,28 @@ export default async function CapitalPage({
             <SubmitButton className="h-11 text-[13px] font-medium">Add investor</SubmitButton>
           </div>
         </form>
-        <form action={allocateCapital} className="border border-border p-5 rounded-xl">
-          <p className="eyebrow">Assign capital</p>
-          <div className="mt-4 grid gap-3">
-            <select name="investorId" className="desk-input" aria-label="Investor" required>
-              <option value="">Investor</option>
-              {investors.map((investor) => <option key={investor.id} value={investor.id}>{investor.name}</option>)}
-            </select>
-            <select name="holdingId" className="desk-input" aria-label="Desk note" required>
-              <option value="">Note</option>
-              {holdings.map((holding) => <option key={holding.id} value={holding.id}>{holding.title}</option>)}
-            </select>
-            <input name="amount" inputMode="decimal" className="desk-input" aria-label="Allocation amount" placeholder="Amount" required />
-            <SubmitButton className="h-11 text-[13px] font-medium">Allocate</SubmitButton>
-          </div>
-        </form>
+        {paused ? (
+          <section className="border border-border p-5 rounded-xl">
+            <p className="eyebrow">Assign capital</p>
+            <p className="mt-4 text-sm text-muted-foreground">New allocations wait on counsel&apos;s review.</p>
+          </section>
+        ) : (
+          <form action={allocateCapital} className="border border-border p-5 rounded-xl">
+            <p className="eyebrow">Assign capital</p>
+            <div className="mt-4 grid gap-3">
+              <select name="investorId" className="desk-input" aria-label="Investor" required>
+                <option value="">Investor</option>
+                {investors.map((investor) => <option key={investor.id} value={investor.id}>{investor.name}</option>)}
+              </select>
+              <select name="holdingId" className="desk-input" aria-label="Desk note" required>
+                <option value="">Note</option>
+                {holdings.map((holding) => <option key={holding.id} value={holding.id}>{holding.title}</option>)}
+              </select>
+              <input name="amount" inputMode="decimal" className="desk-input" aria-label="Allocation amount" placeholder="Amount" required />
+              <SubmitButton className="h-11 text-[13px] font-medium">Allocate</SubmitButton>
+            </div>
+          </form>
+        )}
       </div>}
     </div>
   );

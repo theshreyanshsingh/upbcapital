@@ -1,3 +1,4 @@
+import { modelReadingAllowed, readingModeOf } from "@/lib/ai-reading";
 import { pushReady } from "@/lib/push";
 import { stripeConfigured } from "@/lib/billing";
 import { aiMode } from "@/lib/desk-ai";
@@ -5,7 +6,7 @@ import { isReleaseBuild } from "@/lib/deploy";
 import { deskFiledWaiting } from "@/lib/desk-intake";
 import { emailConfirmationRequired } from "@/lib/email-confirm";
 import { deliverable, resolveMailTransport } from "@/lib/mail-config";
-import { ofacMode } from "@/lib/ofac";
+import { aliasUrl, ofacMode } from "@/lib/ofac";
 import { participationsOpen } from "@/lib/participation";
 import { prisma } from "@/lib/prisma";
 import { ownAccounts } from "@/lib/seats";
@@ -19,7 +20,7 @@ export type ReadinessItem = { label: string; state: ReadinessState; detail: stri
 
 // What runs for real and what runs on a stand-in, read from the environment the server is running with.
 // Stand-ins are fine for the demo desk; each one is a decision to make before real users arrive.
-export async function launchReadiness(settings: { stripePriceId?: string | null; requireTwoStep?: boolean | null; requireSellerIdentity?: boolean | null; requireEmailConfirmation?: boolean | null }, env: Record<string, string | undefined> = process.env) {
+export async function launchReadiness(settings: { stripePriceId?: string | null; requireTwoStep?: boolean | null; requireSellerIdentity?: boolean | null; requireEmailConfirmation?: boolean | null; aiReading?: string | null }, env: Record<string, string | undefined> = process.env) {
   const release = isReleaseBuild(env);
   // Seats are people on a firm's account, not accounts of their own (lib/seats.ts).
   const users = await prisma.user.findMany({ where: ownAccounts(), select: { email: true } });
@@ -32,13 +33,19 @@ export async function launchReadiness(settings: { stripePriceId?: string | null;
   const signature = signatureMode();
   const kyc = kycMode();
   const avm = env.AVM_PROVIDER || "mock";
+  // ATTOM is the one live provider, and without its key every value falls back to the stand-in (lib/enrichment.ts).
+  const avmLive = avm === "attom" && Boolean(env.ATTOM_API_KEY);
+  const avmStandin = release ? "Stand-in values are hidden from buyers." : "A stand-in: the seller's figure nudged a few percent, labelled mock.";
+  const reading = readingModeOf(settings.aiReading);
+  const model = modelReadingAllowed(env);
+  const noModel = env.AI_READING_MODEL === "1" ? "AI_READING_MODEL is set but LLM_API_KEY isn't" : "set AI_READING_MODEL=1 and LLM_API_KEY on an account UPB owns, with a data-processing agreement";
   const items: ReadinessItem[] = [
     release
       ? { label: "Release mode", state: "live", detail: "UPB_RELEASE is set. Builds refuse stand-ins for the database, sign-in, cron, storage, and the sanctions list." }
       : { label: "Release mode", state: "standin", detail: "Demo mode. Set UPB_RELEASE=1 for launch: it closes the simulated checkout, ends Pro at its period end, and hides stand-in property values." },
     participationsOpen(env)
-      ? { label: "Participations", state: "live", detail: "UPB_PARTICIPATIONS is set, so desk slices and partial positions can be listed." }
-      : { label: "Participations", state: "off", detail: "Slices and partial positions can't be listed until counsel rules. Set UPB_PARTICIPATIONS=1 once it does." },
+      ? { label: "Participations", state: "live", detail: "Open: UPB_PARTICIPATIONS is set. Counsel's sign-off should be on file." }
+      : { label: "Participations", state: "off", detail: "Tranche groups, desk capital allocations, desk slices and partial relists wait on counsel. Set UPB_PARTICIPATIONS=1 once counsel signs off." },
     mail === "log"
       ? { label: "Email", state: "standin", detail: "Mail goes to the server log. Set RESEND_API_KEY or SMTP, and EMAIL_FROM on a verified domain." }
       : { label: "Email", state: "live", detail: `Delivered through ${mail}.` },
@@ -46,8 +53,10 @@ export async function launchReadiness(settings: { stripePriceId?: string | null;
       ? { label: "File storage", state: "standin", detail: "Files sit on this server's disk. Set an S3 bucket UPB owns." }
       : { label: "File storage", state: "live", detail: `Files go to ${storage}.` },
     ofac === "mock"
-      ? { label: "Sanctions list", state: "standin", detail: "A short local list. Set OFAC_SDN_URL to Treasury's SDN file or a screening vendor." }
-      : { label: "Sanctions list", state: "live", detail: ofac === "treasury" ? "Treasury's SDN and alternate-name files." : "A screening vendor." },
+      ? { label: "Sanctions list", state: "standin", detail: "Only the local stand-in list is used: a few names, not real screening. Set OFAC_SDN_URL to Treasury's SDN.CSV or a screening vendor." }
+      : ofac === "treasury" && !aliasUrl(env.OFAC_SDN_URL ?? "")
+        ? { label: "Sanctions list", state: "standin", detail: "OFAC_SDN_URL doesn't end in SDN.CSV, so the alias file can't load and only the local stand-in list is used. Point it at Treasury's SDN.CSV." }
+        : { label: "Sanctions list", state: "live", detail: ofac === "treasury" ? "Treasury's SDN and alternate-name files." : "A screening vendor." },
     stripeConfigured(settings.stripePriceId)
       ? { label: "Pro payments", state: "live", detail: "Stripe checkout." }
       : release
@@ -59,9 +68,13 @@ export async function launchReadiness(settings: { stripePriceId?: string | null;
     kyc === "mock"
       ? { label: "Identity checks", state: "standin", detail: "The desk reviews uploaded files by hand. Persona or Parallel Markets can run them." }
       : { label: "Identity checks", state: "live", detail: `Run by ${kyc}.` },
-    avm === "mock"
-      ? { label: "Property values", state: "standin", detail: release ? "Stand-in values are hidden from buyers. Set AVM_PROVIDER and its key." : "A stand-in: the seller's figure nudged a few percent, labelled mock. Set AVM_PROVIDER and its key." }
-      : { label: "Property values", state: "live", detail: `From ${avm}.` },
+    avmLive
+      ? { label: "Property values", state: "live", detail: "From ATTOM." }
+      : avm === "attom"
+        ? { label: "Property values", state: "standin", detail: `ATTOM_API_KEY isn't set, so every value falls back to the stand-in. ${avmStandin}` }
+        : avm === "mock"
+          ? { label: "Property values", state: "standin", detail: `${avmStandin} Set AVM_PROVIDER=attom and ATTOM_API_KEY.` }
+          : { label: "Property values", state: "standin", detail: `UPB calls no provider named ${avm}, so every value falls back to the stand-in. ${avmStandin} Set AVM_PROVIDER=attom and ATTOM_API_KEY.` },
     { label: "Escrow", state: "standin", detail: `${env.ESCROW_PROVIDER || "Manual"} wires. The desk records deposits, funds, and proceeds. A title or escrow agent should hold the money.` },
     pushReady(env)
       ? { label: "Push notices", state: "live", detail: "Installed apps can receive notices on the lock screen. Payloads carry no names, amounts or codes." }
@@ -69,6 +82,14 @@ export async function launchReadiness(settings: { stripePriceId?: string | null;
     aiMode(env) === "live"
       ? { label: "Desk assistant", state: "live", detail: "A live model drafts desk notes." }
       : { label: "Desk assistant", state: "standin", detail: "Canned sketches. Set LLM_API_KEY on an account UPB owns." },
+    // The reader's mode is the desk's setting; whether it reads through a model is the server's (lib/ai-reading.ts).
+    reading === "OFF"
+      ? { label: "Document reader", state: "off", detail: model ? "Off: new files aren't read. The model is configured, so turning it on sends loan files to the model provider." : "Off: new files aren't read. Turned on, it reads text files only until the model is configured." }
+      : model
+        ? reading === "ON"
+          ? { label: "Document reader", state: "live", detail: "On, through the model: loan files go to the model provider, a difference it reads goes to the seller, and sellers see its drafted answers. A field is verified only once the desk confirms it." }
+          : { label: "Document reader", state: "standin", detail: "Shadow, through the model: loan files go to the model provider, and only the desk sees what it reads. Turn it on once it passes its test." }
+        : { label: "Document reader", state: "standin", detail: `${reading === "ON" ? "On, with the offline rules: differences go to the seller." : "Shadow, with the offline rules: only the desk sees what it reads."} PDFs are skipped until the model is configured: ${noModel}.` },
     limitStore() === "memory"
       ? { label: "Rate limits", state: "standin", detail: "Counted per process. Use the database or Redis store when more than one server runs." }
       : { label: "Rate limits", state: "live", detail: `Shared through the ${limitStore()} store.` },

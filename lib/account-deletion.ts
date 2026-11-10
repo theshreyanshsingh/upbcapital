@@ -5,13 +5,18 @@ import bcrypt from "bcryptjs";
 import { audit } from "@/lib/audit";
 import { demoSeat } from "@/lib/deploy";
 import { notifyDesk, sendAlert } from "@/lib/email";
+import { SANCTIONS_RECORD_YEARS } from "@/lib/ofac";
 import { prisma } from "@/lib/prisma";
+import { ofacHold } from "@/lib/screening";
 import { getSettings } from "@/lib/settings";
 import { assertStorageKey, s3Key, storageMode, uploadDir } from "@/lib/storage";
 
 // Deleting an account anonymises it. A hard delete would cascade through Prisma's relations and take closings,
 // signed papers and the audit trail with it, and deal records have to be kept for the retention years. So the
 // person goes, and the deals stay under an account with no name.
+// When a closing names the account, the compliance record behind that deal stays too: who bought or sold, under
+// what certification and identity check, and who owned the entity. Sanctions screens always stay, for at least
+// SANCTIONS_RECORD_YEARS whatever the retention setting, and an open or confirmed match stops a deletion.
 
 export const DELETED_NAME = "Deleted account";
 export const deletedEmail = (userId: string) => `deleted+${userId}@deleted.invalid`;
@@ -24,12 +29,16 @@ export function deletedAccountRefusal(user: { deletedAt?: Date | null }) {
 const LIVE_LISTING = ["SUBMITTED", "UNDER_REVIEW", "APPROVED", "CHANGES_REQUESTED", "PENDING"] as const;
 const OPEN_GROUP = ["GATHERING", "OFFERED", "COUNTERED", "CLOSING"] as const;
 
-export type DeletionBlocker = "an open bid" | "an open closing" | "a live listing" | "an unfunded group seat";
+export const SANCTIONS_BLOCKER = "an open or confirmed sanctions match";
 
-// What a counterparty still relies on. Each one stops a deletion, and the desk is told which.
+export type DeletionBlocker = "an open bid" | "an open closing" | "a live listing" | "an unfunded group seat" | typeof SANCTIONS_BLOCKER;
+
+// What a counterparty still relies on, and a sanctions match the desk hasn't cleared. Each one stops a deletion,
+// and the desk is told which. A confirmed match's records must stay whole for counsel, and an open one is still
+// being decided, so neither account is anonymised (the ofacBlocks rule, as at every approval).
 export async function deletionBlockers(userId: string): Promise<DeletionBlocker[]> {
   const won = (await prisma.inquiry.findMany({ where: { buyerId: userId, status: "ACCEPTED" }, select: { id: true } })).map((row) => row.id);
-  const [bids, closings, listings, seats, shares] = await Promise.all([
+  const [bids, closings, listings, seats, shares, hold] = await Promise.all([
     prisma.inquiry.count({ where: { buyerId: userId, type: "OFFER", status: { in: ["OPEN", "REVIEWED"] } } }),
     prisma.closing.count({
       where: { status: "OPEN", OR: [{ inquiryId: { in: won } }, { funders: { some: { userId } } }, { listing: { sellerId: userId } }, { listing: { brokerId: userId } }] },
@@ -37,21 +46,35 @@ export async function deletionBlockers(userId: string): Promise<DeletionBlocker[
     prisma.listing.count({ where: { OR: [{ sellerId: userId }, { brokerId: userId }], status: { in: [...LIVE_LISTING] } } }),
     prisma.groupPosition.count({ where: { userId, status: { in: ["PLEDGED", "RECONFIRM"] }, group: { status: { in: [...OPEN_GROUP] } } } }),
     prisma.closingFunder.count({ where: { userId, status: "PENDING", closing: { status: "OPEN" } } }),
+    ofacHold({ userIds: [userId] }),
   ]);
   const blockers: DeletionBlocker[] = [];
   if (bids) blockers.push("an open bid");
   if (closings) blockers.push("an open closing");
   if (listings) blockers.push("a live listing");
   if (seats || shares) blockers.push("an unfunded group seat");
+  if (hold) blockers.push(SANCTIONS_BLOCKER);
   return blockers;
 }
 
+// For the desk only. A sanctions match is never named to the holder, so a refusal note shouldn't give it as the reason.
 export function blockerSentence(blockers: DeletionBlocker[]) {
-  const list = blockers.length > 1 ? `${blockers.slice(0, -1).join(", ")} and ${blockers.at(-1)}` : blockers[0];
-  return `This account still has ${list}. ${blockers.length > 1 ? "Each has" : "That has"} to finish or close before the account can be deleted.`;
+  const deals = blockers.filter((blocker) => blocker !== SANCTIONS_BLOCKER);
+  const parts: string[] = [];
+  if (deals.length) {
+    const list = deals.length > 1 ? `${deals.slice(0, -1).join(", ")} and ${deals.at(-1)}` : deals[0];
+    parts.push(`This account still has ${list}. ${deals.length > 1 ? "Each has" : "That has"} to finish or close before the account can be deleted.`);
+  }
+  if (blockers.includes(SANCTIONS_BLOCKER)) {
+    parts.push(
+      `${deals.length ? "It also has" : "This account has"} ${SANCTIONS_BLOCKER}, so it can't be deleted. Decide an open one under OFAC reviews. A confirmed match's records stay whole, so call counsel. Say nothing about the match to the holder.`,
+    );
+  }
+  return parts.join(" ");
 }
 
-// Whether any closing, of any status, names the account. Its buyer file is then part of a deal record.
+// Whether any closing, of any status, names the account. Its buyer and seller files, and the owners listed on
+// them, are then part of a deal record.
 async function closingReferences(userId: string) {
   const bids = (await prisma.inquiry.findMany({ where: { buyerId: userId }, select: { id: true } })).map((row) => row.id);
   const count = await prisma.closing.count({
@@ -103,8 +126,19 @@ export async function requestDeletion(user: { id: string; name: string; email: s
   return { request } as const;
 }
 
-// Everything kept about the buyer's file is its status. The rest was about the person.
-const REDUCED_PROFILE = {
+// What on a buyer file only served the person, cleared on every deletion: the desk's note to them, and the yearly
+// re-certification. Nobody re-certifies a deleted file, so the reminder job passes it by.
+const PERSONAL_FILE = {
+  reviewerNote: "",
+  recertifyBy: null,
+  recertRemindedAt: null,
+} as const;
+
+// The buyer file's compliance record: the entity that bought, where it is formed, the accreditation it certified,
+// the proof of funds the desk confirmed, the ROAD to Housing answers, the identity vendor's case and the tax-ID last
+// four. When a closing names the account it is part of that deal's record and stays. Otherwise it goes, and only
+// the file's status is kept.
+const COMPLIANCE_FILE = {
   entityType: "INDIVIDUAL",
   entityName: "",
   jurisdiction: "",
@@ -113,7 +147,6 @@ const REDUCED_PROFILE = {
   proofAmount: null,
   proofExpiresAt: null,
   proofVerifiedAt: null,
-  reviewerNote: "",
   homesControlled: null,
   reoStrategy: null,
   eligibilityAt: null,
@@ -122,23 +155,21 @@ const REDUCED_PROFILE = {
   submittedAt: null,
   reviewedAt: null,
   taxIdLast4: null,
-  // Nobody re-certifies a deleted file, so the reminder job passes it by.
-  recertifyBy: null,
-  recertRemindedAt: null,
 } as const;
 
 export type ProofOutcome = "none" | "removed" | "kept" | "failed";
 
-// Clears the person and the things that only served them. Closings, signed papers, NDAs, bids and the audit log
-// stay. The proof of funds goes only when no closing names the account; if the store refuses, the key stays so the
-// file isn't lost track of.
-// A seller file follows the proof of funds: its identity and authority documents go only when no closing names the
-// account, and then the entity and signer stay too, since that closing's papers name them. A refused removal keeps
-// its key, so the file isn't lost track of.
-async function clearSellerFile(userId: string) {
+// Clears the person and the things that only served them. Closings, signed papers, NDAs, bids, sanctions screens and
+// the audit log always stay. One rule decides the rest: when a closing names the account, its compliance record is
+// part of that deal and stays; when none does, it goes. That record is the proof of funds, the buyer file's
+// compliance fields (COMPLIANCE_FILE), the beneficial owners, the buying entities' tax-ID last four, and the seller
+// file's documents, entity, signer, identity vendor's case and tax-ID last four. A file the store refuses to remove
+// keeps its key, so it isn't lost track of.
+// The seller file follows that rule, since the closing's papers name its entity and signer. The desk's note to the
+// seller goes either way.
+async function clearSellerFile(userId: string, keep: boolean) {
   const file = await prisma.sellerProfile.findUnique({ where: { userId } });
   if (!file) return;
-  const keep = await closingReferences(userId);
   const stays = async (key: string) => {
     if (!key || keep) return Boolean(key);
     return removeStoredFile(key).then(
@@ -153,11 +184,8 @@ async function clearSellerFile(userId: string) {
   await prisma.sellerProfile.update({
     where: { userId },
     data: {
-      taxIdLast4: null,
       reviewerNote: "",
-      vendor: "",
-      vendorRef: "",
-      ...(keep ? {} : { entityName: "", signerName: "", signerTitle: "" }),
+      ...(keep ? {} : { entityName: "", signerName: "", signerTitle: "", taxIdLast4: null, vendor: "", vendorRef: "" }),
       ...(idStays ? {} : { idDocKey: "", idDocName: "", idDocMime: "" }),
       ...(authorityStays ? {} : { authorityDocKey: "", authorityDocName: "", authorityDocMime: "" }),
     },
@@ -168,9 +196,10 @@ export async function anonymiseAccount(userId: string, now = new Date()): Promis
   const user = await prisma.user.findUnique({ where: { id: userId }, include: { buyerProfile: true } });
   if (!user) return { proof: "none" };
   const profile = user.buyerProfile;
+  const keep = await closingReferences(userId);
   let proof: ProofOutcome = "none";
   if (profile?.proofKey) {
-    if (await closingReferences(userId)) proof = "kept";
+    if (keep) proof = "kept";
     else {
       proof = await removeStoredFile(profile.proofKey).then(
         () => "removed" as const,
@@ -194,19 +223,19 @@ export async function anonymiseAccount(userId: string, now = new Date()): Promis
     prisma.webhookEndpoint.deleteMany({ where: { userId } }),
     prisma.loginCode.deleteMany({ where: { userId } }),
     prisma.passwordReset.deleteMany({ where: { userId } }),
-    // The owners listed on the buyer's files are people too. Their screens stay in the compliance log.
-    prisma.beneficialOwner.deleteMany({ where: { userId } }),
-    prisma.buyerEntity.updateMany({ where: { userId }, data: { taxIdLast4: null } }),
+    // The owners listed on the buyer's files are people too. With no closing they go, and their screens stay in the
+    // compliance log. With one, they are who stood behind the trade, so they stay with it.
+    ...(keep ? [] : [prisma.beneficialOwner.deleteMany({ where: { userId } }), prisma.buyerEntity.updateMany({ where: { userId }, data: { taxIdLast4: null } })]),
     // In-app copies of mail carry the old address. They aren't deal records.
     prisma.notification.deleteMany({ where: { OR: [{ userId }, { toEmail: user.email }] } }),
   ]);
   if (profile) {
     await prisma.buyerProfile.update({
       where: { userId },
-      data: { ...REDUCED_PROFILE, ...(proof === "kept" || proof === "failed" ? {} : { proofKey: "", proofName: "", proofMime: "" }) },
+      data: { ...PERSONAL_FILE, ...(keep ? {} : COMPLIANCE_FILE), ...(proof === "kept" || proof === "failed" ? {} : { proofKey: "", proofName: "", proofMime: "" }) },
     });
   }
-  await clearSellerFile(userId);
+  await clearSellerFile(userId, keep);
   await prisma.user.update({
     where: { id: userId },
     data: {
@@ -258,7 +287,7 @@ export async function completeDeletion(requestId: string, desk: { id: string }, 
     "Your UPB Capital account is deleted",
     `The desk deleted your account, as you asked. Your name, email, phone and company are gone from it, every device is signed out, and your saved searches, buy boxes, API keys and webhooks are deleted.
 
-Deal records stay for ${years} years, because the law requires it: closings, signed papers, NDAs and the audit log. They now sit under an account with no name.
+Deal records stay for ${years} years, because the law requires it: closings, signed papers, NDAs and the audit log. Sanctions screening records stay for at least ${SANCTIONS_RECORD_YEARS} years even when that period is shorter, which UPB reads OFAC's rules to require. If a closing names you, the compliance record behind it stays with that deal too: the entity, certification, proof of funds and identity check on your file, and the owners you listed. They now sit under an account with no name.
 
 This is the last email the desk sends to this address.`,
   );

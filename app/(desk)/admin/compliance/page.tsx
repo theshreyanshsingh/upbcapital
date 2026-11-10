@@ -7,7 +7,7 @@ import { requireRole } from "@/lib/auth";
 import { FLORIDA_DISCLOSURE } from "@/lib/compliance";
 import { prettyDate, q } from "@/lib/format";
 import { US_STATES } from "@/lib/labels";
-import { sanctionSource } from "@/lib/ofac";
+import { SANCTIONS_RECORD_YEARS, sanctionSource } from "@/lib/ofac";
 import { prisma } from "@/lib/prisma";
 import { openReviewWhere, reviewKey } from "@/lib/screening";
 import { getSettings } from "@/lib/settings";
@@ -97,7 +97,7 @@ export default async function CompliancePage({
           {open.map((check) => (
             <li key={check.id} className="border border-border p-4 rounded-xl">
               <p className="text-sm text-foreground">{check.name}{check.matched ? ` · matched ${check.matched}` : ""}</p>
-              <p className="mt-1 text-xs text-muted-foreground">{check.context || "Screened before reviews were tracked"} · {check.provider} · {prettyDate(check.createdAt)}</p>
+              <p className="mt-1 text-xs text-muted-foreground">{check.context || "Screened before reviews were tracked"} · {check.listVersion ?? check.provider} · {prettyDate(check.createdAt)}</p>
               {check.detail && <p className="mt-1 text-xs text-muted-foreground">{check.detail}</p>}
               {vets && <form action={decideOfacReview} className="mt-3 space-y-2">
                 {/* Not name="id": it shadows form.id in the DOM, and React then drops the clicked button's value. */}
@@ -146,13 +146,14 @@ export default async function CompliancePage({
           <ul className="mt-4 space-y-2 text-sm">
             {checks.length === 0 && <li className="text-muted-foreground">No screens yet.</li>}
             {checks.map((check) => (
-              <li key={check.id} className="text-muted-foreground"><span className="text-foreground">{check.name}</span> · {check.result} · {check.provider}</li>
+              <li key={check.id} className="text-muted-foreground"><span className="text-foreground">{check.name}</span> · {check.result} · {check.listVersion ?? check.provider}</li>
             ))}
           </ul>
         </div>
         <div className="border border-border p-5 rounded-xl">
           <p className="eyebrow">Retention</p>
           <p className="mt-2 text-sm text-muted-foreground">Page visits and read notices older than this window can be removed. Loan files, closings, and the ledger stay.</p>
+          <p className="mt-2 text-sm text-muted-foreground">Sanctions screening records keep a floor of {SANCTIONS_RECORD_YEARS} years whatever this says, and the retention run never removes them. That is UPB&apos;s reading of OFAC&apos;s recordkeeping rule (31 CFR 501.601). Counsel confirms the periods.</p>
           {vets ? (
             <>
               <form action={saveRetention} className="mt-4 flex flex-wrap items-center gap-3">

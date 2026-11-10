@@ -1,5 +1,6 @@
 import { buildTrailingList, confirmTrailingReceived, nameTransferee, recordTrailingSent, saveTrailingDocDays, waiveTrailing } from "@/actions/trailing-docs";
 import { SubmitButton } from "@/components/submit-button";
+import { noticeClocks, type NoticeClocks } from "@/lib/borrower-notices";
 import { deskCan, type Staff } from "@/lib/desk-roles";
 import { transferNeeds, transfereeOf, type ENoteTransfer } from "@/lib/enotes";
 import { prettyDate } from "@/lib/format";
@@ -14,6 +15,8 @@ import {
   isOverdue,
   kindLabel,
   loanName,
+  recordOnly,
+  SALE_NOTICE,
   trackingUrl,
   trailingActions,
   trailingStatusLabel,
@@ -33,6 +36,9 @@ type PanelClosing = {
   deskBidId: string | null;
   buyerEntityId?: string | null;
   postCloseCompleteAt?: Date | null;
+  closedAt?: Date | null;
+  transferAt?: Date | null;
+  boarding?: { boardedAt: Date | null } | null;
   listing: { sellerId: string; notes: { id: string; streetAddress: string; city: string; state: string }[] };
   funders: { userId: string }[];
 };
@@ -41,9 +47,11 @@ type Doc = Awaited<ReturnType<typeof prisma.trailingDoc.findMany>>[number];
 
 const TONE: Record<string, string> = { DUE: "bg-muted text-muted-foreground", SENT: "bg-link/10 text-link", RECEIVED: "bg-good/10 text-good", WAIVED: "bg-muted text-muted-foreground" };
 
-function fromWord(doc: { kind: string; owner: string }) {
-  if (doc.owner === "SERVICER") return doc.kind === "SERVICER_BOARDED" ? "The buyer's servicer" : "The seller's servicer";
-  return doc.owner === "SELLER" ? "The seller" : doc.owner === "BUYER" ? "The buyer" : "The desk";
+// On a desk purchase the desk is the buyer side, so it owes the sale notice and its servicer writes the welcome.
+function fromWord(doc: { kind: string; owner: string }, deskBuy: boolean) {
+  const buyer = deskBuy ? "The desk" : "The buyer";
+  if (doc.owner === "SERVICER") return doc.kind === "SERVICER_BOARDED" || doc.kind === "SERVICER_WELCOME" ? `${buyer}'s servicer` : "The seller's servicer";
+  return doc.owner === "SELLER" ? "The seller" : doc.owner === "BUYER" ? buyer : "The desk";
 }
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
@@ -83,7 +91,8 @@ export async function TrailingDocsPanel({ closing, buyerId, viewer }: { closing:
       .map((note) => ({ key: note.id, title: loanName(closing.listing.notes, note.id) ?? "A loan", docs: docs.filter((doc) => doc.noteId === note.id) }))
       .filter((group) => group.docs.length > 0),
   ];
-  const context = { closingId: closing.id, side, runs, now, fileName, custodian: funding?.custodian ?? null, docs };
+  const clocks = noticeClocks({ status: closing.status, closedAt: closing.closedAt ?? null, transferAt: closing.transferAt }, closing.boarding ?? null);
+  const context = { closingId: closing.id, side, runs, now, fileName, custodian: funding?.custodian ?? null, docs, clocks, deskBuy: Boolean(closing.deskBidId) };
   return (
     <section id="trailing" aria-labelledby="trailing-heading" className="mt-6 scroll-mt-6 glass p-6">
       <div className="flex flex-wrap items-baseline justify-between gap-3">
@@ -93,7 +102,7 @@ export async function TrailingDocsPanel({ closing, buyerId, viewer }: { closing:
         </p>
       </div>
       <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
-        What arrives after the close. Whoever owes an item records it here with its tracking, recording or transfer ID, and the other side confirms receipt. Reminders go out three days before each is due.
+        What arrives after the close. Whoever owes an item records it here with its tracking, recording or transfer ID, and the other side confirms receipt. Reminders go out three days before each is due. The borrower letters run on the rules&apos; own clocks, as UPB reads them; counsel confirms.
       </p>
       {closing.postCloseCompleteAt && <p className="mt-3 text-sm text-foreground">The post-closing file is complete as of {prettyDate(closing.postCloseCompleteAt)}.</p>}
       {groups.map((group) => (
@@ -108,16 +117,18 @@ export async function TrailingDocsPanel({ closing, buyerId, viewer }: { closing:
   );
 }
 
-type RowProps = { doc: Doc; docs: Doc[]; closingId: string; side: Side; runs: boolean; now: Date; fileName: Map<string, string>; custodian: string | null };
+type RowProps = { doc: Doc; docs: Doc[]; closingId: string; side: Side; runs: boolean; now: Date; fileName: Map<string, string>; custodian: string | null; clocks: NoticeClocks; deskBuy: boolean };
 
-function Row({ doc, docs, closingId, side, runs, now, fileName, custodian }: RowProps) {
+function Row({ doc, docs, closingId, side, runs, now, fileName, custodian, clocks, deskBuy }: RowProps) {
   const can = trailingActions(doc, side, runs);
   const overdue = isOverdue(doc, now);
+  // A letter whose date had passed when it was listed asks for a record of when it went, not the letter.
+  const rule = recordOnly(doc, clocks);
   const tracked = trackingUrl(doc.carrier, doc.trackingNumber);
   const transfer = doc.kind === "ENOTE_CONTROL" || doc.kind === "ENOTE_LOCATION";
   const orgId = transfer ? transfereeOf(doc.note) : null;
   const file = doc.documentId ? fileName.get(doc.documentId) : null;
-  const status = doc.status === "DUE" && overdue ? `${plural(daysLate(doc.dueAt, now), "day")} late` : trailingStatusLabel(doc.status);
+  const status = doc.status === "DUE" && overdue ? `${plural(daysLate(doc.dueAt, now), "day")} late` : rule ? "Record when it went" : trailingStatusLabel(doc.status);
   return (
     <li className="py-3">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -125,11 +136,16 @@ function Row({ doc, docs, closingId, side, runs, now, fileName, custodian }: Row
         <span className={cn("rounded-full px-2 py-0.5 text-xs font-medium", overdue ? "bg-bad/10 text-bad" : TONE[doc.status])}>{status}</span>
       </div>
       <p className="mt-0.5 text-xs text-muted-foreground">
-        {fromWord(doc)} · due {prettyDate(doc.dueAt)}
+        {fromWord(doc, deskBuy)} · {rule ? `was due ${prettyDate(rule)} · record when it went by ${prettyDate(doc.dueAt)}` : `due ${prettyDate(doc.dueAt)}`}
         {doc.sentAt ? ` · sent ${prettyDate(doc.sentAt)}` : ""}
         {doc.receivedAt ? ` · received ${prettyDate(doc.receivedAt)}` : ""}
       </p>
-      {doc.status === "DUE" && <p className="mt-0.5 text-xs text-muted-foreground">{KIND_HINTS[doc.kind as TrailingKind]}</p>}
+      {doc.status === "DUE" && (
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          {KIND_HINTS[doc.kind as TrailingKind]}
+          {doc.kind === SALE_NOTICE && (side === "buyer" || runs) && <> <a className="text-link" href="#notices">Go to Borrower notices</a></>}
+        </p>
+      )}
       {(doc.trackingNumber || doc.reference || file) && (
         <p className="mt-1 text-xs text-foreground">
           {doc.trackingNumber && (
@@ -143,7 +159,8 @@ function Row({ doc, docs, closingId, side, runs, now, fileName, custodian }: Row
           {file && <> {doc.trackingNumber || doc.reference ? "· " : ""}<a className="text-link" href={`/api/closing-files/${doc.documentId}`}>{file}</a></>}
         </p>
       )}
-      {doc.status === "WAIVED" && doc.waivedReason && <p className="mt-1 text-xs text-muted-foreground">Waived by the desk: {doc.waivedReason}</p>}
+      {/* The desk's waiver names it. A sale notice the notice rules mark not needed carries its own reason. */}
+      {doc.status === "WAIVED" && doc.waivedReason && <p className="mt-1 text-xs text-muted-foreground">{doc.waivedById ? "Waived by the desk: " : ""}{doc.waivedReason}</p>}
       {transfer && doc.status === "DUE" && (
         <p className="mt-1 text-xs text-foreground">
           {orgId ? `Transfer to MERS Org ID ${orgId}.` : side === "seller" ? "Waiting for the buyer's MERS Org ID." : transferNeeds(doc.kind as ENoteTransfer, custodian)}

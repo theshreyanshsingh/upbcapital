@@ -181,11 +181,20 @@ function inBlank(name: string) {
   return ["blank", "in blank", "bearer"].includes(partyKey(name));
 }
 
+// MERS (Mortgage Electronic Registration Systems) holds a mortgage as nominee for the lender and its assigns. Sales
+// between MERS members are tracked on the MERS System by MIN, not recorded, so an assignment chain may stop at MERS.
+// "MERS as nominee for First Bank" and "Mortgage Electronic Registration Systems, Inc." are one party.
+export function isMers(name: string) {
+  const key = partyKey(name);
+  return /^mers\b/.test(key) || key.startsWith("mortgage electronic registration");
+}
+
 function sameParty(a: string, b: string) {
   const left = partyKey(a);
   const right = partyKey(b);
   if (!left || !right) return false;
   if (left === right) return true;
+  if (isMers(a) && isMers(b)) return true;
   // "Coastal Capital" and "Coastal Capital Fund I" are one party written short.
   return Math.min(left.length, right.length) >= 4 && (left.startsWith(right) || right.startsWith(left));
 }
@@ -292,8 +301,14 @@ function buildChain(kind: ChainKind, items: CollateralRow[], holder: string | nu
   });
   const last = links[links.length - 1];
   const endsInBlank = Boolean(last && last.blank);
-  if (last && last.to && holder && !endsInBlank && !sameParty(last.to, holder)) {
+  // Assignments that end with MERS aren't broken: MERS holds the mortgage of record as nominee, and the MERS System,
+  // not the county, shows whom for. That is a check against the MIN, so it reads as a caution.
+  const heldByMers = kind === "ASSIGNMENT" && Boolean(last && last.to && isMers(last.to));
+  if (last && last.to && holder && !endsInBlank && !heldByMers && !sameParty(last.to, holder)) {
     breaks.push({ position: null, message: `The chain ends with ${last.to}, not the seller on file, ${holder}.` });
+  }
+  if (heldByMers && holder && !isMers(holder)) {
+    cautions.push("The recorded assignments end with MERS as nominee. Check that the MERS System shows the seller for this loan's MIN.");
   }
   return {
     kind,
@@ -318,7 +333,8 @@ export function chainOfTitle(items: CollateralRow[], holder?: string | null, opt
   // (Connecticut Supreme Court, June 2026), so the two chains should end with the same holder.
   const noteEnd = endorsements.links[endorsements.links.length - 1]?.to ?? "";
   const mortgageEnd = assignments.links[assignments.links.length - 1]?.to ?? "";
-  const split = Boolean(noteEnd && mortgageEnd && !endorsements.endsInBlank && !sameParty(noteEnd, mortgageEnd));
+  // MERS holding the mortgage for the note's owner is the split MERS is built on, and its own caution covers it.
+  const split = Boolean(noteEnd && mortgageEnd && !endorsements.endsInBlank && !isMers(mortgageEnd) && !sameParty(noteEnd, mortgageEnd));
   const cautions = split ? ["The mortgage is assigned to a different party than the note is endorsed to. A mortgage holder who doesn't own the note may not be able to foreclose."] : [];
   return { endorsements, assignments, breaks: gaps, cautions };
 }

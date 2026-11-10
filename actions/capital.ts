@@ -2,6 +2,7 @@
 
 import { redirect } from "next/navigation";
 import { requireDesk } from "@/lib/staff";
+import { capitalAllocationBlock } from "@/lib/participation";
 import { prisma } from "@/lib/prisma";
 import { investorAllocationBlock, screenInBackground, screenInvestor } from "@/lib/screening";
 
@@ -32,8 +33,12 @@ export async function addCommitment(formData: FormData) {
   redirect("/admin/capital?notice=capital");
 }
 
+// Assigning an investor's money to a desk note waits on counsel while the participations freeze holds. Existing
+// allocations stay, and the statement keeps attributing their receipts (app/api/admin/capital/statement).
 export async function allocateCapital(formData: FormData) {
   await requireDesk("deskBook", "/admin/capital");
+  const paused = capitalAllocationBlock();
+  if (paused) redirect(`/admin/capital?error=${encodeURIComponent(paused)}`);
   const investorId = String(formData.get("investorId") || "");
   const holdingId = String(formData.get("holdingId") || "");
   const amount = money(formData.get("amount"));

@@ -7,8 +7,23 @@ import { ConfirmSubmit } from "@/components/confirm-submit";
 import { SubmitButton } from "@/components/submit-button";
 import { requireUser } from "@/lib/auth";
 import { bidCapFor, capHint } from "@/lib/bid-caps";
+import {
+  ACKNOWLEDGE_FIRST,
+  acknowledgementMissing,
+  confirmNotices,
+  eligibilityFor,
+  MARYLAND_HEADING,
+  MARYLAND_PROMPT,
+  ROAD_HEADING,
+  ROAD_NOTICE,
+  ROAD_RENT,
+  ROAD_UNANSWERED,
+  type Eligibility,
+} from "@/lib/eligibility";
 import { money, prettyDate, q } from "@/lib/format";
 import { fillState, positionEconomics, seatName } from "@/lib/group-buy";
+import { roadAcknowledgedAt } from "@/lib/inquiry";
+import { trancheBlock } from "@/lib/participation";
 import { prisma } from "@/lib/prisma";
 import { canSeeListing } from "@/lib/private-listings";
 
@@ -40,6 +55,16 @@ export default async function GroupPage({
   // A seat stays under the buyer's bid cap like one bid (lib/bid-caps.ts). Shown only when one below the funds applies.
   const cap = user.role === "BUYER" ? capHint(await bidCapFor(user.id)) : null;
   const notes = group.listing.notes;
+  // The eligibility screen a bid shows, on the loans this group buys: the ROAD Act notice, the 350-home
+  // acknowledgement a seat waits on, and the Maryland prompt (lib/group-eligibility.ts).
+  const screened = group.noteId ? notes.filter((note) => note.id === group.noteId) : notes;
+  const profile = user.role === "BUYER" ? await prisma.buyerProfile.findUnique({ where: { userId: user.id } }) : null;
+  const eligibility = eligibilityFor(screened, profile);
+  const acknowledgedAt = user.role === "BUYER" && eligibility.acknowledge ? await roadAcknowledgedAt(user.id, group.listingId) : null;
+  const acknowledgeFirst = user.role === "BUYER" && acknowledgementMissing(eligibility, acknowledgedAt, profile?.eligibilityAt);
+  const notices = confirmNotices(eligibility);
+  // A senior and junior group takes no new seat and sends no first offer while counsel reviews tranches.
+  const paused = trancheBlock(group.structure);
   const upb = notes.reduce((sum, note) => sum + Number(note.upb), 0);
   const monthly = notes.reduce((sum, note) => sum + Number(note.monthlyPi), 0);
   const rate = upb > 0 ? notes.reduce((sum, note) => sum + Number(note.interestRate) * Number(note.upb), 0) / upb : 0;
@@ -74,6 +99,16 @@ export default async function GroupPage({
         {group.structure === "SENIOR_JUNIOR" ? ` Senior is paid first at ${Number(group.seniorYield)}%. Junior takes the rest.` : " Every seat owns its percentage of principal and payment."}
         {group.allowPartial ? " The seller will look at a partial fill." : ""}
       </p>
+      {paused && (group.status === "GATHERING" || group.status === "COUNTERED") && <p className="mt-3 max-w-2xl text-sm text-foreground">{paused}</p>}
+      {(user.role === "BUYER" || user.role === "ADMIN") && (eligibility.road || eligibility.maryland) && (
+        <GroupEligibility
+          listingId={group.listingId}
+          eligibility={eligibility}
+          buyer={user.role === "BUYER"}
+          acknowledgedAt={acknowledgedAt}
+          acknowledgeFirst={acknowledgeFirst}
+        />
+      )}
       <div className="mt-8 max-w-xl">
         <FillBar filled={state.filled} target={target} />
       </div>
@@ -116,7 +151,13 @@ export default async function GroupPage({
         </section>
       )}
 
-      {(group.status === "GATHERING" || group.status === "COUNTERED") && state.remaining > 0.5 && !mine && (
+      {(group.status === "GATHERING" || group.status === "COUNTERED") && state.remaining > 0.5 && !mine && !paused && acknowledgeFirst && (
+        <p className="mt-8 max-w-xl text-sm leading-relaxed text-foreground">
+          {ACKNOWLEDGE_FIRST}{" "}
+          <Link href={`/marketplace/${group.listingId}#eligibility`} className="text-link">Read the notice</Link>.
+        </p>
+      )}
+      {(group.status === "GATHERING" || group.status === "COUNTERED") && state.remaining > 0.5 && !mine && !paused && !acknowledgeFirst && (
         <form action={joinGroup} className="mt-8 grid max-w-xl gap-3 border border-border p-5 rounded-xl">
           <p className="eyebrow">Take a seat</p>
           <input type="hidden" name="groupId" value={group.id} />
@@ -129,6 +170,7 @@ export default async function GroupPage({
               <option value="JUNIOR">Junior, the remainder</option>
             </select>
           )}
+          {notices.length > 0 && <p className="text-xs leading-relaxed text-muted-foreground">{notices.join(" ")}</p>}
           <SubmitButton className="h-11 text-[13px] font-medium">Join</SubmitButton>
         </form>
       )}
@@ -144,21 +186,28 @@ export default async function GroupPage({
             </label>
             <SubmitButton variant="outline" className="h-10 text-[13px] font-medium">Move the deadline</SubmitButton>
           </form>
-          <form action={bidPartial} className="space-y-3">
-            <p className="eyebrow">Partial bid</p>
-            <input type="hidden" name="groupId" value={group.id} />
-            <p className="text-sm text-muted-foreground">{group.allowPartial ? `Send ${money(state.filled)} as the offer.` : "The seller has to allow a short fill first."}</p>
-            <ConfirmSubmit
-              title={`Send ${money(state.filled)} as the group's offer?`}
-              consequence="Every pledged seat is committed at its share of this price if the seller accepts. Seats still reconfirming aren't counted."
-              confirmLabel="Send the offer"
-              pendingLabel="Sending…"
-              variant="outline"
-              className="h-10 text-[13px] font-medium"
-            >
-              Bid what is filled
-            </ConfirmSubmit>
-          </form>
+          {paused ? (
+            <div className="space-y-3">
+              <p className="eyebrow">Partial bid</p>
+              <p className="text-sm text-muted-foreground">A senior and junior group sends no offer until counsel rules on it.</p>
+            </div>
+          ) : (
+            <form action={bidPartial} className="space-y-3">
+              <p className="eyebrow">Partial bid</p>
+              <input type="hidden" name="groupId" value={group.id} />
+              <p className="text-sm text-muted-foreground">{group.allowPartial ? `Send ${money(state.filled)} as the offer.` : "The seller has to allow a short fill first."}</p>
+              <ConfirmSubmit
+                title={`Send ${money(state.filled)} as the group's offer?`}
+                consequence="Every pledged seat is committed at its share of this price if the seller accepts. Seats still reconfirming aren't counted."
+                confirmLabel="Send the offer"
+                pendingLabel="Sending…"
+                variant="outline"
+                className="h-10 text-[13px] font-medium"
+              >
+                Bid what is filled
+              </ConfirmSubmit>
+            </form>
+          )}
           <form action={dissolveGroup} className="space-y-3">
             <p className="eyebrow">Dissolve</p>
             <input type="hidden" name="groupId" value={group.id} />
@@ -187,5 +236,52 @@ export default async function GroupPage({
         </form>
       )}
     </div>
+  );
+}
+
+// The listing page's eligibility panel, for a seat. The acknowledgement is taken on the listing, once, and counts
+// for a bid and a seat alike. Nothing here stops a seat on its own.
+function GroupEligibility({
+  listingId,
+  eligibility,
+  buyer,
+  acknowledgedAt,
+  acknowledgeFirst,
+}: {
+  listingId: string;
+  eligibility: Eligibility;
+  buyer: boolean;
+  acknowledgedAt: Date | null;
+  acknowledgeFirst: boolean;
+}) {
+  return (
+    <section id="eligibility" aria-labelledby="eligibility-heading" className="mt-6 max-w-2xl scroll-mt-6 border border-border p-5 rounded-xl">
+      <h2 id="eligibility-heading" className="eyebrow">Buyer eligibility</h2>
+      {eligibility.road && (
+        <div className="mt-3 space-y-2 text-sm leading-relaxed text-muted-foreground">
+          <p className="text-[13px] font-semibold text-foreground">{ROAD_HEADING}</p>
+          <p>{ROAD_NOTICE.join(" ")}</p>
+          {buyer && eligibility.holdToRent && <p className="text-foreground">{ROAD_RENT}</p>}
+          {buyer && eligibility.unanswered && (
+            <p>
+              {ROAD_UNANSWERED} <Link href="/buyer/verification#eligibility" className="text-link">Answer in your buyer file</Link>.
+            </p>
+          )}
+          {buyer && eligibility.acknowledge && (acknowledgeFirst ? (
+            <p className="text-foreground">
+              {ACKNOWLEDGE_FIRST} <Link href={`/marketplace/${listingId}#eligibility`} className="text-link">Acknowledge it on the listing</Link>.
+            </p>
+          ) : (
+            <p className="text-foreground">You acknowledged this notice on {prettyDate(acknowledgedAt)}.</p>
+          ))}
+        </div>
+      )}
+      {eligibility.maryland && (
+        <div className="mt-4 space-y-2 text-sm leading-relaxed text-muted-foreground">
+          <p className="text-[13px] font-semibold text-foreground">{MARYLAND_HEADING}</p>
+          <p>{MARYLAND_PROMPT.join(" ")}</p>
+        </div>
+      )}
+    </section>
   );
 }

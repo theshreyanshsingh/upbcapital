@@ -2,23 +2,39 @@ import { SDN_NAMES, bestHit, indexNames, parseSanctionNames, parseTreasuryLists,
 
 export type ScreenProvider = "local" | "live" | "treasury";
 // unavailable means a real list is configured but could not be read. That is not a clear result, so approvals stop on it.
-export type Screen = { provider: ScreenProvider; result: "CLEAR" | "REVIEW"; detail: string; matched?: string; unavailable?: boolean };
+// listVersion names the copy of the list the screen ran against, and is stored on its row (listVersion below).
+export type Screen = { provider: ScreenProvider; result: "CLEAR" | "REVIEW"; detail: string; matched?: string; unavailable?: boolean; listVersion?: string };
 export type SanctionSource = { provider: ScreenProvider; index: SanctionEntry[]; count: number; fetchedAt: Date | null; note: string; unavailable: boolean };
 
 type Env = Record<string, string | undefined>;
 
+// OFAC's recordkeeping rule keeps screening and transaction records for at least 10 years (31 CFR 501.601). This is
+// a floor under the desk's retention setting, not a default it can lower. Counsel confirms the periods.
+export const SANCTIONS_RECORD_YEARS = 10;
+
 const LIST_LABEL: Record<ScreenProvider, string> = { local: "local stand-in", live: "parsed vendor", treasury: "OFAC SDN" };
+const VERSION_LABEL: Record<ScreenProvider, string> = { local: "local stand-in", live: "parsed vendor", treasury: "treasury" };
+
+// Which copy of the list a screen ran against: the provider and when that copy was read, as
+// "treasury 2026-11-09T04:00:00.000Z". The stand-in has no read time. A stale copy kept after a failed refresh
+// carries its own read time, so the row says how old the list was.
+export function listVersion(source: Pick<SanctionSource, "provider" | "fetchedAt">) {
+  const label = VERSION_LABEL[source.provider];
+  return source.fetchedAt ? `${label} ${source.fetchedAt.toISOString()}` : label;
+}
+
 const LOCAL_INDEX = indexNames(SDN_NAMES);
 const FRESH_MS = 6 * 60 * 60 * 1000;
 const RETRY_MS = 5 * 60 * 1000;
 
-function screenIndex(name: string, index: SanctionEntry[], provider: ScreenProvider): Screen {
+function screenIndex(name: string, index: SanctionEntry[], provider: ScreenProvider, version = listVersion({ provider, fetchedAt: null })): Screen {
   const cleaned = name.trim();
-  if (!cleaned) return { provider, result: "CLEAR", detail: "No name to screen." };
+  if (!cleaned) return { provider, result: "CLEAR", detail: "No name to screen.", listVersion: version };
   const hit = bestHit(cleaned, index);
-  if (!hit) return { provider, result: "CLEAR", detail: `No fuzzy match on the ${LIST_LABEL[provider]} list.` };
+  if (!hit) return { provider, result: "CLEAR", detail: `No fuzzy match on the ${LIST_LABEL[provider]} list.`, listVersion: version };
   return {
     provider,
+    listVersion: version,
     result: "REVIEW",
     matched: hit.entry,
     detail: `Matched “${hit.entry}” at ${Math.round(hit.score * 100)}% on the ${LIST_LABEL[provider]} list. A person has to clear it.`,
@@ -122,13 +138,14 @@ export async function sanctionSource(env: Env = process.env): Promise<SanctionSo
 
 export async function screenParty(name: string, env: Env = process.env): Promise<Screen> {
   const source = await sanctionSource(env);
-  const screen = screenIndex(name, source.index, source.provider);
+  const screen = screenIndex(name, source.index, source.provider, listVersion(source));
   return source.note ? { ...screen, detail: `${screen.detail} ${source.note}`, unavailable: source.unavailable } : screen;
 }
 
 export async function screenParties(names: string[], env: Env = process.env) {
   const source = await sanctionSource(env);
-  return { source, screens: names.map((name) => ({ name, screen: screenIndex(name, source.index, source.provider) })) };
+  const version = listVersion(source);
+  return { source, screens: names.map((name) => ({ name, screen: screenIndex(name, source.index, source.provider, version) })) };
 }
 
 // A REVIEW row needs a person's decision. Rows from before decisions existed have no status and count as open.

@@ -3,6 +3,7 @@ import Link from "next/link";
 import { PublicPage } from "@/components/public-page";
 import { API_LIMIT } from "@/lib/api-limit";
 import { getCurrentUser } from "@/lib/auth";
+import { SANCTIONS_RECORD_YEARS } from "@/lib/ofac";
 import { getSettings } from "@/lib/settings";
 import { subprocessors } from "./subprocessors";
 
@@ -56,6 +57,7 @@ export default async function SecurityPage() {
       "Retention and deletion",
       [
         `Deal records are kept for ${settings.retentionYears} years: closings, signed papers, NDAs, the ledger and the audit log. Site visit logs and notices you have read are removed after that.`,
+        `Sanctions screening records are kept for at least ${SANCTIONS_RECORD_YEARS} years, whatever period applies to deal records.`,
         "You can ask for your account to be deleted from your security page. The desk removes your name, email, phone, company and second factor, signs out every device, and deletes your saved searches, buy boxes, API keys and webhooks. Your proof of funds is removed when no closing names you. Deal records stay, under an account with no name.",
         "A deletion waits while you have an open bid, an open closing, a live listing or an unfunded group seat.",
       ],
@@ -76,7 +78,7 @@ export default async function SecurityPage() {
 
       <section className="glass p-5 md:p-6" aria-labelledby="vendors-heading">
         <h2 id="vendors-heading" className="eyebrow">Outside services</h2>
-        <p className="mt-2 text-sm text-muted-foreground">Read from the configuration this site runs with today. The servers and the database run with a cloud host, which this list leaves out.</p>
+        <p className="mt-2 text-sm text-muted-foreground">Read from the configuration this site runs with today, including the host the servers run with.</p>
         <dl className="mt-4 divide-y divide-border">
           {vendors.map((vendor) => (
             <div key={vendor.category} className="grid gap-1 py-3 sm:grid-cols-[140px_110px_minmax(0,1fr)] sm:gap-4">

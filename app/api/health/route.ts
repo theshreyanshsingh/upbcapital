@@ -24,7 +24,8 @@ export async function GET() {
     stripe: Boolean(process.env.STRIPE_SECRET_KEY),
     escrow: process.env.ESCROW_PROVIDER || "manual",
     limits: limitStore(),
-    avm: process.env.AVM_PROVIDER || "mock",
+    // A provider without its key falls back to the stand-in, so it reports as mock.
+    avm: process.env.AVM_PROVIDER === "attom" && process.env.ATTOM_API_KEY ? "attom" : "mock",
     signature: signatureMode(),
     kyc: kycMode(),
     assistant: aiMode(),

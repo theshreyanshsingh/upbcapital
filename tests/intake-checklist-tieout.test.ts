@@ -312,6 +312,7 @@ const fullFile = (noteId: string) => [
   line(noteId, "OE_REPORT"),
   line(noteId, "BPO"),
   line(noteId, "ALLONGE", "PRESENT", { detail: "First Bank → Gulf Notes LLC", endorsement: "SPECIAL", datedOn: new Date("2020-01-01"), attachedAt: new Date("2020-01-01") }),
+  line(noteId, "ASSIGNMENT", "PRESENT", { detail: "First Bank → Gulf Notes LLC", recordedAt: new Date("2020-02-01"), recording: "Doc 2020-0001" }),
 ];
 
 test("the checklist reads the loan file: a missing item, a waiver with a reason, and what the buyer sees", () => {

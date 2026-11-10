@@ -20,7 +20,7 @@ function text(formData: FormData, key: string) {
   return String(formData.get(key) ?? "").trim();
 }
 
-const IDENTIFYING = new Set(["streetAddress", "upb", "loanNumber", "servicerName"]);
+const IDENTIFYING = new Set(["streetAddress", "upb", "loanNumber", "servicerName", "mersMin", "borrowerName"]);
 
 function refresh(listingId: string) {
   for (const path of [`/seller/listings/${listingId}`, `/broker/deals/${listingId}`, `/buyer/resales/${listingId}`, `/admin/listings/${listingId}`, `/marketplace/${listingId}`]) revalidatePath(path);

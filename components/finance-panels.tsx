@@ -158,7 +158,6 @@ export function ProrationPanel({ closing, loans, runs }: { closing: ProrationClo
 export async function PayoutPanel({ closing, sellerId, viewer, isSeller }: { closing: { id: string; status: string; payoutAccountId: string | null }; sellerId: string; viewer: Viewer; isSeller: boolean }) {
   const desk = viewer.role === "ADMIN";
   if (!desk && !isSeller) return null;
-  const approves = deskCan(viewer, "approveWires");
   const [accounts, paid] = await Promise.all([
     payoutAccountsFor(sellerId),
     closing.payoutAccountId ? prisma.payoutAccount.findUnique({ where: { id: closing.payoutAccountId } }) : Promise.resolve(null),
@@ -181,75 +180,103 @@ export async function PayoutPanel({ closing, sellerId, viewer, isSeller }: { clo
             Seller proceeds are recorded only to a verified account. Call the seller on a number you find yourself, never one from the request or an email. Another desk member who approves wires then verifies it.
           </p>
           {!accounts.length && <p className="mt-3 text-sm text-foreground">The seller has no payout account on file.</p>}
-          <ul className="mt-3 space-y-4">
-            {accounts.map((account) => (
-              <li key={account.id} className="space-y-2 border-t border-border pt-3 text-sm">
-                <p className="text-foreground">{payoutLabel(account)}</p>
-                <p className="text-xs text-muted-foreground">
-                  {account.accountName} · routing {account.routingNumber} · {PAYOUT_STATUS_LABELS[account.status] ?? account.status} · added {prettyDate(account.createdAt)}
-                </p>
-                {account.callbackAt && (
-                  <p className="text-xs text-muted-foreground">
-                    {account.callbackBy} called {account.callbackPhone} on {prettyDate(account.callbackAt)} · {callbackSourceLabel(account.callbackSource)}{account.callbackNote ? ` · ${account.callbackNote}` : ""}
-                  </p>
-                )}
-                {account.verifiedAt && <p className="text-xs text-muted-foreground">Verified by {account.verifiedBy} on {prettyDate(account.verifiedAt)}</p>}
-                {approves && account.status === "PENDING" && account.callbackAt && account.callbackById !== viewer.id && (
-                  <form action={decidePayoutAccountAction}>
-                    <input type="hidden" name="closingId" value={closing.id} />
-                    <input type="hidden" name="accountId" value={account.id} />
-                    <input type="hidden" name="decision" value="VERIFIED" />
-                    <ConfirmSubmit
-                      title={`Verify ${payoutLabel(account)}?`}
-                      consequence="Seller proceeds can then be recorded to it. Verify only if the call-back above was made on a number the desk found itself, and the seller confirmed these details on it."
-                      confirmLabel="Verify the account"
-                      pendingLabel="Saving…"
-                      className="h-9 text-[13px] font-medium"
-                    >
-                      Verify
-                    </ConfirmSubmit>
-                  </form>
-                )}
-                {approves && account.status === "PENDING" && account.callbackById === viewer.id && <p className="text-xs text-muted-foreground">You logged the call-back, so someone else verifies it.</p>}
-                {approves && account.status === "PENDING" && (
-                  <details>
-                    <summary className="cursor-pointer text-[13px] font-medium text-link">{account.callbackAt ? "Log the call-back again" : "Log the call-back"}</summary>
-                    <form action={logPayoutCallbackAction} className="mt-2 space-y-2">
-                      <input type="hidden" name="closingId" value={closing.id} />
-                      <input type="hidden" name="accountId" value={account.id} />
-                      <input name="phone" inputMode="tel" required placeholder="Number you dialled" aria-label="Number you dialled" className="desk-input" />
-                      <select name="source" required defaultValue="" aria-label="Where you found the number" className="desk-input">
-                        <option value="" disabled>Where you found the number</option>
-                        {CALLBACK_SOURCES.map((source) => <option key={source.value} value={source.value}>{source.label}</option>)}
-                      </select>
-                      <input name="note" required minLength={10} maxLength={500} placeholder="Who answered and what they confirmed" aria-label="Who answered and what they confirmed" className="desk-input" />
-                      <label className="flex items-start gap-2 text-xs text-foreground">
-                        <input type="checkbox" name="independent" value="yes" required className="mt-0.5" />
-                        <span>The number didn&apos;t come from the seller&apos;s request or an email about it.</span>
-                      </label>
-                      <SubmitButton variant="outline" className="h-9 text-[13px] font-medium" pendingLabel="Saving…">Log call-back</SubmitButton>
-                    </form>
-                  </details>
-                )}
-                {approves && account.status !== "REJECTED" && (
-                  <details>
-                    <summary className="cursor-pointer text-[13px] font-medium text-muted-foreground">Reject</summary>
-                    <form action={decidePayoutAccountAction} className="mt-2 space-y-2">
-                      <input type="hidden" name="closingId" value={closing.id} />
-                      <input type="hidden" name="accountId" value={account.id} />
-                      <input type="hidden" name="decision" value="REJECTED" />
-                      <input name="note" required minLength={3} maxLength={300} placeholder="Why, for the desk's record" aria-label="Why it is rejected" className="desk-input" />
-                      <SubmitButton variant="outline" className="h-9 text-[13px] font-medium" pendingLabel="Saving…">Reject account</SubmitButton>
-                    </form>
-                  </details>
-                )}
-              </li>
-            ))}
-          </ul>
-          {!approves && accounts.some((account) => account.status === "PENDING") && <p className="mt-3 text-xs text-muted-foreground">A desk member who approves wires logs the call-back and verifies it.</p>}
+          <PayoutAccountList accounts={accounts} viewer={viewer} closingId={closing.id} party="seller" />
         </>
       )}
     </section>
+  );
+}
+
+type DeskAccount = Awaited<ReturnType<typeof payoutAccountsFor>>[number];
+
+// Each account with its call-back, the four-eyes verify and the reject, for the desk. It says when a sanctions match
+// holds the account, and when the name on it isn't the vetted one, which needs the verifier's reason. On a closing
+// page the forms come back to the closing; on the payouts page, for a broker's account, they come back there.
+export function PayoutAccountList({ accounts, viewer, closingId, party }: { accounts: DeskAccount[]; viewer: Viewer; closingId?: string; party: "seller" | "broker" }) {
+  const approves = deskCan(viewer, "approveWires");
+  const where = closingId ? <input type="hidden" name="closingId" value={closingId} /> : <input type="hidden" name="back" value="/admin/payouts" />;
+  return (
+    <>
+      <ul className="mt-3 space-y-4">
+        {accounts.map((account) => (
+          <li key={account.id} className="space-y-2 border-t border-border pt-3 text-sm">
+            <p className="text-foreground">{payoutLabel(account)}</p>
+            <p className="text-xs text-muted-foreground">
+              {account.accountName} · routing {account.routingNumber} · {PAYOUT_STATUS_LABELS[account.status] ?? account.status} · added {prettyDate(account.createdAt)}
+              {account.screenedAt ? ` · name screened ${prettyDate(account.screenedAt)}` : ""}
+            </p>
+            {account.held && (
+              <p className="text-xs text-bad">Held: an OFAC match on the name on this account is open or confirmed. Compliance decides it, and nothing is said to the {party}. Verifying screens the name again.</p>
+            )}
+            {!account.nameMatches && (
+              <p className="text-xs text-bad">
+                The name on the account isn&apos;t {account.vetted.length ? account.vetted.join(" or ") : "a name the desk vetted"}, the {party}&apos;s vetted name. Verifying it needs your reason, which goes in the audit log.
+              </p>
+            )}
+            {account.callbackAt && (
+              <p className="text-xs text-muted-foreground">
+                {account.callbackBy} called {account.callbackPhone} on {prettyDate(account.callbackAt)} · {callbackSourceLabel(account.callbackSource)}{account.callbackNote ? ` · ${account.callbackNote}` : ""}
+              </p>
+            )}
+            {account.verifiedAt && <p className="text-xs text-muted-foreground">Verified by {account.verifiedBy} on {prettyDate(account.verifiedAt)}</p>}
+            {approves && account.status === "PENDING" && account.callbackAt && account.callbackById !== viewer.id && (
+              <form action={decidePayoutAccountAction} className="space-y-2">
+                {where}
+                <input type="hidden" name="accountId" value={account.id} />
+                <input type="hidden" name="decision" value="VERIFIED" />
+                {!account.nameMatches && (
+                  <input name="reason" required minLength={10} maxLength={300} placeholder="Why the desk accepts this name on the account" aria-label="Why the desk accepts this name on the account" className="desk-input" />
+                )}
+                <ConfirmSubmit
+                  title={`Verify ${payoutLabel(account)}?`}
+                  consequence={`${party === "broker" ? "Broker fees can then be approved to it." : "Seller proceeds can then be recorded to it."} Verify only if the call-back above was made on a number the desk found itself, and the ${party} confirmed these details on it. The name on it is screened again first.`}
+                  typed={account.nameMatches ? undefined : [["Why the name is accepted", "reason", "text"]]}
+                  confirmLabel="Verify the account"
+                  pendingLabel="Saving…"
+                  className="h-9 text-[13px] font-medium"
+                >
+                  Verify
+                </ConfirmSubmit>
+              </form>
+            )}
+            {approves && account.status === "PENDING" && account.callbackById === viewer.id && <p className="text-xs text-muted-foreground">You logged the call-back, so someone else verifies it.</p>}
+            {approves && account.status === "PENDING" && (
+              <details>
+                <summary className="cursor-pointer text-[13px] font-medium text-link">{account.callbackAt ? "Log the call-back again" : "Log the call-back"}</summary>
+                <form action={logPayoutCallbackAction} className="mt-2 space-y-2">
+                  {where}
+                  <input type="hidden" name="accountId" value={account.id} />
+                  <input name="phone" inputMode="tel" required placeholder="Number you dialled" aria-label="Number you dialled" className="desk-input" />
+                  <select name="source" required defaultValue="" aria-label="Where you found the number" className="desk-input">
+                    <option value="" disabled>Where you found the number</option>
+                    {CALLBACK_SOURCES.map((source) => <option key={source.value} value={source.value}>{source.label}</option>)}
+                  </select>
+                  <input name="note" required minLength={10} maxLength={500} placeholder="Who answered and what they confirmed" aria-label="Who answered and what they confirmed" className="desk-input" />
+                  <label className="flex items-start gap-2 text-xs text-foreground">
+                    <input type="checkbox" name="independent" value="yes" required className="mt-0.5" />
+                    <span>The number didn&apos;t come from the {party}&apos;s request or an email about it.</span>
+                  </label>
+                  <SubmitButton variant="outline" className="h-9 text-[13px] font-medium" pendingLabel="Saving…">Log call-back</SubmitButton>
+                </form>
+              </details>
+            )}
+            {approves && account.status !== "REJECTED" && (
+              <details>
+                <summary className="cursor-pointer text-[13px] font-medium text-muted-foreground">Reject</summary>
+                <form action={decidePayoutAccountAction} className="mt-2 space-y-2">
+                  {where}
+                  <input type="hidden" name="accountId" value={account.id} />
+                  <input type="hidden" name="decision" value="REJECTED" />
+                  <input name="note" required minLength={3} maxLength={300} placeholder="Why, for the desk's record" aria-label="Why it is rejected" className="desk-input" />
+                  <SubmitButton variant="outline" className="h-9 text-[13px] font-medium" pendingLabel="Saving…">Reject account</SubmitButton>
+                </form>
+              </details>
+            )}
+          </li>
+        ))}
+      </ul>
+      {!approves && accounts.some((account) => account.status === "PENDING") && <p className="mt-3 text-xs text-muted-foreground">A desk member who approves wires logs the call-back and verifies it.</p>}
+    </>
   );
 }
 
@@ -333,13 +360,13 @@ export async function InvoicePanel({ closing, viewer, sellerId, buyerId }: { clo
 // ---------------------------------------------------------------------------------------------------------------
 // The account page.
 
-export async function PayoutAccountsSection({ userId }: { userId: string }) {
+export async function PayoutAccountsSection({ userId, broker = false }: { userId: string; broker?: boolean }) {
   const accounts = await activePayoutAccounts(userId);
   const full = accounts.length >= MAX_ACTIVE_ACCOUNTS;
   return (
     <section id="payout-accounts" aria-labelledby="payout-accounts-heading" className="mt-8 scroll-mt-6 glass p-6">
       <p id="payout-accounts-heading" className="eyebrow">Payout accounts</p>
-      <p className="mt-2 text-sm text-muted-foreground">Where your sale proceeds go. {PAYOUT_NUMBER_NOTE}</p>
+      <p className="mt-2 text-sm text-muted-foreground">Where your {broker ? "sale proceeds and broker fees go. The desk pays a fee only to a verified account, whatever your payout note says." : "sale proceeds go."} {PAYOUT_NUMBER_NOTE}</p>
       <p className="mt-2 text-sm text-muted-foreground">Every change is emailed to you. If you get one you didn&apos;t make, call the desk.</p>
       {accounts.length > 0 && (
         <ul className="mt-5 space-y-4">

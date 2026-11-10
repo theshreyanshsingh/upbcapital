@@ -25,12 +25,12 @@ export default async function FinancePage({
         title={seller ? "Where your money goes." : "Your fee invoices."}
         lede={
           seller
-            ? "Add the account your sale proceeds go to. The desk checks it by phone before any money moves. Your commission invoices are below."
+            ? `Add the account your ${user.role === "BROKER" ? "sale proceeds and broker fees go" : "sale proceeds go"} to. The desk checks it by phone before any money moves. Your commission invoices are below.`
             : "A numbered invoice for each buyer premium you paid at settlement, and any credit note against it."
         }
       />
       <Notice notice={q(params, "notice")} error={q(params, "error")} />
-      {seller && <PayoutAccountsSection userId={user.id} />}
+      {seller && <PayoutAccountsSection userId={user.id} broker={user.role === "BROKER"} />}
       <MyInvoices userId={user.id} />
     </div>
   );

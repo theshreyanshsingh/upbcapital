@@ -3,7 +3,7 @@ import { after } from "next/server";
 import { audit } from "@/lib/audit";
 import { notifyDesk } from "@/lib/email";
 import { unset } from "@/lib/db-filters";
-import { ofacBlocks, ofacOpen, screenParties, screenParty, type Screen } from "@/lib/ofac";
+import { listVersion, ofacBlocks, ofacOpen, screenParties, screenParty, type Screen } from "@/lib/ofac";
 import { prisma } from "@/lib/prisma";
 
 type Target = { context: string; userId?: string | null; listingId?: string | null };
@@ -35,11 +35,14 @@ export async function sameReviewIds(check: { id: string; name: string; matched?:
 
 // A party's earlier decision on the same name and the same list entry carries forward. A new entry asks again.
 // An open review already on file is the answer, so screening again adds no row and no second email.
+// Every row written names the copy of the list it ran against (lib/ofac.ts listVersion), so a screen can be
+// shown later to have used the list as it stood that day.
 async function recordScreen(name: string, screen: Screen, target: Target) {
   const base = {
     name,
     result: screen.result,
     provider: screen.provider,
+    listVersion: screen.listVersion ?? listVersion({ provider: screen.provider, fetchedAt: null }),
     detail: screen.detail,
     context: target.context,
     userId: target.userId || undefined,
@@ -142,6 +145,44 @@ export async function ofacHold(target: { userIds?: (string | null | undefined)[]
   if (!scopes.length) return null;
   const rows = await prisma.ofacCheck.findMany({ where: { result: "REVIEW", OR: scopes }, orderBy: { createdAt: "desc" } });
   return rows.find(ofacBlocks) ?? null;
+}
+
+// Any open or confirmed match on these names, screened for this account. A payout account's holder name is screened
+// under the account that owns it, so this reads the hold on that name alone.
+export async function nameHold(userId: string, names: (string | null | undefined)[]) {
+  const list = cleanNames(names);
+  if (!list.length) return null;
+  const rows = await prisma.ofacCheck.findMany({ where: { userId, result: "REVIEW", name: { in: list } }, orderBy: { createdAt: "desc" } });
+  return rows.find(ofacBlocks) ?? null;
+}
+
+function cleanNames(names: (string | null | undefined)[]) {
+  return [...new Set(names.map((name) => (name ?? "").trim()).filter(Boolean))];
+}
+
+// Why money or a sale can't go to this account's names now, or null. Earlier screens may be a year old, so like an
+// approval it screens again against today's list and waits for the answer. A desk decision on the same name and
+// list entry stands, a new entry asks again, and a list that can't be read stops it.
+export async function freshScreenBlock(userId: string, names: (string | null | undefined)[], context: string, holdMessage = OFAC_HOLD_MESSAGE) {
+  const list = cleanNames(names);
+  if (await nameHold(userId, list)) return holdMessage;
+  for (const name of list) {
+    const screen = await screenParty(name);
+    if (screen.unavailable) return OFAC_DOWN_MESSAGE;
+    if (ofacBlocks(await recordScreen(name, screen, { context, userId }))) return holdMessage;
+  }
+  return null;
+}
+
+// The award's fresh screen: the winning buyer's name, and the vetted entity the papers will name, which is the
+// buying entity on the bid or else the entity on the buyer's main file. Earlier holds on every party are read
+// before this (ofacHold). Seats in a group and beneficial owners are not screened again here; they were screened
+// when the desk approved their file.
+export async function awardScreenBlock(bid: { buyerId: string; buyerEntityId?: string | null; buyer: { name: string }; listing: { title: string } }) {
+  const entity = bid.buyerEntityId ? await prisma.buyerEntity.findUnique({ where: { id: bid.buyerEntityId }, select: { userId: true, name: true } }) : null;
+  const file = entity ? null : await prisma.buyerProfile.findUnique({ where: { userId: bid.buyerId }, select: { entityName: true } });
+  const vetted = entity?.userId === bid.buyerId ? entity.name : file?.entityName;
+  return freshScreenBlock(bid.buyerId, [bid.buyer.name, vetted], `Award on ${bid.listing.title}`);
 }
 
 // ---------------------------------------------------------------------------------------------------------------

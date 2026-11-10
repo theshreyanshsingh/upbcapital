@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { noticeClocks, otherPurchasesOnUpb } from "../lib/borrower-notices";
 import { finalizeClosing, openClosing } from "../lib/closing-service";
 import { DESK_DENIED } from "../lib/desk-roles";
 import { prisma } from "../lib/prisma";
@@ -10,16 +11,19 @@ import {
   completeIfDone,
   confirmReceived,
   deliveringSide,
+  kindLabel,
   needsEscalation,
   needsReminder,
   planTrailingDocs,
   readProof,
   receivingSide,
+  recordOnly,
   recordSent,
   recordTransferee,
   reminderSlot,
   remindTrailingDocs,
   runTrailingDocs,
+  SALE_NOTICE,
   scheduleTrailingDocs,
   syncTrailingDocs,
   trackingUrl,
@@ -57,13 +61,21 @@ test("a paper loan owes its note, allonge and recorded assignment, and an eNote 
   ]);
   // Friday's close: two business days is Tuesday. No note, allonge or courier, and no title policy, no endorsement.
   assert.deepEqual(of("enote"), ["ENOTE_CONTROL/SELLER/2026-11-10", "ENOTE_LOCATION/SELLER/2026-11-10", "RECORDED_ASSIGNMENT/SELLER/2027-02-04"]);
-  // The tape names a servicer, so the goodbye comes from it.
-  assert.deepEqual(of(null), ["GOODBYE_LETTER/SERVICER/2026-11-21", "HELLO_LETTER/BUYER/2026-12-06", "SERVICER_BOARDED/SERVICER/2026-12-06"]);
+  // The tape names a servicer, so the goodbye comes from it. With no transfer date on file the close stands in: the
+  // goodbye 15 days before, the welcome 15 days after, and the owner's sale notice 30 days after.
+  assert.deepEqual(of(null), [
+    "GOODBYE_LETTER/SERVICER/2026-10-22",
+    "HELLO_LETTER/BUYER/2026-12-06",
+    "SERVICER_WELCOME/SERVICER/2026-11-21",
+    "SERVICER_BOARDED/SERVICER/2026-12-06",
+  ]);
 
-  // No servicer on the tape: the seller writes the goodbye. A recorded transfer date moves the hello letter.
+  // No servicer on the tape: the seller writes the goodbye. A recorded transfer date moves all three letters.
   const plain = planTrailingDocs({ closedAt: noon("2026-11-06"), transferAt: day("2026-11-20"), loans: [{ id: "a" }], titlePolicies: new Set(), assignmentDays: 120 });
   assert.equal(plain.find((doc) => doc.kind === "GOODBYE_LETTER")?.owner, "SELLER");
   assert.equal(iso(plain.find((doc) => doc.kind === "HELLO_LETTER")?.dueAt), "2026-12-20");
+  assert.equal(iso(plain.find((doc) => doc.kind === "GOODBYE_LETTER")?.dueAt), "2026-11-05");
+  assert.equal(iso(plain.find((doc) => doc.kind === "SERVICER_WELCOME")?.dueAt), "2026-12-05");
   assert.equal(iso(plain.find((doc) => doc.kind === "RECORDED_ASSIGNMENT")?.dueAt), "2027-03-06");
   assert.ok(!plain.some((doc) => doc.kind === "TITLE_ENDORSEMENT"));
 
@@ -71,6 +83,40 @@ test("a paper loan owes its note, allonge and recorded assignment, and an eNote 
   assert.equal(assignmentDays(5), 90);
   assert.equal(assignmentDays(120), 120);
   assert.equal(iso(addBusinessDays(noon("2026-11-12"), 2)), "2026-11-16");
+});
+
+test("the borrower letters run on the rules' clocks, and the stored HELLO_LETTER key reads as the owner's sale notice", () => {
+  // The boarding form's servicing transfer date times the servicers' letters; the sale notice keeps the date of transfer.
+  const plan = planTrailingDocs({
+    closedAt: noon("2026-11-06"),
+    transferAt: day("2026-11-10"),
+    servicingAt: day("2026-12-01"),
+    loans: [{ id: "a", servicerName: "Old Servicing" }],
+    titlePolicies: new Set(),
+    assignmentDays: 90,
+  });
+  const item = (kind: string) => plan.find((doc) => doc.kind === kind)!;
+  assert.equal(iso(item("GOODBYE_LETTER").dueAt), "2026-11-16");
+  assert.equal(iso(item("SERVICER_WELCOME").dueAt), "2026-12-16");
+  assert.equal(iso(item(SALE_NOTICE).dueAt), "2026-12-10");
+  // The old servicer is the seller's side, the new servicer the buyer's, and the sale notice the new owner's.
+  assert.equal(deliveringSide(item("GOODBYE_LETTER")), "seller");
+  assert.equal(deliveringSide(item("SERVICER_WELCOME")), "buyer");
+  assert.equal(receivingSide(item("SERVICER_WELCOME")), "desk");
+  assert.equal(deliveringSide(item(SALE_NOTICE)), "buyer");
+  // The key is still the one old rows carry; only what it says changed.
+  assert.equal(SALE_NOTICE, "HELLO_LETTER");
+  assert.equal(kindLabel("HELLO_LETTER"), "Owner's sale notice to the borrower");
+  assert.equal(kindLabel("SERVICER_WELCOME"), "New servicer's welcome letter");
+  // The sale notice is recorded under Borrower notices with its proof, not from the list.
+  assert.equal(trailingActions({ kind: SALE_NOTICE, owner: "BUYER", status: "DUE" }, "buyer", false).send, false);
+  assert.equal(trailingActions({ kind: SALE_NOTICE, owner: "BUYER", status: "DUE" }, "desk", true).send, false);
+  // A letter listed after its date asks for a record of when it went; one on its own date doesn't.
+  const clocks = noticeClocks({ status: "COMPLETE", closedAt: noon("2026-11-06") }, null);
+  assert.equal(iso(recordOnly({ kind: "GOODBYE_LETTER", status: "DUE", dueAt: day("2026-11-13") }, clocks)), "2026-10-22");
+  assert.equal(recordOnly({ kind: "SERVICER_WELCOME", status: "DUE", dueAt: day("2026-11-21") }, clocks), null);
+  assert.equal(recordOnly({ kind: "GOODBYE_LETTER", status: "RECEIVED", dueAt: day("2026-11-13") }, clocks), null);
+  assert.equal(recordOnly({ kind: "ORIGINAL_NOTE", status: "DUE", dueAt: day("2026-11-13") }, clocks), null);
 });
 
 test("each side may do only its own part", () => {
@@ -226,8 +272,11 @@ test("closing a deal lists its trailing documents once, and a second close adds 
     const kinds = (noteId: string | null) => listed.filter((doc) => doc.noteId === noteId).map((doc) => doc.kind).sort();
     assert.deepEqual(kinds(world.paper.id), ["ALLONGE", "ORIGINAL_NOTE", "RECORDED_ASSIGNMENT", "TITLE_ENDORSEMENT"]);
     assert.deepEqual(kinds(world.enote.id), ["ENOTE_CONTROL", "ENOTE_LOCATION", "RECORDED_ASSIGNMENT"]);
-    assert.deepEqual(kinds(null), ["GOODBYE_LETTER", "HELLO_LETTER", "SERVICER_BOARDED"]);
+    assert.deepEqual(kinds(null), ["GOODBYE_LETTER", "HELLO_LETTER", "SERVICER_BOARDED", "SERVICER_WELCOME"]);
     assert.ok(listed.every((doc) => doc.status === "DUE"));
+    // The goodbye's date fell before the close, so it's due a week on as a record of when it went, not late.
+    const listedGoodbye = listed.find((doc) => doc.kind === "GOODBYE_LETTER")!;
+    assert.ok(listedGoodbye.dueAt.getTime() > Date.now());
 
     await finalizeClosing(opened.id);
     assert.equal((await docsOf(opened.id)).length, listed.length);
@@ -425,6 +474,127 @@ test("a closing that closed before the list existed gets one, with a week's grac
     const tally = await runTrailingDocs(now, { closingIds: [recent.id, old.id] });
     assert.equal(tally.sent, 0);
     assert.equal((await docsOf(recent.id)).length, listed.length);
+  } finally {
+    await cleanWorld(world);
+  }
+});
+
+test("the goodbye listed after its date asks for a record, the letters follow a later servicing date, and the welcome is received", async () => {
+  const world = await makeWorld();
+  try {
+    const closing = await closedClosing(world);
+    await scheduleTrailingDocs(closing.id, { now: noon("2026-11-06") });
+    const find = async (kind: string) => (await docsOf(closing.id)).find((doc) => doc.kind === kind && !doc.noteId)!;
+    // 15 days before the close had passed when the list was built, so it's due a week on.
+    assert.equal(iso((await find("GOODBYE_LETTER")).dueAt), "2026-11-13");
+    assert.equal(iso((await find("SERVICER_WELCOME")).dueAt), "2026-11-21");
+    assert.equal(iso((await find(SALE_NOTICE)).dueAt), "2026-12-06");
+    await remindTrailingDocs(noon("2026-11-10"), { closingIds: [closing.id] });
+    const told = (await notices(world.seller.email, "Trailing documents ·")).map((row) => row.body).join("\n");
+    assert.match(told, /Old servicer's goodbye letter: record when it went by Nov 13, 2026 \(it was due Oct 22, 2026\)/);
+
+    // The parties set the servicing transfer for 1 December: both servicer letters move, still ahead.
+    await prisma.servicerBoarding.create({ data: { closingId: closing.id, servicerName: "New Servicer", boardedAt: day("2026-12-01") } });
+    await syncTrailingDocs(closing.id, noon("2026-11-10"));
+    assert.equal(iso((await find("GOODBYE_LETTER")).dueAt), "2026-11-16");
+    assert.equal(iso((await find("SERVICER_WELCOME")).dueAt), "2026-12-16");
+    // A date moved into the past leaves its item where it is rather than late at once.
+    await prisma.closing.update({ where: { id: closing.id }, data: { transferAt: day("2026-10-01") } });
+    await syncTrailingDocs(closing.id, noon("2026-11-10"));
+    assert.equal(iso((await find(SALE_NOTICE)).dueAt), "2026-12-06");
+
+    // The new servicer's letter date receives the welcome, and the boarding date the boarding.
+    await prisma.servicerBoarding.update({ where: { closingId: closing.id }, data: { helloSentAt: day("2026-12-03") } });
+    assert.equal(await syncTrailingDocs(closing.id, noon("2026-12-04")), 2);
+    const welcome = await find("SERVICER_WELCOME");
+    assert.equal(welcome.status, "RECEIVED");
+    assert.equal(iso(welcome.receivedAt), "2026-12-03");
+  } finally {
+    await cleanWorld(world);
+  }
+});
+
+test("an old HELLO_LETTER row still shows, counts and is received as the sale notice, with its proof", async () => {
+  const world = await makeWorld();
+  try {
+    const closing = await closedClosing(world);
+    // A closing listed before the welcome letter had an item: three letters, the sale notice stored as HELLO_LETTER.
+    await prisma.trailingDoc.createMany({
+      data: [
+        { closingId: closing.id, noteId: null, kind: "GOODBYE_LETTER", owner: "SERVICER", dueAt: day("2026-11-21") },
+        { closingId: closing.id, noteId: null, kind: "HELLO_LETTER", owner: "BUYER", dueAt: day("2026-12-06") },
+        { closingId: closing.id, noteId: null, kind: "SERVICER_BOARDED", owner: "SERVICER", dueAt: day("2026-12-06") },
+      ],
+    });
+    // Building again adds the welcome letter and the loans' items, and no second sale notice.
+    await scheduleTrailingDocs(closing.id, { now: noon("2026-11-09") });
+    const rows = await docsOf(closing.id);
+    assert.equal(rows.filter((doc) => doc.kind === "HELLO_LETTER").length, 1);
+    assert.deepEqual(rows.filter((doc) => !doc.noteId).map((doc) => doc.kind), ["GOODBYE_LETTER", "HELLO_LETTER", "SERVICER_BOARDED", "SERVICER_WELCOME"]);
+    // Recording the notice sent, with its proof, receives the old row and puts the proof on it.
+    await prisma.closing.update({ where: { id: closing.id }, data: { ownerNoticeSentAt: day("2026-11-20"), ownerNoticeProof: "USPS certified 9407 1118 9876 5432 1012 34" } });
+    assert.equal(await syncTrailingDocs(closing.id, noon("2026-11-21")), 1);
+    const sale = (await docsOf(closing.id)).find((doc) => doc.kind === "HELLO_LETTER")!;
+    assert.equal(sale.status, "RECEIVED");
+    assert.equal(iso(sale.receivedAt), "2026-11-20");
+    assert.equal(sale.reference, "USPS certified 9407 1118 9876 5432 1012 34");
+    const audited = await prisma.auditEvent.findFirst({ where: { entityId: closing.id, action: "TRAILING_RECEIVED" }, orderBy: { createdAt: "desc" } });
+    assert.match(audited?.detail ?? "", /^Owner's sale notice to the borrower: from the sale notice recorded/);
+    // The list itself refuses to mark it sent, so the notice and its item can't disagree.
+    await prisma.trailingDoc.update({ where: { id: sale.id }, data: { status: "DUE" } });
+    assert.deepEqual(await recordSent(world.buyer, { docId: sale.id, reference: "Mailed" }), { ok: false, error: "Record the sale notice under Borrower notices, with its proof of mailing." });
+  } finally {
+    await cleanWorld(world);
+  }
+});
+
+test("each exemption marks the sale notice not needed and stops its reminders; clearing one brings it back", async () => {
+  const world = await makeWorld();
+  try {
+    const closing = await closedClosing(world);
+    await scheduleTrailingDocs(closing.id, { now: noon("2026-11-06") });
+    const sale = async () => (await docsOf(closing.id)).find((doc) => doc.kind === SALE_NOTICE)!;
+    for (const exemption of ["ONE_LOAN", "RESOLD_30", "PARTIAL"]) {
+      await prisma.closing.update({ where: { id: closing.id }, data: { ownerNoticeExemption: exemption } });
+      await syncTrailingDocs(closing.id, noon("2026-11-20"));
+      const waived = await sale();
+      assert.equal(waived.status, "WAIVED", exemption);
+      assert.equal(waived.waivedById, null);
+      assert.match(waived.waivedReason ?? "", /^Not needed: /);
+      await prisma.closing.update({ where: { id: closing.id }, data: { ownerNoticeExemption: null } });
+      await syncTrailingDocs(closing.id, noon("2026-11-20"));
+      assert.equal((await sale()).status, "DUE", exemption);
+    }
+    // With an exemption on file the list's reminder leaves the notice out; without one it's there.
+    await prisma.closing.update({ where: { id: closing.id }, data: { ownerNoticeExemption: "PARTIAL" } });
+    await syncTrailingDocs(closing.id, noon("2026-11-20"));
+    await remindTrailingDocs(noon("2026-12-03"), { closingIds: [closing.id] });
+    assert.doesNotMatch((await notices(world.buyer.email, "Trailing documents ·")).map((row) => row.body).join("\n"), /sale notice/);
+    await prisma.closing.update({ where: { id: closing.id }, data: { ownerNoticeExemption: null } });
+    await syncTrailingDocs(closing.id, noon("2026-11-20"));
+    await remindTrailingDocs(noon("2026-12-06"), { closingIds: [closing.id] });
+    assert.match((await notices(world.buyer.email, "Trailing documents ·")).at(-1)!.body, /Owner's sale notice to the borrower: due Dec 6, 2026/);
+    // A waiver the desk made itself never comes back on its own.
+    const item = await sale();
+    assert.equal((await waiveTrailingDoc(world.closer, { docId: item.id, reason: "The buyer's counsel sent it outside the app." })).ok, true);
+    await syncTrailingDocs(closing.id, noon("2026-12-07"));
+    assert.equal((await sale()).status, "WAIVED");
+  } finally {
+    await cleanWorld(world);
+  }
+});
+
+test("UPB's record of the owner's other purchases counts closings within 12 months of the transfer", async () => {
+  const world = await makeWorld();
+  try {
+    const closing = await closedClosing(world);
+    assert.equal(await otherPurchasesOnUpb(closing, world.buyer.id, day("2026-11-06")), 0);
+    await closedClosing(world, { closedAt: noon("2026-03-01") });
+    await closedClosing(world, { closedAt: noon("2025-06-01") });
+    // March is within 12 months of the transfer; the year before last isn't, and an open closing isn't a purchase.
+    await closedClosing(world, { status: "OPEN", closedAt: null });
+    assert.equal(await otherPurchasesOnUpb(closing, world.buyer.id, day("2026-11-06")), 1);
+    assert.equal(await otherPurchasesOnUpb(closing, world.stranger.id, day("2026-11-06")), 0);
   } finally {
     await cleanWorld(world);
   }

@@ -12,7 +12,9 @@ import { bidCapBlock } from "@/lib/bid-caps";
 import { guardDesk, requireDesk } from "@/lib/staff";
 import { notify, notifyDesk } from "@/lib/email";
 import { fillState, resolvePositionAmount } from "@/lib/group-buy";
+import { logSeatEligibility, seatEligibility } from "@/lib/group-eligibility";
 import { notifySeats } from "@/lib/group-events";
+import { trancheBlock } from "@/lib/participation";
 import { prisma } from "@/lib/prisma";
 import { canSeeListing } from "@/lib/private-listings";
 import { seatGate, seatLimitBlock, type ActingUser } from "@/lib/seats";
@@ -42,6 +44,22 @@ async function firmSeatGate(user: User | ActingUser, back: string, amount: numbe
 async function firmSeatRole(user: User | ActingUser, back: string) {
   const gated = await seatGate(user, "bid");
   if (gated) redirect(`${back}?error=${encodeURIComponent(gated)}`);
+}
+
+// A seat meets the eligibility screen a bid does (lib/group-eligibility.ts): a buyer who says they control 350 or
+// more homes acknowledges the ROAD Act notice on the listing before their seat counts. The listing page takes the
+// acknowledgement, and both pages show the notice under #eligibility. The desk has no buyer file, so it passes.
+async function seatEligibilityGate(user: User | ActingUser, listingId: string, noteId: string | null, back: string) {
+  if (user.role === "ADMIN") return null;
+  const check = await seatEligibility(user.id, listingId, noteId);
+  if (check.error) redirect(`${back}?error=${encodeURIComponent(check.error)}#eligibility`);
+  return check;
+}
+
+// A senior and junior group waits on counsel while the participations freeze holds (lib/participation.ts).
+function trancheGate(structure: string, back: string) {
+  const paused = trancheBlock(structure);
+  if (paused) redirect(`${back}?error=${encodeURIComponent(paused)}`);
 }
 
 const OPEN_GROUP = ["GATHERING", "OFFERED", "COUNTERED", "CLOSING"] as const;
@@ -91,6 +109,8 @@ async function publishOffer(groupId: string) {
       data: { inquiryId: group.inquiryId, authorId: lead.userId, kind: "OFFER", amount: group.targetAmount, body: "Every seat reconfirmed the group offer." },
     });
   } else {
+    // A senior and junior group sends no first offer while the freeze holds. The actions refuse it before this.
+    if (trancheBlock(group.structure)) return;
     // A group's first offer is a new bid, so it meets the same rules as one buyer's: the listing or loan must
     // still be for sale and the deadline must not have passed.
     const note = group.noteId ? await prisma.note.findUnique({ where: { id: group.noteId }, select: { tradeStatus: true } }) : null;
@@ -155,11 +175,14 @@ export async function openGroup(formData: FormData) {
   if (user.role !== "ADMIN") await seatRecertGate(user.id);
   const existing = await prisma.groupBuy.findFirst({ where: { listingId, status: { in: [...OPEN_GROUP] } } });
   if (existing) redirect(`/groups/${existing.id}?error=This listing already has a group.`);
+  // Opening a group sets the price its offer goes in at, so the acknowledgement comes first, seat or not.
+  const screen = await seatEligibilityGate(user, listingId, null, back);
   const target = dollars(formData.get("targetAmount"));
   const min = dollars(formData.get("minPosition"));
   const deadline = new Date(String(formData.get("deadline") || ""));
   const structure = String(formData.get("structure") || "PRO_RATA") === "SENIOR_JUNIOR" ? "SENIOR_JUNIOR" : "PRO_RATA";
   const seniorYield = dollars(formData.get("seniorYield"));
+  trancheGate(structure, back);
   if (target == null || target <= 0 || min == null || min <= 0 || min > target) {
     redirect(`${back}?error=Set a target price and a minimum seat below it.`);
   }
@@ -192,6 +215,7 @@ export async function openGroup(formData: FormData) {
       await prisma.groupPosition.create({
         data: { groupId: group.id, userId: user.id, seat: 1, amount: sized, percent: (sized / target) * 100, slice, status: "PLEDGED" },
       });
+      if (screen) await logSeatEligibility(user.id, group.id, screen);
       await publishOffer(group.id);
     }
   }
@@ -207,10 +231,13 @@ export async function joinGroup(formData: FormData) {
   const back = `/groups/${group.id}`;
   if (group.status !== "GATHERING" && group.status !== "COUNTERED") redirect(`${back}?error=This group is not taking seats.`);
   if (group.deadline.getTime() < Date.now() && group.status === "GATHERING") redirect(`${back}?error=The deadline passed. Extend it, bid what is filled, or dissolve.`);
+  // Seats already in a senior and junior group stay and can drop. No new one is taken while the freeze holds.
+  trancheGate(group.structure, back);
   const blocked = await buyerReady(user.id, group.listingId);
   if (blocked) redirect(`${back}?error=${encodeURIComponent(blocked)}`);
   // Taking a seat, or taking a dropped one back at a new size.
   await seatRecertGate(user.id);
+  const screen = await seatEligibilityGate(user, group.listingId, group.noteId, back);
   if (group.positions.some((seat) => seat.userId === user.id && seat.status !== "DROPPED")) redirect(`${back}?error=You already have a seat.`);
   const state = fillState(Number(group.targetAmount), group.positions.map((seat) => ({ amount: Number(seat.amount), status: seat.status })));
   const sized = resolvePositionAmount({
@@ -236,6 +263,7 @@ export async function joinGroup(formData: FormData) {
       data: { groupId: group.id, userId: user.id, seat: seatNo, amount: sized, percent: (sized / Number(group.targetAmount)) * 100, slice, status: "PLEDGED" },
     });
   }
+  if (screen) await logSeatEligibility(user.id, group.id, screen);
   await publishOffer(group.id);
   revalidatePath(`/marketplace/${group.listingId}`);
   redirect(`${back}?notice=joined`);
@@ -244,10 +272,14 @@ export async function joinGroup(formData: FormData) {
 export async function reconfirmSeat(formData: FormData) {
   const user = await requireUser();
   const groupId = String(formData.get("groupId") || "");
-  const seat = await prisma.groupPosition.findFirst({ where: { groupId, userId: user.id, status: "RECONFIRM" } });
+  const seat = await prisma.groupPosition.findFirst({
+    where: { groupId, userId: user.id, status: "RECONFIRM" },
+    include: { group: { select: { listingId: true, noteId: true } } },
+  });
   if (!seat) redirect(`/groups/${groupId}?error=There is nothing to reconfirm.`);
-  // Reconfirming holds the seat to the counter's price.
+  // Reconfirming holds the seat to the counter's price, so it meets the screens a new seat does.
   await seatRecertGate(user.id);
+  await seatEligibilityGate(user, seat.group.listingId, seat.group.noteId, `/groups/${groupId}`);
   await seatCapGate(user.id, Number(seat.amount), `/groups/${groupId}`);
   await firmSeatGate(user, `/groups/${groupId}`, Number(seat.amount));
   await prisma.groupPosition.update({ where: { id: seat.id }, data: { status: "PLEDGED" } });
@@ -313,6 +345,8 @@ export async function bidPartial(formData: FormData) {
   if (!group || (group.openedById !== user.id && user.role !== "ADMIN")) redirect(`/groups/${groupId}?error=Only the opener or the desk can send a partial bid.`);
   guardDesk(user, "sales", `/groups/${groupId}`);
   await firmSeatGate(user, `/groups/${groupId}`);
+  // A partial bid is the group's first offer, which a senior and junior group doesn't send while the freeze holds.
+  trancheGate(group.structure, `/groups/${groupId}`);
   if (!group.allowPartial) redirect(`/groups/${groupId}?error=The seller has not allowed a partial bid.`);
   if (group.status !== "GATHERING") redirect(`/groups/${groupId}?error=${encodeURIComponent("A partial bid goes out only while the group is gathering.")}`);
   // A seat waiting to reconfirm a counter hasn't agreed to it, so it can't be signed up on its behalf.

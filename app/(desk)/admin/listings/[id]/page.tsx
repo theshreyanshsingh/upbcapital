@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { adminUpdateListing, reviewListing } from "@/actions/admin";
+import { clearDuplicateHold } from "@/actions/duplicates";
 import { placeDeskBid } from "@/actions/desk-book";
 import { addEventListing, removeEventListing } from "@/actions/sale-events";
 import { sendToBuyers } from "@/actions/outreach";
@@ -47,7 +48,8 @@ import { launchPending, launchTime } from "@/lib/launch-rules";
 import { completeness, completenessLine, groupByNote, verifiedMap } from "@/lib/loan-file";
 import { RESEND_AFTER, sendAudience } from "@/lib/outreach";
 import { buyerPrice } from "@/lib/offers";
-import { DUPLICATE_REASONS, duplicatesFor } from "@/lib/duplicates";
+import { DUPLICATE_REASONS, duplicateGateMessage, duplicatesFor } from "@/lib/duplicates";
+import { deskMaryland, MARYLAND_HEADING, MARYLAND_PROMPT } from "@/lib/eligibility";
 import { prisma } from "@/lib/prisma";
 import { feeTerms, rateText } from "@/lib/fee-schedule";
 import { sellerTermsLine } from "@/lib/seller-decisions";
@@ -105,8 +107,10 @@ export default async function AdminListingPage({
   const listingHref = `/admin/listings/${listing.id}`;
   // The loan file shows one loan at a time, so a 2,000-loan pool is one set of forms, not 2,000.
   const fileNote = listing.notes.find((item) => item.id === q(query, "loan")) ?? note;
-  // Loans that look like ones on another open listing. A relist is legitimate, so this informs and never blocks.
+  // Loans that look like ones on another open listing. A relist can be legitimate, so the seller isn't blocked, but
+  // approval waits until the desk compares them and clears the match. The action checks the same hold.
   const duplicates = await duplicatesFor(listing.id);
+  const duplicateGate = duplicateGateMessage(duplicates.length, listing.duplicateClearedAt);
   const noteIds = listing.notes.map((item) => item.id);
   const [allCollateral, allRisks, differences] = await Promise.all([
     prisma.collateralItem.findMany({ where: { noteId: { in: noteIds } }, orderBy: [{ sequence: "asc" }, { createdAt: "asc" }] }),
@@ -125,6 +129,7 @@ export default async function AdminListingPage({
     ...fileRisks.map((check) => check.checkedById),
     ...Object.values(verifiedMap(fileNote?.verifiedFields)).map((entry) => entry.by),
     ...differences.flatMap((row) => [row.raisedById, row.resolvedById]),
+    listing.duplicateClearedById,
   ].filter((value): value is string => Boolean(value));
   const deskPeople = deskIds.length
     ? Object.fromEntries((await prisma.user.findMany({ where: { id: { in: [...new Set(deskIds)] } }, select: { id: true, name: true } })).map((person) => [person.id, person.name]))
@@ -320,6 +325,13 @@ export default async function AdminListingPage({
             <input type="hidden" name="listingId" value={listing.id} />
             <label className="block"><span className="text-[13px] text-muted-foreground">Amount</span><input name="amount" inputMode="decimal" className="desk-input mt-2" aria-label="Desk bid amount" required /></label>
             <label className="block"><span className="text-[13px] text-muted-foreground">Note</span><input name="message" className="desk-input mt-2" aria-label="Desk bid note" /></label>
+            {/* The desk buys for its own book, so it sees a buyer's Maryland prompt, and the bid logs it. It informs only. */}
+            {deskMaryland(listing.notes) && (
+              <div className="space-y-1 text-sm leading-relaxed text-muted-foreground sm:col-span-2">
+                <p className="text-[13px] font-semibold text-foreground">{MARYLAND_HEADING}</p>
+                <p>{MARYLAND_PROMPT.join(" ")}</p>
+              </div>
+            )}
             <div className="sm:col-span-2"><SubmitButton className="h-11 text-[13px] font-medium">Bid for the desk</SubmitButton></div>
             {listing.deskBids.length > 0 && <p className="text-sm text-muted-foreground sm:col-span-2">{listing.deskBids.length} desk bid{listing.deskBids.length === 1 ? "" : "s"} on file. Latest {money(Number(listing.deskBids[0].amount))} · {listing.deskBids[0].status.toLowerCase()}.</p>}
           </form>
@@ -382,7 +394,7 @@ export default async function AdminListingPage({
         </form>
 
         {duplicates.length > 0 && (
-          <section className="mt-8 border border-warn/40 bg-warn/5 p-4 rounded-xl" aria-labelledby="duplicates-heading">
+          <section id="duplicates" className="mt-8 scroll-mt-6 border border-warn/40 bg-warn/5 p-4 rounded-xl" aria-labelledby="duplicates-heading">
             <p id="duplicates-heading" className="eyebrow">Possible duplicate</p>
             <ul className="mt-2 space-y-1 text-sm text-foreground">
               {duplicates.map((match) => (
@@ -393,6 +405,34 @@ export default async function AdminListingPage({
                 </li>
               ))}
             </ul>
+            {listing.duplicateClearedAt ? (
+              <div className="mt-3 text-sm text-foreground">
+                <p>
+                  Cleared by {deskPeople[listing.duplicateClearedById ?? ""] ?? "the desk"} on {prettyDate(listing.duplicateClearedAt)}. Approval doesn&apos;t wait on these
+                  matches. A change to what identifies a loan asks the desk again.
+                </p>
+                {listing.duplicateClearNote && <p className="mt-1 text-xs text-muted-foreground">{listing.duplicateClearNote}</p>}
+              </div>
+            ) : (
+              <>
+                <p className="mt-3 text-sm text-foreground">{duplicateGate} The seller could still submit, since a relist of the same loan can be legitimate.</p>
+                {!sells ? (
+                  <p className="mt-2 text-xs text-muted-foreground">The sales side of the desk clears a match.</p>
+                ) : deskDecisionAllowed("APPROVE", listing.status) ? (
+                  <form action={clearDuplicateHold} className="mt-3 grid gap-3">
+                    <input type="hidden" name="listingId" value={listing.id} />
+                    <label className="block">
+                      <span className="text-[13px] text-muted-foreground">What the desk compared</span>
+                      <textarea name="note" required minLength={3} maxLength={500} className="desk-input mt-2 min-h-20" aria-describedby="duplicate-clear-hint" />
+                      <span id="duplicate-clear-hint" className="mt-1 block text-xs text-muted-foreground">
+                        Such as the MIN and the servicer&apos;s record, and why both listings may stand. The note and the listings compared go in the audit log. The seller doesn&apos;t see them.
+                      </span>
+                    </label>
+                    <div><SubmitButton variant="outline" className="h-9 text-[13px] font-medium" pendingLabel="Clearing…">Clear the match</SubmitButton></div>
+                  </form>
+                ) : null}
+              </>
+            )}
           </section>
         )}
 
@@ -564,10 +604,19 @@ export default async function AdminListingPage({
           <div className="grid gap-2">
             {/* Only the decisions that apply from this status; the action checks the same rule. */}
             {deskDecisionAllowed("UNDER_REVIEW", listing.status) && <Decision action="UNDER_REVIEW" label="Mark under review" />}
-            {deskDecisionAllowed("APPROVE", listing.status) && (approvalGate ? (
-              <p role="status" className="rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-foreground">
-                Approval is on hold. {approvalGate} <a href="#differences" className="font-medium text-link">See the differences</a>
-              </p>
+            {deskDecisionAllowed("APPROVE", listing.status) && (approvalGate || duplicateGate ? (
+              <>
+                {approvalGate && (
+                  <p role="status" className="rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-foreground">
+                    Approval is on hold. {approvalGate} <a href="#differences" className="font-medium text-link">See the differences</a>
+                  </p>
+                )}
+                {duplicateGate && (
+                  <p role="status" className="rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-foreground">
+                    Approval is on hold until the desk compares the possible duplicate and clears it. <a href="#duplicates" className="font-medium text-link">See the match</a>
+                  </p>
+                )}
+              </>
             ) : <Decision action="APPROVE" label="Approve · live now, or at the launch time" />)}
             {deskDecisionAllowed("REQUEST_CHANGES", listing.status) && <Decision action="REQUEST_CHANGES" label="Request changes" />}
             {deskDecisionAllowed("REJECT", listing.status) && <Decision action="REJECT" label="Reject" />}

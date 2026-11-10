@@ -1,5 +1,5 @@
 import { audit } from "@/lib/audit";
-import { addDays, calendarDay, transferDate } from "@/lib/borrower-notices";
+import { addDays, borrowerNotices, calendarDay, loansInScope, NOTICE_EXEMPTIONS, noticeClocks, type NoticeClocks } from "@/lib/borrower-notices";
 import { closingLoans } from "@/lib/closing";
 import { buyerSideEmails } from "@/lib/closing-service";
 import { unset } from "@/lib/db-filters";
@@ -15,8 +15,8 @@ import { extensionOf, mimeFor, putBytes, safeBasename } from "@/lib/storage";
 import { uploadProblem } from "@/lib/uploads";
 
 // Trailing documents: what still arrives after a note sale closes. The recorded assignment comes back from the
-// county, the original note and allonge go by courier, a title endorsement follows, the borrower gets the goodbye
-// and hello letters, and the buyer's servicer boards the loan. An eNote moves instead by an eRegistry transfer of
+// county, the original note and allonge go by courier, a title endorsement follows, the borrower gets the new
+// owner's sale notice and the two servicers' letters, and the buyer's servicer boards the loan. An eNote moves instead by an eRegistry transfer of
 // control and location. Each item has an owner and a due date; the owner records how it went, the other side
 // confirms receipt, and the desk can waive one. The kinds and statuses are the schema's, and the sellers' track
 // record reads them for days to collateral delivered, so they stay as they are.
@@ -30,9 +30,18 @@ export const TRAILING_KINDS = [
   "TITLE_ENDORSEMENT",
   "GOODBYE_LETTER",
   "HELLO_LETTER",
+  "SERVICER_WELCOME",
   "SERVICER_BOARDED",
 ] as const;
 export type TrailingKind = (typeof TRAILING_KINDS)[number];
+
+// HELLO_LETTER is the stored key of the new owner's sale notice to the borrower (12 CFR 1026.39). It was named before
+// the new servicer's welcome letter, which servicers call the hello letter, had an item of its own. Every closing's
+// rows so far are stored under it, so the key stays and only its label and hint changed: old rows need no mapping
+// and keep showing and counting as they did. SERVICER_WELCOME is the new servicer's letter.
+export const SALE_NOTICE = "HELLO_LETTER" satisfies TrailingKind;
+// The borrower letters, whose dates come from the rules' clocks rather than the close. lib/borrower-notices.ts.
+const LETTERS = ["GOODBYE_LETTER", SALE_NOTICE, "SERVICER_WELCOME"];
 export type TrailingOwner = "SELLER" | "BUYER" | "DESK" | "SERVICER";
 export type TrailingStatus = "DUE" | "SENT" | "RECEIVED" | "WAIVED";
 
@@ -43,8 +52,9 @@ export const KIND_LABELS: Record<TrailingKind, string> = {
   ENOTE_LOCATION: "eRegistry transfer of location",
   RECORDED_ASSIGNMENT: "Recorded assignment",
   TITLE_ENDORSEMENT: "Title endorsement",
-  GOODBYE_LETTER: "Goodbye letter",
-  HELLO_LETTER: "Hello letter",
+  GOODBYE_LETTER: "Old servicer's goodbye letter",
+  HELLO_LETTER: "Owner's sale notice to the borrower",
+  SERVICER_WELCOME: "New servicer's welcome letter",
   SERVICER_BOARDED: "Servicer boarding",
 };
 
@@ -55,8 +65,9 @@ export const KIND_HINTS: Record<TrailingKind, string> = {
   ENOTE_LOCATION: "The eRegistry names the eVault that holds the authoritative copy.",
   RECORDED_ASSIGNMENT: "The assignment of the mortgage, back from the county with its recording.",
   TITLE_ENDORSEMENT: "The title company's endorsement of the lender's policy to the buyer.",
-  GOODBYE_LETTER: "The old servicer's notice to the borrower that servicing moves (12 CFR 1024.33).",
-  HELLO_LETTER: "The new owner's notice of sale to the borrower (12 CFR 1026.39). Recording the sale notice receives it.",
+  GOODBYE_LETTER: "The old servicer tells the borrower that servicing moves, at least 15 days before the servicing transfer (12 CFR 1024.33). The old servicer's letter date under Servicer boarding receives it.",
+  HELLO_LETTER: "The new owner tells the borrower who owns the loan now, within 30 days after the date of transfer (12 CFR 1026.39). Record it under Borrower notices with its proof of mailing, or why it isn't owed.",
+  SERVICER_WELCOME: "The new servicer tells the borrower where to pay, no more than 15 days after the servicing transfer (12 CFR 1024.33). The new servicer's letter date under Servicer boarding receives it.",
   SERVICER_BOARDED: "The buyer's servicer has the loan on its system. A boarding date on file receives it.",
 };
 
@@ -70,13 +81,13 @@ export function trailingStatusLabel(status: string) {
   return (STATUS_LABELS as Record<string, string>)[status] ?? status;
 }
 
-// Days after closing each is due. The recorded assignment waits on the county, so the desk can set its own.
+// Days after closing each is due. The recorded assignment waits on the county, so the desk can set its own. The
+// borrower letters run on the rules' own clocks instead: the sale notice from the date of transfer, and the servicers'
+// letters either side of the servicing transfer. lib/borrower-notices.ts.
 export const NOTE_DAYS = 10;
 export const ENOTE_BUSINESS_DAYS = 2;
 export const DEFAULT_ASSIGNMENT_DAYS = 90;
 export const TITLE_DAYS = 30;
-export const GOODBYE_DAYS = 15;
-export const HELLO_DAYS = 30;
 export const BOARDING_DAYS = 30;
 export const REMIND_BEFORE_DAYS = 3;
 export const ESCALATE_DAYS = 14;
@@ -107,11 +118,30 @@ export type PlannedDoc = { kind: TrailingKind; owner: TrailingOwner; noteId: str
 
 type PlanLoan = { id: string; eNote?: boolean | null; servicerName?: string | null };
 
+// The date the rules set for a borrower letter's item, from the closing's dates as they stand. Null for the rest.
+export function letterDue(kind: string, clocks: NoticeClocks) {
+  if (kind === SALE_NOTICE) return clocks.saleDue;
+  if (kind === "GOODBYE_LETTER") return clocks.goodbyeDue;
+  if (kind === "SERVICER_WELCOME") return clocks.helloDue;
+  return null;
+}
+
+// A letter whose rule date had passed when it was listed is due later, as a record of when it went: the old
+// servicer's letter most often, since it falls before the close. This is that rule date, or null when the item
+// runs on its own date.
+export function recordOnly(doc: { kind: string; status: string; dueAt: Date }, clocks: NoticeClocks) {
+  const rule = doc.status === "DUE" ? letterDue(doc.kind, clocks) : null;
+  return rule && rule.getTime() < calendarDay(doc.dueAt).getTime() ? rule : null;
+}
+
 // What a closing owes after it closes. Each paper loan: the note and allonge by courier, the recorded assignment,
 // and a title endorsement when a title policy is in its collateral file. An eNote swaps the note and allonge for
-// the two eRegistry transfers. The closing: the borrower's goodbye and hello letters and the servicer boarding.
-export function planTrailingDocs(input: { closedAt: Date; transferAt?: Date | null; loans: PlanLoan[]; titlePolicies: Set<string>; assignmentDays: number }): PlannedDoc[] {
+// the two eRegistry transfers. The closing: the new owner's sale notice, the old servicer's goodbye and the new
+// servicer's welcome letters, and the servicer boarding. `servicingAt` is the boarding form's servicing transfer
+// date; without one the date of transfer stands in, and without that the close.
+export function planTrailingDocs(input: { closedAt: Date; transferAt?: Date | null; servicingAt?: Date | null; loans: PlanLoan[]; titlePolicies: Set<string>; assignmentDays: number }): PlannedDoc[] {
   const closed = calendarDay(input.closedAt);
+  const clocks = noticeClocks({ status: "COMPLETE", closedAt: closed, transferAt: input.transferAt }, input.servicingAt ? { boardedAt: input.servicingAt } : null);
   const docs: PlannedDoc[] = [];
   for (const loan of input.loans) {
     if (isENote(loan)) {
@@ -124,11 +154,14 @@ export function planTrailingDocs(input: { closedAt: Date; transferAt?: Date | nu
     docs.push({ kind: "RECORDED_ASSIGNMENT", owner: "SELLER", noteId: loan.id, dueAt: addDays(closed, input.assignmentDays) });
     if (input.titlePolicies.has(loan.id)) docs.push({ kind: "TITLE_ENDORSEMENT", owner: "SELLER", noteId: loan.id, dueAt: addDays(closed, TITLE_DAYS) });
   }
-  // A loan the seller has a servicer for gets its goodbye letter from that servicer, on the seller's side.
+  // A loan the seller has a servicer for gets its goodbye letter from that servicer, on the seller's side. The sale
+  // notice is the new owner's, so the buyer side's, which on a desk purchase is the desk. The welcome letter comes
+  // from the buyer's new servicer.
   const serviced = input.loans.some((loan) => Boolean(loan.servicerName?.trim()));
   docs.push(
-    { kind: "GOODBYE_LETTER", owner: serviced ? "SERVICER" : "SELLER", noteId: null, dueAt: addDays(closed, GOODBYE_DAYS) },
-    { kind: "HELLO_LETTER", owner: "BUYER", noteId: null, dueAt: addDays(input.transferAt ? calendarDay(input.transferAt) : closed, HELLO_DAYS) },
+    { kind: "GOODBYE_LETTER", owner: serviced ? "SERVICER" : "SELLER", noteId: null, dueAt: clocks.goodbyeDue! },
+    { kind: SALE_NOTICE, owner: "BUYER", noteId: null, dueAt: clocks.saleDue! },
+    { kind: "SERVICER_WELCOME", owner: "SERVICER", noteId: null, dueAt: clocks.helloDue! },
     { kind: "SERVICER_BOARDED", owner: "SERVICER", noteId: null, dueAt: addDays(closed, BOARDING_DAYS) },
   );
   return docs;
@@ -137,12 +170,14 @@ export function planTrailingDocs(input: { closedAt: Date; transferAt?: Date | nu
 const slot = (doc: { kind: string; noteId: string | null }) => `${doc.kind}:${doc.noteId ?? ""}`;
 
 // Builds the list for a closed closing. A second call adds only what is missing, so the close, the backfill and a
-// retry can all call it. `notBefore` holds every due date to that day or later.
+// retry can all call it. `notBefore` holds every due date to that day or later. Without it, a date already past
+// when the list is built is due a week on: the item asks for a record of when it went, and isn't late from the day
+// it appears.
 export async function scheduleTrailingDocs(closingId: string, options: { notBefore?: Date; now?: Date } = {}) {
   const now = options.now ?? new Date();
   const closing = await prisma.closing.findUnique({
     where: { id: closingId },
-    include: { listing: { include: { notes: true } }, trailingDocs: { select: { kind: true, noteId: true } } },
+    include: { listing: { include: { notes: true } }, boarding: { select: { boardedAt: true } }, trailingDocs: { select: { kind: true, noteId: true } } },
   });
   if (!closing || closing.status !== "COMPLETE") return { created: 0 };
   const loans = closingLoans(closing, closing.listing.notes);
@@ -152,14 +187,17 @@ export async function scheduleTrailingDocs(closingId: string, options: { notBefo
   ]);
   const planned = planTrailingDocs({
     closedAt: closing.closedAt ?? now,
-    transferAt: transferDate(closing),
+    transferAt: closing.transferAt,
+    servicingAt: closing.boarding?.boardedAt,
     loans,
     titlePolicies: new Set(policies.map((row) => row.noteId)),
     assignmentDays: assignmentDays(settings.trailingDocDays),
   });
   const have = new Set(closing.trailingDocs.map(slot));
   const floor = options.notBefore ? calendarDay(options.notBefore) : null;
-  const fresh = planned.filter((doc) => !have.has(slot(doc))).map((doc) => ({ ...doc, closingId, dueAt: floor && doc.dueAt < floor ? floor : doc.dueAt }));
+  const today = calendarDay(now);
+  const dueFor = (dueAt: Date) => (floor && dueAt < floor ? floor : dueAt < today ? addDays(now, BACKFILL_GRACE_DAYS) : dueAt);
+  const fresh = planned.filter((doc) => !have.has(slot(doc))).map((doc) => ({ ...doc, closingId, dueAt: dueFor(doc.dueAt) }));
   if (fresh.length) await prisma.trailingDoc.createMany({ data: fresh });
   if (fresh.length) await dropDuplicates(closingId);
   await syncTrailingDocs(closingId, now);
@@ -216,12 +254,12 @@ export async function backfillTrailingDocs(now = new Date(), options: { closingI
 export type Side = "seller" | "buyer" | "desk";
 
 // Who delivers it. A servicer isn't on the desk: the seller's old servicer writes the goodbye, and the buyer's new one
-// boards the loan.
+// writes the welcome and boards the loan.
 export function deliveringSide(doc: { kind: string; owner: string }): Side {
   if (doc.owner === "SELLER") return "seller";
   if (doc.owner === "BUYER") return "buyer";
   if (doc.owner === "DESK") return "desk";
-  return doc.kind === "SERVICER_BOARDED" ? "buyer" : "seller";
+  return doc.kind === "SERVICER_BOARDED" || doc.kind === "SERVICER_WELCOME" ? "buyer" : "seller";
 }
 
 // Who confirms it arrived. What the seller side sends, the buyer receives. What the buyer side does goes to the
@@ -246,12 +284,13 @@ export function viewerSide(viewer: { id: string; role: string }, parties: Partie
 type DocState = { kind: string; owner: string; status: string };
 
 // The actions this side may take on an item. `runs` is a desk member whose role covers closings; any other desk
-// role reads the list.
+// role reads the list. The sale notice is recorded as sent under Borrower notices, with its proof, so the notice
+// and its item can't disagree.
 export function trailingActions(doc: DocState, side: Side | null, runs: boolean) {
   const open = doc.status === "DUE" || doc.status === "SENT";
   const desk = side === "desk" && runs;
   return {
-    send: open && (desk || side === deliveringSide(doc)),
+    send: open && doc.kind !== SALE_NOTICE && (desk || side === deliveringSide(doc)),
     confirm: open && (desk || side === receivingSide(doc)),
     waive: desk && doc.status !== "WAIVED",
     // The buyer names the MERS Org ID an eNote moves to.
@@ -421,7 +460,7 @@ async function tellSide(closing: Item["closing"], side: Side, subject: string, b
 
 // A step on the closed file holds the upload, so the closing-files route serves it to the same people as the
 // closing's own files.
-const FILE_STEP: Record<string, string> = { RECORDED_ASSIGNMENT: "ASSIGNMENT", ALLONGE: "ASSIGNMENT", GOODBYE_LETTER: "CLOSED", HELLO_LETTER: "CLOSED", SERVICER_BOARDED: "CLOSED" };
+const FILE_STEP: Record<string, string> = { RECORDED_ASSIGNMENT: "ASSIGNMENT", ALLONGE: "ASSIGNMENT", GOODBYE_LETTER: "CLOSED", HELLO_LETTER: "CLOSED", SERVICER_WELCOME: "CLOSED", SERVICER_BOARDED: "CLOSED" };
 
 async function storeFile(item: Item, actorId: string, file: NonNullable<SentInput["file"]>): Promise<Outcome<string>> {
   const problem = uploadProblem(file.name, file.bytes.length, file.bytes);
@@ -444,6 +483,7 @@ export async function recordSent(actor: Actor, input: SentInput, now = new Date(
   if (found.error !== null) return fail(found.error);
   const { item, side, runs } = found;
   const { doc } = item;
+  if (doc.kind === SALE_NOTICE) return fail("Record the sale notice under Borrower notices, with its proof of mailing.");
   if (!trailingActions(doc, side, runs).send) {
     return fail(doc.status === "RECEIVED" || doc.status === "WAIVED" ? "That item is already received or waived." : `The ${sideWord(deliveringSide(doc))} records this one.`);
   }
@@ -529,29 +569,88 @@ export async function recordTransferee(actor: Actor, input: { docId: string; org
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Records kept elsewhere receive their items: the sale notice the buyer recorded is the hello letter, the boarding
-// date is the servicer boarding, and the old servicer's letter date is the goodbye.
+// Records kept elsewhere receive their items: the sale notice recorded under Borrower notices, the boarding date,
+// and the servicers' letter dates on the boarding form. A sale notice the notice rules say isn't owed, because no
+// loan is in scope or the owner recorded why, is marked not needed, and comes back if that changes. The letters'
+// due dates follow the dates on file while the new date is still ahead.
+
+const NOT_NEEDED = "Not needed:";
 
 export async function syncTrailingDocs(closingId: string, now = new Date()) {
-  const closing = await prisma.closing.findUnique({ where: { id: closingId }, select: { id: true, status: true, ownerNoticeSentAt: true, boarding: { select: { boardedAt: true, goodbyeSentAt: true } } } });
+  const closing = await prisma.closing.findUnique({
+    where: { id: closingId },
+    select: {
+      id: true,
+      status: true,
+      closedAt: true,
+      transferAt: true,
+      noteId: true,
+      noteIds: true,
+      loanPurpose: true,
+      ownerNoticeSentAt: true,
+      ownerNoticeProof: true,
+      ownerNoticeExemption: true,
+      listing: { select: { notes: { select: { id: true, occupancy: true, borrowerName: true } } } },
+      boarding: { select: { boardedAt: true, goodbyeSentAt: true, helloSentAt: true } },
+    },
+  });
   if (!closing || closing.status !== "COMPLETE") return 0;
+  const inScope = loansInScope(closingLoans(closing, closing.listing.notes), closing.loanPurpose).length;
+  const sale = borrowerNotices(closing, closing.boarding, inScope, now).sale;
+  await redateLetters(closingId, noticeClocks(closing, closing.boarding), now);
+
+  // A sale notice marked not needed by these rules, never one the desk waived, comes back once it's owed again.
+  let reopened = 0;
+  if (sale.state !== "not_needed") {
+    const back = await prisma.trailingDoc.updateMany({ where: { closingId, kind: SALE_NOTICE, status: "WAIVED", ...unset("waivedById") }, data: { status: "DUE", waivedReason: null } });
+    reopened = back.count;
+    if (reopened) {
+      await prisma.closing.updateMany({ where: { id: closingId }, data: { postCloseCompleteAt: null } });
+      await audit(null, "TRAILING_REOPENED", "closing", closingId, `${kindLabel(SALE_NOTICE)}: owed again`);
+    }
+  }
+
   const boardedAt = closing.boarding?.boardedAt && closing.boarding.boardedAt.getTime() <= now.getTime() ? closing.boarding.boardedAt : null;
-  const records: [TrailingKind, Date | null | undefined, string][] = [
-    ["HELLO_LETTER", closing.ownerNoticeSentAt, "the sale notice recorded"],
-    ["SERVICER_BOARDED", boardedAt, "the boarding date on file"],
-    ["GOODBYE_LETTER", closing.boarding?.goodbyeSentAt, "the old servicer's letter date on file"],
+  const proof = closing.ownerNoticeProof?.trim() || "";
+  const records: [TrailingKind, Date | null | undefined, string, Record<string, unknown>][] = [
+    [SALE_NOTICE, closing.ownerNoticeSentAt, "the sale notice recorded", { sentAt: closing.ownerNoticeSentAt, ...(proof ? { reference: proof } : {}) }],
+    ["SERVICER_BOARDED", boardedAt, "the boarding date on file", {}],
+    ["GOODBYE_LETTER", closing.boarding?.goodbyeSentAt, "the old servicer's letter date on file", {}],
+    ["SERVICER_WELCOME", closing.boarding?.helloSentAt, "the new servicer's letter date on file", {}],
   ];
   let received = 0;
-  for (const [kind, at, source] of records) {
+  for (const [kind, at, source, extra] of records) {
     if (!at) continue;
-    const moved = await prisma.trailingDoc.updateMany({ where: { closingId, kind, status: { in: ["DUE", "SENT"] } }, data: { status: "RECEIVED", receivedAt: at } });
+    const moved = await prisma.trailingDoc.updateMany({ where: { closingId, kind, status: { in: ["DUE", "SENT"] } }, data: { status: "RECEIVED", receivedAt: at, ...extra } });
     if (moved.count) {
       received += moved.count;
       await audit(null, "TRAILING_RECEIVED", "closing", closingId, `${kindLabel(kind)}: from ${source}, ${prettyDate(at)}`);
     }
   }
-  if (received) await completeIfDone(closingId, now);
+
+  let waived = 0;
+  if (sale.state === "not_needed") {
+    const why = sale.exemption
+      ? `${NOT_NEEDED} ${NOTICE_EXEMPTIONS[sale.exemption].label.toLowerCase()}, as the new owner recorded under Borrower notices.`
+      : `${NOT_NEEDED} no loan on this closing looks in scope for the sale notice.`;
+    const moved = await prisma.trailingDoc.updateMany({ where: { closingId, kind: SALE_NOTICE, status: { in: ["DUE", "SENT"] } }, data: { status: "WAIVED", waivedById: null, waivedReason: why } });
+    waived = moved.count;
+    if (waived) await audit(null, "TRAILING_WAIVED", "closing", closingId, `${kindLabel(SALE_NOTICE)}: ${why}`);
+  }
+  if (received || waived) await completeIfDone(closingId, now);
   return received;
+}
+
+// A letter still due follows its rule date when that date is today or later. One whose date has passed is left
+// where it is, asking for a record of when the letter went, so moving a date never makes an item late at once.
+async function redateLetters(closingId: string, clocks: NoticeClocks, now: Date) {
+  const rows = await prisma.trailingDoc.findMany({ where: { closingId, kind: { in: LETTERS }, status: "DUE" }, select: { id: true, kind: true, dueAt: true } });
+  const today = calendarDay(now).getTime();
+  for (const row of rows) {
+    const due = letterDue(row.kind, clocks);
+    if (!due || due.getTime() < today || due.getTime() === calendarDay(row.dueAt).getTime()) continue;
+    await prisma.trailingDoc.updateMany({ where: { id: row.id, status: "DUE" }, data: { dueAt: due } });
+  }
 }
 
 // Once every item is received or waived, the file is complete. Claimed once, so both sides hear once.
@@ -633,13 +732,30 @@ export async function remindTrailingDocs(now = new Date(), options: { closingIds
     if (!reminded.length && !escalated.length) return false;
     const closing = await prisma.closing.findUnique({
       where: { id: closingId },
-      select: { id: true, deskBidId: true, deskOwnerId: true, listing: { select: { title: true, seller: { select: { email: true } }, notes: { select: { id: true, streetAddress: true, city: true, state: true } } } } },
+      select: {
+        id: true,
+        status: true,
+        closedAt: true,
+        transferAt: true,
+        deskBidId: true,
+        deskOwnerId: true,
+        boarding: { select: { boardedAt: true } },
+        listing: { select: { title: true, seller: { select: { email: true } }, notes: { select: { id: true, streetAddress: true, city: true, state: true } } } },
+      },
     });
     if (!closing) return false;
+    const clocks = noticeClocks(closing, closing.boarding);
     const line = (doc: (typeof items)[number]) => {
       const loan = loanName(closing.listing.notes, doc.noteId);
       const late = daysLate(doc.dueAt, now);
-      return `${kindLabel(doc.kind)}${loan ? ` · ${loan}` : ""}: ${late > 0 ? `late, was due ${prettyDate(doc.dueAt)}` : `due ${prettyDate(doc.dueAt)}`}`;
+      // A letter whose date had passed when it was listed asks for when it went, not for the letter.
+      const rule = recordOnly(doc, clocks);
+      const when = rule
+        ? `record when it went${late > 0 ? `, asked for by ${prettyDate(doc.dueAt)}` : ` by ${prettyDate(doc.dueAt)}`} (it was due ${prettyDate(rule)})`
+        : late > 0
+          ? `late, was due ${prettyDate(doc.dueAt)}`
+          : `due ${prettyDate(doc.dueAt)}`;
+      return `${kindLabel(doc.kind)}${loan ? ` · ${loan}` : ""}: ${when}`;
     };
     const subject = `Trailing documents · ${closing.listing.title}`;
     for (const side of ["seller", "buyer", "desk"] as const) {

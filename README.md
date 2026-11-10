@@ -134,6 +134,8 @@ Files go to S3-compatible storage when `S3_BUCKET`, `S3_ACCESS_KEY_ID`, and `S3_
 
 See `.env.example`. In production `DATABASE_URL` is the MongoDB Atlas connection string for UPB's own database, `upb_capital`, on the SynergyFund cluster. A release build refuses a URL with no database name or one that names `synergifund`.
 
+`HOSTING_PROVIDER` names the host the servers run with, for example `Amazon Web Services`, in the outside services on `/security`. On Vercel the `VERCEL` variable names it instead. Left blank anywhere else, the page says the host isn't named.
+
 ## Deploy
 
 Docker:

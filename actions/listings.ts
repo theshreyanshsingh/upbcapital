@@ -243,7 +243,9 @@ export async function updateOwnNote(listingId: string, formData: FormData) {
     moved ||
     Number(note.upb) !== Number(data.upb) ||
     (data.loanNumber !== undefined && data.loanNumber !== note.loanNumber) ||
-    (data.servicerName !== undefined && data.servicerName !== note.servicerName);
+    (data.servicerName !== undefined && data.servicerName !== note.servicerName) ||
+    (data.mersMin !== undefined && data.mersMin !== note.mersMin) ||
+    data.borrowerName !== note.borrowerName;
   await prisma.note.update({
     where: { id: note.id },
     data: moved ? { ...data, latitude: null, longitude: null, avmValue: null, avmProvider: "", avmAsOf: null } : data,

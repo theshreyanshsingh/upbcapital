@@ -497,6 +497,8 @@ export default async function ListingPage({
                   canStart={listing.status === "APPROVED" && wholeOpen && (user.role === "ADMIN" || (user.role === "BUYER" && verified && unlocked))}
                   viewer={{ id: user.id, role: user.role }}
                   capLine={standing?.cap?.line ?? null}
+                  acknowledgeFirst={acknowledgeFirst}
+                  notices={notices}
                   group={liveGroup ? {
                     id: liveGroup.id,
                     status: liveGroup.status,

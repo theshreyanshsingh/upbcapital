@@ -2,6 +2,7 @@ import { requestAccountDeletion } from "@/actions/account-deletion";
 import { SubmitButton } from "@/components/submit-button";
 import { demoSeat } from "@/lib/deploy";
 import { prettyDate } from "@/lib/format";
+import { SANCTIONS_RECORD_YEARS } from "@/lib/ofac";
 import { prisma } from "@/lib/prisma";
 import { getSettings } from "@/lib/settings";
 
@@ -16,7 +17,7 @@ export async function AccountDeletion({ user }: { user: { id: string; email: str
     <section id="delete" aria-labelledby="delete-heading" className="mt-8 scroll-mt-6 border border-border p-5 rounded-xl">
       <p id="delete-heading" className="eyebrow">Delete the account</p>
       <p className="mt-2 text-sm text-muted-foreground">
-        The desk removes your name, email, phone and company, signs out every device, and deletes your saved searches, buy boxes, API keys and webhooks. Deal records stay for {settings.retentionYears} years because the law requires it: closings, signed papers, NDAs and the audit log. An open bid, closing, listing or group seat has to finish first.
+        The desk removes your name, email, phone and company, signs out every device, and deletes your saved searches, buy boxes, API keys and webhooks. Deal records stay for {settings.retentionYears} years because the law requires it: closings, signed papers, NDAs and the audit log. Sanctions screening records stay for at least {SANCTIONS_RECORD_YEARS} years even when that period is shorter, which UPB reads OFAC&apos;s rules to require. If a closing names you, the compliance record behind it stays with that deal too: the entity, certification, proof of funds and identity check on your file, and the owners you listed. An open bid, closing, listing or group seat has to finish first.
       </p>
       {latest?.status === "REFUSED" && (
         <p className="mt-3 text-sm text-foreground">The desk refused your request of {prettyDate(latest.requestedAt)}: {latest.note}</p>

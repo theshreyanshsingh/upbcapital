@@ -10,6 +10,7 @@ import { money, prettyDate, q } from "@/lib/format";
 import { bookReturn } from "@/lib/holdings";
 import { prisma } from "@/lib/prisma";
 import { unset } from "@/lib/db-filters";
+import { deskMaryland, MARYLAND_BRIEF } from "@/lib/eligibility";
 import { deskCan } from "@/lib/staff";
 
 export const metadata = { title: "Desk book" };
@@ -24,7 +25,7 @@ export default async function DeskBookPage({
   const params = await searchParams;
   await ensureAcceptedDeskClosings();
   const [bids, holdings, closings, tasks] = await Promise.all([
-    prisma.deskBid.findMany({ where: { status: "OPEN" }, include: { listing: true }, orderBy: { createdAt: "desc" } }),
+    prisma.deskBid.findMany({ where: { status: "OPEN" }, include: { listing: { include: { notes: { select: { id: true, state: true } } } } }, orderBy: { createdAt: "desc" } }),
     prisma.deskHolding.findMany({ include: { payments: true, listing: true }, orderBy: { acquiredAt: "desc" } }),
     prisma.closing.findMany({ where: { deskBidId: { not: null } }, select: { id: true, listingId: true, noteId: true, status: true } }),
     prisma.lossTask.findMany({
@@ -57,9 +58,10 @@ export default async function DeskBookPage({
                   <input type="hidden" name="id" value={bid.id} />
                   <input type="hidden" name="decision" value="ACCEPTED" />
                   <input name="consent" className="desk-input w-56" aria-label={`How the seller agreed to the bid on ${bid.listing.title}`} placeholder="How the seller agreed" required minLength={3} />
+                  {/* The desk is the buyer, so a Maryland loan carries a buyer's Maryland prompt, and taking it logs that. */}
                   <ConfirmSubmit
                     title={`Buy ${bid.listing.title} at ${money(Number(bid.amount))}?`}
-                    consequence="This opens a closing with the desk as the buyer, puts the loan or listing in contract and declines the other bids on it. The seller's agreement you typed is recorded with it."
+                    consequence={`This opens a closing with the desk as the buyer, puts the loan or listing in contract and declines the other bids on it. The seller's agreement you typed is recorded with it.${deskMaryland(bid.noteId ? bid.listing.notes.filter((note) => note.id === bid.noteId) : bid.listing.notes) ? ` ${MARYLAND_BRIEF}` : ""}`}
                     typed={[["Seller's agreement", "consent", "text"]]}
                     confirmLabel="Take it and open the closing"
                     pendingLabel="Opening…"

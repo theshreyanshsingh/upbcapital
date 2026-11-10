@@ -13,7 +13,7 @@ import { loanPriceProblem, standingLoanPrices, sumPrices, type LoanPrices } from
 import { bidExpired, buyerPrice, withdrawBlock, type OfferMoney } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
 import { awardBlock } from "@/lib/private-listings";
-import { OFAC_HOLD_MESSAGE, ofacHold } from "@/lib/screening";
+import { OFAC_HOLD_MESSAGE, awardScreenBlock, ofacHold } from "@/lib/screening";
 import { strikeStanding } from "@/lib/strikes";
 import { notifyWatchers } from "@/lib/watchers";
 
@@ -233,6 +233,10 @@ export async function checkAward(inquiryId: string, part?: { noteIds: string[] }
   // The papers name the entity the bid is for, so it must still be one the desk approved.
   const entityBlock = await entityAwardBlock(offer);
   if (entityBlock) return { error: entityBlock } as const;
+  // The holds above come from earlier screens. The winner and the entity the papers name are screened again against
+  // today's list, and a new match or a list that can't be read stops the award (lib/screening.ts).
+  const screenBlock = await awardScreenBlock(offer);
+  if (screenBlock) return { error: screenBlock } as const;
   // A buyer or seat holder the seller now excludes, or a private listing no longer shows to, can't win it unless
   // already a closing party on it. The desk reads why; the buyer is never told (lib/private-listings.ts).
   const hidden = await awardBlock(offer, seats.map((seat) => seat.userId));

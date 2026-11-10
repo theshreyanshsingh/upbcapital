@@ -83,10 +83,18 @@ export async function removePayoutAccountAction(formData: FormData) {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// The desk's call-back and its four-eyes decision, from the closing page.
+// The desk's call-back and its four-eyes decision, from the closing page, or the payouts page for a broker's account.
+
+const PAYOUTS_PAGE = "/admin/payouts";
+
+function deskPage(formData: FormData) {
+  return formData.get("back") === PAYOUTS_PAGE ? PAYOUTS_PAGE : closingPage(formData.get("closingId"));
+}
+
+const payoutAnchor = (page: string) => (page === PAYOUTS_PAGE ? "#broker-accounts" : "#payout");
 
 export async function logPayoutCallbackAction(formData: FormData) {
-  const page = closingPage(formData.get("closingId"));
+  const page = deskPage(formData);
   const actor = await requireDesk("approveWires", page);
   const logged = await logCallback(actor, {
     accountId: String(formData.get("accountId") || ""),
@@ -95,23 +103,24 @@ export async function logPayoutCallbackAction(formData: FormData) {
     note: String(formData.get("note") || ""),
     independent: String(formData.get("independent") || "") === "yes",
   });
-  if (logged.error !== null) back(page, "error", logged.error, "#payout");
+  if (logged.error !== null) back(page, "error", logged.error, payoutAnchor(page));
   revalidatePath(page);
-  back(page, "notice", "Call-back logged. Another desk member who approves wires verifies the account.", "#payout");
+  back(page, "notice", "Call-back logged. Another desk member who approves wires verifies the account.", payoutAnchor(page));
 }
 
 export async function decidePayoutAccountAction(formData: FormData) {
-  const page = closingPage(formData.get("closingId"));
+  const page = deskPage(formData);
   const actor = await requireDesk("approveWires", page);
   const decided = await decidePayoutAccount(actor, {
     accountId: String(formData.get("accountId") || ""),
     decision: String(formData.get("decision") || ""),
     note: String(formData.get("note") || ""),
+    reason: String(formData.get("reason") || ""),
   });
-  if (decided.error !== null) back(page, "error", decided.error, "#payout");
+  if (decided.error !== null) back(page, "error", decided.error, payoutAnchor(page));
   revalidatePath(page);
   revalidatePath(ACCOUNT_PAGE);
-  back(page, "notice", decided.status === "VERIFIED" ? "The payout account is verified. The seller was told." : "The payout account is rejected. The seller was told.", "#payout");
+  back(page, "notice", decided.status === "VERIFIED" ? "The payout account is verified. The account holder was told." : "The payout account is rejected. The account holder was told.", payoutAnchor(page));
 }
 
 // ---------------------------------------------------------------------------------------------------------------

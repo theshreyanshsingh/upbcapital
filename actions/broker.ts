@@ -11,6 +11,7 @@ import { notify, notifyDesk } from "@/lib/email";
 import { flagDuplicates } from "@/lib/duplicates";
 import { rescoreListing } from "@/lib/matching";
 import { OFAC_DOWN_MESSAGE, OFAC_HOLD_MESSAGE, ofacHold, screenInBackground, screenListing, screenUser } from "@/lib/screening";
+import { approveBrokerFee, recordBrokerFeePaid } from "@/lib/payout-accounts";
 import { prisma } from "@/lib/prisma";
 import { extensionOf, mimeFor, putBytes, safeBasename } from "@/lib/storage";
 import { parseTapeBuffer, normalizeTapeRows } from "@/lib/tape";
@@ -390,16 +391,22 @@ export async function setBrokerStatus(formData: FormData) {
   redirect("/admin/brokers?notice=updated");
 }
 
+// A broker fee leaves in two steps by two desk members (lib/payout-accounts.ts). One who approves wires approves it to
+// a verified payout account of the broker's, after a fresh sanctions screen; another who runs closings records it
+// paid once the money has gone.
+export async function approveBrokerFeeAction(formData: FormData) {
+  const actor = await requireDesk("approveWires", "/admin/payouts");
+  const approved = await approveBrokerFee(actor, { feeId: String(formData.get("feeId") || ""), accountId: String(formData.get("accountId") || "") });
+  if (approved.error !== null) redirect(`/admin/payouts?error=${encodeURIComponent(approved.error)}`);
+  revalidatePath("/admin/payouts");
+  redirect(`/admin/payouts?notice=${encodeURIComponent("Approved. Another desk member records it paid once the money has gone.")}`);
+}
+
 export async function markBrokerFeePaid(formData: FormData) {
-  const admin = await requireDesk("closings", "/admin/payouts");
-  const feeId = String(formData.get("feeId") || "");
-  const fee = await prisma.brokerFee.findUnique({ where: { id: feeId }, include: { broker: true, closing: { include: { listing: true } } } });
-  if (!fee || fee.status !== "OWED") redirect("/admin/payouts?error=That fee is not waiting.");
-  await prisma.brokerFee.update({ where: { id: fee.id }, data: { status: "PAID", paidAt: new Date() } });
-  await notify(fee.broker.email, "Broker fee marked paid", `The desk marked $${(fee.amountCents / 100).toFixed(2)} paid on ${fee.closing.listing.title}.`);
-  await prisma.auditEvent.create({
-    data: { actorId: admin.id, action: "broker.paid", entityType: "BrokerFee", entityId: fee.id, detail: fee.broker.email },
-  });
+  const actor = await requireDesk("closings", "/admin/payouts");
+  const paid = await recordBrokerFeePaid(actor, { feeId: String(formData.get("feeId") || "") });
+  if (paid.error !== null) redirect(`/admin/payouts?error=${encodeURIComponent(paid.error)}`);
   revalidatePath("/broker");
+  revalidatePath("/admin/payouts");
   redirect("/admin/payouts?notice=payment");
 }

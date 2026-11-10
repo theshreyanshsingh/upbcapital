@@ -27,9 +27,11 @@ export async function saveDisclosure(formData: FormData) {
   redirect("/admin/compliance?notice=compliance");
 }
 
+// The window for deal records and the page-visit clean-up. Sanctions screens keep their SANCTIONS_RECORD_YEARS floor
+// whatever this says, and the retention run never removes them (lib/jobs.ts cleanRetention).
 export async function saveRetention(formData: FormData) {
   await requireDesk("compliance", "/admin/compliance");
-  const years = Number(formData.get("retentionYears") || 7);
+  const years = Number(formData.get("retentionYears") || 10);
   if (!Number.isFinite(years) || years < 1 || years > 25) redirect("/admin/compliance?error=Keep retention between 1 and 25 years.");
   await prisma.platformSettings.update({ where: { id: "default" }, data: { retentionYears: Math.round(years) } });
   clearSettingsCache();

@@ -72,6 +72,7 @@ export async function buildSaleNoticePdf(input: SaleNoticeInput) {
       "Prepared by UPB Capital from the closing record as a draft. The new owner is responsible for this notice and its",
       "accuracy, and for sending it on or before the 30th day after the date of transfer (12 CFR 1026.39). Have counsel review it",
       "before it is sent. If the servicer is also changing, the servicers send their own transfer letters (12 CFR 1024.33).",
+      "Keep proof of mailing, such as a certified-mail number or a certificate of mailing, and record it in the closing room.",
     ];
     footer.forEach((line, index) => page.drawText(line, { x: 48, y: 72 - index * 11, size: 7.5, font, color: quiet }));
   }

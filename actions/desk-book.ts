@@ -8,6 +8,7 @@ import { notify, notifyDesk } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/audit";
 import { claimLoan, declineLosingBids, deskBidNotAcceptable, sellerPage } from "@/lib/awards";
+import { deskEligibilityLog } from "@/lib/eligibility";
 import { OFAC_HOLD_MESSAGE, ofacHold } from "@/lib/screening";
 import { sendOnAward } from "@/lib/signatures";
 import { DESK_ROLE_LABELS, deskRoleOf, requireDesk } from "@/lib/staff";
@@ -37,10 +38,14 @@ export async function placeDeskBid(formData: FormData) {
   const note = noteId ? listing.notes.find((item) => item.id === noteId) : null;
   if (noteId && !note) redirect(`/admin/listings/${listingId}?error=That loan is not on this listing.`);
   const message = String(formData.get("message") || "").trim().slice(0, 1000);
-  await prisma.deskBid.create({
+  const bid = await prisma.deskBid.create({
     data: { listingId, noteId: note?.id, amount, message },
   });
   await audit(user.id, "DESK_BID", "listing", listingId, `Desk bid $${amount.toLocaleString("en-US")}${note ? " for one loan" : ""} by ${staffLine(user)}`);
+  // The bid form showed the Maryland prompt on a Maryland loan, as a buyer's bid does, and the log says so. It
+  // informs and refuses nothing (lib/eligibility.ts).
+  const shown = deskEligibilityLog(note ? [note] : listing.notes, "bid");
+  if (shown) await audit(user.id, "ELIGIBILITY", "deskBid", bid.id, shown);
   await notify(
     listing.seller.email,
     `The desk bid on ${listing.title}`,
@@ -106,6 +111,10 @@ export async function decideDeskBid(formData: FormData) {
   }
   const price = `$${Number(bid.amount).toLocaleString("en-US")}`;
   await audit(user.id, "DESK_BID_ACCEPTED", "listing", bid.listingId, `Closing ${closing.id} at ${price}. Taken by ${staffLine(user)}. Seller agreement: ${consent}`);
+  // The desk is the buyer, and the purchase confirmation showed it the Maryland prompt on a Maryland loan.
+  const bought = bid.noteId ? bid.listing.notes.filter((item) => item.id === bid.noteId) : bid.listing.notes;
+  const shown = deskEligibilityLog(bought, "purchase");
+  if (shown) await audit(user.id, "ELIGIBILITY", "deskBid", bid.id, shown);
   await notify(
     bid.listing.seller.email,
     `Desk purchase · ${bid.listing.title}`,
