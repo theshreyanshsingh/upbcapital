@@ -3,7 +3,7 @@ import { confirmUnsubscribe } from "@/actions/unsubscribe";
 import { Logo } from "@/components/logo";
 import { SubmitButton } from "@/components/submit-button";
 import { q } from "@/lib/format";
-import { categoryText, readUnsubscribeToken } from "@/lib/unsubscribe";
+import { categoryText, preferenceLinkForUser, readUnsubscribeToken } from "@/lib/unsubscribe";
 
 export const metadata = { title: "Unsubscribe", robots: { index: false, follow: false } };
 
@@ -19,6 +19,8 @@ export default async function UnsubscribePage({
   const found = readUnsubscribeToken(token);
   const done = q(params, "done") === "1";
   const what = found ? categoryText(found) : "";
+  // Every mailing for this address, on one page that needs no sign-in either.
+  const manage = found ? await preferenceLinkForUser(found.userId) : null;
   return (
     <main id="desk" className="flex min-h-screen items-center justify-center px-4 py-12">
       <div className="w-full max-w-[420px]">
@@ -50,9 +52,11 @@ export default async function UnsubscribePage({
             </form>
           </>
         )}
-        <p className="mt-6 text-sm text-muted-foreground">
-          <Link href="/account/notifications" className="text-link">Manage all notices</Link>
-        </p>
+        {manage && (
+          <p className="mt-6 text-sm text-muted-foreground">
+            <Link href={manage} className="text-link">Manage all notices</Link>
+          </p>
+        )}
       </div>
     </main>
   );

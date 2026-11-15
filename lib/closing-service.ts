@@ -9,6 +9,7 @@ import { getEscrowProvider } from "@/lib/escrow";
 import { money, prettyDate } from "@/lib/format";
 import { postRevenueOnce } from "@/lib/ledger";
 import { ensureBuyerHolding } from "@/lib/portfolio";
+import { WALK_AWAY_PREFIX, readWalkAway, type WalkAwayReason } from "@/lib/retrade";
 import { unset } from "@/lib/db-filters";
 import { prisma } from "@/lib/prisma";
 import { variance } from "@/lib/settlement";
@@ -95,12 +96,16 @@ export async function openClosing(input: {
   }
   const [settings, listingFees] = await Promise.all([
     getSettings(),
-    prisma.listing.findUnique({ where: { id: input.listingId }, select: { feeBuyerPremiumBps: true, feeSellerCommissionBps: true, feeSchedule: true, feePayer: true, deskOwnerId: true } }),
+    prisma.listing.findUnique({ where: { id: input.listingId }, select: { feeBuyerPremiumBps: true, feeSellerCommissionBps: true, feeSchedule: true, feePayer: true, deskOwnerId: true, flowProgramId: true } }),
   ]);
+  // The buyer's own cut to the premium (a volume tier, a forward-flow tranche), now that the buyer is known. It is
+  // fixed here with the premium, and the closing keeps it. lib/volume-tiers.ts.
+  const volume = await import("@/lib/volume-tiers");
+  const cut = input.inquiryId && !input.deskBidId ? await volume.premiumCutAtAward({ listing: listingFees, inquiryId: input.inquiryId, settings }) : null;
   // The fees fixed when the desk approved the listing, graded on this price when it went live with a schedule. The
   // desk buying for its own book pays no premium, and the seller's commission is still the one the listing went
   // live with.
-  const fees = feesFor(listingFees, settings, input.salePrice, { deskPurchase: Boolean(input.deskBidId) });
+  const fees = feesFor(listingFees, settings, input.salePrice, { deskPurchase: Boolean(input.deskBidId), premiumOffBps: cut?.offBps });
   const provider = getEscrowProvider();
   const preview = await provider.open({
     closingId: input.inquiryId || input.deskBidId || "desk",
@@ -154,6 +159,7 @@ export async function openClosing(input: {
         data: { wireInstructions: preview.instructions.replaceAll(input.inquiryId, created.id) },
       })
     : created;
+  if (cut) await audit(null, "PREMIUM_CUT", "closing", opened.id, volume.cutAuditLine(cut));
   await ensureClosingThread(opened.id);
   return opened;
 }
@@ -280,14 +286,21 @@ export async function finalizeClosing(closingId: string) {
 // The desk names whose failure ended it. A buyer's failure records a strike against the winning bidder. A walk-away
 // in diligence is the buyer's right under the terms, so it is nobody's fault and never a strike. The desk buying
 // for its own book has no buyer to strike.
-export async function cancelOpenClosing(closingId: string, reason: string, options: { withinDiligence?: Date; fault?: CancelFault; actorId?: string | null } = {}) {
+export async function cancelOpenClosing(closingId: string, reason: string, options: { withinDiligence?: Date; fault?: CancelFault; actorId?: string | null; walkAwayReason?: WalkAwayReason } = {}) {
   const closing = await prisma.closing.findUnique({ where: { id: closingId }, include: { listing: true } });
   if (!closing || closing.status !== "OPEN") return null;
   const fault = options.withinDiligence ? "NEITHER" : options.fault === "BUYER" && closing.deskBidId ? undefined : options.fault;
-  // Only the write that moves it off OPEN cancels, so a close that landed first stays closed.
+  // Only the write that moves it off OPEN cancels, so a close that landed first stays closed. A walk-away's finding
+  // goes in the same write (lib/retrade.ts).
   const claimed = await prisma.closing.updateMany({
     where: { id: closingId, status: "OPEN", ...(options.withinDiligence ? { diligenceEndsAt: { gt: options.withinDiligence } } : {}) },
-    data: { status: "CANCELED", canceledAt: new Date(), cancelReason: reason, ...(fault ? { cancelFault: fault } : {}) },
+    data: {
+      status: "CANCELED",
+      canceledAt: new Date(),
+      cancelReason: reason,
+      ...(fault ? { cancelFault: fault } : {}),
+      ...(options.withinDiligence && options.walkAwayReason ? { walkAwayReason: options.walkAwayReason } : {}),
+    },
   });
   if (claimed.count !== 1) return null;
   // A whole-listing closing never took its loans one by one, so only a closing that names its loans hands them back.
@@ -321,9 +334,10 @@ export async function cancelOpenClosing(closingId: string, reason: string, optio
   return closing;
 }
 
-// The buyer walks away inside the diligence window, with a reason both sides read. It cancels through the same path
-// as a desk cancel. A group's closing is the seats' money, so one seat can't end it for the rest; the desk does.
-export async function walkAwayFromClosing(closingId: string, buyerId: string, reason: string, now = new Date()) {
+// The buyer walks away inside the diligence window, for one finding from a fixed list, with their own words beside it
+// (required for Other). Both sides and the desk read the finding. It cancels through the same path as a desk cancel.
+// A group's closing is the seats' money, so one seat can't end it for the rest; the desk does.
+export async function walkAwayFromClosing(closingId: string, buyerId: string, finding: { reason: unknown; words: unknown }, now = new Date()) {
   const closing = await prisma.closing.findUnique({ where: { id: closingId }, include: { listing: { include: { seller: true } }, funders: { select: { userId: true } } } });
   if (!closing) return { error: "That closing no longer exists." } as const;
   const inquiry = closing.inquiryId ? await prisma.inquiry.findUnique({ where: { id: closing.inquiryId }, include: { buyer: true } }) : null;
@@ -332,9 +346,11 @@ export async function walkAwayFromClosing(closingId: string, buyerId: string, re
   if (closing.funders.length > 1) return { error: "A group closing is ended by the desk, so every seat is heard. Write the desk on the closing thread." } as const;
   if (closing.status !== "OPEN") return { error: "This closing is already finished." } as const;
   if (!diligenceOpen(closing, now)) return { error: "The diligence window has closed, so the purchase terms govern from here. Write the desk on the closing thread." } as const;
-  const why = reason.replace(/\s+/g, " ").trim().slice(0, 500);
-  if (why.length < 10) return { error: "Say what you found, in a sentence. The seller reads it." } as const;
-  if (!(await cancelOpenClosing(closingId, `The buyer walked away in diligence: ${why}`, { withinDiligence: now }))) {
+  const read = readWalkAway(finding);
+  if (read.error !== null) return { error: read.error } as const;
+  // "Title. Title search shows a second lien." The finding's label goes everywhere the buyer's words do.
+  const why = read.text;
+  if (!(await cancelOpenClosing(closingId, `${WALK_AWAY_PREFIX}: ${why}`, { withinDiligence: now, walkAwayReason: read.reason }))) {
     return { error: "The diligence window closed or the closing finished a moment ago." } as const;
   }
   await audit(buyerId, "DILIGENCE_WALK_AWAY", "closing", closingId, why);

@@ -1,11 +1,27 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { getCurrentUser } from "@/lib/auth";
+import { actionGate } from "@/lib/action-gates";
+import { getCurrentUser, requireRole } from "@/lib/auth";
+import { secureCookies } from "@/lib/deploy";
+import { INTAKE_COOKIE, intakeCookieValue, isSplitRule, parseBands, planProblem, readIntakeCookie } from "@/lib/desk-intake";
+import { typedNumber } from "@/lib/money";
 import { requestMeta } from "@/lib/request-meta";
 import { requireDesk } from "@/lib/staff";
-import { MAX_TYPED_LOANS, closeValuation, inviteFromValuation, linkValuationListing, quoteValuation, requestValuation, type TypedLoan } from "@/lib/valuations";
+import { deleteTapeDraft, readTapeDraft } from "@/lib/tape-draft";
+import {
+  MAX_TYPED_LOANS,
+  askDeskToFile,
+  closeValuation,
+  inviteFromValuation,
+  linkValuationListing,
+  quoteValuation,
+  requestValuation,
+  stageValuationIntake,
+  type TypedLoan,
+} from "@/lib/valuations";
 
 function text(formData: FormData, key: string) {
   return String(formData.get(key) ?? "");
@@ -80,4 +96,38 @@ export async function closeValuationRequest(formData: FormData) {
   const result = await closeValuation({ id, note: text(formData, "note"), actor });
   if (result.error !== null) deskBack(id, "error", result.error);
   deskBack(id, "notice", "The request is closed.");
+}
+
+// The seller's desk: "Ask the desk to file it". The desk hears and opens the tape in intake from the request.
+export async function askDeskToFileValuation(formData: FormData) {
+  const user = await requireRole(["INDIVIDUAL_SELLER", "INSTITUTIONAL_SELLER"]);
+  const back = (kind: "notice" | "error", message: string): never => redirect(`/seller?${kind}=${encodeURIComponent(message)}#valuation`);
+  const gate = await actionGate(user, "list");
+  if (gate) back("error", gate);
+  const result = await askDeskToFile(user, text(formData, "id"));
+  if (result.error !== null) back("error", result.error);
+  revalidatePath("/seller");
+  back("notice", result.already ? "The desk already has this tape to file." : "The desk has your tape and will file it in your name. You confirm each listing before buyers see it.");
+}
+
+// The desk opens a request's tape in desk intake, with the price and split chosen here, and lands on the preview.
+// The same cookie, path and life as a tape the desk uploads there (actions/desk-intake.ts).
+export async function openValuationInIntake(formData: FormData) {
+  const id = text(formData, "id");
+  const actor = await requireDesk("sales", `/admin/valuations/${id}`);
+  const priceMode = text(formData, "priceMode") === "PERCENT" ? "PERCENT" : "COLUMN";
+  const percent = priceMode === "PERCENT" ? typedNumber(formData.get("percent")) : null;
+  const rules = formData.getAll("rule").map(String).filter(isSplitRule);
+  const bands = rules.includes("BALANCE") ? parseBands(text(formData, "bands")) : [];
+  if (bands === null) deskBack(id, "error", "Write the balance edges as amounts, such as 100k, 250k. Up to six.");
+  const plan = planProblem({ rules, bands });
+  if (plan) deskBack(id, "error", plan);
+  const result = await stageValuationIntake(actor, { id, priceMode, percent: percent != null && Number.isFinite(percent) ? percent : null, rules, bands });
+  if (result.error !== null) deskBack(id, "error", result.error);
+  const jar = await cookies();
+  // One staged tape at a time: this one replaces whatever the intake page had.
+  const earlier = readIntakeCookie(jar.get(INTAKE_COOKIE)?.value);
+  if (earlier && (await readTapeDraft(actor.id, earlier.token))) await deleteTapeDraft(earlier.token);
+  jar.set(INTAKE_COOKIE, intakeCookieValue(result.staged), { httpOnly: true, sameSite: "lax", secure: secureCookies(), path: "/admin/intake", maxAge: 24 * 60 * 60 });
+  redirect("/admin/intake#preview");
 }

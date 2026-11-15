@@ -11,7 +11,14 @@ import { applyBps, bpsToPercent, dollarsToCents, feeBreakdown, percentToBps, typ
 // One price band. upTo is in dollars and inclusive; null is the last, open-ended tier.
 export type FeeTier = { upTo: number | null; premiumBps: number; commissionBps: number };
 
-export type FeeSchedule = { tiers: FeeTier[]; minPremiumCents: number; minCommissionCents: number };
+// A cut to the buyer premium for a firm whose closed purchases on UPB over the trailing 12 months reach minCents,
+// its seats and its funded group shares included. A buyer takes the cut of the highest tier it reaches.
+export type VolumeTier = { minCents: number; premiumOffBps: number };
+
+// volumeTiers and flowPremiumOffBps are optional, and a schedule saved before them has neither. flowPremiumOffBps is
+// a cut to the buyer premium on a forward-flow tranche (a listing with a flowProgramId). Both cut the premium's rate
+// before the minimum, so minPremiumCents still holds, and neither touches the seller commission.
+export type FeeSchedule = { tiers: FeeTier[]; minPremiumCents: number; minCommissionCents: number; volumeTiers?: VolumeTier[]; flowPremiumOffBps?: number };
 
 // Who pays UPB's fees on a listing. SPLIT is the default: the buyer pays the premium and the seller the commission.
 // SELLER pays both out of the proceeds, and BUYER pays both on top of the price. Both fees are worked out as for a
@@ -31,7 +38,9 @@ export const FEE_PAYER_LABELS: Record<FeePayer, string> = {
 
 // What a listing trades at: a graded schedule, or flat rates when there is none. Plain data, so a server page can
 // hand it to a bid form. payer is left off for a split, which is how every listing traded before the choice.
-export type FeeTerms = { schedule: FeeSchedule | null; premiumBps: number; commissionBps: number; payer?: FeePayer };
+// premiumOffBps is one buyer's cut to the premium (its volume tier and a forward-flow tranche's cut), set only when
+// a closing opens for that buyer (lib/volume-tiers.ts). Pages that price a bid leave it off.
+export type FeeTerms = { schedule: FeeSchedule | null; premiumBps: number; commissionBps: number; payer?: FeePayer; premiumOffBps?: number };
 
 export type FeeSettings = {
   buyerPremiumBps: number;
@@ -53,6 +62,9 @@ export const MAX_TIER_BPS = 1000;
 export const MAX_TIERS = 8;
 // $100,000, so a typo in the minimum can't swallow a sale.
 export const MAX_MINIMUM_CENTS = 10_000_000;
+export const MAX_VOLUME_TIERS = 6;
+// $10 billion of purchases a year, far past any buyer, so a stray digit is refused rather than saved.
+export const MAX_VOLUME_CENTS = 1_000_000_000_000;
 
 // The sizes the fee page works through.
 export const EXAMPLE_PRICES = [25_000, 100_000, 500_000] as const;
@@ -93,7 +105,43 @@ export function checkSchedule(input: unknown): Checked {
   const minPremiumCents = raw?.minPremiumCents ?? 0;
   const minCommissionCents = raw?.minCommissionCents ?? 0;
   if (!wholeCents(minPremiumCents) || !wholeCents(minCommissionCents)) return { error: "Minimums are dollar amounts from $0 to $100,000." };
-  return { error: null, schedule: { tiers: out, minPremiumCents: minPremiumCents as number, minCommissionCents: minCommissionCents as number } };
+  const volume = checkVolumeTiers(raw?.volumeTiers);
+  if (volume.error !== null) return { error: volume.error };
+  const flow = raw?.flowPremiumOffBps ?? 0;
+  if (!wholeBps(flow)) return { error: "Keep the forward-flow cut between 0% and 10%, to two decimal places." };
+  // The two cuts are left off a schedule that has none, so a schedule saved before them reads back as it was.
+  return {
+    error: null,
+    schedule: {
+      tiers: out,
+      minPremiumCents: minPremiumCents as number,
+      minCommissionCents: minCommissionCents as number,
+      ...(volume.tiers.length ? { volumeTiers: volume.tiers } : {}),
+      ...((flow as number) > 0 ? { flowPremiumOffBps: flow as number } : {}),
+    },
+  };
+}
+
+// Volume tiers go up in volume, each cut at least the one before it, so more purchases never cost a buyer more.
+function checkVolumeTiers(input: unknown): { error: string; tiers?: undefined } | { error: null; tiers: VolumeTier[] } {
+  if (input == null) return { error: null, tiers: [] };
+  if (!Array.isArray(input)) return { error: "Volume tiers are a list of volumes and cuts." };
+  if (input.length > MAX_VOLUME_TIERS) return { error: `Keep volume tiers to ${MAX_VOLUME_TIERS} or fewer.` };
+  const tiers: VolumeTier[] = [];
+  for (const item of input) {
+    const tier = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
+    const minCents = tier.minCents;
+    const off = tier.premiumOffBps;
+    if (typeof minCents !== "number" || !Number.isInteger(minCents) || minCents <= 0 || minCents > MAX_VOLUME_CENTS) {
+      return { error: "Each volume tier starts at a 12-month purchase total above zero, in dollars." };
+    }
+    if (!wholeBps(off) || (off as number) <= 0) return { error: "Each volume tier cuts the premium by more than 0% and at most 10%, to two decimal places." };
+    const before = tiers[tiers.length - 1];
+    if (before && minCents <= before.minCents) return { error: "Volume tiers go up in volume. Each must start above the one before it." };
+    if (before && (off as number) < before.premiumOffBps) return { error: "A higher volume tier can't cut the premium by less than the tier before it." };
+    tiers.push({ minCents, premiumOffBps: off as number });
+  }
+  return { error: null, tiers };
 }
 
 // A stored schedule, or null when there is none. A stored value that no longer passes the rules reads as none, so
@@ -104,11 +152,50 @@ export function readSchedule(raw: unknown): FeeSchedule | null {
   return checked.error === null ? checked.schedule : null;
 }
 
-export type ScheduleForm = { upTo: string[]; premium: string[]; commission: string[]; minPremium: string; minCommission: string };
+// The volume rows and the forward-flow cut are optional, so a form without them saves a schedule without them.
+export type ScheduleForm = {
+  upTo: string[];
+  premium: string[];
+  commission: string[];
+  minPremium: string;
+  minCommission: string;
+  volumeMin?: string[];
+  volumeOff?: string[];
+  flowOff?: string;
+};
+
+// Two decimal places of a percent is a whole basis point; anything finer is refused rather than rounded away.
+function bpsFromPercent(text: string) {
+  const value = typedNumber(text);
+  if (!Number.isFinite(value)) return Number.NaN;
+  return Math.abs(value * 100 - Math.round(value * 100)) < 1e-6 ? percentToBps(value) : Number.NaN;
+}
 
 // The settings form: one row per tier, rates as percents and prices as people type them. A row left wholly blank is
 // skipped, so the form can offer spare rows.
 export function scheduleFromForm(form: ScheduleForm): Checked {
+  const checked = tiersFromForm(form);
+  if (checked.error !== null) return checked;
+  const volumeTiers: Record<string, unknown>[] = [];
+  const volumeRows = Math.max(form.volumeMin?.length ?? 0, form.volumeOff?.length ?? 0);
+  for (let index = 0; index < volumeRows; index += 1) {
+    const minText = String(form.volumeMin?.[index] ?? "").trim();
+    const offText = String(form.volumeOff?.[index] ?? "").trim();
+    if (!minText && !offText) continue;
+    if (!minText || !offText) return { error: "Each volume tier needs a 12-month purchase total and a cut, as a percent." };
+    const min = typedNumber(minText);
+    if (!Number.isFinite(min)) return { error: "Enter each volume as a dollar amount, such as 5,000,000 or 5M." };
+    const off = bpsFromPercent(offText);
+    if (!Number.isFinite(off)) return { error: "Enter each volume cut as a percent, such as 0.25." };
+    volumeTiers.push({ minCents: Math.round(min * 100), premiumOffBps: off });
+  }
+  const flowText = String(form.flowOff ?? "").trim();
+  const flow = flowText ? bpsFromPercent(flowText) : 0;
+  if (!Number.isFinite(flow)) return { error: "Enter the forward-flow cut as a percent, such as 0.25." };
+  return checkSchedule({ ...checked.schedule, volumeTiers, flowPremiumOffBps: flow });
+}
+
+function tiersFromForm(form: ScheduleForm): Checked {
   const tiers: Record<string, unknown>[] = [];
   const rows = Math.max(form.upTo.length, form.premium.length, form.commission.length);
   for (let index = 0; index < rows; index += 1) {
@@ -174,6 +261,8 @@ export type Fees = {
   commissionFloor: boolean;
   // Set when one side pays both fees. A split leaves it off.
   payer?: FeePayer;
+  // The buyer's cut taken off the premium's rate, when terms carried one. premiumBps is the rate after it.
+  premiumOffBps?: number;
 };
 
 export type ChargeOptions = {
@@ -185,8 +274,12 @@ export type ChargeOptions = {
 // The one place a fee is worked out. Flat terms charge exactly what they always have: the rate on the price, with no
 // minimum. A schedule charges the tier's rate on the whole price, then lifts each side to its minimum, and never
 // past the price. When one side pays both, both fees are worked out as for a split and then move to that side.
+// A buyer's cut (terms.premiumOffBps) comes off the premium's rate before the minimum, so the minimum still holds. It
+// is the buyer's, so it never applies when the seller pays both fees or the desk buys for its own book.
 export function chargeFees(terms: FeeTerms, price: number, options: ChargeOptions = {}): Fees {
-  return movePayer(splitFees(terms, price, options), feePayerOf(terms.payer), options.deskPurchase === true);
+  const payer = feePayerOf(terms.payer);
+  const off = payer === "SELLER" || options.deskPurchase === true ? 0 : Math.max(0, Math.round(terms.premiumOffBps ?? 0));
+  return movePayer(splitFees(terms, price, options, off), payer, options.deskPurchase === true);
 }
 
 // One side pays the premium and the commission together, never more than the price. A desk purchase has no premium
@@ -204,16 +297,18 @@ export function movePayer(fees: Fees, payer: FeePayer, deskPurchase = false): Fe
   return { ...fees, premiumCents: both, commissionCents: 0, buyerTotalCents: fees.saleCents + both, netToSellerCents: fees.saleCents, premiumBps: bps, commissionBps: 0, premiumFloor: floor, commissionFloor: false, payer };
 }
 
-function splitFees(terms: FeeTerms, price: number, options: ChargeOptions): Fees {
+function splitFees(terms: FeeTerms, price: number, options: ChargeOptions, off = 0): Fees {
   const desk = options.deskPurchase === true;
   const chargeCommission = !desk || Boolean(options.chargeDeskFees);
+  const cut = off > 0 ? { premiumOffBps: off } : {};
   if (!terms.schedule) {
-    const premiumBps = desk ? 0 : terms.premiumBps;
+    const premiumBps = desk ? 0 : Math.max(0, terms.premiumBps - off);
     const commissionBps = chargeCommission ? terms.commissionBps : 0;
-    return { ...feeBreakdown(price, premiumBps, commissionBps), premiumBps, commissionBps, graded: false, premiumFloor: false, commissionFloor: false };
+    return { ...feeBreakdown(price, premiumBps, commissionBps), premiumBps, commissionBps, graded: false, premiumFloor: false, commissionFloor: false, ...cut };
   }
   const saleCents = dollarsToCents(price);
-  const tier = tierFor(terms.schedule, price);
+  const listed = tierFor(terms.schedule, price);
+  const tier = { ...listed, premiumBps: Math.max(0, listed.premiumBps - off) };
   const side = (bps: number, minimumCents: number, charged: boolean) => {
     if (!charged || saleCents <= 0) return { cents: 0, floor: false };
     const byRate = applyBps(saleCents, bps);
@@ -233,13 +328,88 @@ function splitFees(terms: FeeTerms, price: number, options: ChargeOptions): Fees
     graded: true,
     premiumFloor: premium.floor,
     commissionFloor: commission.floor,
+    ...cut,
   };
 }
 
 // The fees on a sale of this listing at this price. A desk purchase passes deskPurchase, and the settings say
 // whether the seller still pays the commission.
-export function feesFor(listing: ListingFees | null | undefined, settings: FeeSettings, price: number, options: { deskPurchase?: boolean } = {}): Fees {
-  return chargeFees(feeTerms(listing, settings), price, { deskPurchase: options.deskPurchase, chargeDeskFees: settings.chargeDeskFees });
+// A closing opening for a known buyer passes that buyer's cut as premiumOffBps (lib/volume-tiers.ts).
+export function feesFor(listing: ListingFees | null | undefined, settings: FeeSettings, price: number, options: { deskPurchase?: boolean; premiumOffBps?: number } = {}): Fees {
+  const terms = feeTerms(listing, settings);
+  const cut = options.premiumOffBps ? { premiumOffBps: options.premiumOffBps } : {};
+  return chargeFees({ ...terms, ...cut }, price, { deskPurchase: options.deskPurchase, chargeDeskFees: settings.chargeDeskFees });
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The buyer's cut: a volume tier and a forward-flow tranche's cut, both off the premium's rate.
+
+// The tier a 12-month purchase total reaches: the highest whose minimum it meets, or null below the first.
+export function volumeTierFor(schedule: FeeSchedule | null | undefined, volumeCents: number): VolumeTier | null {
+  const tiers = schedule?.volumeTiers ?? [];
+  let reached: VolumeTier | null = null;
+  for (const tier of tiers) if (volumeCents >= tier.minCents) reached = tier;
+  return reached;
+}
+
+export type BuyerCut = { volumeBps: number; flowBps: number; offBps: number; tier: VolumeTier | null; volumeCents: number | null };
+
+// One buyer's cut on these terms. volumeCents is the firm's 12-month total, or null when no one firm is the buyer (a
+// group's bid), which takes no volume cut. flowTranche says the listing is a forward-flow tranche. Null when there is
+// no cut, which is every flat-rate listing and every listing whose seller pays both fees.
+export function buyerCut(terms: FeeTerms, input: { volumeCents: number | null; flowTranche: boolean }): BuyerCut | null {
+  if (!terms.schedule || feePayerOf(terms.payer) === "SELLER") return null;
+  const tier = input.volumeCents == null ? null : volumeTierFor(terms.schedule, input.volumeCents);
+  const volumeBps = tier?.premiumOffBps ?? 0;
+  const flowBps = input.flowTranche ? terms.schedule.flowPremiumOffBps ?? 0 : 0;
+  if (volumeBps + flowBps <= 0) return null;
+  return { volumeBps, flowBps, offBps: volumeBps + flowBps, tier, volumeCents: input.volumeCents };
+}
+
+export function hasBuyerCuts(schedule: FeeSchedule | null | undefined) {
+  return Boolean(schedule && ((schedule.volumeTiers?.length ?? 0) > 0 || (schedule.flowPremiumOffBps ?? 0) > 0));
+}
+
+// The cut a closing's premium carries, read back from what it charged against the listing's terms without a cut.
+// Nothing is stored for it: the premium the closing opened with is the record, and the listing's terms are fixed at
+// go-live, so the difference is the cut. offBps is the smallest cut that gives the premium charged, which is the cut
+// itself unless the minimum set the premium. flowCents is the part of cutCents the forward-flow cut accounts for.
+export type PremiumCut = { beforeCents: number; cutCents: number; offBps: number; flowCents: number; volumeCents: number };
+
+export function premiumCutOf(
+  terms: FeeTerms,
+  closing: { salePrice: number; buyerPremiumCents: number; deskBidId?: string | null },
+  flowTranche = false,
+): PremiumCut | null {
+  if (closing.deskBidId || !hasBuyerCuts(terms.schedule) || feePayerOf(terms.payer) === "SELLER") return null;
+  const price = Number(closing.salePrice);
+  const plain = { ...terms, premiumOffBps: 0 };
+  const beforeCents = chargeFees(plain, price).premiumCents;
+  const cutCents = beforeCents - closing.buyerPremiumCents;
+  if (!(price > 0) || cutCents <= 0) return null;
+  let offBps = 0;
+  for (let off = 1; off <= MAX_TIER_BPS; off += 1) {
+    if (chargeFees({ ...terms, premiumOffBps: off }, price).premiumCents <= closing.buyerPremiumCents) {
+      offBps = off;
+      break;
+    }
+  }
+  const flowBps = flowTranche ? terms.schedule?.flowPremiumOffBps ?? 0 : 0;
+  const flowCents = flowBps > 0 ? Math.min(cutCents, beforeCents - chargeFees({ ...terms, premiumOffBps: flowBps }, price).premiumCents) : 0;
+  return { beforeCents, cutCents, offBps, flowCents, volumeCents: cutCents - flowCents };
+}
+
+// The words a statement line and an invoice carry: "less a volume cut of $625.00, fixed at award".
+export function cutText(cut: PremiumCut) {
+  const parts = [
+    cut.volumeCents > 0 ? `a volume cut of ${cents2(cut.volumeCents)}` : "",
+    cut.flowCents > 0 ? `a forward-flow cut of ${cents2(cut.flowCents)}` : "",
+  ].filter(Boolean);
+  return `${cents2(cut.beforeCents)} at the listing's rate, less ${parts.join(" and ")}, fixed at award`;
+}
+
+function cents2(cents: number) {
+  return `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 // The rate a fee comes to on its price, minimum included, for a form that takes a single rate. Not rounded to a

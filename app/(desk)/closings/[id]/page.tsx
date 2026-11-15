@@ -2,7 +2,7 @@ import { notFound, redirect } from "next/navigation";
 import { Check } from "lucide-react";
 import { markShareFunded } from "@/actions/group";
 import { BoardingForm } from "@/components/boarding-form";
-import { cancelClosing, completeClosingStep, recordSettlement, saveWireInstructions, setClosingDates, uploadClosingFile, walkAway } from "@/actions/closing";
+import { cancelClosing, completeClosingStep, recordSettlement, saveWireInstructions, setClosingDates, uploadClosingFile } from "@/actions/closing";
 import { BorrowerNotices } from "@/components/borrower-notices";
 import { ClosingMasters } from "@/components/closing-masters";
 import { ClaimsPanel } from "@/components/claims-panel";
@@ -16,6 +16,7 @@ import { DeskNotes } from "@/components/desk-notes";
 import { SignaturePanel } from "@/components/signature-panel";
 import { TieOutPanel } from "@/components/tie-out";
 import { TrailingDocsPanel } from "@/components/trailing-docs";
+import { WalkAwayForm } from "@/components/walk-away-form";
 import { ConfirmRows, ConfirmSubmit } from "@/components/confirm-submit";
 import { Notice } from "@/components/notice";
 import { SubmitButton } from "@/components/submit-button";
@@ -93,7 +94,8 @@ export default async function ClosingPage({
   const side = access === "observer" ? "observer" : statementSide({ role: user.role, userId: user.id, sellerId: closing.listing.sellerId, buyerId: inquiry?.buyerId ?? null, funderIds: closing.funders.map((funder) => funder.userId) });
   const mine = side === "buyer" ? closing.funders.find((funder) => funder.userId === user.id) : undefined;
   const economics = economicsRows(
-    { ...closing, salePrice: Number(closing.salePrice) },
+    // The buyer's cut to the premium, fixed at award, shows on the premium row for the buyer and the desk.
+    { ...closing, salePrice: Number(closing.salePrice), premiumCut: side === "buyer" || side === "desk" ? await import("@/lib/volume-tiers").then((volume) => volume.closingPremiumCut(closing)) : null },
     side,
     mine ? { amount: Number(mine.amount), premiumCents: mine.premiumCents, status: mine.status, fundedAt: mine.fundedAt } : null,
   );
@@ -185,6 +187,14 @@ export default async function ClosingPage({
           <p role="status" className="mt-4 border border-bad/40 bg-bad/10 px-4 py-3 text-sm text-foreground rounded-xl">
             Canceled{closing.canceledAt ? ` ${prettyDate(closing.canceledAt)}` : ""}.{closing.cancelReason ? ` ${closing.cancelReason}` : ""} Nothing was posted to the ledger.
             {isAdmin && closing.cancelFault ? ` Fault: ${faultLabel(closing.cancelFault).toLowerCase()}.` : ""}
+          </p>
+        )}
+        {/* The seller's copy of the sale record, for its own board or exam file. Each download is logged. lib/sale-file.ts. */}
+        {!isAdmin && (isSeller || user.id === closing.listing.brokerId) && (
+          <p className="mt-3 text-[13px] text-muted-foreground">
+            Sale record for your board or exam file:{" "}
+            <a className="text-link" href={`/api/listings/${closing.listingId}/sale-file`}>CSV</a> ·{" "}
+            <a className="text-link" href={`/api/listings/${closing.listingId}/sale-file?format=pdf`}>PDF</a>. The bids as your bid summary shows them, the award and its cover bid, and the dates through the trailing documents.
           </p>
         )}
         <ComplianceNote
@@ -565,29 +575,7 @@ export default async function ClosingPage({
           )}
         </div>
         {canWalkAway && closing.diligenceEndsAt && (
-          <form action={walkAway} className="glass space-y-3 p-6">
-            <input type="hidden" name="closingId" value={closing.id} />
-            <p className="eyebrow">Walk away in diligence</p>
-            {/* Counsel: confirm "returned per the purchase terms" matches the deposit and refund language in the purchase agreement. */}
-            <p className="text-sm text-muted-foreground">
-              Until {prettyDate(closing.diligenceEndsAt)} you can walk away for something you found in the file. The closing is canceled, the note goes back on the book, and the seller and the desk are told. Money already wired is returned per the purchase terms.
-            </p>
-            <label className="block text-[13px] text-muted-foreground">
-              What you found, in a sentence. The seller reads this.
-              <Textarea name="reason" className="mt-1 min-h-20 bg-card" required minLength={10} />
-            </label>
-            <ConfirmSubmit
-              title={`Walk away from ${money(closing.salePrice)} on ${closing.listing.title}?`}
-              consequence="The closing is canceled for both sides and the note goes back on the book. It can't be reopened, and you'd need to bid again to buy it. Money already wired is returned per the purchase terms."
-              typed={[["Reason the seller will read", "reason", "text"]]}
-              confirmLabel="Walk away"
-              pendingLabel="Canceling…"
-              tone="danger"
-              className="h-9 text-[13px] font-medium"
-            >
-              Walk away
-            </ConfirmSubmit>
-          </form>
+          <WalkAwayForm closing={{ id: closing.id, salePrice: Number(closing.salePrice), diligenceEndsAt: closing.diligenceEndsAt, title: closing.listing.title }} />
         )}
         {inDiligence && !isAdmin && isBuyer && closing.funders.length > 1 && (
           <p className="glass p-6 text-sm text-muted-foreground">The diligence window runs until {prettyDate(closing.diligenceEndsAt)}. A group closing is ended by the desk, so every seat is heard. Write the desk on the closing thread.</p>

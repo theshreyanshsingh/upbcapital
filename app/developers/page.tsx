@@ -4,6 +4,7 @@ import { BUYER_SCOPES, SCOPE_LABELS } from "@/lib/api-keys";
 import { API_LIMIT } from "@/lib/api-limit";
 import { PAGE_LIMIT } from "@/lib/buyer-api";
 import { BUYER_WEBHOOK_EVENTS } from "@/lib/webhooks";
+import { PROVENANCE_VERSION } from "@/lib/provenance-rules";
 
 export const metadata: Metadata = {
   title: "API",
@@ -57,6 +58,7 @@ const summary = {
   approvedAt: "2026-11-02T15:04:00.000Z",
   updatedAt: "2026-11-08T09:12:44.000Z",
   webUrl: web,
+  seller: "Credit union",
 };
 
 export default function DevelopersPage() {
@@ -88,7 +90,7 @@ export default function DevelopersPage() {
       <p>Money is in dollars and ratios in percent. saleFormat is NONE for open offers, SEALED or BEST_AND_FINAL. bidDeadline is set when a round has one. updatedAt moves when the listing or its price changes.</p>
 
       <Endpoint>GET /api/v1/listings/:id</Endpoint>
-      <p>One live listing&apos;s summary and loan tape, as a signed-in buyer reads it before the confidentiality agreement. It never carries data-room files, the street, zip or borrower, the loan number, MERS or eNote ids, the seller&apos;s memo, or anyone&apos;s bid. Each loan lists every other tape field, null where the tape lacks it. A value estimate shows only where it came from a real provider. Scope listings:read.</p>
+      <p>One live listing&apos;s summary and loan tape, as a signed-in buyer reads it before the confidentiality agreement. It never carries data-room files, the street, zip or borrower, the loan number, MERS or eNote ids, the seller&apos;s memo, or anyone&apos;s bid. seller is the seller&apos;s type, such as Credit union or Bank, until this account is in the listing&apos;s data room, and then the seller&apos;s name. paused is true when the seller hasn&apos;t reconfirmed the loans are still available: the listing is off the book and takes no bids until they do. confirmedAvailableAt is the seller&apos;s latest confirmation. Each loan lists every other tape field, null where the tape lacks it. A value estimate shows only where it came from a real provider. Scope listings:read.</p>
       <Example label="Response, shortened">{{
         ...summary,
         summary: "Vacant SFR, foreclosure filed, BPO in the room.",
@@ -191,7 +193,7 @@ export default function DevelopersPage() {
       <Example label="offer.status">{{ event: "offer.status", sentAt: "2026-11-21T16:30:12.000Z", inquiryId: "cm3kc8f2e0011", listingId: ID, type: "OFFER", status: "DECLINED", change: "declined", reason: "another_bid_accepted" }}</Example>
 
       <Heading>Seller endpoints</Heading>
-      <p>POST /api/v1/tapes with JSON. title is the pool name. csv is the tape, using the same headers as the upload template. The listing is submitted for review and the response is listingId and loans. Scope tapes:write.</p>
+      <p>POST /api/v1/tapes with JSON. title is the pool name. csv is the tape, using the same headers as the upload template. ownership is the version of the ownership statement the seller gives, &quot;{PROVENANCE_VERSION}&quot;: the seller owns these loans or holds the owner&apos;s written mandate, and they are not pledged or sold elsewhere. A tape without it is refused. The listing is submitted for review and the response is listingId and loans. Scope tapes:write.</p>
       <p>GET /api/v1/offers returns bids on listings this key’s account owns: id, status, amount, listing title. GET /api/v1/offers/:id returns one of them. On a sealed listing before its deadline, amount is null, sealed is true, and the message history is empty. Scope offers:read.</p>
       <p>A seller&apos;s webhook receives offer.created, offer.accepted, offer.declined, and offer.countered, and you can pick which for each endpoint. An offer declined because another bid won carries reason another_bid_accepted.</p>
 

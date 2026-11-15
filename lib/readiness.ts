@@ -103,7 +103,7 @@ export async function launchReadiness(settings: { stripePriceId?: string | null;
       ? { label: "Email confirmation", state: "live", detail: "An account confirms it owns its email before it bids, lists, signs or messages." }
       : { label: "Email confirmation", state: release ? "off" : "standin", detail: "Accounts can bid and list before proving they own their email. Turn the gate on below before real users." },
     unmandated > 0
-      ? { label: "Broker mandates", state: "off", detail: `${unmandated} broker-filed listing${unmandated === 1 ? " is" : "s are"} in review with no mandate from the note holder. With the seller identity gate on, the desk can't approve ${unmandated === 1 ? "it" : "them"} until the broker adds one.` }
+      ? { label: "Broker mandates", state: "off", detail: `${unmandated} broker-filed listing${unmandated === 1 ? " is" : "s are"} in review with no mandate from the note holder. The desk can't approve ${unmandated === 1 ? "it" : "them"} until the broker adds one.` }
       : { label: "Broker mandates", state: "live", detail: "Every broker-filed listing in review has the note holder's mandate on file." },
     // The gate is always on, so this reads live either way and says how many desk-filed tapes wait on a seller.
     { label: "Desk-filed tapes", state: "live", detail: deskFiled > 0 ? `${deskFiled} listing${deskFiled === 1 ? "" : "s"} the desk filed for a seller wait${deskFiled === 1 ? "s" : ""} for the seller to confirm the tape. None can be approved before then.` : "A tape the desk files for a seller can't be approved until the seller confirms it is theirs and correct." },

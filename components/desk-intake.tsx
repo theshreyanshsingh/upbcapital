@@ -1,5 +1,6 @@
 import { askDeskTapeChanges, confirmDeskFiledTape } from "@/actions/desk-intake";
 import { ConfirmSubmit } from "@/components/confirm-submit";
+import { OwnershipStatement } from "@/components/ownership-statement";
 import { SubmitButton } from "@/components/submit-button";
 import { prettyDate } from "@/lib/format";
 
@@ -26,8 +27,10 @@ export function IntakeConfirm({ listing, viewerId }: { listing: IntakeListing; v
         <p className="mt-3 text-sm text-muted-foreground">This listing is no longer in review.</p>
       ) : (
         <div className="mt-4 grid gap-4 md:grid-cols-2">
-          <form action={confirmDeskFiledTape}>
+          <form action={confirmDeskFiledTape} className="space-y-3">
             <input type="hidden" name="listingId" value={listing.id} />
+            {/* The confirmation is the seller's ownership statement too (lib/provenance.ts). */}
+            <OwnershipStatement />
             <ConfirmSubmit
               title="Confirm this tape?"
               consequence="You confirm that these loans are yours to sell and that the tape is correct. The desk then finishes its review and can approve the listing."

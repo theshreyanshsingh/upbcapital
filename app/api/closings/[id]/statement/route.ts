@@ -31,7 +31,9 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     sellerOnTitle(closing.listing.seller),
   ]);
   const buyer = closing.deskBidId ? "UPB Capital desk" : funderIds.length > 1 ? "A buying group" : names.buyer || "Buyer";
-  const record = { ...closing, salePrice: Number(closing.salePrice) };
+  // The buyer's cut to the premium, fixed at award, shows beside the premium line (lib/volume-tiers.ts).
+  const premiumCut = side === "seller" ? null : await import("@/lib/volume-tiers").then((volume) => volume.closingPremiumCut(closing));
+  const record = { ...closing, salePrice: Number(closing.salePrice), premiumCut };
   // The loans the closing covers now, and any the desk took out before settlement.
   const { loans, kickouts } = statementScope(closing, closing.listing.notes);
   const pdf = await buildStatementPdf({

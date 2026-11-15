@@ -24,9 +24,17 @@ export function suggestedPrice(subject: Comp, book: Comp[]) {
 // Closed-trade comps. A trade is a COMPLETE closing, or a SOLD listing with no complete closing on file. Nothing
 // here names a trade: a cell shows only with at least MIN_TRADES trades in it, prices show as a percent of UPB, and
 // amounts show only as bands.
+//
+// A cell also needs a recent trade: at least MIN_RECENT_TRADES of its trades closed in the RECENT_MONTHS before the
+// day it is read. Three trades from two years ago say little about today's price. Manheim's market report asks a
+// lot more (6 trades a year and 2 in the last 90 days), but it prices cars that trade thousands of times a day. Notes
+// trade a few times a month in a cell, so its rule would leave almost every cell empty. One trade in six months is
+// the lightest rule that still keeps a stale cell off the page.
 
 export const MIN_TRADES = 3;
 export const COMP_WINDOW_MONTHS = 24;
+export const RECENT_MONTHS = 6;
+export const MIN_RECENT_TRADES = 1;
 
 export type ClosedTrade = {
   price: number;
@@ -82,7 +90,30 @@ export type CompCell = {
   high: number;
   // The band of the median trade's UPB.
   upbBand: string;
+  // The month the cell's latest trade closed, as "2026-10". compCells always sets it; a cell built by hand may not.
+  latestMonth?: string;
 };
+
+function monthsBefore(now: Date, months: number) {
+  const since = new Date(now);
+  since.setMonth(since.getMonth() - months);
+  return since;
+}
+
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+// "October 2026", from "2026-10". A month only, so no single trade's date can be read from it.
+export function monthText(month: string | undefined | null) {
+  const match = /^(\d{4})-(\d{2})$/.exec(month ?? "");
+  if (!match) return "";
+  return `${MONTHS[Number(match[2]) - 1] ?? ""} ${match[1]}`.trim();
+}
+
+// "4 trades, the latest in October 2026", for every page that shows a cell.
+export function cellFacts(cell: Pick<CompCell, "count" | "latestMonth">) {
+  const latest = monthText(cell.latestMonth);
+  return `${cell.count} trade${cell.count === 1 ? "" : "s"}${latest ? `, the latest in ${latest}` : ""}`;
+}
 
 function placeOf(trade: ClosedTrade, geo: Geo) {
   if (geo === "state") return trade.state.toUpperCase();
@@ -103,20 +134,26 @@ function usable(trade: ClosedTrade) {
   return trade.upb > 0 && trade.price > 0 && Number.isFinite(trade.price / trade.upb);
 }
 
-// Group trades by lien, performance and place. Cells under minTrades are dropped and counted, never shown.
-export function compCells(trades: ClosedTrade[], geo: Geo = "region", minTrades = MIN_TRADES) {
+// Group trades by lien, performance and place. A cell shows with at least minTrades trades in the COMP_WINDOW_MONTHS
+// to now and at least MIN_RECENT_TRADES in the RECENT_MONTHS to now; any other is dropped and counted, never shown.
+// now is the day the comps are read: today on a page, the award date in the back-test.
+export function compCells(trades: ClosedTrade[], geo: Geo = "region", minTrades = MIN_TRADES, now = new Date()) {
+  const since = monthsBefore(now, COMP_WINDOW_MONTHS);
+  const recentSince = monthsBefore(now, RECENT_MONTHS);
   const groups = new Map<string, ClosedTrade[]>();
-  for (const trade of trades.filter(usable)) {
+  for (const trade of trades.filter((row) => usable(row) && row.closedAt >= since && row.closedAt <= now)) {
     const key = [trade.lienPosition, trade.paymentStatus, placeOf(trade, geo)].join("|");
     groups.set(key, [...(groups.get(key) ?? []), trade]);
   }
   const cells: CompCell[] = [];
   let suppressed = 0;
   for (const [key, rows] of groups) {
-    if (rows.length < Math.max(MIN_TRADES, minTrades)) {
+    const recent = rows.filter((row) => row.closedAt >= recentSince).length;
+    if (rows.length < Math.max(MIN_TRADES, minTrades) || recent < MIN_RECENT_TRADES) {
       suppressed += rows.length;
       continue;
     }
+    const latest = rows.reduce((last, row) => (row.closedAt > last ? row.closedAt : last), rows[0].closedAt);
     const [lienPosition, paymentStatus, place] = key.split("|");
     const ratios = rows.map((row) => (row.price / row.upb) * 100).sort((a, b) => a - b);
     const upbs = rows.map((row) => row.upb).sort((a, b) => a - b);
@@ -131,6 +168,7 @@ export function compCells(trades: ClosedTrade[], geo: Geo = "region", minTrades 
       low: Math.round(ratios[0]),
       high: Math.round(ratios[ratios.length - 1]),
       upbBand: upbBand(median(upbs)),
+      latestMonth: latest.toISOString().slice(0, 7),
     });
   }
   const order = (cell: CompCell) => `${Object.keys(LIEN_WORDS).indexOf(cell.lienPosition)}${Object.keys(STATUS_WORDS).indexOf(cell.paymentStatus)}${cell.place}`;
@@ -140,10 +178,10 @@ export function compCells(trades: ClosedTrade[], geo: Geo = "region", minTrades 
 
 // The narrowest cell that holds enough trades for a loan like the subject: its state, then its region, then all
 // states. Null when even the national cell is too small.
-export function compsFor(subject: { state: string; lienPosition: string; paymentStatus: string }, trades: ClosedTrade[], minTrades = MIN_TRADES) {
+export function compsFor(subject: { state: string; lienPosition: string; paymentStatus: string }, trades: ClosedTrade[], minTrades = MIN_TRADES, now = new Date()) {
   for (const geo of ["state", "region", "national"] as Geo[]) {
     const place = placeOf({ ...subject, price: 0, upb: 0, closedAt: new Date(0) }, geo);
-    const cell = compCells(trades, geo, minTrades).cells.find(
+    const cell = compCells(trades, geo, minTrades, now).cells.find(
       (row) => row.lienPosition === subject.lienPosition && row.paymentStatus === subject.paymentStatus && row.place === place,
     );
     if (cell) return cell;
@@ -166,12 +204,12 @@ export function marketView(trades: ClosedTrade[], now = new Date(), windowMonths
   const since = new Date(now);
   since.setMonth(since.getMonth() - windowMonths);
   const recent = trades.filter((trade) => usable(trade) && trade.closedAt >= since && trade.closedAt <= now);
-  const regional = compCells(recent, "region");
+  const regional = compCells(recent, "region", MIN_TRADES, now);
   return {
     asOf: now.toISOString().slice(0, 10),
     windowMonths,
     total: recent.length,
-    national: compCells(recent, "national").cells,
+    national: compCells(recent, "national", MIN_TRADES, now).cells,
     regional: regional.cells,
     suppressed: regional.suppressed,
   };

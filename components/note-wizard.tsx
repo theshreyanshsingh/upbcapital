@@ -4,6 +4,7 @@ import { useRef, useState, useTransition } from "react";
 import { createNoteListing, updateOwnNote } from "@/actions/listings";
 import { checkNoteMarket } from "@/actions/market-rates";
 import { PriceAgainstTime } from "@/components/indicative-price";
+import { OwnershipStatement } from "@/components/ownership-statement";
 import { Field } from "@/components/page-intro";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,11 +23,13 @@ import {
   US_STATES,
 } from "@/lib/labels";
 import { bpsToPercent } from "@/lib/money";
+import { PROVENANCE_VERSION, STATEMENT_MISSING_TEXT } from "@/lib/provenance-rules";
 import {
   BANKRUPTCY_CHAPTERS,
   CREDIT_SCORE_MAX,
   CREDIT_SCORE_MIN,
   CREDIT_SCORE_TYPES,
+  LOAN_PROGRAMS,
   LOAN_PURPOSES,
   LOSS_MIT_STAGES,
   PAYMENT_TYPES,
@@ -119,6 +122,8 @@ export function NoteWizard({
   const [draft, setDraft] = useState<Draft>({ ...empty, ...initial });
   const [files, setFiles] = useState<Record<string, File[]>>({});
   const [error, setError] = useState("");
+  // The ownership statement, ticked fresh on every filing and resubmission (lib/provenance-rules.ts).
+  const [owned, setOwned] = useState(false);
   const [pending, start] = useTransition();
   const [market, setMarket] = useState<{ ladder: PriceLadder | null; error: string | null; loading: boolean }>({ ladder: null, error: null, loading: false });
   // Only the latest check lands, so an answer for an older ask never overwrites a newer one.
@@ -173,6 +178,8 @@ export function NoteWizard({
       if (draft.payoffAsOf && payoff == null) return "Enter the payoff amount for that date.";
       const senior = amount(draft.seniorLienBalance);
       if (senior != null && !(senior >= 0)) return "The senior lien balance can't be below zero.";
+      const claim = amount(draft.partialClaimBalance);
+      if (claim != null && !(claim > 0)) return "The partial claim balance must be greater than zero.";
     }
     if (name === "Price" && Number(draft.askingPrice) <= 0) return "Enter an asking price.";
     return "";
@@ -222,11 +229,18 @@ export function NoteWizard({
       setError(message);
       return;
     }
+    if (!owned) {
+      setError(STATEMENT_MISSING_TEXT);
+      return;
+    }
     const formData = new FormData();
     if (leadId) formData.set("leadId", leadId);
+    formData.set("ownership", PROVENANCE_VERSION);
     Object.entries(draft).forEach(([key, value]) => formData.set(key, value));
     // A first lien has nothing ahead of it, so a senior balance typed before the lien changed isn't sent.
     if (draft.lienPosition === "FIRST") formData.set("seniorLienBalance", "");
+    // A balance goes only with a partial claim answered yes.
+    if (draft.partialClaim !== "true") formData.set("partialClaimBalance", "");
     formData.set("servicingLoaded", servicingLoaded ? "true" : "false");
     Object.entries(files).forEach(([type, group]) => {
       group.forEach((file) => {
@@ -523,6 +537,21 @@ export function NoteWizard({
             ) : (
               <div className="hidden md:block" />
             )}
+            <Field label="Loan program" hint="Conventional, or the government program that insures or guarantees the loan.">
+              <OptionalSelect value={draft.loanProgram} options={LOAN_PROGRAMS} onChange={(value) => set("loanProgram", value)} />
+            </Field>
+            <Field label="Partial claim?" hint="On an FHA or VA loan: a lien the agency holds for arrears it paid, due at payoff, sale or refinance.">
+              <OptionalSelect
+                value={draft.partialClaim}
+                options={YES_NO}
+                onChange={(value) => setDraft((current) => ({ ...current, partialClaim: value, partialClaimBalance: value === "true" ? current.partialClaimBalance : "" }))}
+              />
+            </Field>
+            {draft.partialClaim === "true" && (
+              <Field label="Partial claim balance" hint="Leave it blank if you don't know it.">
+                <Input className="h-11 bg-card tabular-nums" inputMode="decimal" value={draft.partialClaimBalance} onChange={(event) => set("partialClaimBalance", event.target.value)} />
+              </Field>
+            )}
           </div>
         )}
         {step === 4 && (
@@ -595,6 +624,7 @@ export function NoteWizard({
             {draft.sellerFinanced === "true" && (
               <OriginatorLicense value={draft.originatorLicense} onChange={(value) => set("originatorLicense", value)} />
             )}
+            <OwnershipStatement checked={owned} onChange={setOwned} className="border-t border-border pt-4" />
           </div>
         )}
         {error && <p role="alert" className="mt-6 text-sm text-bad">{error}</p>}

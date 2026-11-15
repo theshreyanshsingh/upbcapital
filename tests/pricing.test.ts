@@ -209,6 +209,8 @@ test("a pool's price is the sum of its loans' prices", () => {
 });
 
 const at = new Date("2026-10-01T00:00:00Z");
+// Comps are read as of a day, since a cell needs a trade in the six months before it (lib/comps.ts).
+const asOf = new Date("2026-11-05T00:00:00Z");
 const trade = (state: string, lien: string, status: string, ratio: number, upb = 100000, closedAt = at): ClosedTrade => ({
   state,
   lienPosition: lien,
@@ -227,11 +229,11 @@ test("comps suppress any cell with fewer than three trades", () => {
     trade("NY", "FIRST", "NON_PERFORMING", 0.5),
     trade("NY", "FIRST", "NON_PERFORMING", 0.4),
   ];
-  const byState = compCells(trades, "state");
+  const byState = compCells(trades, "state", MIN_TRADES, asOf);
   assert.equal(byState.cells.length, 0);
   assert.equal(byState.suppressed, 5);
   // The South has three performing first liens, so that cell shows; the Northeast's two do not.
-  const byRegion = compCells(trades, "region");
+  const byRegion = compCells(trades, "region", MIN_TRADES, asOf);
   assert.equal(byRegion.cells.length, 1);
   assert.equal(byRegion.suppressed, 2);
   const south = byRegion.cells[0];
@@ -242,21 +244,22 @@ test("comps suppress any cell with fewer than three trades", () => {
   assert.equal(south.high, 90);
   assert.equal(south.upbBand, "$100–250k");
   // A raised floor is honoured; a lowered one is not.
-  assert.equal(compCells(trades, "region", 4).cells.length, 0);
-  assert.equal(compCells(trades, "region", 1).cells.length, 1);
-  // Nothing in a cell names a trade: no prices, dates or exact amounts.
-  assert.deepEqual(Object.keys(south).sort(), ["count", "geo", "high", "label", "lienPosition", "low", "median", "paymentStatus", "place", "upbBand"]);
+  assert.equal(compCells(trades, "region", 4, asOf).cells.length, 0);
+  assert.equal(compCells(trades, "region", 1, asOf).cells.length, 1);
+  // Nothing in a cell names a trade: no prices, days or exact amounts. The latest trade shows by month only.
+  assert.deepEqual(Object.keys(south).sort(), ["count", "geo", "high", "label", "latestMonth", "lienPosition", "low", "median", "paymentStatus", "place", "upbBand"]);
+  assert.equal(south.latestMonth, "2026-10");
 });
 
 test("comps widen from state to region to all states until a cell has three trades", () => {
   const trades = [trade("FL", "FIRST", "PERFORMING", 0.8), trade("GA", "FIRST", "PERFORMING", 0.7), trade("TX", "FIRST", "PERFORMING", 0.9)];
-  const region = compsFor({ state: "FL", lienPosition: "FIRST", paymentStatus: "PERFORMING" }, trades);
+  const region = compsFor({ state: "FL", lienPosition: "FIRST", paymentStatus: "PERFORMING" }, trades, MIN_TRADES, asOf);
   assert.equal(region?.geo, "region");
-  const national = compsFor({ state: "CA", lienPosition: "FIRST", paymentStatus: "PERFORMING" }, [...trades, trade("CA", "FIRST", "PERFORMING", 0.6)]);
+  const national = compsFor({ state: "CA", lienPosition: "FIRST", paymentStatus: "PERFORMING" }, [...trades, trade("CA", "FIRST", "PERFORMING", 0.6)], MIN_TRADES, asOf);
   assert.equal(national?.geo, "national");
   assert.equal(national?.count, 4);
-  assert.equal(compsFor({ state: "FL", lienPosition: "SECOND", paymentStatus: "PERFORMING" }, trades), null);
-  const state = compsFor({ state: "FL", lienPosition: "FIRST", paymentStatus: "PERFORMING" }, [...trades, ...trades.map((row) => ({ ...row, state: "FL" }))]);
+  assert.equal(compsFor({ state: "FL", lienPosition: "SECOND", paymentStatus: "PERFORMING" }, trades, MIN_TRADES, asOf), null);
+  const state = compsFor({ state: "FL", lienPosition: "FIRST", paymentStatus: "PERFORMING" }, [...trades, ...trades.map((row) => ({ ...row, state: "FL" }))], MIN_TRADES, asOf);
   assert.equal(state?.geo, "state");
   assert.equal(regionOf("dc"), "South");
   assert.equal(upbBand(49999), "Under $50k");

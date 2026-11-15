@@ -24,6 +24,7 @@ import { percentToBps } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
 import { OFAC_DOWN_MESSAGE, OFAC_HOLD_MESSAGE, ofacHold, screenInBackground, screenListing, screenUser } from "@/lib/screening";
 import { sellerIdentityHold } from "@/lib/seller-identity";
+import { provenanceHold } from "@/lib/provenance";
 import { clearSettingsCache, getSettings } from "@/lib/settings";
 import { cancelBuyerSubscription } from "@/lib/stripe-billing";
 import { syncProPrice } from "@/lib/stripe-sync";
@@ -98,6 +99,9 @@ export async function reviewListing(formData: FormData) {
     // A tape the desk filed for the seller waits on the seller's word that it is theirs and correct.
     const unconfirmed = deskIntakeHold(listing);
     if (unconfirmed) redirect(`/admin/listings/${listingId}?error=${encodeURIComponent(unconfirmed)}`);
+    // A new listing waits on the seller's ownership statement (lib/provenance.ts).
+    const unattested = provenanceHold(listing);
+    if (unattested) redirect(`/admin/listings/${listingId}?error=${encodeURIComponent(unattested)}#availability`);
     // The diligence set: each required item on file, or waived by compliance with a reason.
     const diligence = await diligenceHold(listingId);
     if (diligence) redirect(`/admin/listings/${listingId}?error=${encodeURIComponent(diligence)}#diligence`);

@@ -54,9 +54,13 @@ export function LoginPanel({ next, demo }: { next?: string; demo?: DemoDesk }) {
   );
 }
 
-export function SignupForm({ lead = "", email = "", referral = "", next = "" }: { lead?: string; email?: string; referral?: string; next?: string }) {
+// `valuation` comes from a valuation's result page: the request's id, the seller role it fits, and the name, email
+// and company when this browser sent it (lib/valuations.ts signupPrefill).
+type ValuationPrefill = { id: string; role: string; name: string; email: string; company: string };
+
+export function SignupForm({ lead = "", email = "", referral = "", next = "", valuation }: { lead?: string; email?: string; referral?: string; next?: string; valuation?: ValuationPrefill }) {
   const [state, action] = useActionState(signup, { error: "" } as { error: string; field?: string });
-  const [role, setRole] = useState(lead ? "INDIVIDUAL_SELLER" : "BUYER");
+  const [role, setRole] = useState(valuation?.role ?? (lead ? "INDIVIDUAL_SELLER" : "BUYER"));
   const form = useRef<HTMLFormElement>(null);
   // An error about one field moves focus there, so the person lands on what to fix.
   useEffect(() => {
@@ -69,6 +73,7 @@ export function SignupForm({ lead = "", email = "", referral = "", next = "" }: 
     <form ref={form} action={action} className="glass space-y-6 p-6 md:p-10">
       {lead && <input type="hidden" name="lead" value={lead} />}
       {next && <input type="hidden" name="next" value={next} />}
+      {valuation && <input type="hidden" name="valuation" value={valuation.id} />}
       <div className="grid gap-3 sm:grid-cols-2">
         {[
           ["BUYER", "Buyer", "Underwrite the book."],
@@ -86,8 +91,8 @@ export function SignupForm({ lead = "", email = "", referral = "", next = "" }: 
         ))}
       </div>
       <div className="grid gap-4 md:grid-cols-2">
-        <Field name="name" label="Name" autoComplete="name" errorId={invalid("name")} />
-        <Field name="email" label="Email" type="email" autoComplete="email" defaultValue={email} errorId={invalid("email")} />
+        <Field name="name" label="Name" autoComplete="name" defaultValue={valuation?.name} errorId={invalid("name")} />
+        <Field name="email" label="Email" type="email" autoComplete="email" defaultValue={email || valuation?.email} errorId={invalid("email")} />
         <Field name="password" label="Password" type="password" autoComplete="new-password" errorId={invalid("password")} />
         <Field name="phone" label="Phone" type="tel" autoComplete="tel" errorId={invalid("phone")} />
         <Field name="referral" label="Referral code" defaultValue={referral} errorId={invalid("referral")} />
@@ -99,13 +104,16 @@ export function SignupForm({ lead = "", email = "", referral = "", next = "" }: 
       )}
       {role === "INSTITUTIONAL_SELLER" && (
         <div className="grid gap-4 md:grid-cols-2">
-          <Field name="companyName" label="Company" autoComplete="organization" errorId={invalid("companyName")} />
+          <Field name="companyName" label="Company" autoComplete="organization" defaultValue={valuation?.company} errorId={invalid("companyName")} />
           <label>
             <span className="text-[13px] text-muted-foreground">Company type</span>
+            {/* Buyers see the listings by this type until the data room opens to them. lib/seller-anonymity.ts. */}
             <select name="companyType" className="desk-input mt-2" defaultValue="FUND">
               <option value="BANK">Bank</option>
+              <option value="CREDIT_UNION">Credit union</option>
               <option value="FUND">Fund</option>
               <option value="SERVICER">Servicer</option>
+              <option value="LENDER">Private lender</option>
               <option value="OTHER">Other</option>
             </select>
           </label>

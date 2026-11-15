@@ -1,12 +1,18 @@
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
-import { deskWalled } from "@/lib/auction";
+import { canManageRoom } from "@/lib/acl";
+import { listingActivity } from "@/lib/activity";
+import { deskWalled, sealedFromSeller } from "@/lib/auction";
+import { bidderNamer } from "@/lib/bidder-alias";
 import { closingLoans } from "@/lib/closing";
 import { toCsv } from "@/lib/csv";
 import type { Staff } from "@/lib/desk-roles";
 import { money, prettyDate } from "@/lib/format";
 import { pdfSafe, wrap } from "@/lib/memo-pdf";
-import { buyerPrice } from "@/lib/offers";
+import { bidExpired, buyerPrice, type OfferMoney } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
+import { prorationDirection, prorationSummary, readProration } from "@/lib/proration";
+import { bidSummary, trackLine } from "@/lib/seller-decisions";
+import { deliveringSide, kindLabel, sideWord, trailingStatusLabel } from "@/lib/trailing-docs";
 import { vestingNames } from "@/lib/vesting";
 
 // One export of a sale's record, for a bank seller's exam file: every bid with its round, time, good-until date and
@@ -210,10 +216,238 @@ export async function saleFile(listingId: string, viewer: Staff, now = new Date(
   }
   if (!listing.closings.length) row({ section: "Closing outcome", status: listing.status === "SOLD" ? "Sold outside the closing room" : "No closing", amount: listing.salePrice != null ? Number(listing.salePrice) : null, at: listing.soldAt });
 
-  return { listing: { id: listing.id, title: listing.title, status: listing.status, seller: listing.seller.companyName || listing.seller.name }, event, reserve, walled, rows };
+  return { listing: { id: listing.id, title: listing.title, status: listing.status, seller: listing.seller.companyName || listing.seller.name }, event, reserve, walled, rows, copy: "desk" as const };
 }
 
-export type SaleFile = NonNullable<Awaited<ReturnType<typeof saleFile>>>;
+// The desk's file, or the seller's copy below. Both export through the same CSV and PDF.
+export type SaleFile = Omit<NonNullable<Awaited<ReturnType<typeof saleFile>>>, "copy"> & { copy: "desk" | "seller" };
+
+// ---------------------------------------------------------------------------------------------------------------
+// The cover bid, as Fannie Mae publishes it for its pool sales: the highest other bid on the same loans, as a share
+// of the winning bid, which is the second-highest bid when the winner bid most. The rivals are buyers' bids for the
+// same scope placed before the award, less any the bidder had withdrawn or let lapse by then. `bids` counts the
+// winner, so an award with no rival has one. The seller's copy and the board pack (lib/board-pack.ts) read it.
+
+export type BidOnRecord = {
+  id: string;
+  buyerId: string;
+  noteId: string | null;
+  amount: number | null;
+  status: string;
+  createdAt: Date;
+  expiresAt?: Date | null;
+  withdrawnAt?: Date | null;
+  messages: OfferMoney[];
+};
+
+// The bidder's price as it stood at a moment: their opening bid, or the last price they posted by then.
+export function priceAt(bid: BidOnRecord, at: Date) {
+  const price = buyerPrice(bid.amount, bid.messages.filter((message) => message.createdAt.getTime() <= at.getTime()), bid.buyerId);
+  return price != null && price > 0 ? price : null;
+}
+
+export function awardCover(input: { winner: { id: string | null; noteId: string | null; price: number | null }; at: Date; bids: BidOnRecord[] }) {
+  const { winner, at } = input;
+  if (winner.price == null || !(winner.price > 0)) return null;
+  const rivals = input.bids.flatMap((bid) => {
+    if (bid.id === winner.id || (bid.noteId ?? null) !== (winner.noteId ?? null) || bid.createdAt.getTime() > at.getTime()) return [];
+    const withdrawn = bid.status === "WITHDRAWN" && (!bid.withdrawnAt || bid.withdrawnAt.getTime() <= at.getTime());
+    const lapsed = bidExpired(bid.expiresAt, at) || (bid.status === "EXPIRED" && !bid.expiresAt);
+    const price = withdrawn || lapsed ? null : priceAt(bid, at);
+    return price == null ? [] : [price];
+  });
+  const cover = rivals.length ? Math.max(...rivals) : null;
+  return { winnerPrice: winner.price, bids: rivals.length + 1, cover, ratio: cover == null ? null : cover / winner.price };
+}
+
+export type AwardCover = NonNullable<ReturnType<typeof awardCover>>;
+
+// ---------------------------------------------------------------------------------------------------------------
+// The seller's copy, for its own board or exam file. It opens once the listing has an award, to the seller (a firm's
+// seats act as the firm) and the broker of record. Line by line it holds only what the seller can already see in the
+// app: the listing and the seller's own reserve and terms; every bid as the bid summary shows it, by the bidder's
+// letter except an awarded buyer, with the bidder's track line; the seller's own approvals and counters and the
+// desk's asks; each award, its cover bid, kick-outs, proration and outcome, with the seller's net; the trailing
+// documents; and counts of NDAs and data-room files. It leaves out the desk's notes and its words on the log, the
+// desk staff's names, other parties' files, KYC and screening, the notices sent to buyers, anything only the desk
+// scores, the buyer's deposit, and every amount while the round is still sealed from the seller.
+
+export const SALE_FILE_LOCKED = "The sale file opens to the seller once a bid is awarded.";
+
+const SELLER_APPROVALS = ["SELLER_ASKED", "SELLER_ASKED_PART", "SELLER_APPROVED", "SELLER_DECLINED", "SELLER_COUNTERED", "RESERVE", "BUY_NOW_SET", "BUY_NOW_CLEARED"];
+
+// An award, or a closing from one: the listing has a sale record to give.
+export function saleAwarded(listing: { closings: unknown[]; inquiries: { status: string }[]; deskBids: { status: string }[] }) {
+  return listing.closings.length > 0 || listing.inquiries.some((bid) => bid.status === "ACCEPTED") || listing.deskBids.some((bid) => bid.status === "ACCEPTED");
+}
+
+export async function sellerSaleFile(listingId: string, viewer: { id: string; role: string }, now = new Date()) {
+  const listing = await prisma.listing.findUnique({
+    where: { id: listingId },
+    include: {
+      seller: { select: { name: true, companyName: true } },
+      notes: { select: { id: true, city: true, state: true }, orderBy: { createdAt: "asc" } },
+      inquiries: {
+        where: { type: "OFFER" },
+        select: { id: true, buyerId: true, noteId: true, amount: true, status: true, createdAt: true, expiresAt: true, withdrawnAt: true, buyer: { select: { id: true, name: true, companyName: true } }, messages: { select: { kind: true, amount: true, createdAt: true, authorId: true } } },
+        orderBy: { createdAt: "asc" },
+      },
+      deskBids: { orderBy: { createdAt: "asc" } },
+      closings: { orderBy: { openedAt: "asc" }, include: { kickouts: { orderBy: { createdAt: "asc" } }, trailingDocs: { orderBy: { dueAt: "asc" } } } },
+    },
+  });
+  if (!listing) return { status: 404 as const };
+  // The desk reads its own file. Everyone else reads this copy, if the listing is theirs to sell or broker.
+  if (viewer.role === "ADMIN" || !canManageRoom(viewer, listing)) return { status: 403 as const, error: "The sale file is for the seller, the broker of record and the desk." };
+  if (!saleAwarded(listing)) return { status: 403 as const, error: SALE_FILE_LOCKED };
+  const sealed = sealedFromSeller(listing, now);
+  const event = listing.saleEventId ? await prisma.saleEvent.findUnique({ where: { id: listing.saleEventId } }) : null;
+  const ids = [listing.id, ...listing.inquiries.map((bid) => bid.id)];
+  const [summary, nameOf, audits, activity] = await Promise.all([
+    bidSummary(listing.id, viewer, now),
+    bidderNamer(listing.id, { role: "SELLER" }),
+    prisma.auditEvent.findMany({ where: { entityId: { in: ids }, action: { in: SELLER_APPROVALS } }, select: { action: true, actorId: true, entityId: true, detail: true, createdAt: true }, orderBy: { createdAt: "asc" } }),
+    listingActivity(listing.id, listing.sellerId, now),
+  ]);
+  if (summary.status !== 200) return { status: 403 as const, error: "The sale file is for the seller, the broker of record and the desk." };
+  const bidOf = new Map(listing.inquiries.map((bid) => [bid.id, bid]));
+  const partyOf = (buyerId: string) => {
+    const buyer = listing.inquiries.find((bid) => bid.buyerId === buyerId)?.buyer;
+    return buyer ? nameOf(buyer) : "A bidder";
+  };
+  // The desk's people show as the desk, as on the closing timeline.
+  const who = (actorId: string | null) => (actorId === listing.sellerId ? "The seller" : actorId && actorId === listing.brokerId ? "The broker" : "The desk");
+  const reserve = listing.reservePrice != null ? Number(listing.reservePrice) : null;
+  const roundOf = (at: Date) =>
+    event
+      ? at.getTime() < event.indicationsAt.getTime() ? "Indication" : "Best and final"
+      : listing.bidMode === "SEALED" ? "Sealed" : listing.bidMode === "BEST_AND_FINAL" ? "Best and final" : "Open offer";
+  const position = new Map(listing.notes.map((note, index) => [note.id, index + 1]));
+  const loan = (noteId: string | null) => {
+    const note = noteId ? listing.notes.find((item) => item.id === noteId) : null;
+    return note ? `Loan ${position.get(note.id)} in ${note.city}, ${note.state}` : "Whole listing";
+  };
+  const scope = (closing: (typeof listing.closings)[number]) => {
+    const loans = closingLoans(closing, listing.notes);
+    if (loans.length === listing.notes.length) return "Whole listing";
+    return loans.length === 1 ? loan(loans[0].id) : `${loans.length} of ${listing.notes.length} loans`;
+  };
+  const rows: SaleFileRow[] = [];
+  const row = (input: Partial<SaleFileRow> & { section: string }) =>
+    rows.push({ at: null, party: "", amount: null, round: "", goodUntil: null, status: "", reserveMet: "", by: "", detail: "", ...input });
+
+  row({ section: "Listing", at: listing.approvedAt, party: listing.seller.companyName || listing.seller.name, status: words(listing.status), detail: `${listing.title} · ${listing.kind === "POOL" ? `pool of ${listing.notes.length} loans` : "single note"}` });
+  row({ section: "Reserve", amount: reserve, detail: reserve == null ? "The seller set no reserve." : "Bids at or above it needed no further seller approval." });
+  row({
+    section: "Bid terms",
+    at: listing.bidDeadline,
+    round: event ? "Sale event" : words(listing.bidMode),
+    detail: event
+      ? `${event.name}: indications due ${event.indicationsAt.toISOString()}, best and final due ${event.bestFinalAt.toISOString()}`
+      : listing.bidDeadline ? `Deadline ${listing.bidDeadline.toISOString()}` : "No deadline",
+  });
+  // Counts only, as the seller's buyer-interest panel shows them. Who signed or took a file stays with the desk.
+  const takers = new Set(activity.downloads.map((entry) => entry.actorId)).size;
+  row({ section: "Interest", status: "NDAs signed", detail: String(activity.ndas.length) });
+  row({ section: "Interest", status: "Data room", detail: `${activity.downloads.length} file${activity.downloads.length === 1 ? "" : "s"} taken by ${takers} buyer${takers === 1 ? "" : "s"}` });
+
+  // Every bid as the seller's bid summary has it, with the bidder's track line.
+  summary.rows.forEach((bid, index) => {
+    const placed = summary.bids[index];
+    const record = placed?.record;
+    const price = bid.price && bid.price !== "Sealed until the deadline" ? Number(bid.price) : null;
+    row({
+      section: "Bid",
+      at: placed?.at ?? null,
+      party: bid.bidder,
+      amount: sealed ? null : price,
+      round: placed ? roundOf(placed.at) : "",
+      goodUntil: placed ? (bidOf.get(placed.id)?.expiresAt ?? null) : null,
+      status: bid.status,
+      reserveMet: bid.reserve_met,
+      detail: [
+        bid.scope,
+        bid.pct_of_upb ? `${bid.pct_of_upb}% of UPB` : "",
+        bid.loan_prices ? `loan prices ${bid.loan_prices}` : "",
+        record ? `track record: ${trackLine(record)}` : "",
+        ...(record?.facts ?? []),
+      ].filter(Boolean).join(" · "),
+    });
+  });
+
+  for (const bid of listing.deskBids) {
+    row({ section: "Desk bid", at: bid.createdAt, party: "UPB Capital desk book", amount: Number(bid.amount), round: roundOf(bid.createdAt), status: words(bid.status), reserveMet: reserve == null ? "No reserve" : Number(bid.amount) >= reserve ? "Yes" : "No", detail: loan(bid.noteId) });
+  }
+
+  // The seller's own answers and counters and the desk's asks, in the words the log keeps for them, which carry the
+  // price and never a name.
+  for (const entry of audits) {
+    const bid = bidOf.get(entry.entityId);
+    row({ section: "Seller approval", at: entry.createdAt, party: bid ? partyOf(bid.buyerId) : "", status: words(entry.action.replace(/^SELLER_/, "")), by: who(entry.actorId), detail: sealed ? SEALED : entry.detail });
+  }
+
+  const records: BidOnRecord[] = listing.inquiries.map((bid) => ({ ...bid, amount: bid.amount == null ? null : Number(bid.amount) }));
+  for (const closing of listing.closings) {
+    const winner = closing.inquiryId ? bidOf.get(closing.inquiryId) : null;
+    const desk = closing.deskBidId ? listing.deskBids.find((bid) => bid.id === closing.deskBidId) : null;
+    const named = winner ? partyOf(winner.buyerId) : "";
+    const party = closing.deskBidId ? "UPB Capital desk book" : named || "The buyer";
+    // The award price, before any loan came out of it.
+    const awarded = Number(closing.salePrice) + closing.kickouts.reduce((sum, kick) => sum + kick.priceCents, 0) / 100;
+    // The buyer's entity on title shows where the closing names the buyer to the seller.
+    const title = closing.buyerEntity && winner && winner.status === "ACCEPTED" ? `takes title as ${closing.buyerEntity}` : "";
+    row({ section: "Award", at: closing.openedAt, party, amount: awarded, status: closing.deskBidId ? "Desk purchase" : "Awarded", by: "The desk", detail: [scope(closing), title].filter(Boolean).join(" · ") });
+    const cover = sealed
+      ? null
+      : awardCover({
+          winner: { id: winner?.id ?? null, noteId: winner ? winner.noteId : (desk?.noteId ?? null), price: winner ? priceAt(records.find((bid) => bid.id === winner.id)!, closing.openedAt) : desk ? Number(desk.amount) : null },
+          at: closing.openedAt,
+          bids: records,
+        });
+    if (cover) {
+      row({
+        section: "Cover bid",
+        at: closing.openedAt,
+        party,
+        amount: cover.cover,
+        status: cover.ratio == null ? "One bid" : `${(cover.ratio * 100).toFixed(2)}% of the winning bid`,
+        detail: cover.ratio == null ? "No other bid on these loans before the award." : `The highest other bid on these loans before the award, of ${cover.bids} bids. The winning bid was ${money(cover.winnerPrice, 2)}.`,
+      });
+    }
+    for (const kick of closing.kickouts) {
+      row({ section: "Closing outcome", at: kick.createdAt, party, amount: kick.priceCents / 100, status: "Kicked out", by: "The desk", detail: [loan(kick.noteId), `price down ${money(kick.priceCents / 100, 2)}`, kick.reason].filter(Boolean).join(" · ") });
+    }
+    if (closing.prorationCents != null) {
+      const proration = readProration(closing.prorationDetail);
+      row({ section: "Proration", party, amount: closing.prorationCents / 100, status: prorationDirection(closing.prorationCents), detail: proration ? prorationSummary(proration) : "" });
+    }
+    for (const doc of closing.trailingDocs) {
+      const by = sideWord(deliveringSide(doc));
+      row({
+        section: "Trailing document",
+        at: doc.receivedAt ?? doc.sentAt ?? doc.dueAt,
+        party: by.charAt(0).toUpperCase() + by.slice(1),
+        status: trailingStatusLabel(doc.status),
+        detail: [
+          kindLabel(doc.kind),
+          doc.noteId ? loan(doc.noteId) : "",
+          `due ${doc.dueAt.toISOString().slice(0, 10)}`,
+          doc.sentAt ? `sent ${doc.sentAt.toISOString().slice(0, 10)}` : "",
+          doc.receivedAt ? `received ${doc.receivedAt.toISOString().slice(0, 10)}` : "",
+          doc.reference,
+          doc.status === "WAIVED" && doc.waivedReason ? `waived: ${doc.waivedReason}` : "",
+        ].filter(Boolean).join(" · "),
+      });
+    }
+    if (closing.closedAt) row({ section: "Closing outcome", at: closing.closedAt, party, amount: Number(closing.salePrice), status: "Closed", detail: `Net to seller ${money(closing.netToSellerCents / 100, 2)}` });
+    if (closing.canceledAt || closing.status === "CANCELED") {
+      // The seller reads a finding against itself, never one against the buyer (lib/closing-service.ts faultLine).
+      row({ section: "Closing outcome", at: closing.canceledAt, party, status: "Canceled", detail: [closing.cancelReason ?? "", closing.cancelFault === "SELLER" ? "Recorded as the seller's failure to deliver." : ""].filter(Boolean).join(" · ") });
+    }
+  }
+
+  return { status: 200 as const, file: { listing: { id: listing.id, title: listing.title, status: listing.status, seller: listing.seller.companyName || listing.seller.name }, event, reserve, walled: sealed, rows, copy: "seller" as const } satisfies SaleFile };
+}
 
 export function saleFileCsv(file: SaleFile) {
   return toCsv(
@@ -232,7 +466,8 @@ export function saleFileCsv(file: SaleFile) {
   );
 }
 
-// A one- or two-page summary to put on top of the CSV in the exam file.
+// A one- or two-page summary to put on top of the CSV in the exam file. The seller's copy adds its cover bids,
+// proration, trailing documents and interest counts, and each bid's track line.
 export async function saleFilePdf(file: SaleFile, generatedAt = new Date()) {
   const pdf = await PDFDocument.create();
   const font = await pdf.embedFont(StandardFonts.Helvetica);
@@ -259,20 +494,23 @@ export async function saleFilePdf(file: SaleFile, generatedAt = new Date()) {
   const declines = file.rows.filter((row) => row.section === "Decline sent");
   const outcomes = file.rows.filter((row) => row.section === "Closing outcome" || row.section === "Closing opened");
   const approvals = file.rows.filter((row) => row.section === "Seller approval");
+  const seller = file.copy === "seller";
   const when = (at: Date | null) => (at ? `${prettyDate(at)} ${at.toISOString().slice(11, 16)} UTC` : "no date");
 
-  line("UPB CAPITAL  ·  SALE FILE", { size: 9, face: bold, color: soft, gap: 6 });
+  line(seller ? "UPB CAPITAL  ·  SALE FILE  ·  SELLER COPY" : "UPB CAPITAL  ·  SALE FILE", { size: 9, face: bold, color: soft, gap: 6 });
   line(file.listing.title, { size: 18, face: bold, gap: 4 });
   line(`Seller ${file.listing.seller} · status ${words(file.listing.status)} · generated ${when(generatedAt)}`, { color: soft, gap: 10 });
   const terms = file.rows.find((row) => row.section === "Bid terms");
   line(`Bid terms: ${terms?.round ?? ""}. ${terms?.detail ?? ""}`);
-  line(file.reserve == null ? "Reserve: none set." : file.walled ? `Reserve: ${SEALED.toLowerCase()}.` : `Reserve: ${money(file.reserve, 2)}.`, { gap: 10 });
+  // The seller set the reserve, so their copy always shows it.
+  line(file.reserve == null ? "Reserve: none set." : file.walled && !seller ? `Reserve: ${SEALED.toLowerCase()}.` : `Reserve: ${money(file.reserve, 2)}.`, { gap: 10 });
 
   line(`Bids (${bids.length})`, { size: 12, face: bold, gap: 2 });
   if (!bids.length) line("No bids were placed.", { color: soft });
   for (const bid of bids) {
     const figure = bid.amount == null ? (file.walled ? "sealed" : "no amount") : money(bid.amount, 2);
     line(`${when(bid.at)} · ${bid.party} · ${figure} · ${bid.round} · ${bid.status}${bid.goodUntil ? ` · good until ${prettyDate(bid.goodUntil)}` : ""}${bid.reserveMet ? ` · met reserve: ${bid.reserveMet.toLowerCase()}` : ""}`);
+    if (seller && bid.detail) line(bid.detail, { size: 9, color: soft, gap: 2 });
   }
   y -= 8;
   line(`Seller approvals, counters and declines (${approvals.length})`, { size: 12, face: bold, gap: 2 });
@@ -281,15 +519,40 @@ export async function saleFilePdf(file: SaleFile, generatedAt = new Date()) {
   y -= 8;
   line("Award", { size: 12, face: bold, gap: 2 });
   if (!awards.length) line("No award recorded.", { color: soft });
-  for (const award of awards) line(`${when(award.at)} · ${award.status} · ${award.party || "the listing"} · by ${award.by}${file.walled ? "" : ` · ${award.detail}`}`);
-  y -= 8;
-  line(`Declines sent (${declines.length})`, { size: 12, face: bold, gap: 2 });
-  if (!declines.length) line("None sent.", { color: soft });
-  for (const decline of declines) line(`${when(decline.at)} · ${decline.party} · ${decline.detail}`);
+  for (const award of awards) {
+    if (seller) line(`${when(award.at)} · ${award.status} · ${award.party} · ${award.amount != null ? money(award.amount, 2) : "no amount"} · ${award.detail}`);
+    else line(`${when(award.at)} · ${award.status} · ${award.party || "the listing"} · by ${award.by}${file.walled ? "" : ` · ${award.detail}`}`);
+  }
+  if (seller) {
+    const covers = file.rows.filter((row) => row.section === "Cover bid");
+    y -= 8;
+    line("Cover bid", { size: 12, face: bold, gap: 2 });
+    if (!covers.length) line(file.walled ? "Sealed until the deadline." : "No award to measure.", { color: soft });
+    for (const cover of covers) line(`${when(cover.at)} · ${cover.status}${cover.amount != null ? ` · ${money(cover.amount, 2)}` : ""} · ${cover.detail}`);
+  } else {
+    y -= 8;
+    line(`Declines sent (${declines.length})`, { size: 12, face: bold, gap: 2 });
+    if (!declines.length) line("None sent.", { color: soft });
+    for (const decline of declines) line(`${when(decline.at)} · ${decline.party} · ${decline.detail}`);
+  }
   y -= 8;
   line("Closing outcome", { size: 12, face: bold, gap: 2 });
   for (const outcome of outcomes) line(`${when(outcome.at)} · ${outcome.section === "Closing opened" ? "Opened" : outcome.status} · ${outcome.party || ""}${outcome.amount != null ? ` · ${money(outcome.amount, 2)}` : ""}${outcome.detail ? ` · ${outcome.detail}` : ""}`);
-  y -= 12;
+  if (seller) {
+    for (const proration of file.rows.filter((row) => row.section === "Proration")) line(`Proration · ${proration.party} · ${proration.detail || proration.status}`);
+    const docs = file.rows.filter((row) => row.section === "Trailing document");
+    y -= 8;
+    line(`Trailing documents (${docs.length})`, { size: 12, face: bold, gap: 2 });
+    if (!docs.length) line("None yet. They are set when a closing completes.", { color: soft });
+    for (const doc of docs) line(`${doc.status} · from the ${doc.party.toLowerCase()} · ${doc.detail}`);
+    y -= 8;
+    line("Interest", { size: 12, face: bold, gap: 2 });
+    for (const count of file.rows.filter((row) => row.section === "Interest")) line(`${count.status}: ${count.detail}`);
+    y -= 12;
+    line("Bidders show by letter, except a buyer who was awarded. Funds show as the band the desk verified, never the figure. This copy leaves out the desk's notes, other parties' files and screening, and the notices sent to buyers.", { size: 9, color: soft, gap: 4 });
+  } else {
+    y -= 12;
+  }
   line("Every bid, counter and notice with its exact time is in the CSV of this sale file. Times are UTC.", { size: 9, color: soft });
   return pdf.save();
 }

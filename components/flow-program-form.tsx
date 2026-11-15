@@ -14,6 +14,10 @@ export type ProgramDraft = {
   cadence: string;
   firstLookHours: number;
   expectedVolume: number | null;
+  monthlyMin: number | null;
+  monthlyMax: number | null;
+  // The chosen start as yyyy-mm-dd, or "" for an open start.
+  startsOn: string;
   terms: string;
   lienPositions: string[];
   paymentStatuses: string[];
@@ -66,6 +70,17 @@ export function FlowProgramForm({
       </div>
       <Field label="Expected volume per tranche, in UPB (optional)" hint="What buyers can plan for. It binds nobody.">
         <Input name="expectedVolume" inputMode="decimal" defaultValue={program?.expectedVolume ?? ""} placeholder="5,000,000" className="h-11 bg-card tabular-nums" />
+      </Field>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field label="Monthly volume from, in UPB (optional)" hint="The low end of what you expect to sell each month. It binds nobody.">
+          <Input name="monthlyMin" inputMode="decimal" defaultValue={program?.monthlyMin ?? ""} placeholder="5,000,000" className="h-11 bg-card tabular-nums" />
+        </Field>
+        <Field label="Monthly volume to, in UPB (optional)" hint="The high end. Give one end alone if that is all you know.">
+          <Input name="monthlyMax" inputMode="decimal" defaultValue={program?.monthlyMax ?? ""} placeholder="50,000,000" className="h-11 bg-card tabular-nums" />
+        </Field>
+      </div>
+      <Field label="Start date (optional)" hint="Tranches join from this day. Leave it blank for an open start: tranches come whenever the programme is open. A day that has passed by the desk's approval starts it then.">
+        <Input name="startsOn" type="date" defaultValue={program?.startsOn ?? ""} className="h-11 bg-card sm:max-w-xs" />
       </Field>
       <fieldset className="space-y-4 border-t border-border pt-5">
         <legend className="type-label font-medium text-foreground">What qualifies a loan</legend>

@@ -15,6 +15,7 @@ import {
   parseBankruptcyChapter,
   parseCreditScore,
   parseCreditScoreType,
+  parseLoanProgram,
   parseLoanPurpose,
   parseLossMitStage,
   parseMersMin,
@@ -358,6 +359,58 @@ function readRisk(
   put(record, "litigationNote", litigationNote || null);
   // A note about a case answers the litigation question when the flag is blank.
   if (litigationNote && record.litigationFlag === undefined && !get("litigationFlag")) record.litigationFlag = true;
+
+  const programRaw = get("loanProgram");
+  if (programRaw) {
+    const program = parseLoanProgram(programRaw);
+    if (!program) warn("loanProgram", `Loan program “${clip(programRaw)}” isn't conventional, FHA, VA, USDA, private or other and will be left off.`);
+    put(record, "loanProgram", program);
+  }
+  readPartialClaim(record, get, raw, warn, notes);
+}
+
+// An FHA or VA partial claim and its balance. A "Partial Claim" column sometimes holds the amount, which says there is
+// one and what it is. A balance answers the question when the flag is blank, and a zero balance reads as none. A tape
+// that says no and gives a balance contradicts itself, so both are left off for the servicer to settle.
+function readPartialClaim(
+  record: ServicingRecord,
+  get: (key: TapeFieldKey) => string,
+  raw: (key: TapeFieldKey) => string,
+  warn: (field: TapeFieldKey, message: string) => void,
+  notes: ServicingNote[],
+) {
+  const text = get("partialClaim");
+  let claim = parseYesNo(raw("partialClaim"));
+  let inFlag: number | null = null;
+  if (claim == null && text) {
+    const value = parseMoney(text);
+    if (value != null && value > 0 && !get("partialClaimBalance")) {
+      inFlag = Math.round(value * 100) / 100;
+      notes.push({ field: "partialClaim", level: "fix", message: `Partial claim “${clip(text)}” is an amount, so it will be stored as the partial claim balance.` });
+    } else {
+      warn("partialClaim", `Partial claim “${clip(text)}” wasn't read as yes or no and will be left off.`);
+    }
+  }
+  const balanceRaw = get("partialClaimBalance");
+  let balance = inFlag;
+  if (balanceRaw) {
+    const value = parseMoney(balanceRaw);
+    if (value == null) warn("partialClaimBalance", `Partial claim balance “${clip(balanceRaw)}” wasn't read as an amount and will be left off.`);
+    else if (value < 0) warn("partialClaimBalance", `Partial claim balance “${clip(balanceRaw)}” is below zero and will be left off.`);
+    else balance = Math.round(value * 100) / 100;
+  }
+  if (balance != null && balance > 0) {
+    if (claim === false) {
+      warn("partialClaimBalance", `The tape says there is no partial claim but gives a balance of ${balance.toLocaleString("en-US")}, so both will be left off. Ask the servicer.`);
+      claim = null;
+    } else {
+      claim = true;
+      record.partialClaimBalance = balance;
+    }
+  } else if (balance === 0 && claim == null && !text) {
+    claim = false;
+  }
+  put(record, "partialClaim", claim);
 }
 
 const ROUNDED = /^\d(\.\d+)?E\+\d+$/i;

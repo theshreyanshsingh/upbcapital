@@ -1,11 +1,12 @@
 "use server";
 
 import bcrypt from "bcryptjs";
+import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { deletedAccountRefusal } from "@/lib/account-deletion";
 import { audit } from "@/lib/audit";
-import { clearSession, getCurrentUser, setPending, setSession } from "@/lib/auth";
+import { clearSession, getCurrentUser, requireUser, setPending, setSession } from "@/lib/auth";
 import { demoAddress, isReleaseBuild } from "@/lib/deploy";
 import { sendConfirmation } from "@/lib/email-confirm";
 import { notifyDesk } from "@/lib/email";
@@ -18,6 +19,9 @@ import { consumeRateLimit } from "@/lib/rate-limit";
 import { referralCodeFor } from "@/lib/referral";
 import { requestMeta } from "@/lib/request-meta";
 import { safeNext } from "@/lib/safe-next";
+import { canManageSeats } from "@/lib/seats";
+import { linkValuationAtSignup } from "@/lib/valuations";
+import { COMPANY_TYPE_VALUES, setCompanyType } from "@/lib/seller-anonymity";
 import { firstZodError } from "@/lib/validators";
 
 const signupSchema = z.object({
@@ -27,7 +31,8 @@ const signupSchema = z.object({
   password: z.string().min(8, "Use at least 8 characters."),
   phone: z.string().trim().optional().or(z.literal("")),
   companyName: z.string().trim().optional().or(z.literal("")),
-  companyType: z.enum(["BANK", "FUND", "SERVICER", "OTHER"]).optional().or(z.literal("")),
+  // Buyers see an institution's listings by this type until the data room opens to them (lib/seller-anonymity.ts).
+  companyType: z.enum(COMPANY_TYPE_VALUES).optional().or(z.literal("")),
   referral: z.string().trim().optional().or(z.literal("")),
 });
 
@@ -123,13 +128,16 @@ export async function signup(_prev: { error: string; field?: string }, formData:
       data: { userId: user.id, status: "LISTING" },
     });
   }
+  // From a valuation's result page: the request joins this seller account only when it was sent from this email
+  // (lib/valuations.ts). The seller's desk then shows it.
+  const valued = await linkValuationAtSignup({ valuationId: String(formData.get("valuation") || ""), userId: user.id, email: user.email, role: user.role });
   await setSession({ sub: user.id, email: user.email, role: user.role, name: user.name });
   // A page that sent them here to sign up, such as a private-sale invitation, gets them back. Same-site paths only.
   const next = safeNext(formData.get("next"), "");
   if (next) redirect(next);
   if (user.role === "BUYER") redirect("/buyer/pending");
   if (user.role === "BROKER") redirect("/broker/onboarding");
-  if (user.role === "INDIVIDUAL_SELLER") redirect(leadId ? `/seller/notes/new?lead=${leadId}` : "/seller/notes/new");
+  if (user.role === "INDIVIDUAL_SELLER" && !valued) redirect(leadId ? `/seller/notes/new?lead=${leadId}` : "/seller/notes/new");
   redirect("/seller");
 }
 
@@ -175,4 +183,16 @@ export async function logout() {
   await clearSession();
   if (user) await audit(user.id, "LOGOUT", "user", user.id);
   redirect("/");
+}
+
+// The seller's company type, from the seller desk. It is the label buyers read until the data room opens to them, so a
+// firm's managing seat or its own login changes it.
+export async function saveCompanyType(formData: FormData) {
+  const user = await requireUser();
+  const back = (key: "notice" | "error", text: string): never => redirect(`/seller?${key}=${encodeURIComponent(text)}#seller-type`);
+  if (!canManageSeats(user)) return back("error", "Only a managing seat or the account owner can change how the firm is described.");
+  const result = await setCompanyType(user, formData.get("companyType"));
+  if (result.error !== null) return back("error", result.error);
+  revalidatePath("/seller");
+  return back("notice", result.unchanged ? "Your type is unchanged." : `Buyers see you as ${result.label} until the data room opens to them.`);
 }

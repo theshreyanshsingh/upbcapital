@@ -3,7 +3,7 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import { audit } from "@/lib/audit";
 import { winAnsi } from "@/lib/closing-docs";
 import { DESK_DENIED, deskCan, type Staff } from "@/lib/desk-roles";
-import { feePayerOf } from "@/lib/fee-schedule";
+import { cutText, feePayerOf, type PremiumCut } from "@/lib/fee-schedule";
 import { notify } from "@/lib/email";
 import { money } from "@/lib/format";
 import { postRevenueOnce } from "@/lib/ledger";
@@ -123,11 +123,16 @@ export function closingCharges(closing: {
 
 // What an invoice says it is for, and who pays it under the listing's fee payer (lib/fee-schedule.ts). When one
 // side pays both fees, its one invoice covers the premium and the commission together, and the other side gets none.
-export function invoiceDescription(kind: "PREMIUM" | "COMMISSION", feePayer: unknown, title: string) {
+// A premium invoice names the buyer's cut fixed at award, when the closing carries one (lib/volume-tiers.ts). A group
+// seat's invoice is its share of the premium after the cut, so it names the cut without the closing's figures.
+export function invoiceDescription(kind: "PREMIUM" | "COMMISSION", feePayer: unknown, title: string, cut: PremiumCut | null = null, share = false) {
   const payer = feePayerOf(feePayer);
   const side = kind === "PREMIUM" ? "buyer" : "seller";
-  if (payer !== "SPLIT" && payer.toLowerCase() === side) return `Buyer premium and seller commission on ${title}, paid by the ${side} under this listing's terms`;
-  return `${INVOICE_KIND_LABELS[kind]} on ${title}, paid by the ${side}`;
+  const base = payer !== "SPLIT" && payer.toLowerCase() === side
+    ? `Buyer premium and seller commission on ${title}, paid by the ${side} under this listing's terms`
+    : `${INVOICE_KIND_LABELS[kind]} on ${title}, paid by the ${side}`;
+  if (kind !== "PREMIUM" || !cut) return base;
+  return share ? `${base}. Your share, after the premium cut fixed at award` : `${base}. ${cutText(cut)}`;
 }
 
 // Issued when a closing completes, from lib/closing-service.ts finalizeClosing. A repeat call finds them issued.
@@ -136,10 +141,11 @@ export async function issueClosingInvoices(closingId: string, options: { series?
   if (!closing || closing.status !== "COMPLETE") return [];
   const inquiry = closing.inquiryId ? await prisma.inquiry.findUnique({ where: { id: closing.inquiryId }, select: { buyerId: true } }) : null;
   const charges = closingCharges({ ...closing, sellerId: closing.listing.sellerId, buyerId: inquiry?.buyerId ?? null });
+  const cut = charges.some((charge) => charge.kind === "PREMIUM") ? await import("@/lib/volume-tiers").then((volume) => volume.closingPremiumCut(closing)) : null;
   const now = options.now ?? new Date();
   const out: Invoice[] = [];
   for (const charge of charges) {
-    const description = invoiceDescription(charge.kind, closing.listing.feePayer, closing.listing.title);
+    const description = invoiceDescription(charge.kind, closing.listing.feePayer, closing.listing.title, cut, closing.funders.length > 0);
     const { invoice, issued } = await issueOnce(
       { id: invoiceId(closing.id, charge.kind, charge.userId), kind: charge.kind, closingId: closing.id, userId: charge.userId, amountCents: charge.amountCents, description },
       options.series ?? INVOICE_SERIES,

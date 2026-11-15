@@ -18,6 +18,7 @@ import {
   PROGRAM_LABEL,
   termsVersion,
   trancheReports,
+  volumeLine,
   type GridRow,
 } from "@/lib/flow-programs";
 import { money, prettyDate, q } from "@/lib/format";
@@ -74,6 +75,13 @@ export default async function AdminFlowProgramPage({
         <div>
           <dt className="text-muted-foreground">Expected volume per tranche</dt>
           <dd className="text-foreground tabular-nums">{program.expectedVolumeCents ? money(program.expectedVolumeCents / 100) : "Not given"}</dd>
+        </div>
+        <div>
+          <dt className="text-muted-foreground">Monthly volume and start</dt>
+          <dd className="text-foreground tabular-nums">
+            {volumeLine(program)}
+            {program.status === "DRAFT" && program.startsAt ? " · the seller's day stands at approval if it is still ahead" : ""}
+          </dd>
         </div>
         <div className="sm:col-span-2">
           <dt className="text-muted-foreground">Loans it takes</dt>

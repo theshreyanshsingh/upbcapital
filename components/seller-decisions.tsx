@@ -1,5 +1,6 @@
 import { counterBid, saveFeePayer, saveResponseWindow } from "@/actions/seller-decisions";
 import { ConfirmSubmit } from "@/components/confirm-submit";
+import { SellerNameChoice } from "@/components/seller-anonymity";
 import { SubmitButton } from "@/components/submit-button";
 import { FEE_PAYERS, FEE_PAYER_LABELS, feePayerOf, feesFor, type FeeSettings, type ListingFees } from "@/lib/fee-schedule";
 import { money } from "@/lib/format";
@@ -73,9 +74,15 @@ type TermsListing = ListingFees & {
   status: string;
   sellerResponseHours?: number | null;
   notes?: { askingPrice: number }[];
+  // Who sells, and whether every approved buyer reads their name (lib/seller-anonymity.ts). Every seller page passes them.
+  sellerId?: string;
+  brokerId?: string | null;
+  clientSellerName?: string | null;
+  sellerNamed?: boolean | null;
 };
 
-// The seller's own terms: how long they have to answer the desk, and who pays UPB's fees. The payer locks at go-live.
+// The seller's own terms: how long they have to answer the desk, who pays UPB's fees, and how buyers see the seller
+// before the room opens. The payer locks at go-live.
 export function SellerTerms({ listing, canAnswer, settings }: { listing: TermsListing; canAnswer: boolean; settings: FeeSettings }) {
   const hours = responseHours(listing);
   const payer = feePayerOf(listing.feePayer);
@@ -141,6 +148,7 @@ export function SellerTerms({ listing, canAnswer, settings }: { listing: TermsLi
           <SubmitButton variant="outline" pendingLabel="Saving…" className="h-11 text-[13px] font-medium">Save who pays</SubmitButton>
         </form>
       )}
+      {listing.sellerId && <SellerNameChoice listing={{ ...listing, sellerId: listing.sellerId }} canAnswer={canAnswer} />}
     </div>
   );
 }

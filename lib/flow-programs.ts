@@ -5,7 +5,7 @@ import { seasoningMonths } from "@/lib/buy-box";
 import { unset } from "@/lib/db-filters";
 import { DESK_DENIED, deskCan } from "@/lib/desk-roles";
 import { notify, notifyDesk } from "@/lib/email";
-import { money } from "@/lib/format";
+import { money, moneyCompact } from "@/lib/format";
 import type { Tally } from "@/lib/jobs";
 import { labelOf, LIEN_POSITIONS, PAYMENT_STATUSES, US_STATES } from "@/lib/labels";
 import { launchPending, launchTime } from "@/lib/launch-rules";
@@ -38,6 +38,9 @@ const MAX_CENTS = 500_000_000_000;
 const INVITES_AT_ONCE = 25;
 const INVITE_BATCHES = 12;
 const HOUR = 60 * 60 * 1000;
+const DAY = 24 * HOUR;
+// How far ahead a seller may set a programme's start.
+const START_WITHIN_DAYS = 366;
 
 export const PROGRAM_LABEL: Record<string, string> = { DRAFT: "Awaiting approval", OPEN: "Open", PAUSED: "Paused", CLOSED: "Closed" };
 export const COMMITMENT_LABEL: Record<string, string> = { INVITED: "Invited", ACTIVE: "Active", PAUSED: "Paused", ENDED: "Ended" };
@@ -140,9 +143,43 @@ export type ProgramInput = {
   states: unknown;
   maxUpb: unknown;
   minSeasoningMonths: unknown;
+  // The volume the seller expects each month, in dollars, and the day tranches may start. Blank start is an open start.
+  monthlyMin?: unknown;
+  monthlyMax?: unknown;
+  startsOn?: unknown;
 };
 
-export function readProgram(input: ProgramInput) {
+// The seller's start, as a calendar day in UTC, or null for an open start. Yesterday is allowed, so a date picked in a
+// timezone behind the server isn't called the past.
+function readStart(raw: unknown, now: Date) {
+  const text = String(raw ?? "").trim();
+  if (!text) return { error: null, startsAt: null } as const;
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(text) ? new Date(`${text}T00:00:00.000Z`) : null;
+  if (!date || Number.isNaN(date.getTime())) return { error: "Enter the start as a date, or leave it blank for an open start." } as const;
+  const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  if (date.getTime() < today - DAY) return { error: "Choose a start from today on, or leave it blank for an open start." } as const;
+  if (date.getTime() > today + START_WITHIN_DAYS * DAY) return { error: "Choose a start within a year, or leave it blank for an open start." } as const;
+  return { error: null, startsAt: date } as const;
+}
+
+// The monthly range, as institutional desks quote forward flow ("$5M to $50M a month"). Either end may stand alone.
+function readMonthly(input: ProgramInput) {
+  const min = dollarsOf(input.monthlyMin);
+  const max = dollarsOf(input.monthlyMax);
+  if (!blank(input.monthlyMin) && min == null) return { error: "Enter the monthly minimum in dollars above zero, or leave it blank." } as const;
+  if (!blank(input.monthlyMax) && max == null) return { error: "Enter the monthly maximum in dollars above zero, or leave it blank." } as const;
+  if ((min != null && Math.round(min * 100) > MAX_CENTS) || (max != null && Math.round(max * 100) > MAX_CENTS)) {
+    return { error: `Enter a monthly volume up to ${money(MAX_CENTS / 100)}.` } as const;
+  }
+  if (min != null && max != null && min > max) return { error: "The monthly minimum is above the maximum. Swap them, or change one." } as const;
+  return {
+    error: null,
+    monthlyMinCents: min == null ? null : Math.round(min * 100),
+    monthlyMaxCents: max == null ? null : Math.round(max * 100),
+  } as const;
+}
+
+export function readProgram(input: ProgramInput, now = new Date()) {
   const name = String(input.name ?? "").replace(/\s+/g, " ").trim();
   if (name.length < 3 || name.length > NAME_MAX) return { error: `Name the programme in 3 to ${NAME_MAX} characters.` } as const;
   const cadence = CADENCES.find((option) => option.value === input.cadence)?.value;
@@ -154,6 +191,10 @@ export function readProgram(input: ProgramInput) {
   const volume = dollarsOf(input.expectedVolume);
   if (!blank(input.expectedVolume) && volume == null) return { error: "Enter the expected volume in dollars, or leave it blank." } as const;
   if (volume != null && Math.round(volume * 100) > MAX_CENTS) return { error: `Enter an expected volume up to ${money(MAX_CENTS / 100)}.` } as const;
+  const monthly = readMonthly(input);
+  if (monthly.error !== null) return { error: monthly.error } as const;
+  const start = readStart(input.startsOn, now);
+  if (start.error !== null) return { error: start.error } as const;
   const terms = String(input.terms ?? "").replace(/\r\n/g, "\n").trim();
   if (terms.length < 20) return { error: "Write the programme terms buyers accept, in 20 characters or more." } as const;
   if (terms.length > TERMS_MAX) return { error: `Keep the terms under ${TERMS_MAX.toLocaleString("en-US")} characters.` } as const;
@@ -173,8 +214,74 @@ export function readProgram(input: ProgramInput) {
   };
   return {
     error: null,
-    data: { name, cadence, firstLookHours: hours, expectedVolumeCents: volume == null ? null : Math.round(volume * 100), terms, criteria },
+    data: {
+      name,
+      cadence,
+      firstLookHours: hours,
+      expectedVolumeCents: volume == null ? null : Math.round(volume * 100),
+      monthlyMinCents: monthly.monthlyMinCents,
+      monthlyMaxCents: monthly.monthlyMaxCents,
+      // Before approval this is the seller's chosen day. Approval settles it (approvalStart).
+      startsAt: start.startsAt,
+      terms,
+      criteria,
+    },
   } as const;
+}
+
+// At approval the seller's start stands if it is still ahead; a day already past starts the programme at approval. No
+// day is an open start, left null: tranches come whenever the programme is open.
+export function approvalStart(chosen: Date | null, now: Date) {
+  if (!chosen) return null;
+  return chosen.getTime() > now.getTime() ? chosen : now;
+}
+
+// An open programme takes tranches from its start, or at any time with an open start (null).
+export function startsLater(program: { startsAt: Date | null }, now = new Date()) {
+  return program.startsAt != null && program.startsAt.getTime() > now.getTime();
+}
+
+// "Dec 1", with the year when it isn't this year's. Starts are calendar days, so they read in UTC.
+export function startDay(date: Date, now = new Date()) {
+  const year = date.getUTCFullYear() !== now.getUTCFullYear();
+  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", ...(year ? { year: "numeric" } : {}), timeZone: "UTC" }).format(date);
+}
+
+type Volume = { monthlyMinCents: number | null; monthlyMaxCents: number | null };
+
+// "$5M–$50M a month", "$5M or more a month", "Up to $50M a month", or null when the seller gave no range.
+export function monthlyRange(program: Volume) {
+  const min = program.monthlyMinCents == null ? null : moneyCompact(program.monthlyMinCents / 100);
+  const max = program.monthlyMaxCents == null ? null : moneyCompact(program.monthlyMaxCents / 100);
+  if (min && max) return min === max ? `About ${min} a month` : `${min}–${max} a month`;
+  if (min) return `${min} or more a month`;
+  if (max) return `Up to ${max} a month`;
+  return null;
+}
+
+// "open start", "starts Dec 1", or "started Nov 10". A draft whose chosen day has passed starts on approval.
+export function startLabel(program: { status: string; startsAt: Date | null }, now = new Date()) {
+  if (!program.startsAt) return "open start";
+  if (startsLater(program, now)) return `starts ${startDay(program.startsAt, now)}`;
+  return program.status === "DRAFT" ? "starts on approval" : `started ${startDay(program.startsAt, now)}`;
+}
+
+// The range and the start in one line, for the seller's, the buyer's and the desk's pages: "$5M–$50M a month · open start".
+export function volumeLine(program: Volume & { status: string; startsAt: Date | null }, now = new Date()) {
+  const range = monthlyRange(program);
+  const start = startLabel(program, now);
+  return range ? `${range} · ${start}` : `${start.charAt(0).toUpperCase()}${start.slice(1)}`;
+}
+
+// The same for an email, as a sentence: "The seller expects $5M–$50M a month, with an open start." A start already
+// past says nothing more.
+export function volumeSentence(program: Volume & { startsAt: Date | null }, now = new Date()) {
+  const range = monthlyRange(program);
+  const day = program.startsAt != null && startsLater(program, now) ? startDay(program.startsAt, now) : null;
+  const start = day ? `from ${day}` : program.startsAt ? null : "with an open start";
+  if (range) return `The seller expects ${range.charAt(0).toLowerCase()}${range.slice(1)}${start ? `, ${start}` : ""}.`;
+  if (day) return `Tranches start ${day}.`;
+  return start ? "It has an open start." : "";
 }
 
 // The version a buyer accepts: a short fingerprint of the terms text, so a record names exactly what they read.
@@ -238,7 +345,7 @@ export async function decideProgram(desk: Actor, input: { programId: string; dec
   if (move.to === "CLOSED" && program.status === "DRAFT" && note.length < 3) return fail("Tell the seller why the programme isn't approved.");
   const data =
     move.to === "OPEN" && program.status === "DRAFT"
-      ? { status: "OPEN", approvedById: desk.id, approvedAt: now, startsAt: now }
+      ? { status: "OPEN", approvedById: desk.id, approvedAt: now, startsAt: approvalStart(program.startsAt, now) }
       : move.to === "CLOSED"
         ? { status: "CLOSED", endsAt: now }
         : { status: move.to };
@@ -249,7 +356,11 @@ export async function decideProgram(desk: Actor, input: { programId: string; dec
   const link = `${appOrigin()}/seller/flow/${program.id}`;
   const said = note ? `\n\n${note}` : "";
   if (move.to === "OPEN" && program.status === "DRAFT") {
-    if (seller.email) await notify(seller.email, `Programme approved · ${program.name}`, `The desk approved ${program.name}. Invite your buyers and add tranches here: ${link}${said}`);
+    const starts = approvalStart(program.startsAt, now);
+    const next = starts && startsLater({ startsAt: starts }, now)
+      ? `Invite your buyers now. Tranches join from its start on ${startDay(starts, now)}: ${link}`
+      : `Invite your buyers and add tranches here: ${link}`;
+    if (seller.email) await notify(seller.email, `Programme approved · ${program.name}`, `The desk approved ${program.name}. ${next}${said}`);
   } else if (move.to === "CLOSED") {
     await releaseProgramTranches(program.id, now);
     if (seller.email) await notify(seller.email, `Programme closed · ${program.name}`, `${program.status === "DRAFT" ? "The desk didn't approve" : "The desk closed"} ${program.name}. Tranches still in first look are open to the market now. ${link}${said}`);
@@ -294,10 +405,10 @@ async function committedBuyers(programId: string, statuses: string[]) {
 // Tranches. The seller adds one of their listings still with the desk, or uploads a tape for the programme, and
 // the listing is tagged before anything scores it. It goes through the desk's review as any other listing.
 
-// The programme a tape upload files into: the seller's own, and open.
-export async function tapeProgram(sellerId: string, programId: string) {
-  const program = await prisma.flowProgram.findUnique({ where: { id: programId }, select: { id: true, name: true, sellerId: true, status: true, criteria: true } });
-  return program && program.sellerId === sellerId && program.status === "OPEN" ? program : null;
+// The programme a tape upload files into: the seller's own, open, and past its start.
+export async function tapeProgram(sellerId: string, programId: string, now = new Date()) {
+  const program = await prisma.flowProgram.findUnique({ where: { id: programId }, select: { id: true, name: true, sellerId: true, status: true, criteria: true, startsAt: true } });
+  return program && program.sellerId === sellerId && program.status === "OPEN" && !startsLater(program, now) ? program : null;
 }
 
 export async function attachCandidates(sellerId: string) {
@@ -325,6 +436,8 @@ export async function addTranche(seller: Actor, input: { programId: string; list
   const program = await prisma.flowProgram.findUnique({ where: { id: input.programId } });
   if (!program || program.sellerId !== seller.id) return fail(NOT_YOURS);
   if (program.status !== "OPEN") return fail(`Tranches join an open programme. This one is ${PROGRAM_LABEL[program.status]?.toLowerCase() ?? program.status}.`);
+  // An open start (null) takes a tranche at any time; a chosen start, from that day.
+  if (program.startsAt && startsLater(program, now)) return fail(`This programme takes tranches from its start on ${startDay(program.startsAt, now)}.`);
   const listing = await prisma.listing.findUnique({ where: { id: input.listingId }, select: { id: true, title: true, sellerId: true, status: true, flowProgramId: true, notes: { select: LOAN_FIELDS } } });
   if (!listing || listing.sellerId !== seller.id) return fail("That listing isn't yours.");
   if (listing.flowProgramId) return fail("That listing is already in a programme.");
@@ -627,6 +740,7 @@ export async function inviteToProgram(actor: Actor, input: { programId: string; 
   const fileOf = new Map(profiles.map((row) => [row.userId, row.status as string]));
   const held = new Map(existing.map((row) => [row.buyerId, row]));
   const result: InviteResult = { invited: [], skipped: [] };
+  const volume = volumeSentence(program);
   for (const email of emails) {
     const user = users.find((row) => row.email.toLowerCase() === email);
     const approved = user && user.role === "BUYER" && canSubmitOffer({ role: user.role, accountStatus: user.accountStatus, verificationStatus: fileOf.get(user.id) ?? null }).ok;
@@ -653,7 +767,7 @@ export async function inviteToProgram(actor: Actor, input: { programId: string; 
       user.email,
       `Forward-flow programme · ${program.name}`,
       [
-        `${seller.name} invites you to ${program.name}, a forward-flow programme on UPB Capital. Tranches come ${program.cadence === "AD_HOC" ? "as the seller has loans" : cadenceLabel(program.cadence).toLowerCase()}, and committed buyers see each one for ${program.firstLookHours} hours before the market.`,
+        `${seller.name} invites you to ${program.name}, a forward-flow programme on UPB Capital. Tranches come ${program.cadence === "AD_HOC" ? "as the seller has loans" : cadenceLabel(program.cadence).toLowerCase()}, and committed buyers see each one for ${program.firstLookHours} hours before the market.${volume ? ` ${volume}` : ""}`,
         "Read the terms and join here. You accept them once, set a price grid that pre-fills your bids, and confirm every bid yourself.",
         `${appOrigin()}/buyer/flow`,
       ].join("\n\n"),

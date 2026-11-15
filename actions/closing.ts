@@ -184,15 +184,15 @@ export async function cancelClosing(formData: FormData) {
   redirect(`/closings/${closingId}?notice=closing_canceled`);
 }
 
-// The buyer walks away inside the diligence window, with a reason the seller reads.
+// The buyer walks away inside the diligence window, for a finding from the list and in their own words, which the
+// seller reads (lib/retrade.ts).
 export async function walkAway(formData: FormData) {
   const closingId = String(formData.get("closingId") || "");
-  const reason = String(formData.get("reason") || "");
   const { user } = await participant(closingId);
   // Walking away undoes the award, so a firm's seat needs the role that accepts one (lib/seats.ts).
   const gated = await seatGate(user, "award");
   if (gated) redirect(`/closings/${closingId}?error=${encodeURIComponent(gated)}`);
-  const result = await walkAwayFromClosing(closingId, user.id, reason);
+  const result = await walkAwayFromClosing(closingId, user.id, { reason: formData.get("reason"), words: formData.get("words") });
   if (result.error !== null) redirect(`/closings/${closingId}?error=${encodeURIComponent(result.error)}`);
   revalidatePath(`/closings/${closingId}`);
   revalidatePath("/closings");

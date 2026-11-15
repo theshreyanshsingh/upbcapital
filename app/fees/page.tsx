@@ -46,6 +46,16 @@ export default async function FeeSchedulePage() {
   // Flat rates read as one tier that covers every price.
   const table = graded ?? { tiers: [{ upTo: null, premiumBps: terms.premiumBps, commissionBps: terms.commissionBps }], minPremiumCents: 0, minCommissionCents: 0 };
   const tierRule = "The tier the price falls in sets the rate on the whole price. It is not worked out band by band.";
+  // The buyer's cuts to the premium: by 12-month volume on UPB, and on forward-flow tranches. Part of the schedule.
+  const volumeTiers = graded?.volumeTiers ?? [];
+  const flowOff = graded?.flowPremiumOffBps ?? 0;
+  const cutsLine = volumeTiers.length || flowOff
+    ? [
+        volumeTiers.length ? "A buyer whose closed purchases on UPB over the last 12 months reach a volume below pays less premium, by the cut shown. A firm's seats and its funded group shares count toward the firm." : "",
+        flowOff ? `The premium on a forward-flow tranche is ${rate(flowOff)} lower${volumeTiers.length ? ", on top of any volume cut" : ""}.` : "",
+        "Each cut comes off the premium's rate, and the minimum premium still applies. The cut is fixed when the closing opens and never changes after. When the seller pays both fees there is no premium to cut.",
+      ].filter(Boolean).join(" ")
+    : "None today. Every buyer pays the same premium on the same price.";
   const schedule: [string, string][] = [
     ["Buyer premium", graded
       ? `${rateText(terms, "premium")}, added on top of the accepted price. It is not part of the bid itself. ${tierRule}`
@@ -58,6 +68,7 @@ export default async function FeeSchedulePage() {
     ["Broker fee", `${share(broker)}. UPB pays it out of its own fees, so it adds nothing to what a buyer or seller pays.`],
     ["Affiliate fee", `${share(affiliate)}. Paid the same way, out of UPB's fees.`],
     ["Pro membership", `${money(settings.proMonthlyPriceCents / 100, 2)} a month, for buyers.`],
+    ["Buyer cuts", cutsLine],
     ["Desk purchases", `When UPB's desk buys a note for its own book, there is no buyer premium${settings.chargeDeskFees ? ", and the seller commission applies." : " and no seller commission."}`],
     ["Who pays", "Split by default: the buyer pays the premium and the seller the commission. Before a listing goes live, its seller may pay both fees, or have the buyer pay both. Each fee is worked out the same way, tiers and minimums included. The listing shows the choice before anyone bids."],
   ];
@@ -134,6 +145,31 @@ export default async function FeeSchedulePage() {
           </p>
         )}
         </section>
+      {volumeTiers.length > 0 && (
+        <section className="glass p-5 md:p-6" aria-labelledby="volume-heading">
+          <h2 id="volume-heading" className="eyebrow">Cuts for buyers by volume</h2>
+          <p className="mt-2 text-sm text-muted-foreground">Closed purchases on UPB in the 12 months before the award. The highest tier a buyer reaches sets the cut.</p>
+          <div className="mt-4 overflow-x-auto">
+            <table className="w-full min-w-[20rem] text-sm tabular-nums">
+              <thead>
+                <tr className="border-b border-border text-left text-[13px] text-muted-foreground">
+                  <th scope="col" className="py-2 pr-3 font-medium">12-month purchases</th>
+                  <th scope="col" className="py-2 text-right font-medium">Off the buyer premium</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {volumeTiers.map((tier) => (
+                  <tr key={tier.minCents}>
+                    <th scope="row" className="py-2 pr-3 text-left font-normal text-foreground">{money(tier.minCents / 100)} or more</th>
+                    <td className="py-2 text-right text-foreground">{rate(tier.premiumOffBps)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {flowOff > 0 && <p className="mt-3 text-xs leading-relaxed text-muted-foreground">A forward-flow tranche takes {rate(flowOff)} off as well. The minimum premium still applies.</p>}
+        </section>
+      )}
       <section className="glass p-5 md:p-6" aria-labelledby="example-heading">
         <h2 id="example-heading" className="eyebrow">Worked examples</h2>
         <p className="mt-2 text-sm text-muted-foreground">Notes that trade at {EXAMPLE_PRICES.map((price) => money(price)).join(", ").replace(/, ([^,]*)$/, " and $1")}, under today&apos;s schedule.</p>

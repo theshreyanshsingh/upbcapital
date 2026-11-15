@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { closeValuationRequest, inviteValuationSeller, linkValuation, sendValuationQuote } from "@/actions/valuations";
+import { closeValuationRequest, inviteValuationSeller, linkValuation, openValuationInIntake, sendValuationQuote } from "@/actions/valuations";
 import { ConfirmRows, ConfirmSubmit } from "@/components/confirm-submit";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
@@ -9,7 +9,8 @@ import { money, pct, prettyDate, q } from "@/lib/format";
 import { labelOf } from "@/lib/labels";
 import { prisma } from "@/lib/prisma";
 import { requireDesk } from "@/lib/staff";
-import { statusLabel, storedLoans } from "@/lib/valuations";
+import { SPLIT_RULES } from "@/lib/desk-intake";
+import { linkValuationListings, statusLabel, storedLoans } from "@/lib/valuations";
 
 export const metadata = { title: "Valuation request" };
 
@@ -24,6 +25,8 @@ export default async function ValuationRequestPage({
 }) {
   await requireDesk("sales", "/admin");
   const [{ id }, query] = await Promise.all([params, searchParams]);
+  // A listing the seller or intake filed from these loans since marks the request listed (lib/valuations.ts).
+  await linkValuationListings({ ids: [id] });
   const request = await prisma.valuationRequest.findUnique({ where: { id } });
   if (!request) notFound();
   const loans = storedLoans(request.rows);
@@ -35,6 +38,7 @@ export default async function ValuationRequestPage({
     ? await prisma.listing.findMany({ where: { sellerId: account.id, status: { notIn: ["WITHDRAWN", "REJECTED"] } }, select: { id: true, title: true, status: true }, orderBy: { createdAt: "desc" }, take: 20 })
     : [];
   const linked = request.listingId ? await prisma.listing.findUnique({ where: { id: request.listingId }, select: { id: true, title: true } }) : null;
+  const asked = await prisma.auditEvent.findFirst({ where: { entityType: "valuation", entityId: request.id, action: "VALUATION_FILE_ASKED" }, select: { createdAt: true } });
   const closed = request.status === "CLOSED";
   const ltv = (loan: (typeof loans)[number]) => (loan.estimatedValue > 0 ? (loan.upb / loan.estimatedValue) * 100 : null);
   return (
@@ -160,6 +164,35 @@ export default async function ValuationRequestPage({
           )}
           {linked && <p className="text-sm text-foreground">Listed as <Link href={`/admin/listings/${linked.id}`} className="text-link">{linked.title}</Link>.</p>}
         </section>
+      )}
+
+      {!closed && !linked && request.tapeKey && (
+        <form action={openValuationInIntake} className="mt-8 space-y-4 glass p-6" aria-labelledby="intake-heading">
+          <input type="hidden" name="id" value={request.id} />
+          <h2 id="intake-heading" className="eyebrow">File it in desk intake</h2>
+          <p className="text-sm text-muted-foreground">
+            {asked ? `The seller asked the desk to file this tape on ${prettyDate(asked.createdAt)}. ` : ""}
+            Opens the tape on the intake page for {account ? account.name : "the seller's account"}, with the preview and quality checks a seller&apos;s upload gets. The seller confirms each listing before it can be approved, and the listing marks this request listed.
+          </p>
+          <fieldset>
+            <legend className="text-[13px] text-muted-foreground">Asking price</legend>
+            <div className="mt-2 flex flex-wrap items-center gap-4 text-sm">
+              <label className="flex items-center gap-2"><input type="radio" name="priceMode" value="COLUMN" defaultChecked /> From the tape&apos;s price column</label>
+              <label className="flex items-center gap-2"><input type="radio" name="priceMode" value="PERCENT" /> Percent of UPB</label>
+              <input name="percent" inputMode="decimal" aria-label="Percent of UPB" placeholder="80" className="desk-input h-9 w-24" />
+            </div>
+          </fieldset>
+          <fieldset>
+            <legend className="text-[13px] text-muted-foreground">Split into pools by</legend>
+            <div className="mt-2 flex flex-wrap gap-4 text-sm">
+              {SPLIT_RULES.map((rule) => (
+                <label key={rule.value} className="flex items-center gap-2"><input type="checkbox" name="rule" value={rule.value} /> {rule.label}</label>
+              ))}
+            </div>
+            <input name="bands" className="desk-input mt-2" aria-label="Balance band edges" placeholder="Balance edges for a balance split, such as 100k, 250k" autoComplete="off" />
+          </fieldset>
+          <SubmitButton variant="outline" className="h-11 text-[13px] font-medium" pendingLabel="Opening…">Open in desk intake</SubmitButton>
+        </form>
       )}
 
       {!closed ? (

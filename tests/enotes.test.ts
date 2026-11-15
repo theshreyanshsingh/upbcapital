@@ -75,21 +75,22 @@ test("the tape reads the eNote flag, the eRegistry Org IDs and the eVault, and l
   const notes = readServicing({ ...base, "Is eNote": "maybe", "eRegistry Controller": "12345" }, full).notes;
   assert.ok(notes.some((note) => note.field === "eNote" && /yes or no/.test(note.message)));
   assert.ok(notes.some((note) => note.field === "eRegistryController" && /7-digit MERS Org ID/.test(note.message)));
-  // The standard lists them, as UPB extensions, and an Org ID names a holder, not the borrower.
+  // The standard lists them, as UPB extensions. An Org ID names the holder, usually the seller, so it waits for the
+  // data room like the street (lib/seller-anonymity.ts); the flag and the eVault vendor don't.
   for (const key of ["eNote", "eRegistryController", "eRegistryLocation", "eVaultProvider"] as const) {
     assert.ok(TAPE_STANDARD.some((field) => field.key === key), key);
     assert.equal(mismoFor(key)?.match, "extension");
-    assert.equal(WITHHELD_UNTIL_OPEN.has(key), false);
+    assert.equal(WITHHELD_UNTIL_OPEN.has(key), key === "eRegistryController" || key === "eRegistryLocation", key);
   }
 });
 
 test("the tape export carries the eNote fields, and an import of it reads them back", () => {
   const stored = { eNote: true, eRegistryController: "1000123", eRegistryLocation: "1000456", eVaultProvider: "Sample eVault", eNoteId: "EN-778-1" };
-  // Org IDs name a MERS member, not the borrower, so a closed loan still exports them; the eNote ID waits for the street.
+  // Org IDs name the holder, usually the seller, so like the eNote ID they wait for the street.
   const closed = termsExportColumns(stored, false);
   assert.equal(closed.isENote, "yes");
-  assert.equal(closed.eRegistryController, "1000123");
-  assert.equal(closed.eRegistryLocation, "1000456");
+  assert.equal(closed.eRegistryController, "");
+  assert.equal(closed.eRegistryLocation, "");
   assert.equal(closed.eVaultProvider, "Sample eVault");
   assert.equal(closed.eNoteId, "");
   assert.equal(termsExportColumns({ eNote: false }, true).isENote, "no");
@@ -107,13 +108,17 @@ test("the tape export carries the eNote fields, and an import of it reads them b
   assert.equal(loans[0].eRegistryLocation, "1000456");
   assert.equal(loans[0].eVaultProvider, "Sample eVault");
   assert.equal(loans[0].eNoteId, "EN-778-1");
-  // The MISMO export reads the standard's field list, so the four travel there too, under UPB extensions.
+  // The MISMO export reads the standard's field list, so the four travel there too, under UPB extensions. A closed
+  // export holds back the Org IDs and the eNote ID; an open one carries them.
   const mismo = mismoLoan({ city: "Tampa", ...stored }, false);
   assert.equal(mismo["DEAL/LOANS/LOAN/EXTENSION/OTHER/UPB_TAPE/ENoteIndicator"], true);
-  assert.equal(mismo["DEAL/LOANS/LOAN/EXTENSION/OTHER/UPB_TAPE/ERegistryControllerOrganizationIdentifier"], "1000123");
-  assert.equal(mismo["DEAL/LOANS/LOAN/EXTENSION/OTHER/UPB_TAPE/ERegistryLocationOrganizationIdentifier"], "1000456");
+  assert.equal(mismo["DEAL/LOANS/LOAN/EXTENSION/OTHER/UPB_TAPE/ERegistryControllerOrganizationIdentifier"], undefined);
+  assert.equal(mismo["DEAL/LOANS/LOAN/EXTENSION/OTHER/UPB_TAPE/ERegistryLocationOrganizationIdentifier"], undefined);
   assert.equal(mismo["DEAL/LOANS/LOAN/EXTENSION/OTHER/UPB_TAPE/EVaultProviderName"], "Sample eVault");
   assert.ok(!Object.values(mismo).includes("EN-778-1"));
+  const opened = mismoLoan({ city: "Tampa", ...stored }, true);
+  assert.equal(opened["DEAL/LOANS/LOAN/EXTENSION/OTHER/UPB_TAPE/ERegistryControllerOrganizationIdentifier"], "1000123");
+  assert.equal(opened["DEAL/LOANS/LOAN/EXTENSION/OTHER/UPB_TAPE/ERegistryLocationOrganizationIdentifier"], "1000456");
 });
 
 test("an eNote's file doesn't ask for the paper original or an allonge, and the loan file says it's on the eRegistry", () => {
@@ -141,7 +146,8 @@ test("an eNote's file doesn't ask for the paper original or an allonge, and the 
   assert.equal(spec.source, "eVault confirmation");
   assert.equal(displayValue(spec, tapeValue({ eNote: true }, "eNote")), "Yes");
   assert.equal(tapeValue({}, "eNote"), null);
-  assert.equal(fieldSpec("eRegistryController")?.identity, undefined);
+  // A MERS Org ID names the firm holding control, usually the seller, so it waits for the data room like the street.
+  assert.equal(fieldSpec("eRegistryController")?.identity, true);
 
   assert.equal(eNoteSummary([{ eNote: false }]), null);
   assert.equal(eNoteSummary([{ eNote: true }])?.title, "eNote on the MERS eRegistry");

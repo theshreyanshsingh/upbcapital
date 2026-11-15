@@ -123,7 +123,9 @@ const FIRST_LIEN = new Set(["1", "1st", "first", "firstlien"]);
 const JUNIOR_LIEN = new Set(["2", "2nd", "second", "secondlien", "3", "3rd", "third", "thirdlien"]);
 
 // Combined LTV for a junior lien: this loan and what is owed ahead of it, over the value. Null for a first lien,
-// or when the senior balance, the UPB or the value is missing.
+// or when the senior balance, the UPB or the value is missing. An FHA or VA partial claim never counts here: it is the
+// agency's lien junior to the first mortgage, so it takes nothing from a first lien's collateral, and on a second it
+// isn't ahead of the note either. UPB keeps no total-debt figure for the borrower, so the claim shows as its own field.
 export function combinedLtv(input: { lien: string; upb: number | null; value: number | null; seniorLienBalance?: number | null }) {
   const lien = input.lien.toLowerCase().replace(/[^a-z0-9]/g, "");
   if (!JUNIOR_LIEN.has(lien) ||input.seniorLienBalance == null || !input.upb || !input.value || input.value <= 0) return null;

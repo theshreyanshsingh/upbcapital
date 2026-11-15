@@ -117,6 +117,8 @@ export async function runJobs(now = new Date()) {
     ["Sale notice reminders", () => remindSaleNotices(now)],
     // Trailing documents after a close: three days out, on the day, weekly while late, and the desk at 14 days.
     ["Trailing documents", () => import("@/lib/trailing-docs").then((docs) => docs.runTrailingDocs(now))],
+    // Once a closing and its post-closing file are complete, its buyer and seller are each asked once for a review.
+    ["Review requests", () => import("@/lib/reviews").then((reviews) => reviews.requestReviews(now))],
     ["Closed auctions", () => notifyClosedAuctions().then(() => "closed auctions checked")],
     ["Retention", () => cleanRetention(now)],
     ["Abandoned tapes", () => purgeTapeDrafts(now).then((count) => `abandoned tapes ${count}`)],
@@ -128,6 +130,8 @@ export async function runJobs(now = new Date()) {
     ["Launches", () => import("@/lib/launch").then((launch) => launch.runLaunches(now))],
     // Forward-flow tranches whose first look has ended open to the market, with the alerts approval held back.
     ["Flow releases", () => import("@/lib/flow-programs").then((flow) => flow.runFlowReleases(now))],
+    // A live listing unconfirmed for 30 days asks its seller once; still unconfirmed 7 days later, it pauses.
+    ["Stale listings", () => import("@/lib/provenance").then((provenance) => provenance.runFreshness(now))],
     ["Search roundups", () => sendSearchRoundups(now)],
     // Each seller or broker with a live listing hears how it did, once a week.
     ["Seller reports", () => sendSellerReports(now)],

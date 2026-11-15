@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { heldForClient, sellerNameSight, sellerShown } from "@/lib/seller-anonymity";
 
 // Sellers and brokers see bidders as "Bidder A", "Bidder B" and so on until a bid is awarded, so a seller can't
 // pick a buyer by name or shop the field. Letters follow each buyer's first NDA or inquiry on the listing, which
@@ -69,16 +70,33 @@ export async function bidderNamer(listingId: string, viewer: { role: string }) {
 type Person = { id: string; name: string; companyName?: string | null; role: string };
 
 // The names on listing threads. On a listing the viewer sells or brokered, a bidder shows by letter, as on the
-// listing page; everywhere else, and for the desk, people show by name.
+// listing page. On a listing the viewer bids on, the seller shows by type until the data room opens to them, as on
+// the listing page (lib/seller-anonymity.ts); a broker of record stays named. The desk sees names.
 export async function threadNamer(viewer: { id: string; role: string }, listingIds: (string | null)[]) {
   const ids = [...new Set(listingIds.filter((id): id is string => Boolean(id)))];
   const plain = (_listingId: string | null, person: Person) => person.name;
   if (viewer.role === "ADMIN" || !ids.length) return plain;
-  const owned = await prisma.listing.findMany({ where: { id: { in: ids }, OR: [{ sellerId: viewer.id }, { brokerId: viewer.id }] }, select: { id: true } });
-  if (!owned.length) return plain;
+  const listings = await prisma.listing.findMany({
+    where: { id: { in: ids } },
+    select: {
+      id: true,
+      sellerId: true,
+      brokerId: true,
+      sellerNamed: true,
+      clientSellerName: true,
+      seller: { select: { name: true, companyName: true, companyType: true, role: true } },
+    },
+  });
+  const owned = listings.filter((listing) => listing.sellerId === viewer.id || (Boolean(listing.brokerId) && listing.brokerId === viewer.id));
+  const others = listings.filter((listing) => !owned.includes(listing));
   const namers = new Map(await Promise.all(owned.map(async (listing) => [listing.id, await bidderNamer(listing.id, viewer)] as const)));
+  const sight = await sellerNameSight(viewer, others);
+  const sellers = new Map(others.map((listing) => [listing.id, listing]));
   return (listingId: string | null, person: Person) => {
     const namer = listingId ? namers.get(listingId) : undefined;
-    return namer && person.role === "BUYER" && person.id !== viewer.id ? namer(person) : person.name;
+    if (namer) return person.role === "BUYER" && person.id !== viewer.id ? namer(person) : person.name;
+    const listing = listingId ? sellers.get(listingId) : undefined;
+    if (listing && person.id === listing.sellerId && !heldForClient(listing)) return sellerShown(listing, sight.get(listing.id) ?? false);
+    return person.name;
   };
 }

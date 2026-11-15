@@ -1,4 +1,4 @@
-import type { CompCell } from "@/lib/comps";
+import { cellFacts, MIN_RECENT_TRADES, RECENT_MONTHS, type CompCell } from "@/lib/comps";
 import { prettyDate } from "@/lib/format";
 
 // Closed-trade comps for one listing. Presentational only, so it renders in a server or a client tree.
@@ -8,7 +8,8 @@ import { prettyDate } from "@/lib/format";
 //   const comps = compsFor({ state, lienPosition, paymentStatus }, trades);
 //   <CompsPanel comps={comps} state={state} ask={ask} upb={upb} asOf={new Date()} />
 export type CompsPanelProps = {
-  // From compsFor(). It is the narrowest group (state, then region, then all states) with at least three trades.
+  // From compsFor(). It is the narrowest group (state, then region, then all states) with at least three trades and a
+  // recent one (lib/comps.ts).
   // Null shows the empty state.
   comps: CompCell | null;
   // The listing's state, so a wider group can say why it is wider.
@@ -23,25 +24,25 @@ export type CompsPanelProps = {
 
 export function CompsPanel({ comps, state, ask, upb, asOf, windowMonths = 24 }: CompsPanelProps) {
   const askPct = ask && upb && upb > 0 ? Math.round((ask / upb) * 100) : null;
-  const basis = `Gross price over UPB on closings completed on UPB in the ${windowMonths} months to ${prettyDate(asOf)}, before the buyer premium and seller commission. A group shows only with three or more trades, and sizes show as bands, so no single trade can be read from it.`;
+  const basis = `Gross price over UPB on closings completed on UPB in the ${windowMonths} months to ${prettyDate(asOf)}, before the buyer premium and seller commission. A group shows only with three or more trades, ${MIN_RECENT_TRADES === 1 ? "one" : MIN_RECENT_TRADES} of them in the last ${RECENT_MONTHS} months, and sizes show as bands, so no single trade can be read from it.`;
   if (!comps) {
     return (
       <section className="glass p-6">
         <p className="eyebrow">Closed-trade comps</p>
         <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
-          Fewer than three closed trades like this one so far, so there is no comp to show yet.
+          Fewer than three closed trades like this one, or none in the last six months, so there is no comp to show yet.
         </p>
         <p className="mt-3 text-xs leading-relaxed text-muted-foreground">{basis}</p>
       </section>
     );
   }
-  const wider = comps.geo !== "state" && state ? `Fewer than three trades in ${state.toUpperCase()}, so this is the ${comps.geo === "region" ? `${comps.place} region` : "all-state"} figure.` : null;
+  const wider = comps.geo !== "state" && state ? `Too few recent trades in ${state.toUpperCase()}, so this is the ${comps.geo === "region" ? `${comps.place} region` : "all-state"} figure.` : null;
   return (
     <section className="glass p-6">
       <p className="eyebrow">Closed-trade comps</p>
       <p className="mt-3 font-semibold tracking-tight text-3xl tabular-nums text-foreground">{comps.median}% of UPB</p>
       <p className="mt-1 text-sm text-muted-foreground tabular-nums">
-        Median of {comps.count} closed trades · {comps.label} · typical UPB {comps.upbBand}
+        Median of {cellFacts(comps)} · {comps.label} · typical UPB {comps.upbBand}
       </p>
       <RangeBar low={comps.low} high={comps.high} median={comps.median} mark={askPct} markLabel="Ask" />
       <p className="mt-2 text-sm text-foreground tabular-nums">

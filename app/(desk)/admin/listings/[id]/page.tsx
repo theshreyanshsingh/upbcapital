@@ -8,6 +8,7 @@ import { sendToBuyers } from "@/actions/outreach";
 import { AuctionForm } from "@/components/auction-form";
 import { ComplianceNote } from "@/components/compliance-note";
 import { SellerIdentityLine } from "@/components/seller-identity";
+import { ProvenanceDesk } from "@/components/listing-provenance";
 import { DeskDiligence } from "@/components/diligence-checklist";
 import { DeskNotes } from "@/components/desk-notes";
 import { DiscrepancyDesk } from "@/components/discrepancy-desk";
@@ -52,6 +53,7 @@ import { DUPLICATE_REASONS, duplicateGateMessage, duplicatesFor } from "@/lib/du
 import { deskMaryland, MARYLAND_HEADING, MARYLAND_PROMPT } from "@/lib/eligibility";
 import { prisma } from "@/lib/prisma";
 import { feeTerms, rateText } from "@/lib/fee-schedule";
+import { deskSellerLine } from "@/lib/seller-anonymity";
 import { sellerTermsLine } from "@/lib/seller-decisions";
 import { getSettings } from "@/lib/settings";
 import { joinBlock, leaveBlock, roundText, when } from "@/lib/sale-events";
@@ -199,13 +201,19 @@ export default async function AdminListingPage({
           )}
         </section>
         <SellerIdentityLine listing={listing} viewer={user} />
+        {/* The seller's ownership statement, and whether the listing is still confirmed available (lib/provenance.ts). */}
+        <ProvenanceDesk listing={listing} viewer={user} />
         <ComplianceNote states={listing.notes.map((item) => item.state)} sellerFinanced={listing.sellerFinanced} sellerRole={listing.seller.role} />
         <p className="mt-4 text-sm text-foreground">Aggregate ask {money(ask)} · {listing.notes.length} loan{listing.notes.length === 1 ? "" : "s"} · {listing.matches.length} buy-box matches</p>
         {/* The seller's own terms (lib/seller-decisions.ts): who pays UPB's fees and their window to answer an ask. */}
         <p className="mt-1 text-sm text-muted-foreground">{sellerTermsLine(listing)}</p>
+        {/* What a buyer outside the data room reads for the seller, and when the name shows. lib/seller-anonymity.ts. */}
+        <p className="mt-1 text-sm text-muted-foreground">{deskSellerLine(listing)}</p>
 
         <section className="mt-6 border border-border p-5 rounded-xl" aria-labelledby="activity-heading">
           <p id="activity-heading" className="eyebrow">Buyer activity</p>
+          {/* Every prospective bidder by stage, with their engagement and the next step. lib/engagement.ts. */}
+          {sells && <Link href={`${listingHref}/pipeline`} className="mt-1 inline-block text-[13px] font-medium text-link">Bidder pipeline</Link>}
           <dl className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
             <Stat k="Buyers opened" v={activity.viewers.length} hint={`${activity.viewsThisWeek} opens this week`} />
             <Stat k="Signed NDA" v={activity.ndas.length} />

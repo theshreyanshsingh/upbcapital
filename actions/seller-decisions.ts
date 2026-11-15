@@ -8,6 +8,7 @@ import { sellerPage } from "@/lib/awards";
 import { FEE_PAYER_LABELS } from "@/lib/fee-schedule";
 import { prisma } from "@/lib/prisma";
 import { seatGate } from "@/lib/seats";
+import { setSellerNamed } from "@/lib/seller-anonymity";
 import { counterAnyBid, setFeePayer, setResponseWindow } from "@/lib/seller-decisions";
 
 // Each export answers to the seller of record alone. Anyone else goes back to their own home page.
@@ -63,4 +64,21 @@ export async function saveFeePayer(formData: FormData) {
   revalidatePath(`/marketplace/${listing.id}`);
   revalidatePath(`/admin/listings/${listing.id}`);
   redirect(`${back}?notice=${encodeURIComponent(result.unchanged ? "Who pays the fees is unchanged." : `${FEE_PAYER_LABELS[result.payer]}. It locks when the listing goes live.`)}#seller-terms`);
+}
+
+// Whether every approved buyer reads the seller's name, or the seller's type until the data room opens to them.
+export async function saveSellerNamed(formData: FormData) {
+  const { user, listing, back } = await ownListing(String(formData.get("listingId") || ""));
+  const on = String(formData.get("sellerNamed") || "") === "on";
+  const result = await setSellerNamed({ listingId: listing.id, actorId: user.id, on });
+  if (result.error !== null) redirect(`${back}?error=${encodeURIComponent(result.error)}#seller-terms`);
+  revalidatePath(back);
+  revalidatePath(`/marketplace/${listing.id}`);
+  revalidatePath(`/admin/listings/${listing.id}`);
+  const notice = result.unchanged
+    ? "How buyers see you is unchanged."
+    : result.on
+      ? "Every approved buyer sees your name on this listing now."
+      : "Buyers outside the data room see your type now, not your name.";
+  redirect(`${back}?notice=${encodeURIComponent(notice)}#seller-terms`);
 }

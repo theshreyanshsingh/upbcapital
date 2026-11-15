@@ -2,6 +2,8 @@ import { flagDuplicates } from "@/lib/duplicates";
 import { notifyDesk } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
 import { rescoreListing } from "@/lib/matching";
+import { ownershipFields } from "@/lib/provenance";
+import { PROVENANCE_VERSION, statementProblem, statementText } from "@/lib/provenance-rules";
 import { screenInBackground, screenListing } from "@/lib/screening";
 import { putBytes } from "@/lib/storage";
 import { parseTapeBuffer, normalizeTapeRows } from "@/lib/tape";
@@ -12,7 +14,10 @@ import { reviewTape } from "@/lib/tape-quality";
 const MAX_TAPE_BYTES = 10 * 1024 * 1024;
 const MAX_LOANS = 2000;
 
-export async function ingestTape(input: { sellerId: string; title: unknown; summary?: unknown; csv: unknown }) {
+// An API caller has no checkbox, so it makes the seller's ownership statement by sending the wording's version.
+export const API_STATEMENT = `Send ownership as "${PROVENANCE_VERSION}" to make the seller's ownership statement: ${statementText("SELLER")}`;
+
+export async function ingestTape(input: { sellerId: string; title: unknown; summary?: unknown; csv: unknown; ownership?: unknown }) {
   if (typeof input.title !== "string" || typeof input.csv !== "string" || (input.summary != null && typeof input.summary !== "string")) {
     return { error: "Send title, csv and summary as text." as const };
   }
@@ -20,6 +25,7 @@ export async function ingestTape(input: { sellerId: string; title: unknown; summ
   if (title.length < 3) return { error: "Name the pool." as const };
   const bytes = Buffer.from(input.csv);
   if (bytes.length > MAX_TAPE_BYTES) return { error: "Tapes are limited to 10 MB." as const };
+  if (statementProblem(input.ownership)) return { error: API_STATEMENT };
   const matrix = parseTapeBuffer(bytes, "tape.csv");
   // Header aliases cover the servicing columns too, so an API tape carries the same record as an uploaded one.
   const mapping = suggestMapping(matrix.headers);
@@ -32,6 +38,7 @@ export async function ingestTape(input: { sellerId: string; title: unknown; summ
       kind: "POOL",
       sellerId: input.sellerId,
       status: "SUBMITTED",
+      ...ownershipFields({ id: input.sellerId }),
       title,
       summary: input.summary?.trim() || "Pushed through the seller API.",
       notes: { create: loans },

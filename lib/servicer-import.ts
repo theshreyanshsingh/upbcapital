@@ -96,6 +96,10 @@ export const REPORT_FIELDS = [
   "scraFlag",
   "borrowerDeceased",
   "litigationFlag",
+  // Tape v3.1: the servicer files an FHA or VA partial claim, so its export knows the program and the claim.
+  "loanProgram",
+  "partialClaim",
+  "partialClaimBalance",
 ] as const satisfies readonly TapeFieldKey[];
 
 export type ReportField = (typeof REPORT_FIELDS)[number];

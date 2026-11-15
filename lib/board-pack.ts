@@ -13,9 +13,11 @@ import { deliverable } from "@/lib/mail-config";
 import { pdfSafe, wrap } from "@/lib/memo-pdf";
 import { loansForSale } from "@/lib/metrics";
 import { prisma } from "@/lib/prisma";
+import { awardCover, priceAt, type AwardCover, type BidOnRecord } from "@/lib/sale-file";
 import { reviewKey } from "@/lib/screening";
 import { ownAccounts } from "@/lib/seats";
 import { getSettings } from "@/lib/settings";
+import { funnelOf, funnelRows, type FunnelRow, type ValuationFunnel } from "@/lib/valuations";
 
 // The monthly board pack: one calendar month (UTC) of UPB's own records, with the month before and the trailing
 // three months, worked out the same way every time. A month is locked into BoardSnapshot once it is over, so a later
@@ -209,6 +211,8 @@ export type BoardFigures = {
     awardToCloseDays: number | null;
     failed: { total: number; buyer: number; seller: number; neither: number; unrecorded: number };
     fallThrough: number | null;
+    // Missing from a pack locked before it was counted.
+    attrition?: Attrition;
   };
   liquidity: {
     liveListings: number;
@@ -219,6 +223,8 @@ export type BoardFigures = {
     clearedReserve: number;
     clearedReserveShare: number | null;
     priceToAskMedian: number | null;
+    // Missing from a pack locked before it was counted.
+    cover?: CoverFigures;
   };
   people: {
     newSellers: number;
@@ -229,6 +235,9 @@ export type BoardFigures = {
     repeatSellers: number;
     activeBuyers: number;
   };
+  // Value my loans requests made in the month, and how far each has got (lib/valuations.ts). Missing in packs
+  // locked before it was counted.
+  valuations?: ValuationFunnel;
   pipeline: {
     review: { listings: number; loans: number; upbCents: number; askCents: number; feesCents: number };
     live: { listings: number; loans: number; upbCents: number; askCents: number; feesCents: number };
@@ -272,6 +281,12 @@ type ClosingRow = {
   noteId: string | null;
   noteIds: string[];
   salePrice: number;
+  // What the winning bid was for: one loan, or null for the whole listing. Unknown when the bid is gone.
+  bidScope?: { noteId: string | null } | null;
+  // The loans the desk kicked out of it before settlement.
+  kickedOut?: string[];
+  // Its cover bid (lib/sale-file.ts), or null when the winning price isn't on record.
+  cover?: AwardCover | null;
 };
 type ListingRow = ListingDates & {
   id: string;
@@ -302,6 +317,7 @@ type Rows = {
   ofac: { id: string; name: string; matched: string | null; userId: string | null; listingId: string | null; status: string | null; createdAt: Date }[];
   settings: FeeSettings;
   demoAccounts: number;
+  valuations: FunnelRow[];
 };
 
 // Everything the window's figures read, in one pass. The window runs over the trailing three months; cohorts reach
@@ -335,7 +351,7 @@ async function loadRows(window: Range, cohortStart: Date): Promise<Rows> {
   const [closings, entries, bids] = await Promise.all([
     prisma.closing.findMany({
       where: { listingId: { in: ids } },
-      select: { id: true, listingId: true, status: true, openedAt: true, closedAt: true, canceledAt: true, cancelFault: true, noteId: true, noteIds: true, salePrice: true },
+      select: { id: true, listingId: true, status: true, openedAt: true, closedAt: true, canceledAt: true, cancelFault: true, noteId: true, noteIds: true, salePrice: true, inquiryId: true, deskBidId: true },
     }),
     prisma.reviewComment.findMany({
       where: { listingId: { in: ids }, action: { in: ["REJECT", "REQUEST_CHANGES", "RESUBMIT", "MARK_PENDING"] } },
@@ -343,9 +359,38 @@ async function loadRows(window: Range, cohortStart: Date): Promise<Rows> {
     }),
     prisma.inquiry.findMany({ where: { type: "OFFER", listingId: { in: ids }, createdAt: { lt: window.end } }, select: { listingId: true, buyerId: true, createdAt: true } }),
   ]);
+  // The bids each award was chosen from, the desk's own winning bids, and the kick-outs, for pool attrition and the
+  // cover bid.
+  const awarded = [...new Set(closings.map((closing) => closing.listingId))];
+  const deskBidIds = closings.map((closing) => closing.deskBidId).filter((id): id is string => Boolean(id));
+  const [awardBids, deskBids, kickouts] = await Promise.all([
+    awarded.length
+      ? prisma.inquiry.findMany({
+          where: { type: "OFFER", listingId: { in: awarded } },
+          select: { id: true, listingId: true, buyerId: true, noteId: true, amount: true, status: true, createdAt: true, expiresAt: true, withdrawnAt: true, messages: { select: { kind: true, amount: true, createdAt: true, authorId: true } } },
+        })
+      : Promise.resolve([]),
+    deskBidIds.length ? prisma.deskBid.findMany({ where: { id: { in: deskBidIds } }, select: { id: true, noteId: true, amount: true } }) : Promise.resolve([]),
+    closings.length ? prisma.closingKickout.findMany({ where: { closingId: { in: closings.map((closing) => closing.id) } }, select: { closingId: true, noteId: true } }) : Promise.resolve([]),
+  ]);
+  const bidsOn = new Map<string, BidOnRecord[]>();
+  for (const bid of awardBids) bidsOn.set(bid.listingId, [...(bidsOn.get(bid.listingId) ?? []), { ...bid, amount: bid.amount == null ? null : Number(bid.amount) }]);
+  const deskBidOf = new Map(deskBids.map((bid) => [bid.id, bid]));
   const closingsOf = new Map<string, ClosingRow[]>();
   for (const closing of closings) {
-    const row = { ...closing, cancelFault: closing.cancelFault ?? null, noteIds: closing.noteIds ?? [], salePrice: Number(closing.salePrice) };
+    const bids = bidsOn.get(closing.listingId) ?? [];
+    const bid = closing.inquiryId ? bids.find((item) => item.id === closing.inquiryId) : undefined;
+    const desk = closing.deskBidId ? deskBidOf.get(closing.deskBidId) : undefined;
+    const winner = bid ? { id: bid.id, noteId: bid.noteId ?? null, price: priceAt(bid, closing.openedAt) } : desk ? { id: null, noteId: desk.noteId ?? null, price: Number(desk.amount) } : null;
+    const row = {
+      ...closing,
+      cancelFault: closing.cancelFault ?? null,
+      noteIds: closing.noteIds ?? [],
+      salePrice: Number(closing.salePrice),
+      bidScope: winner ? { noteId: winner.noteId } : null,
+      kickedOut: kickouts.filter((kick) => kick.closingId === closing.id).map((kick) => kick.noteId),
+      cover: winner ? awardCover({ winner, at: closing.openedAt, bids }) : null,
+    };
     closingsOf.set(closing.listingId, [...(closingsOf.get(closing.listingId) ?? []), row]);
   }
   const entriesOf = new Map<string, { action: string; at: Date }[]>();
@@ -428,6 +473,7 @@ async function loadRows(window: Range, cohortStart: Date): Promise<Rows> {
     ofac: ofac.map((row) => ({ ...row, matched: row.matched ?? null, userId: row.userId ?? null, listingId: row.listingId ?? null, status: row.status ?? null })),
     settings,
     demoAccounts: emails.filter((user) => !deliverable(user.email)).length,
+    valuations: await funnelRows(window),
   };
 }
 
@@ -464,6 +510,67 @@ function pipelineAt(rows: Rows, at: Date, live: boolean) {
     out.feesCents += fees ? fees.premiumCents + fees.commissionCents : 0;
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Pool attrition and the cover bid.
+
+type LoanUpb = { id: string; upbCents: number };
+export type Attrition = {
+  offered: { loans: number; upbCents: number };
+  awarded: { loans: number; upbCents: number };
+  closed: { loans: number; upbCents: number };
+  kickedOut: { loans: number; upbCents: number };
+  lostShare: number | null;
+};
+export type AttritionAward = { offered: LoanUpb[]; awarded: LoanUpb[]; closed: LoanUpb[]; kickedOut: LoanUpb[] };
+
+// For awards whose closing ended: the loans the winning bids were for, then awarded, then closed, each loan once
+// however many closings touched it. Kick-outs count each time a loan came out. Lost before closing is the offered UPB
+// that didn't close, over the offered UPB.
+export function poolAttrition(awards: AttritionAward[]): Attrition {
+  const once = (lists: LoanUpb[][]) => {
+    const seen = new Map<string, number>();
+    for (const loan of lists.flat()) seen.set(loan.id, loan.upbCents);
+    return { loans: seen.size, upbCents: sum([...seen.values()]) };
+  };
+  const offered = once(awards.map((award) => award.offered));
+  const closed = once(awards.map((award) => award.closed));
+  const kicked = awards.flatMap((award) => award.kickedOut);
+  return {
+    offered,
+    awarded: once(awards.map((award) => award.awarded)),
+    closed,
+    kickedOut: { loans: kicked.length, upbCents: sum(kicked.map((loan) => loan.upbCents)) },
+    lostShare: share(Math.max(0, offered.upbCents - closed.upbCents), offered.upbCents),
+  };
+}
+
+export type CoverFigures = { median: number | null; contested: number; oneBid: number };
+
+// The median cover bid over the awards that had a rival, and how many had none. An award whose winning price isn't
+// on record isn't counted.
+export function coverFigures(covers: (AwardCover | null | undefined)[]): CoverFigures {
+  const known = covers.filter((cover): cover is AwardCover => Boolean(cover));
+  const ratios = known.flatMap((cover) => (cover.ratio == null ? [] : [cover.ratio]));
+  return { median: median(ratios), contested: ratios.length, oneBid: known.filter((cover) => cover.ratio == null).length };
+}
+
+// One closing that ended, as attrition reads it. Loans and UPB are the tape as it stands now, as elsewhere in the pack.
+function attritionAward(closing: ClosingRow, listing: ListingRow): AttritionAward {
+  const upb = (loans: Loan[]) => loans.map((loan) => ({ id: loan.id, upbCents: cents(loan.upb) }));
+  const kicked = new Set(closing.kickedOut ?? []);
+  const kickedOut = listing.notes.filter((note) => kicked.has(note.id));
+  const kept = closingLoans(closing, listing.notes);
+  const awarded = [...kept, ...kickedOut.filter((note) => !kept.some((loan) => loan.id === note.id))];
+  const scope = closing.bidScope;
+  const offered = scope ? (scope.noteId ? listing.notes.filter((note) => note.id === scope.noteId) : listing.notes) : awarded;
+  return {
+    offered: upb([...offered, ...awarded.filter((note) => !offered.some((loan) => loan.id === note.id))]),
+    awarded: upb(awarded),
+    closed: closing.status === "COMPLETE" ? upb(kept) : [],
+    kickedOut: upb((closing.kickedOut ?? []).flatMap((id) => listing.notes.filter((note) => note.id === id))),
+  };
 }
 
 function figuresFor(rows: Rows, range: Range, now: Date): BoardFigures {
@@ -573,6 +680,7 @@ function figuresFor(rows: Rows, range: Range, now: Date): BoardFigures {
       awardToCloseDays: median(completed.map(({ closing }) => daysBetween(closing.openedAt, closing.closedAt!))),
       failed: { total: canceled.length, buyer: fault("BUYER"), seller: fault("SELLER"), neither: fault("NEITHER"), unrecorded: canceled.filter(({ closing }) => !FAULTS.includes(closing.cancelFault as (typeof FAULTS)[number])).length },
       fallThrough: stats.closeRate == null ? null : 1 - stats.closeRate,
+      attrition: poolAttrition([...completed, ...canceled].map(({ closing, listing }) => attritionAward(closing, listing))),
     },
     liquidity: {
       liveListings: live.length,
@@ -583,6 +691,7 @@ function figuresFor(rows: Rows, range: Range, now: Date): BoardFigures {
       clearedReserve: cleared.length,
       clearedReserveShare: share(cleared.length, reserved.length),
       priceToAskMedian: median(priceToAsk),
+      cover: coverFigures(awards.map(({ closing }) => closing.cover)),
     },
     people: {
       newSellers: joined.filter((user) => (SELLER_ROLES as readonly string[]).includes(user.role)).length,
@@ -594,6 +703,7 @@ function figuresFor(rows: Rows, range: Range, now: Date): BoardFigures {
       repeatSellers: repeat.length,
       activeBuyers: new Set(bidsIn.map((bid) => bid.buyerId)).size,
     },
+    valuations: funnelOf(rows.valuations.filter((row) => within(row.createdAt, range))),
     pipeline: { review: pipelineAt(rows, at, false), live: pipelineAt(rows, at, true) },
     risk: {
       openDiscrepancies: rows.discrepancies.filter((row) => row.createdAt.getTime() < asOf.getTime() && (!row.closedAt || row.closedAt.getTime() >= asOf.getTime())).length,
@@ -710,6 +820,15 @@ export const BOARD_METRICS: BoardMetric[] = [
   define("Speed and fall-through", "speed.failed.neither", "Failed, neither side", "count", { better: "down" }),
   define("Speed and fall-through", "speed.failed.unrecorded", "Failed, fault not recorded", "count", { better: "down" }),
   define("Speed and fall-through", "speed.fallThrough", "Fall-through rate", "ratio", { better: "down" }),
+  define("Speed and fall-through", "speed.attrition.offered.loans", "Pool attrition: loans offered", "count"),
+  define("Speed and fall-through", "speed.attrition.offered.upbCents", "Pool attrition: UPB offered", "cents"),
+  define("Speed and fall-through", "speed.attrition.awarded.loans", "Pool attrition: loans awarded", "count"),
+  define("Speed and fall-through", "speed.attrition.awarded.upbCents", "Pool attrition: UPB awarded", "cents"),
+  define("Speed and fall-through", "speed.attrition.closed.loans", "Pool attrition: loans closed", "count"),
+  define("Speed and fall-through", "speed.attrition.closed.upbCents", "Pool attrition: UPB closed", "cents"),
+  define("Speed and fall-through", "speed.attrition.kickedOut.loans", "Loans kicked out", "count", { better: "down" }),
+  define("Speed and fall-through", "speed.attrition.kickedOut.upbCents", "UPB kicked out", "cents", { better: "down" }),
+  define("Speed and fall-through", "speed.attrition.lostShare", "Offered UPB lost before closing", "ratio", { better: "down" }),
   define("Liquidity", "liquidity.liveListings", "Live listings", "count", { better: "up" }),
   define("Liquidity", "liquidity.bids", "Bids on live listings", "count", { better: "up" }),
   define("Liquidity", "liquidity.bidsPerLiveListing", "Bids per live listing", "number", { better: "up", digits: 1 }),
@@ -717,6 +836,9 @@ export const BOARD_METRICS: BoardMetric[] = [
   define("Liquidity", "liquidity.withReserve", "Awards with a reserve", "count"),
   define("Liquidity", "liquidity.clearedReserveShare", "Awards that cleared reserve", "ratio", { better: "up" }),
   define("Liquidity", "liquidity.priceToAskMedian", "Median awarded price over ask", "ratio", { better: "up" }),
+  define("Liquidity", "liquidity.cover.median", "Median cover bid, share of the winning bid", "ratio", { better: "up" }),
+  define("Liquidity", "liquidity.cover.contested", "Awards with two or more bids", "count", { better: "up" }),
+  define("Liquidity", "liquidity.cover.oneBid", "Awards with one bid", "count", { better: "down" }),
   define("Supply and demand", "people.newSellers", "New sellers", "count", { better: "up" }),
   define("Supply and demand", "people.newBuyers", "New buyers", "count", { better: "up" }),
   define("Supply and demand", "people.approvedFiles", "Buyer files approved", "count", { better: "up" }),
@@ -724,6 +846,10 @@ export const BOARD_METRICS: BoardMetric[] = [
   define("Supply and demand", "people.sellersSold", "Sellers who sold", "count", { better: "up" }),
   define("Supply and demand", "people.repeatSellers", "Repeat sellers", "count", { better: "up" }),
   define("Supply and demand", "people.activeBuyers", "Active buyers", "count", { better: "up" }),
+  define("Supply and demand", "valuations.requests", "Valuation requests", "count", { better: "up" }),
+  define("Supply and demand", "valuations.signedUp", "Valuations, signed up", "count", { better: "up" }),
+  define("Supply and demand", "valuations.listed", "Valuations, listed", "count", { better: "up" }),
+  define("Supply and demand", "valuations.closed", "Valuations, closed", "count", { better: "up" }),
   define("Pipeline", "pipeline.review.listings", "Listings in review", "count", { stock: true }),
   define("Pipeline", "pipeline.review.loans", "Loans in review", "count", { stock: true }),
   define("Pipeline", "pipeline.review.upbCents", "UPB in review", "cents", { stock: true }),
@@ -806,10 +932,19 @@ function sameValue(a: number | null, b: number | null) {
 
 export type BoardDifference = { key: string; label: string; locked: number | null; live: number | null };
 
+// Whether a pack counted this figure at all. A month locked before a figure was added has no value for it, which is
+// not a difference.
+function counted(figures: unknown, key: string) {
+  let value: unknown = figures;
+  for (const part of key.split(".")) value = value && typeof value === "object" ? (value as Record<string, unknown>)[part] : undefined;
+  return value !== undefined;
+}
+
 // Where a live recount of the month now differs from what was locked, figure by figure, cohorts included.
 export function packDifferences(locked: BoardPack, live: BoardPack): BoardDifference[] {
   const out: BoardDifference[] = [];
   for (const metric of BOARD_METRICS) {
+    if (!counted(locked.current, metric.key)) continue;
     const was = metricValue(locked.current, metric.key);
     const now = metricValue(live.current, metric.key);
     if (!sameValue(was, now)) out.push({ key: metric.key, label: metric.label, locked: was, live: now });
@@ -1094,6 +1229,10 @@ export function boardDefinitions(demoAccounts: number) {
         { term: "Approved to first bid", text: "Median days from approval, or from the launch date when that was later, since no one can bid before it, to the first bid, for listings whose first bid came in the month." },
         { term: "Award to close", text: "Median days, for closings completed in the month. The desk home shows the mean over 180 days, and analytics the mean from filing to sold." },
         { term: "Failed and fall-through", text: "Closings canceled in the month, by the fault the desk recorded. Fall-through is canceled over canceled and completed, for closings that ended in the month: the desk home's close rate, turned round." },
+        {
+          term: "Pool attrition",
+          text: "For closings that ended in the month: the loans and UPB the winning bids were for, then awarded, then closed, each loan once. Kick-outs count each loan the desk took out of those closings. Lost before closing is offered UPB that didn't close, over offered UPB.",
+        },
       ],
     },
     {
@@ -1104,6 +1243,10 @@ export function boardDefinitions(demoAccounts: number) {
         { term: "3 or more bids", text: "Live listings with three or more bids by the month end." },
         { term: "Cleared reserve", text: "Awards in the month on a whole listing with a reserve, where the price met it. Awards with no reserve, and part-pool or one-loan awards from a pool, are left out." },
         { term: "Awarded price over ask", text: "The median of each award's price over the ask of the loans it covers, at the ask as it stands now." },
+        {
+          term: "Cover bid",
+          text: "For each award in the month, the highest other buyer's bid on the same loans placed before it, withdrawn and lapsed bids left out, over the winning bid: the second-highest bid when the winner bid most. The median is of awards with two or more bids. An award with one bid counts on its own line.",
+        },
       ],
     },
     {
@@ -1113,6 +1256,7 @@ export function boardDefinitions(demoAccounts: number) {
         { term: "Buyer files", text: "Approved this month counts files whose latest review, an approval, fell in the month. On record counts files approved by the month end, as analytics counts verified buyers, less any approved file with no review date, which can't be placed in a month." },
         { term: "Repeat sellers", text: "Sellers who closed a sale in the month and had also closed one in an earlier month." },
         { term: "Active buyers", text: "Accounts that placed a bid in the month." },
+        { term: "Valuations", text: "Value my loans requests sent in the month, then how many of those are on a seller account, have a listing that came from them, and have a sale from that listing closed, as of when the pack was made." },
         { term: "Buyer cohorts", text: "Buyers who signed up in each of the six months before this one: how many have bid by the month end, and how many bid in this month. Retention is the second over the cohort." },
       ],
     },

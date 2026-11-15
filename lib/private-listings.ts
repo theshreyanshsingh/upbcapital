@@ -5,6 +5,7 @@ import { audit } from "@/lib/audit";
 import { unset } from "@/lib/db-filters";
 import { notify } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
+import { notStalePaused, stalePaused } from "@/lib/provenance-rules";
 
 // A private listing shows only to the buyers its seller or the desk invited. Anything that lists or announces
 // listings to people who weren't invited (the marketplace, search, roundups, matching, the public index,
@@ -15,9 +16,10 @@ export function isPrivateListing(listing: { visibility?: string | null }) {
   return listing.visibility === PRIVATE;
 }
 
-// Public listings: visibility never set, null, or anything but PRIVATE. Merge it into a where with AND.
+// Public listings: visibility never set, null, or anything but PRIVATE. Merge it into a where with AND. A live listing
+// paused for want of its seller's reconfirmation is off the public book too (lib/provenance.ts).
 export function publicListing(): Prisma.ListingWhereInput {
-  return { OR: [{ visibility: { isSet: false } }, { visibility: null }, { visibility: { not: PRIVATE } }] };
+  return { OR: [{ visibility: { isSet: false } }, { visibility: null }, { visibility: { not: PRIVATE } }], AND: [notStalePaused()] };
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -27,7 +29,7 @@ export function publicListing(): Prisma.ListingWhereInput {
 // to its closing. Every list, search, alert and bid path asks here, so the rules live in one place.
 
 export type ListingViewer = { id: string; role: string } | null | undefined;
-type Shown = { id: string; sellerId: string; brokerId?: string | null; visibility?: string | null };
+type Shown = { id: string; sellerId: string; brokerId?: string | null; visibility?: string | null; status?: string; stalePausedAt?: Date | null };
 type Person = { id: string; email: string; companies: string[] };
 type ExclusionRow = { sellerId: string; buyerId: string | null; email: string | null; company: string | null };
 
@@ -91,6 +93,13 @@ async function withVisibility<T extends Shown>(listing: T): Promise<T & { visibi
   return { ...listing, visibility: row?.visibility ?? null };
 }
 
+// Paused for want of the seller's reconfirmation (lib/provenance.ts), read when the caller's select left it out.
+async function pausedNow(listing: Shown) {
+  if (listing.status !== undefined && listing.stalePausedAt !== undefined) return stalePaused(listing);
+  const row = await prisma.listing.findUnique({ where: { id: listing.id }, select: { status: true, stalePausedAt: true } });
+  return Boolean(row && stalePaused(row));
+}
+
 export type HiddenReason = "excluded" | "private" | "first_look";
 type Audience = { id: string; email: string; role?: string; companyName?: string | null };
 
@@ -130,6 +139,11 @@ export async function hiddenReasons(input: Shown, people: Audience[]): Promise<M
 // The people in `people` who may see this listing, for anything that tells many buyers about one listing: buy-box
 // matches, saved-search alerts, watchers, published answers and desk picks.
 export async function audienceOf<T extends Audience>(input: Shown, people: T[]): Promise<T[]> {
+  // A paused listing reaches no one but its own side and the desk: no alerts, matches or watcher notices. A buyer who
+  // opens it by its link still sees it, paused, and can't bid (lib/provenance.ts).
+  if (people.length && (await pausedNow(input))) {
+    return people.filter((person) => person.role === "ADMIN" || person.id === input.sellerId || (Boolean(input.brokerId) && person.id === input.brokerId));
+  }
   const reasons = await hiddenReasons(input, people);
   return reasons.size ? people.filter((person) => !reasons.has(person.id)) : people;
 }
@@ -145,7 +159,7 @@ export async function listingSight(viewer: ListingViewer, input: Shown): Promise
   if (viewer.role === "ADMIN" || viewer.id === listing.sellerId || (Boolean(listing.brokerId) && viewer.id === listing.brokerId)) return { visible: true, invited: false };
   const user = await prisma.user.findUnique({ where: { id: viewer.id }, select: { id: true, email: true, role: true, companyName: true } });
   if (!user) return { visible: false, invited: false };
-  const visible = (await audienceOf(listing, [user])).length > 0;
+  const visible = !(await hiddenReasons(listing, [user])).has(user.id);
   // A committed buyer's first look lifts the same holds: the programme asked them in.
   return { visible, invited: visible && (hidden || Boolean(await firstLookBuyers(listing.id))) };
 }
@@ -205,6 +219,7 @@ export function canSee(access: ListingAccess, listing: Shown) {
   if (access.userId && (listing.sellerId === access.userId || (Boolean(listing.brokerId) && listing.brokerId === access.userId))) return true;
   if (access.excludedBy.has(listing.sellerId)) return false;
   if (access.firstLook?.has(listing.id)) return false;
+  if (stalePaused(listing)) return false;
   return !isPrivateListing(listing) || access.invited.has(listing.id);
 }
 
@@ -227,6 +242,8 @@ export function visibleWhere(access: ListingAccess): Prisma.ListingWhereInput {
       { OR: [publicListing(), { sellerId: me }, { brokerId: me }, ...(access.invited.size ? [{ id: { in: [...access.invited] } }] : [])] },
       ...(access.excludedBy.size ? [{ OR: [{ sellerId: { notIn: [...access.excludedBy] } }, { sellerId: me }, { brokerId: me }] }] : []),
       ...(closed.length ? [{ OR: [{ id: { notIn: closed } }, { sellerId: me }, { brokerId: me }] }] : []),
+      // A paused listing stays on its own side's book, and an invitation doesn't bring it back for anyone else.
+      { OR: [notStalePaused(), { sellerId: me }, { brokerId: me }] },
     ],
   };
 }

@@ -1,5 +1,5 @@
 import { closingLoans } from "@/lib/closing";
-import { COMP_WINDOW_MONTHS, compsFor, loadClosedTrades, type ClosedTrade } from "@/lib/comps";
+import { COMP_WINDOW_MONTHS, MIN_TRADES, compsFor, loadClosedTrades, type ClosedTrade } from "@/lib/comps";
 import { showableAvm } from "@/lib/enrichment";
 import { compSubjectOf, indicativeRange, type IndicativeNote } from "@/lib/indicative";
 import { labelOf } from "@/lib/labels";
@@ -122,7 +122,7 @@ export async function loadBacktest(now = new Date(), limit = 500): Promise<Backt
     }));
     const subject = notes.length ? compSubjectOf(notes) : null;
     const range = subject
-      ? indicativeRange({ notes, targetYield: settings.indicativeTargetYield, comps: compsFor(subject, before), compsWindowMonths: COMP_WINDOW_MONTHS, standing: [], premiumBps: settings.buyerPremiumBps, now: at })
+      ? indicativeRange({ notes, targetYield: settings.indicativeTargetYield, comps: compsFor(subject, before, MIN_TRADES, at), compsWindowMonths: COMP_WINDOW_MONTHS, standing: [], premiumBps: settings.buyerPremiumBps, now: at })
       : null;
     const upb = notes.reduce((sum, note) => sum + note.upb, 0);
     const score = range ? scoreAward({ price: Number(closing.salePrice), upb, low: range.low, high: range.high }) : null;

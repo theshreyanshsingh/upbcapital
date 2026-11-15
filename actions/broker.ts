@@ -13,6 +13,8 @@ import { rescoreListing } from "@/lib/matching";
 import { OFAC_DOWN_MESSAGE, OFAC_HOLD_MESSAGE, ofacHold, screenInBackground, screenListing, screenUser } from "@/lib/screening";
 import { approveBrokerFee, recordBrokerFeePaid } from "@/lib/payout-accounts";
 import { prisma } from "@/lib/prisma";
+import { ownershipFields } from "@/lib/provenance";
+import { statementProblem } from "@/lib/provenance-rules";
 import { extensionOf, mimeFor, putBytes, safeBasename } from "@/lib/storage";
 import { parseTapeBuffer, normalizeTapeRows } from "@/lib/tape";
 import { suggestMapping } from "@/lib/tape-fields";
@@ -135,6 +137,11 @@ export async function submitBrokerDeal(formData: FormData) {
   if (role === "SELLER_BROKER" && !profile.licenseNumber) {
     return { error: "A seller's broker needs a license number on the profile. Affiliates can leave it blank." };
   }
+  // The broker's ownership statement: they hold the holder's signed mandate and the holder's own statement
+  // (lib/provenance.ts). Checked before the upload is stored, so a refused filing leaves no file behind.
+  const statement = statementProblem(formData.get("ownership"));
+  if (statement) return { error: statement };
+  // The mandate itself is required here whatever the seller identity setting says, and again at approval.
   const authorization = await storeFile(formData.get("authorization"), "seller authorization");
   if (authorization.error) return { error: authorization.error };
 
@@ -171,6 +178,7 @@ export async function submitBrokerDeal(formData: FormData) {
       clientSellerName,
       clientRelationship,
       authorization,
+      ownership: ownershipFields(user),
       loans,
     });
     await prisma.document.create({
@@ -221,6 +229,7 @@ export async function submitBrokerDeal(formData: FormData) {
     clientSellerName,
     clientRelationship,
     authorization,
+    ownership: ownershipFields(user),
     loans: [
       {
         streetAddress: note.streetAddress,
@@ -259,6 +268,7 @@ async function createBrokerListing(input: {
   clientSellerName: string;
   clientRelationship: string;
   authorization: { key: string; name: string; size: number; mime: string };
+  ownership: ReturnType<typeof ownershipFields>;
   loans: Record<string, unknown>[];
 }) {
   const listing = await prisma.listing.create({
@@ -272,6 +282,7 @@ async function createBrokerListing(input: {
       authorizationKey: input.authorization.key,
       authorizationName: input.authorization.name,
       status: "SUBMITTED",
+      ...input.ownership,
       title: input.title,
       summary: input.summary,
       notes: { create: input.loans as never },

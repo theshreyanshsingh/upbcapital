@@ -1,7 +1,7 @@
 import { audit } from "@/lib/audit";
 import { closingIsWhole, closingLoans } from "@/lib/closing";
 import { buyerSideEmails } from "@/lib/closing-service";
-import { chargeFees, feePayerOf, flatTerms, readSchedule, type Fees } from "@/lib/fee-schedule";
+import { chargeFees, feePayerOf, flatTerms, premiumCutOf, readSchedule, type Fees } from "@/lib/fee-schedule";
 import { notify, notifyDesk } from "@/lib/email";
 import { money } from "@/lib/format";
 import { pricesFor } from "@/lib/loan-prices";
@@ -109,8 +109,11 @@ export async function kickOutLoan(input: { closingId: string; noteId: string; re
   // A listing that went live with a schedule grades the new price on it. A desk purchase pays no premium, and the
   // seller pays the commission only if the closing charged one.
   const kept = readSchedule(closing.listing.feeSchedule);
+  // The buyer's cut fixed at award (lib/volume-tiers.ts) stays with the closing at its smaller price.
+  const keptTerms = { ...flatTerms(0), schedule: kept, payer: feePayerOf(closing.listing.feePayer) };
+  const off = kept ? premiumCutOf(keptTerms, { salePrice, buyerPremiumCents: closing.buyerPremiumCents, deskBidId: closing.deskBidId }, Boolean(closing.listing.flowProgramId))?.offBps ?? 0 : 0;
   const graded = kept
-    ? (price: number) => chargeFees({ ...flatTerms(0), schedule: kept, payer: feePayerOf(closing.listing.feePayer) }, price, { deskPurchase: Boolean(closing.deskBidId), chargeDeskFees: closing.sellerCommissionCents > 0 })
+    ? (price: number) => chargeFees({ ...keptTerms, premiumOffBps: off }, price, { deskPurchase: Boolean(closing.deskBidId), chargeDeskFees: closing.sellerCommissionCents > 0 })
     : null;
   const terms = kickoutTerms({
     closing: { ...closing, salePrice },

@@ -1,5 +1,6 @@
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import { closingLoans } from "@/lib/closing";
+import { cutText, type PremiumCut } from "@/lib/fee-schedule";
 import { prorationDirection, readProration } from "@/lib/proration";
 
 export type Variance = { state: "none" | "match" | "short" | "over"; diffCents: number };
@@ -41,7 +42,14 @@ type StatementClosing = {
   // The proration between the cut-off and closing, owed to the seller when positive. lib/proration.ts.
   prorationCents?: number | null;
   prorationDetail?: unknown;
+  // The buyer's cut to the premium, fixed at award, read back by lib/volume-tiers.ts closingPremiumCut.
+  premiumCut?: PremiumCut | null;
 };
+
+// The premium line, with the buyer's cut beside it when the closing carries one.
+function premiumLine(closing: { buyerPremiumCents: number; premiumCut?: PremiumCut | null }): StatementLine {
+  return { label: "Buyer premium", cents: closing.buyerPremiumCents, ...(closing.premiumCut ? { detail: cutText(closing.premiumCut) } : {}) };
+}
 
 // The proration moves what the buyer wires and what the seller nets by the same cents. The stored price and fees
 // stay as they are, so every expected total reads through these.
@@ -198,7 +206,7 @@ function shareSection(share: FunderShare) {
 
 // The price and fee rows each side sees on the closing page, the same figures as its statement.
 export function economicsRows(
-  closing: { salePrice: number; buyerPremiumCents: number; sellerCommissionCents: number; buyerTotalCents: number; netToSellerCents: number; prorationCents?: number | null },
+  closing: { salePrice: number; buyerPremiumCents: number; sellerCommissionCents: number; buyerTotalCents: number; netToSellerCents: number; prorationCents?: number | null; premiumCut?: PremiumCut | null },
   side: StatementSide | "observer",
   share: FunderShare | null = null,
 ): { label: string; cents: number }[] {
@@ -212,9 +220,11 @@ export function economicsRows(
     ];
   }
   const prorated = closing.prorationCents != null ? [{ label: "Proration", cents: closing.prorationCents }] : [];
+  // The buyer's cut, fixed at award, named on the premium row (lib/volume-tiers.ts).
+  const cut = closing.premiumCut ? `, after a ${dollars(closing.premiumCut.cutCents)} cut fixed at award` : "";
   const buyer = [
     { label: "Sale price", cents: price },
-    { label: "Buyer premium", cents: closing.buyerPremiumCents },
+    { label: `Buyer premium${cut}`, cents: closing.buyerPremiumCents },
     ...prorated,
     { label: "Buyer all-in", cents: buyerDueCents(closing) },
   ];
@@ -285,7 +295,7 @@ export function statementLines(
     heading: "Buyer",
     lines: [
       { label: "Purchase price", cents: price },
-      { label: "Buyer premium", cents: closing.buyerPremiumCents },
+      premiumLine(closing),
       ...prorationLines(closing),
       { label: "Due from buyer", cents: buyerDueCents(closing) },
       ...(hasDeposit
@@ -318,7 +328,7 @@ export function statementLines(
   const desk = {
     heading: "Desk",
     lines: [
-      { label: "Buyer premium", cents: closing.buyerPremiumCents },
+      premiumLine(closing),
       { label: "Seller commission", cents: closing.sellerCommissionCents },
       ...(brokerFeeCents ? [{ label: "Broker fees owed", cents: -brokerFeeCents }] : []),
       { label: "Desk revenue", cents: closing.buyerPremiumCents + closing.sellerCommissionCents - brokerFeeCents },

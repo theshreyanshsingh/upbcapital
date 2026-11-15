@@ -101,6 +101,9 @@ export default async function ValueMyLoansPage({ searchParams }: { searchParams:
       <p className="text-sm text-muted-foreground">
         One note and no tape? The <Link href="/sell" className="text-link">quick quote</Link> takes a minute.
       </p>
+      <p className="text-sm text-muted-foreground">
+        <Link href="/buying" className="text-link">Who&apos;s buying</Link> counts the approved buyers looking for each kind of note, by lien, performance and region.
+      </p>
     </PublicPage>
   );
 }

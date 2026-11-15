@@ -5,6 +5,7 @@ import { createPoolListing } from "@/actions/listings";
 import { checkTapeMarket } from "@/actions/market-rates";
 import { PriceAgainstTime } from "@/components/indicative-price";
 import { FlowTapeCheck } from "@/components/flow-tape-check";
+import { OwnershipStatement } from "@/components/ownership-statement";
 import { Field } from "@/components/page-intro";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,6 +13,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { money } from "@/lib/format";
 import type { PriceLadder } from "@/lib/indicative";
 import { bpsToPercent, typedNumber } from "@/lib/money";
+import { PROVENANCE_VERSION, STATEMENT_MISSING_TEXT } from "@/lib/provenance-rules";
 import { TAPE_FIELDS, type TapeFieldKey } from "@/lib/tape-fields";
 
 type TapeFlag = { row: number; level: "error" | "warn" | "fix"; field: string; message: string };
@@ -58,6 +60,8 @@ export function TapeWizard({
   const [error, setError] = useState("");
   const [flags, setFlags] = useState<TapeFlag[]>([]);
   const [counts, setCounts] = useState<FlagCounts | null>(null);
+  // The ownership statement, ticked on the confirm step (lib/provenance-rules.ts).
+  const [owned, setOwned] = useState(false);
   const [pending, start] = useTransition();
   const [market, setMarket] = useState<{ ladder: PriceLadder | null; error: string | null; loading: boolean }>({ ladder: null, error: null, loading: false });
   // Only the latest check lands, so a slow answer for an older mapping never overwrites a newer one.
@@ -125,7 +129,12 @@ export function TapeWizard({
       setError(`Map ${missing.join(", ")}.`);
       return;
     }
+    if (!owned) {
+      setError(STATEMENT_MISSING_TEXT);
+      return;
+    }
     const formData = new FormData();
+    formData.set("ownership", PROVENANCE_VERSION);
     formData.set("token", preview.token);
     formData.set("title", title);
     formData.set("summary", summary);
@@ -303,6 +312,7 @@ export function TapeWizard({
             <PriceAgainstTime ladder={market.ladder} loading={market.loading} error={market.error} />
           </div>
           {flow && <FlowTapeCheck program={flow} check={{ token: preview.token, mapping, priceMode, pricePercent, poolTotal }} />}
+          <OwnershipStatement checked={owned} onChange={setOwned} className="mt-6 border-t border-border pt-4" />
           <div className="mt-8 flex justify-between">
             <Button type="button" variant="ghost" onClick={() => setStep(2)}>Back</Button>
             <Button type="button" className="h-11 px-5 text-[13px] font-medium" disabled={pending} onClick={submit}>

@@ -9,6 +9,8 @@ import type { Outcome } from "@/lib/loan-file";
 import { rescoreListing } from "@/lib/matching";
 import { typedNumber } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
+import { ownershipFields } from "@/lib/provenance";
+import { PROVENANCE_VERSION, statementProblem } from "@/lib/provenance-rules";
 import { screenInBackground, screenListing } from "@/lib/screening";
 import { deskCan, DESK_DENIED, type Staff } from "@/lib/staff";
 import { putBytes, safeBasename } from "@/lib/storage";
@@ -301,7 +303,8 @@ export async function fileDeskIntake(
         sellerId: seller.value.id,
         status: "SUBMITTED",
         title,
-        summary: summary || `Filed by the desk from ${seller.value.companyName || seller.value.name}'s tape.`,
+        // The default names no one: buyers outside the data room see the seller by type (lib/seller-anonymity.ts).
+        summary: summary || "Filed by the desk from the seller's tape.",
         filedByDeskId: actor.id,
         notes: { create: loans },
       },
@@ -351,13 +354,18 @@ async function ownDeskFiled(user: { id: string }, listingId: string) {
   return { ok: true as const, value: listing };
 }
 
-export async function confirmDeskTape(user: { id: string }, listingId: string, now = new Date()): Promise<Outcome<{ title: string }>> {
+// The confirmation is also the seller's ownership statement (lib/provenance.ts). The confirm form shows its words as a
+// required checkbox and sends the version it showed, which must be the current one. Left out, the confirmation makes
+// the current statement.
+export async function confirmDeskTape(user: { id: string; actor?: { id: string } | null }, listingId: string, now = new Date(), statement: unknown = PROVENANCE_VERSION): Promise<Outcome<{ title: string }>> {
   const own = await ownDeskFiled(user, listingId);
   if (!own.ok) return own;
+  const problem = statementProblem(statement);
+  if (problem) return fail(problem);
   const listing = own.value;
   const moved = await prisma.listing.updateMany({
     where: { id: listing.id, sellerId: user.id, status: { in: [...CONFIRMABLE] }, ...unset("sellerConfirmedAt") },
-    data: { sellerConfirmedAt: now, sellerConfirmedById: user.id },
+    data: { sellerConfirmedAt: now, sellerConfirmedById: user.id, ...ownershipFields(user, now) },
   });
   if (moved.count !== 1) return fail("The listing changed a moment ago. Reload and try again.");
   await audit(user.id, "DESK_INTAKE_CONFIRMED", "listing", listing.id, "The seller confirmed the tape the desk filed");

@@ -93,6 +93,7 @@ export function MarketingFooter() {
           <Link href="/privacy" className="transition-colors hover:text-foreground">Privacy</Link>
           <Link href="/security" className="transition-colors hover:text-foreground">Security</Link>
           <Link href="/tape-standard" className="transition-colors hover:text-foreground">Tape standard</Link>
+          <Link href="/verified" className="transition-colors hover:text-foreground">Desk-verified</Link>
           {desk && <a href={`mailto:${desk}`} className="transition-colors hover:text-foreground">{desk}</a>}
         </div>
       </div>

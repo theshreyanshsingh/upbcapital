@@ -57,6 +57,10 @@ export const TAPE_FIELDS = [
   { key: "balloonDate", label: "Balloon date", required: false, group: "risk" },
   { key: "paymentType", label: "Payment type (fixed, ARM, interest-only, balloon, other)", required: false, group: "risk" },
   { key: "seniorLienBalance", label: "Senior lien balance (junior liens)", required: false, group: "risk" },
+  // Tape v3.1: the program the loan was made under, and an FHA or VA partial claim.
+  { key: "loanProgram", label: "Loan program (conventional, FHA, VA, USDA, private, other)", required: false, group: "risk" },
+  { key: "partialClaim", label: "Partial claim (yes or no)", required: false, group: "risk" },
+  { key: "partialClaimBalance", label: "Partial claim balance", required: false, group: "risk" },
   { key: "scraFlag", label: "SCRA protection (yes or no)", required: false, group: "risk" },
   { key: "borrowerDeceased", label: "Borrower deceased (yes or no)", required: false, group: "risk" },
   { key: "litigationFlag", label: "Litigation (yes or no)", required: false, group: "risk" },
@@ -126,6 +130,9 @@ export const TAPE_HEADERS = [
   "balloon_date",
   "payment_type",
   "senior_lien_balance",
+  "loan_program",
+  "partial_claim",
+  "partial_claim_balance",
   "scra",
   "borrower_deceased",
   "litigation",
@@ -230,7 +237,7 @@ const SYNONYMS: Record<TapeFieldKey, string[]> = {
     "payoffthroughdate", "payoffquotedate",
   ],
   balloonDate: ["balloondate", "balloon", "balloonduedate", "balloondue", "balloonmaturity", "balloonmaturitydate", "balloondt"],
-  // "Loan type" usually means FHA, VA or conventional, so it isn't listed.
+  // "Loan type" usually means FHA, VA or conventional, so it maps to the loan program below.
   paymentType: [
     "paymenttype", "pmttype", "amortizationtype", "amorttype", "amortization", "ratetype", "interestratetype", "paymentstructure",
     "loanstructure", "producttype",
@@ -238,6 +245,19 @@ const SYNONYMS: Record<TapeFieldKey, string[]> = {
   seniorLienBalance: [
     "seniorlienbalance", "seniorbalance", "seniorlien", "seniorlienamount", "seniorupb", "firstlienbalance", "1stlienbalance",
     "firstmortgagebalance", "1stmortgagebalance", "firstlienupb", "priorlienbalance", "seniordebt",
+  ],
+  // "FHA/VA" loses its slash when normalised.
+  loanProgram: [
+    "loanprogram", "program", "programtype", "loanprogramtype", "loantype", "mortgagetype", "mortgageprogram", "fhava",
+    "fhavaconv", "fhavaconventional", "convfhava", "governmentprogram", "agencyprogram",
+  ],
+  partialClaim: [
+    "partialclaim", "partialclaimflag", "partialclaimyn", "haspartialclaim", "partialclaimindicator", "pcflag", "pcyn",
+    "fhapartialclaim", "vapartialclaim", "hudpartialclaim",
+  ],
+  partialClaimBalance: [
+    "partialclaimbalance", "partialclaimamount", "partialclaimamt", "partialclaimbal", "partialclaimupb", "pcamount", "pcamt",
+    "pcbalance", "pcbal", "fhapartialclaimamount", "vapartialclaimamount", "hudpartialclaimamount",
   ],
   scraFlag: [
     "scra", "scraflag", "scrastatus", "scraprotected", "scraprotection", "scrayn", "sscra", "military", "militarystatus",
@@ -277,9 +297,9 @@ export function suggestMapping(headers: string[]): Partial<Record<TapeFieldKey, 
 }
 
 export const SAMPLE_TAPE_ROWS = [
-  ["100 SAMPLE Banyan Street", "Miami", "FL", "33130", "SFR", "First", "428000", "6.50", "2704", "Performing", "0", "2026-09-01", "2019-06-15", "2049-06-15", "710000", "312000", "Owner occupied", "None", "FICTIONAL BORROWER 01", "Sample row — delete before a live tape", "SAMPLE-0001", "Sample Servicing LLC", "000000000000", "2026-11-01", "No", "", "", "", "", "", "BPO", "2026-08-15", "Purchase", "No", "No", "", "", "", "742", "FICO", "2026-08-15", "", "", "", "", "", "", "520000", "3150.22", "0", "", "", "", "Fixed", "", "No", "No", "No", "", "No", "", "", ""],
-  ["200 SAMPLE Magnolia Court", "Savannah", "GA", "31401", "Condo", "Second", "86000", "8.25", "690", "Non-performing", "11", "2025-10-01", "2018-03-01", "2048-03-01", "340000", "29000", "Vacant", "Lis pendens", "FICTIONAL BORROWER 02", "Sample row — fictional", "SAMPLE-0002", "Sample Servicing LLC", "999876543210", "2025-12-01", "Yes", "2020-08-01", "Forbearance ended", "", "", "2026-04-10", "BPO", "2026-06-01", "Cash-out refinance", "Yes", "No", "", "", "", "588", "VantageScore 4.0", "2026-06-01", "", "", "", "Decided", "", "", "95000", "", "9875", "97210.55", "2026-10-15", "", "Fixed", "212000", "No", "No", "Yes", "Sample: the borrower contests the foreclosure", "No", "", "", ""],
-  ["300 SAMPLE Palmetto Lane", "Charlotte", "NC", "28202", "Townhouse", "First", "196500", "7.00", "1310", "Sub-performing", "2", "2026-07-15", "2021-01-20", "2051-01-20", "285000", "151000", "Tenant occupied", "None", "FICTIONAL BORROWER 03", "Sample row — fictional", "SAMPLE-0003", "Sample Servicing LLC", "221100000000", "2026-09-01", "No", "", "Repayment plan", "13", "2026-08-03", "", "AVM", "2026-09-20", "Refinance", "No", "No", "30-day average SOFR", "2.75", "2028-01-20", "691", "FICO", "2026-09-20", "", "", "", "Decided", "", "", "210000", "1840", "2620", "", "", "", "ARM", "", "No", "No", "No", "", "Yes", "1000123", "1000456", "Sample eVault Co"],
+  ["100 SAMPLE Banyan Street", "Miami", "FL", "33130", "SFR", "First", "428000", "6.50", "2704", "Performing", "0", "2026-09-01", "2019-06-15", "2049-06-15", "710000", "312000", "Owner occupied", "None", "FICTIONAL BORROWER 01", "Sample row — delete before a live tape", "SAMPLE-0001", "Sample Servicing LLC", "000000000000", "2026-11-01", "No", "", "", "", "", "", "BPO", "2026-08-15", "Purchase", "No", "No", "", "", "", "742", "FICO", "2026-08-15", "", "", "", "", "", "", "520000", "3150.22", "0", "", "", "", "Fixed", "", "Conventional", "No", "", "No", "No", "No", "", "No", "", "", ""],
+  ["200 SAMPLE Magnolia Court", "Savannah", "GA", "31401", "Condo", "Second", "86000", "8.25", "690", "Non-performing", "11", "2025-10-01", "2018-03-01", "2048-03-01", "340000", "29000", "Vacant", "Lis pendens", "FICTIONAL BORROWER 02", "Sample row — fictional", "SAMPLE-0002", "Sample Servicing LLC", "999876543210", "2025-12-01", "Yes", "2020-08-01", "Forbearance ended", "", "", "2026-04-10", "BPO", "2026-06-01", "Cash-out refinance", "Yes", "No", "", "", "", "588", "VantageScore 4.0", "2026-06-01", "", "", "", "Decided", "", "", "95000", "", "9875", "97210.55", "2026-10-15", "", "Fixed", "212000", "Conventional", "", "", "No", "No", "Yes", "Sample: the borrower contests the foreclosure", "No", "", "", ""],
+  ["300 SAMPLE Palmetto Lane", "Charlotte", "NC", "28202", "Townhouse", "First", "196500", "7.00", "1310", "Sub-performing", "2", "2026-07-15", "2021-01-20", "2051-01-20", "285000", "151000", "Tenant occupied", "None", "FICTIONAL BORROWER 03", "Sample row — fictional", "SAMPLE-0003", "Sample Servicing LLC", "221100000000", "2026-09-01", "No", "", "Repayment plan", "13", "2026-08-03", "", "AVM", "2026-09-20", "Refinance", "No", "No", "30-day average SOFR", "2.75", "2028-01-20", "691", "FICO", "2026-09-20", "", "", "", "Decided", "", "", "210000", "1840", "2620", "", "", "", "ARM", "", "FHA", "Yes", "8420", "No", "No", "No", "", "Yes", "1000123", "1000456", "Sample eVault Co"],
 ];
 
 export const VALUE_TYPES = [
@@ -325,6 +345,16 @@ export const PAYMENT_TYPES = [
   { value: "OTHER", label: "Other" },
 ] as const;
 
+// Tape v3.1: the program the loan was made under. PRIVATE is seller financing or private money.
+export const LOAN_PROGRAMS = [
+  { value: "CONVENTIONAL", label: "Conventional" },
+  { value: "FHA", label: "FHA" },
+  { value: "VA", label: "VA" },
+  { value: "USDA", label: "USDA" },
+  { value: "PRIVATE", label: "Private (seller-financed or private money)" },
+  { value: "OTHER", label: "Other" },
+] as const;
+
 export const CREDIT_SCORE_MIN = 300;
 export const CREDIT_SCORE_MAX = 850;
 
@@ -334,6 +364,7 @@ export type BankruptcyChapter = (typeof BANKRUPTCY_CHAPTERS)[number];
 export type CreditScoreType = (typeof CREDIT_SCORE_TYPES)[number]["value"];
 export type LossMitStage = (typeof LOSS_MIT_STAGES)[number]["value"];
 export type PaymentType = (typeof PAYMENT_TYPES)[number]["value"];
+export type LoanProgram = (typeof LOAN_PROGRAMS)[number]["value"];
 
 // The optional servicing record a tape or the note wizard can carry. Absent keys stay off the stored note.
 export type ServicingRecord = {
@@ -376,6 +407,9 @@ export type ServicingRecord = {
   borrowerDeceased?: boolean;
   litigationFlag?: boolean;
   litigationNote?: string;
+  loanProgram?: LoanProgram;
+  partialClaim?: boolean;
+  partialClaimBalance?: number;
   // Read from the tape only. The note wizard doesn't ask for them, so they aren't servicing keys.
   eNote?: boolean;
   eRegistryController?: string;
@@ -424,6 +458,9 @@ export const SERVICING_KEYS = [
   "borrowerDeceased",
   "litigationFlag",
   "litigationNote",
+  "loanProgram",
+  "partialClaim",
+  "partialClaimBalance",
 ] as const satisfies readonly (keyof ServicingRecord)[];
 
 // Tape v3's own keys, for the wizard's section and the tests.
@@ -575,6 +612,28 @@ export function parsePaymentType(raw: string): PaymentType | null {
   return null;
 }
 
+// "VA", "V.A.", "Veterans Affairs" and "VA IRRRL" all read as VA; "FHA 203(b)" and "HUD" as FHA; "Conv" and "Fannie
+// Mae" as conventional. "Private" contains "va", so VA is matched as a word, not a substring. A Ginnie Mae pool holds
+// FHA, VA and USDA loans alike, so "GNMA" isn't read.
+export function parseLoanProgram(raw: string): LoanProgram | null {
+  const key = raw.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (!key) return null;
+  if (/^d?va(loan|guarant|irrrl|insured|mortgage|\d|$)/.test(key) || key.includes("veteran")) return "VA";
+  if (key.startsWith("fha") || key.startsWith("hud") || key.includes("federalhousing")) return "FHA";
+  if (key.startsWith("usda") || key.includes("rural") || key === "rd" || key === "rhs" || key === "fmha") return "USDA";
+  if (key.includes("sellerfinanc") || key.includes("ownerfinanc") || key.includes("sellercarry") || key.includes("private") || key.includes("hardmoney")) {
+    return "PRIVATE";
+  }
+  if (
+    key.startsWith("conv") || key.includes("conforming") || key.includes("fannie") || key.includes("freddie") || key === "fnma" ||
+    key === "fhlmc" || key === "gse" || key.includes("jumbo") || key === "nonqm"
+  ) {
+    return "CONVENTIONAL";
+  }
+  if (key === "other") return "OTHER";
+  return null;
+}
+
 // Registry IDs identify the borrower's loan as the loan number does, so they follow the street address. The
 // originator's license can name the seller or a loan officer, so it follows the same rule.
 export const IDENTITY_TERMS = ["mersMin", "eNoteId", "originatorLicense"] as const;
@@ -622,8 +681,9 @@ export function termsExportColumns(note: TermsNote, open: boolean) {
     // An Org ID names the holder's MERS member, not the borrower, so these export either way. "isENote" rather than
     // "eNote", which an import reads as the eNote ID.
     isENote: note.eNote == null ? "" : note.eNote ? "yes" : "no",
-    eRegistryController: note.eRegistryController ?? "",
-    eRegistryLocation: note.eRegistryLocation ?? "",
+    // A MERS Org ID names the holder, usually the seller, so it waits for the data room like the street.
+    eRegistryController: open ? note.eRegistryController ?? "" : "",
+    eRegistryLocation: open ? note.eRegistryLocation ?? "" : "",
     eVaultProvider: note.eVaultProvider ?? "",
   };
 }
@@ -644,6 +704,9 @@ type RiskNote = {
   borrowerDeceased?: boolean | null;
   litigationFlag?: boolean | null;
   litigationNote?: string | null;
+  loanProgram?: string | null;
+  partialClaim?: boolean | null;
+  partialClaimBalance?: number | null;
 };
 
 const exportFlag = (flag: boolean | null | undefined) => (flag == null ? "" : flag ? "yes" : "no");
@@ -663,5 +726,50 @@ export function riskExportColumns(note: RiskNote, open: boolean) {
     borrowerDeceased: exportFlag(note.borrowerDeceased),
     litigation: exportFlag(note.litigationFlag),
     litigationNote: open ? note.litigationNote ?? "" : "",
+    loanProgram: note.loanProgram ?? "",
+    partialClaim: exportFlag(note.partialClaim),
+    partialClaimBalance: note.partialClaimBalance ?? "",
   };
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// A partial claim: arrears HUD (for an FHA loan) or VA paid for the borrower, recorded as the agency's subordinate
+// lien and due at payoff, sale or refinance. VA's Partial Claim Program goes live for servicers by 28 November 2026,
+// so re-performing VA loans will start to carry one. Combined LTV never counts it (lib/tape-quality.ts).
+
+export type PartialClaimNote = {
+  loanProgram?: string | null;
+  partialClaim?: boolean | null;
+  partialClaimBalance?: number | null;
+  paymentStatus?: string | null;
+  payString?: string | null;
+  modified?: boolean | null;
+  lossMitigation?: string | null;
+};
+
+const CLAIM_HOLDER: Record<string, string> = { FHA: "HUD holds an FHA partial claim", VA: "VA holds a partial claim" };
+
+// One factual line for a loan whose tape says it carries a partial claim, or null. `showBalance` is whether the viewer
+// may see balances (Pro), as on the loan facts; a hidden balance is left out of the line.
+export function partialClaimLine(note: PartialClaimNote, showBalance: boolean) {
+  if (note.partialClaim !== true) return null;
+  const holder = (note.loanProgram && CLAIM_HOLDER[note.loanProgram]) || "The tape shows a partial claim";
+  const balance = note.partialClaimBalance != null && note.partialClaimBalance > 0 ? note.partialClaimBalance : null;
+  const amount = balance != null && showBalance ? ` of $${Math.round(balance).toLocaleString("en-US")}` : "";
+  const unknown = balance == null ? " The tape doesn't give its balance." : "";
+  return `${holder}${amount} for arrears the agency paid.${unknown} UPB reads it as a subordinate lien, due at payoff, sale or refinance. Counsel confirms the terms.`;
+}
+
+export const PARTIAL_CLAIM_ASK = "Ask the servicer whether a partial claim was filed.";
+
+// An FHA or VA loan that fell behind and caught up is when the agency pays the arrears with a partial claim. Kept
+// simple: the program is FHA or VA, the tape leaves the partial claim unanswered, and the loan was modified, or the
+// tape names a loss mitigation outcome (a repayment plan, a forbearance that ended), or the loan isn't
+// non-performing and its pay string shows a missed month before a current one (re-performing).
+export function asksForPartialClaim(note: PartialClaimNote) {
+  if (note.loanProgram !== "FHA" && note.loanProgram !== "VA") return false;
+  if (note.partialClaim != null || note.partialClaimBalance != null) return false;
+  if (note.modified === true || Boolean(note.lossMitigation?.trim())) return true;
+  const pay = note.payString ?? "";
+  return note.paymentStatus !== "NON_PERFORMING" && payStringMonths(pay) === 0 && /[1-9]/.test(pay.slice(1));
 }

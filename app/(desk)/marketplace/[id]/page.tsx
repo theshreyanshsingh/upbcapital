@@ -15,6 +15,7 @@ import { QuestionBoard } from "@/components/listing-questions";
 import { DealAnalyzer } from "@/components/deal-analyzer";
 import { GroupPanel } from "@/components/group-panel";
 import { ListingEconomics } from "@/components/listing-economics";
+import { AvailabilityLine } from "@/components/listing-provenance";
 import { ListingTabs } from "@/components/listing-tabs";
 import { bidModeLabel, ListingTimeline } from "@/components/listing-timeline";
 import { LoanFacts, LoanFileView } from "@/components/loan-file-view";
@@ -69,6 +70,7 @@ import { deskWalled, eventSetsTerms } from "@/lib/auction";
 import { currentSaleEvent, qaClosed, qaClosedText, roundText, when } from "@/lib/sale-events";
 import { EventPaperLinks } from "@/components/event-papers";
 import { SellerRecordCard } from "@/components/track-record";
+import { maySeeSellerName, namedToEveryBuyer, sellerLabel, sellerShown, servicerShown } from "@/lib/seller-anonymity";
 import { chargeFees, effectiveBps, feeTerms } from "@/lib/fee-schedule";
 import { getSettings, isPro } from "@/lib/settings";
 import { canSubmitOffer } from "@/lib/verification";
@@ -271,6 +273,15 @@ export default async function ListingPage({
   const collateralByNote = groupByNote(collateralRows);
   const risksByNote = groupByNote(riskRows);
   const holder = listing.clientSellerName || listing.seller.companyName || listing.seller.name || null;
+  // A buyer outside the room reads the seller as a type, and the name once the room opens to them. The holder above
+  // only checks the chain; its names show with the loan's street (lib/seller-anonymity.ts).
+  const sellerNamed = maySeeSellerName(user, listing, { nda: listing.ndas[0], closingParty });
+  const seller = sellerShown(listing, sellerNamed);
+  // The desk's own paper reads as UPB Capital to everyone, so only a real name withheld gets the line saying when.
+  const withheld = seller !== sellerShown(listing, true);
+  // A seller servicing its own loans is named in the servicer field, so until the name shows that reads as the type.
+  if (!sellerNamed) for (const note of listing.notes) note.servicerName = servicerShown(listing, note.servicerName, false);
+  const buyersSee = sellerLabel(listing);
   const fileNote = listing.notes.find((note) => note.id === q(query, "loan")) ?? listing.notes[0];
   const filePosition = listing.notes.findIndex((note) => note.id === fileNote.id);
   const fileOpen = notes[filePosition]?.open ?? false;
@@ -350,6 +361,8 @@ export default async function ListingPage({
         </div>
         <h1 className="mt-3 font-semibold tracking-tight text-[28px] leading-tight text-foreground">{listing.title}</h1>
         <p className="mt-3 max-w-3xl text-sm leading-relaxed text-muted-foreground">{listing.summary || "No narrative from the seller."}</p>
+        {/* When the seller last confirmed the loans are still for sale, or that it is paused until they do (lib/provenance.ts). */}
+        <AvailabilityLine listing={listing} />
         {launchPending(listing) && listing.launchAt && (
           <p role="status" className="mt-3 max-w-3xl border border-link/30 bg-link/5 px-3 py-2 text-sm leading-relaxed text-foreground rounded-lg tabular-nums">
             Coming soon. Buyers see a teaser until it goes live on {launchTime(listing.launchAt)}, when the room and bids open.
@@ -461,7 +474,7 @@ export default async function ListingPage({
               />
               {/* SCRA, deceased and litigation flags, and the time to sue on a non-performing loan, ahead of the facts. */}
               {listing.kind === "SINGLE"
-                ? <TapeRisks note={rawLead} open={lead.open} />
+                ? <TapeRisks note={rawLead} open={lead.open} pro={pro} />
                 : <PoolRisks notes={listing.notes.filter((note) => forSale.some((loan) => loan.id === note.id))} />}
               {/* An eNote moves by eRegistry transfer, not endorsement and courier. lib/enotes.ts. */}
               <ENoteLine notes={listing.kind === "SINGLE" ? [rawLead] : listing.notes.filter((note) => forSale.some((loan) => loan.id === note.id))} />
@@ -523,7 +536,7 @@ export default async function ListingPage({
             </TabsContent>
 
             <TabsContent value="file">
-              {listing.kind === "POOL" && <TapeRisks note={fileNote} open={fileOpen} />}
+              {listing.kind === "POOL" && <TapeRisks note={fileNote} open={fileOpen} pro={pro} />}
               <LoanFileView
                 note={fileNote}
                 collateral={collateralByNote.get(fileNote.id) ?? []}
@@ -540,6 +553,8 @@ export default async function ListingPage({
                   : `${labelOf("lien", fileNote.lienPosition)} lien in ${fileNote.city}, ${fileNote.state}`}
                 nav={listing.kind === "POOL" ? { previous: fileHref(filePosition - 1), next: fileHref(filePosition + 1), position: `Loan ${filePosition + 1} of ${listing.notes.length}` } : undefined}
               />
+              {/* The badges' standard: what the desk checks, against which document, and what it doesn't. */}
+              <p className="mt-3 text-xs text-muted-foreground">Each badge says where a fact came from. <Link href="/verified" className="text-link">What desk-verified means</Link>.</p>
             </TabsContent>
 
             <TabsContent value="room">
@@ -715,8 +730,12 @@ export default async function ListingPage({
             loans={listing.kind === "POOL" && canOffer ? notes.map((note, index) => ({ id: note.id, label: `Loan ${index + 1} · ${note.open && note.streetAddress ? `${note.streetAddress}, ` : ""}${note.city}, ${note.state}`, ask: pro ? note.askingPrice : null })) : []}
             closedText={listing.status === "APPROVED" && !wholeOpen ? "Some loans in this pool have traded, so it can't be bid whole. Bid the loans still for sale in the table." : undefined}
           />
-          <p className="text-xs leading-relaxed text-muted-foreground">Listed by {listing.seller.companyName || listing.seller.name}. An accepted bid opens a closing checklist with the premium and commission on the all-in total.</p>
-          {/* The page names the seller above, so their record adds no identity. components/track-record.tsx. */}
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            Seller: {seller}.{" "}
+            {withheld ? "The name shows once the data room opens to you. " : managesRoom && buyersSee !== seller && !namedToEveryBuyer(listing) ? `Buyers outside the data room see ${buyersSee}. ` : ""}
+            An accepted bid opens a closing checklist with the premium and commission on the all-in total.
+          </p>
+          {/* Counts only, never a name, so the record sits beside the type label. components/track-record.tsx. */}
           <SellerRecordCard sellerId={listing.sellerId} />
         </aside>
       </div>

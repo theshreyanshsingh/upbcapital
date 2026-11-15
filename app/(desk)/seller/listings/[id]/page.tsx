@@ -11,6 +11,8 @@ import { ComplianceNote } from "@/components/compliance-note";
 import { Countdown } from "@/components/countdown";
 import { DiscrepancyAnswers } from "@/components/discrepancy-answers";
 import { IntakeConfirm } from "@/components/desk-intake";
+import { AvailabilityPanel } from "@/components/listing-provenance";
+import { OwnershipStatement } from "@/components/ownership-statement";
 import { SellerDiligence } from "@/components/diligence-checklist";
 import { ReaderSummary } from "@/components/document-reader";
 import { QuestionQueue } from "@/components/listing-questions";
@@ -111,6 +113,8 @@ export default async function SellerListingPage({
         <p className="mt-4 max-w-2xl text-sm leading-relaxed text-muted-foreground">{listing.summary}</p>
         {/* A tape the desk filed for the seller, to confirm, and the diligence set. components/desk-intake.tsx, components/diligence-checklist.tsx. */}
         <IntakeConfirm listing={listing} viewerId={user.id} />
+        {/* The ownership statement, and the seller's word that the loans are still for sale. components/listing-provenance.tsx. */}
+        <AvailabilityPanel listing={listing} viewerId={user.id} from="seller" />
         <ComplianceNote states={listing.notes.map((note) => note.state)} sellerFinanced={listing.sellerFinanced} sellerRole={listing.seller.role} />
         <SellerDiligence listingId={listing.id} />
         <DiscrepancyAnswers
@@ -135,6 +139,7 @@ export default async function SellerListingPage({
               <span className="text-[13px] text-muted-foreground">Narrative</span>
               <textarea name="summary" defaultValue={listing.summary} className="desk-input mt-2 min-h-28" />
             </label>
+            <OwnershipStatement />
             <SubmitButton className="h-11 text-[13px] font-medium">Save and resubmit</SubmitButton>
           </form>
         )}

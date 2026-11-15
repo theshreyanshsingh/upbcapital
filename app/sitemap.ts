@@ -14,7 +14,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     }),
     prisma.post.findMany({ where: { publishedAt: { not: null } }, select: { slug: true, updatedAt: true } }),
   ]);
-  const staticPaths = ["", "/learn", "/learn/what-is-a-note", "/learn/buying", "/learn/selling", "/faq", "/results", "/fees", "/servicers", "/blog", "/developers", "/sell", "/signup", "/login", "/terms", "/privacy", "/security", "/tape-standard", "/open", "/announcements"];
+  const staticPaths = ["", "/learn", "/learn/what-is-a-note", "/learn/buying", "/learn/selling", "/faq", "/results", "/fees", "/servicers", "/blog", "/developers", "/sell", "/signup", "/login", "/terms", "/privacy", "/security", "/tape-standard", "/verified", "/buying", "/open", "/announcements"];
   return [
     ...staticPaths.map((path) => ({ url: `${base}${path || "/"}`, changeFrequency: "weekly" as const, priority: path === "" ? 1 : 0.6 })),
     ...listings.map((listing) => ({

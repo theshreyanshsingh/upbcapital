@@ -16,10 +16,15 @@ function summary(schedule: FeeSchedule | null) {
   if (!schedule) return "Graded schedule cleared; flat rates apply.";
   const terms = { schedule, premiumBps: 0, commissionBps: 0 };
   const tiers = schedule.tiers.map((tier) => `${tier.upTo === null ? "rest" : `to $${tier.upTo}`} ${tier.premiumBps}/${tier.commissionBps} bps`).join(", ");
-  return `Graded schedule: ${tiers}. Premium ${rateText(terms, "premium")}; commission ${rateText(terms, "commission")}.`;
+  // The buyer cuts too, so the log shows each change to them.
+  const volume = schedule.volumeTiers?.length
+    ? ` Volume cuts: ${schedule.volumeTiers.map((tier) => `from $${tier.minCents / 100} ${tier.premiumOffBps} bps off`).join(", ")}.`
+    : " No volume cuts.";
+  return `Graded schedule: ${tiers}. Premium ${rateText(terms, "premium")}; commission ${rateText(terms, "commission")}.${volume} Forward-flow cut ${schedule.flowPremiumOffBps ?? 0} bps.`;
 }
 
-// The desk's graded schedule. Listings already live keep the fees they went live with; the next approval takes this.
+// The desk's graded schedule and its buyer cuts. Listings already live keep the fees they went live with; the next
+// approval takes this. A closing keeps the cut it opened with.
 export async function saveFeeSchedule(formData: FormData) {
   const actor = await requireDesk("admin", "/admin/settings");
   const clear = formData.get("intent") === "clear";
@@ -31,6 +36,9 @@ export async function saveFeeSchedule(formData: FormData) {
       commission: formData.getAll("tierCommission").map(String),
       minPremium: String(formData.get("minPremium") ?? ""),
       minCommission: String(formData.get("minCommission") ?? ""),
+      volumeMin: formData.getAll("volumeMin").map(String),
+      volumeOff: formData.getAll("volumeOff").map(String),
+      flowOff: String(formData.get("flowOff") ?? ""),
     });
     if (checked.error !== null) back(checked.error, "error");
     schedule = checked.schedule;

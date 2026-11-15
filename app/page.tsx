@@ -8,6 +8,7 @@ import { labelOf } from "@/lib/labels";
 import { upbBucket } from "@/lib/strata";
 import { noteMetrics } from "@/lib/metrics";
 import { prisma } from "@/lib/prisma";
+import { publicTestimonials, REVIEWS_NOTE } from "@/lib/reviews";
 import { outsideFirstLook, publicListing } from "@/lib/private-listings";
 import { getSettings } from "@/lib/settings";
 import { ensureStories } from "@/lib/stories";
@@ -60,7 +61,8 @@ export default async function HomePage() {
     : null;
   await ensureStories();
   // Rows labeled Placeholder came from an earlier seed. They never show here, and the journal page can delete them.
-  const quotes = await prisma.testimonial.findMany({ where: { published: true, NOT: { role: { startsWith: "Placeholder" } } }, orderBy: { createdAt: "desc" }, take: 2 });
+  // A review from a party to a completed closing names its side and month; a typed testimonial its role (lib/reviews.ts).
+  const quotes = await publicTestimonials(2);
   const premium = bpsToPercent(settings.buyerPremiumBps);
   const commission = bpsToPercent(settings.sellerCommissionBps);
   const pro = (settings.proMonthlyPriceCents / 100).toLocaleString("en-US");
@@ -257,10 +259,12 @@ export default async function HomePage() {
               {quotes.map((quote) => (
                 <blockquote key={quote.id} className="glass p-7">
                   <p className="font-display text-[1.375rem] leading-snug tracking-[-0.01em] text-pretty text-foreground">&ldquo;{quote.quote}&rdquo;</p>
-                  <footer className="mt-4 type-label font-medium text-muted-foreground">{quote.role}{quote.place ? ` · ${quote.place}` : ""}</footer>
+                  <footer className="mt-4 type-label font-medium text-muted-foreground">{quote.byline}</footer>
                 </blockquote>
               ))}
             </div>
+            {/* Counsel: confirm this line, and the desk choosing which reviews show, under the FTC's endorsement and review rules (lib/reviews.ts). */}
+            {quotes.some((quote) => quote.review) && <p className="mt-4 text-xs text-muted-foreground">{REVIEWS_NOTE}</p>}
           </section>
         )}
 

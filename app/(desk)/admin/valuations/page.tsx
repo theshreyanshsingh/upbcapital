@@ -5,7 +5,7 @@ import { PageIntro } from "@/components/page-intro";
 import { money, prettyDate, q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 import { requireDesk } from "@/lib/staff";
-import { VALUATION_STATUSES, statusLabel } from "@/lib/valuations";
+import { FUNNEL_DAYS, VALUATION_STATUSES, statusLabel, valuationFunnel } from "@/lib/valuations";
 
 export const metadata = { title: "Valuations" };
 
@@ -19,6 +19,8 @@ export default async function ValuationsPage({ searchParams }: { searchParams: P
   await requireDesk("sales", "/admin");
   const params = await searchParams;
   const filter = FILTERS.find((item) => item.key === q(params, "show")) ?? FILTERS[0];
+  // The line first: it ties listings filed since to their requests, which the list below then shows as listed.
+  const funnel = await valuationFunnel();
   const [requests, waiting] = await Promise.all([
     prisma.valuationRequest.findMany({ where: filter.where, orderBy: { createdAt: "desc" }, take: 200 }),
     prisma.valuationRequest.count({ where: { status: "NEW" } }),
@@ -31,7 +33,13 @@ export default async function ValuationsPage({ searchParams }: { searchParams: P
         lede="Sellers who sent a tape or a few loans from Value my loans. Each saw the instant range. Send your own range with a note, invite them to list, or close the request."
       />
       <Notice notice={q(params, "notice")} error={q(params, "error")} />
-      <nav aria-label="Filter requests" className="mt-2 flex flex-wrap gap-2">
+      <p className="mt-2 text-sm text-foreground tabular-nums" aria-label={`Conversion over the last ${FUNNEL_DAYS} days`}>
+        Last {FUNNEL_DAYS} days: {funnel.requests} {funnel.requests === 1 ? "request" : "requests"} → {funnel.signedUp} signed up → {funnel.listed} listed → {funnel.closed} closed
+      </p>
+      <p className="mt-1 text-xs text-muted-foreground">
+        Requests sent in the window. Signed up means the request is on a seller account; listed, that a listing came from it; closed, that a sale from that listing closed. The board pack carries the same line by month.
+      </p>
+      <nav aria-label="Filter requests" className="mt-4 flex flex-wrap gap-2">
         {FILTERS.map((item) => (
           <Link
             key={item.key}

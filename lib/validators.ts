@@ -7,6 +7,7 @@ import {
   CREDIT_SCORE_MAX,
   CREDIT_SCORE_MIN,
   CREDIT_SCORE_TYPES,
+  LOAN_PROGRAMS,
   LOAN_PURPOSES,
   LOSS_MIT_STAGES,
   PAYMENT_TYPES,
@@ -149,7 +150,14 @@ export const noteSchema = z.object({
   borrowerDeceased: yesNo,
   litigationFlag: yesNo,
   litigationNote: optionalText(300, "Keep the litigation note under 300 characters."),
+  // Tape v3.1.
+  loanProgram: optionalEnum(values(LOAN_PROGRAMS), "Choose the loan program."),
+  partialClaim: yesNo,
+  partialClaimBalance: optionalNumber(z.coerce.number({ error: "Enter the partial claim balance as an amount." }).positive("The partial claim balance must be greater than zero.")),
 }).superRefine((input, context) => {
+  if (input.partialClaimBalance != null && input.partialClaim !== true) {
+    context.addIssue({ code: "custom", path: ["partialClaimBalance"], message: "Answer yes to the partial claim to give its balance." });
+  }
   // A payoff is only a figure with the date it's good through.
   if (input.payoffAmount != null && !input.payoffAsOf) context.addIssue({ code: "custom", path: ["payoffAsOf"], message: "Give the date the payoff is good through." });
   if (input.payoffAsOf && input.payoffAmount == null) context.addIssue({ code: "custom", path: ["payoffAmount"], message: "Enter the payoff amount for that date." });
@@ -211,5 +219,8 @@ export function servicingDraft(note: Pick<Note, ServicingKey>): Record<Servicing
     borrowerDeceased: flag(note.borrowerDeceased),
     litigationFlag: flag(note.litigationFlag),
     litigationNote: note.litigationNote ?? "",
+    loanProgram: note.loanProgram ?? "",
+    partialClaim: flag(note.partialClaim),
+    partialClaimBalance: amount(note.partialClaimBalance),
   };
 }

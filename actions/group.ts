@@ -17,6 +17,8 @@ import { notifySeats } from "@/lib/group-events";
 import { trancheBlock } from "@/lib/participation";
 import { prisma } from "@/lib/prisma";
 import { canSeeListing } from "@/lib/private-listings";
+import { pausedBidBlock } from "@/lib/provenance";
+import { rebidBlock } from "@/lib/retrade";
 import { seatGate, seatLimitBlock, type ActingUser } from "@/lib/seats";
 import { lapsedFileBlock } from "@/lib/buyer-file";
 import { canSubmitOffer } from "@/lib/verification";
@@ -56,6 +58,13 @@ async function seatEligibilityGate(user: User | ActingUser, listingId: string, n
   return check;
 }
 
+// A buyer who walked away from these loans in diligence can't come back lower through a group: not by opening one,
+// taking a seat in one, or sending a part bid from the seats that are pledged (lib/retrade.ts).
+async function rebidGate(user: User | ActingUser, userIds: string[], listingId: string, noteId: string | null, price: number, back: string) {
+  const blocked = await rebidBlock({ userIds, actorId: user.id, listingId, noteId, amount: price, group: true });
+  if (blocked) redirect(`${back}?error=${encodeURIComponent(blocked)}`);
+}
+
 // A senior and junior group waits on counsel while the participations freeze holds (lib/participation.ts).
 function trancheGate(structure: string, back: string) {
   const paused = trancheBlock(structure);
@@ -80,6 +89,9 @@ async function buyerReady(userId: string, listingId: string) {
   if (user.role === "ADMIN") return null;
   // A private listing seats its invitees only, and an excluded buyer finds the group closed (lib/private-listings.ts).
   if (!listing || !(await canSeeListing(user, listing))) return "This group is not taking seats.";
+  // A paused listing takes no new group or seat, as it takes no new bid. Seats already pledged stay (lib/provenance.ts).
+  const paused = await pausedBidBlock(listing);
+  if (paused) return paused;
   const gate = canSubmitOffer({ role: user.role, accountStatus: user.accountStatus, verificationStatus: profile?.status ?? null });
   if (!gate.ok) return gate.reason === "verification" ? "Verify the buyer file before joining a group." : "This account cannot join a group.";
   if (!nda) return "Sign the confidentiality agreement before taking a seat.";
@@ -111,6 +123,9 @@ async function publishOffer(groupId: string) {
   } else {
     // A senior and junior group sends no first offer while the freeze holds. The actions refuse it before this.
     if (trancheBlock(group.structure)) return;
+    // Nor does any group on a listing paused until its seller reconfirms it. A seat the desk takes can fill a group
+    // without the buyer checks that refuse this (lib/provenance.ts).
+    if (await pausedBidBlock(group.listing)) return;
     // A group's first offer is a new bid, so it meets the same rules as one buyer's: the listing or loan must
     // still be for sale and the deadline must not have passed.
     const note = group.noteId ? await prisma.note.findUnique({ where: { id: group.noteId }, select: { tradeStatus: true } }) : null;
@@ -189,6 +204,7 @@ export async function openGroup(formData: FormData) {
   if (Number.isNaN(deadline.getTime()) || deadline.getTime() < Date.now()) {
     redirect(`${back}?error=The deadline has to be in the future.`);
   }
+  await rebidGate(user, [user.id], listingId, null, target, back);
   if (structure === "SENIOR_JUNIOR" && (seniorYield == null || seniorYield <= 0 || seniorYield > 20)) {
     redirect(`${back}?error=Set the senior yield between 0 and 20%.`);
   }
@@ -250,6 +266,7 @@ export async function joinGroup(formData: FormData) {
   if (sized == null) redirect(`${back}?error=That seat is below the minimum or larger than what is left.`);
   await seatCapGate(user.id, sized, back);
   await firmSeatGate(user, back, sized);
+  await rebidGate(user, [user.id], group.listingId, group.noteId, Number(group.targetAmount), back);
   const slice = group.structure === "SENIOR_JUNIOR" ? (formData.get("slice") === "JUNIOR" ? "JUNIOR" : "SENIOR") : "PARI";
   const seatNo = group.positions.reduce((max, seat) => Math.max(max, seat.seat), 0) + 1;
   const dropped = group.positions.find((seat) => seat.userId === user.id && seat.status === "DROPPED");
@@ -356,6 +373,7 @@ export async function bidPartial(formData: FormData) {
   const pledged = group.positions.filter((seat) => seat.status === "PLEDGED");
   const next = Math.round(pledged.reduce((sum, seat) => sum + Number(seat.amount), 0) * 100) / 100;
   if (next + 0.01 < Number(group.minPosition)) redirect(`/groups/${groupId}?error=Nothing is pledged yet.`);
+  await rebidGate(user, pledged.map((seat) => seat.userId), group.listingId, group.noteId, next, `/groups/${groupId}`);
   for (const seat of pledged) {
     await prisma.groupPosition.update({
       where: { id: seat.id },

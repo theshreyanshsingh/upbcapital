@@ -3,6 +3,7 @@ import { BulkPick, BulkResults, BulkReviewForm } from "@/components/bulk-review"
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { StatusPill } from "@/components/status-pill";
+import { PausedTag } from "@/components/listing-provenance";
 import { requireRole } from "@/lib/auth";
 import { DUPLICATE_COMMENT } from "@/lib/duplicates";
 import { q } from "@/lib/format";
@@ -102,6 +103,7 @@ export default async function QueuePage({
                 {listing.reviews.length > 0 && (
                   <span className="inline-flex items-center rounded-full bg-warn/12 px-2 py-0.5 text-xs font-semibold text-warn">Possible duplicate</span>
                 )}
+                <PausedTag listing={listing} />
                 {tab.id === "review" && (listing.status === "CHANGES_REQUESTED"
                   ? <span className="text-[13px] font-medium text-muted-foreground">With the seller</span>
                   : <Waiting days={Math.floor((now - listing.submittedAt.getTime()) / 86400000)} />)}

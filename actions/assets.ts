@@ -12,6 +12,8 @@ import { feesAtApproval } from "@/lib/desk-fees";
 import { modelParticipation, partialShare, participationsOpen, PARTICIPATIONS_PAUSED } from "@/lib/participation";
 import { rescoreListing } from "@/lib/matching";
 import { prisma } from "@/lib/prisma";
+import { ownershipFields } from "@/lib/provenance";
+import { statementProblem } from "@/lib/provenance-rules";
 import { carriedFileLine, carriedSomething, copyLoanFile, type LoanOverrides } from "@/lib/relist-file";
 import { screenAndRecord } from "@/lib/screening";
 import { carriedSellerTerms } from "@/lib/seller-decisions";
@@ -180,6 +182,8 @@ async function relistFrom(input: {
   // When the earlier sale closed, for the line that says where the file came from.
   soldOn: Date | null;
   live: boolean;
+  // The seller's ownership statement, for a relist filed for the desk's review (lib/provenance.ts).
+  ownership?: ReturnType<typeof ownershipFields>;
 }) {
   // A relist that goes straight onto the book fixes its fees now, as a desk approval does.
   const fees = input.live ? feesAtApproval(await getSettings()) : {};
@@ -195,6 +199,7 @@ async function relistFrom(input: {
       approvedAt: input.live ? new Date() : null,
       ...fees,
       ...terms,
+      ...input.ownership,
       title: input.title,
       summary: input.summary,
     },
@@ -260,6 +265,8 @@ export async function relistBuyerNote(formData: FormData) {
   const gated = await actionGate(user, "list");
   if (gated) redirect(`/buyer/portfolio?error=${encodeURIComponent(gated)}`);
   if (!(price > 0)) redirect("/buyer/portfolio?error=Enter an asking price.");
+  const statement = statementProblem(formData.get("ownership"));
+  if (statement) redirect(`/buyer/portfolio?error=${encodeURIComponent(statement)}`);
   if (partialShare(holding.sharePercent == null ? null : Number(holding.sharePercent)) && !participationsOpen()) {
     redirect(`/buyer/portfolio?error=${encodeURIComponent(PARTICIPATIONS_PAUSED)}`);
   }
@@ -284,6 +291,7 @@ export async function relistBuyerNote(formData: FormData) {
       ? `A ${Number(holding.sharePercent).toFixed(1)}% participation relisted by the holder.${yieldText} Receipts: ${history || "none logged."}`
       : `Relisted by the holder.${yieldText} Receipts: ${history || "none logged."}`,
     live: false,
+    ownership: ownershipFields(user),
     source,
     notes,
     overrides: (note) => ({

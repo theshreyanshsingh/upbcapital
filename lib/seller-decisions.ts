@@ -458,7 +458,10 @@ export async function bidSummary(listingId: string, viewer: Viewer, now = new Da
       member_since: record ? String(record.memberSince) : "",
     };
   });
-  return { status: 200 as const, listing: { id: listing.id, title: listing.title, bidMode: listing.bidMode, bidDeadline: listing.bidDeadline, reserve }, sealed, rows };
+  // Beside each row, in the same order, the bid it is and its bidder's record, for the seller's sale file
+  // (lib/sale-file.ts). The CSV and the PDF read the rows alone.
+  const placed = bids.map(({ offer }) => ({ id: offer.id, at: offer.createdAt, record: records.get(offer.id) ?? null }));
+  return { status: 200 as const, listing: { id: listing.id, title: listing.title, bidMode: listing.bidMode, bidDeadline: listing.bidDeadline, reserve }, sealed, rows, bids: placed };
 }
 
 export type BidSummary = Extract<Awaited<ReturnType<typeof bidSummary>>, { status: 200 }>;

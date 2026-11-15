@@ -3,7 +3,9 @@
 import { useState } from "react";
 import { submitBrokerDeal } from "@/actions/broker";
 import { ChoiceCard, FieldLabel, StepChrome } from "@/components/broker-chrome";
+import { OwnershipStatement } from "@/components/ownership-statement";
 import { FORECLOSURES, LIEN_POSITIONS, OCCUPANCIES, PAYMENT_STATUSES, PROPERTY_TYPES, US_STATES } from "@/lib/labels";
+import { PROVENANCE_VERSION, STATEMENT_MISSING_TEXT } from "@/lib/provenance-rules";
 
 const empty = {
   clientSellerName: "",
@@ -36,6 +38,8 @@ export function BrokerWizard({ licensed }: { licensed: boolean }) {
   const [fields, setFields] = useState(empty);
   const [authorization, setAuthorization] = useState<File | null>(null);
   const [tape, setTape] = useState<File | null>(null);
+  // The broker's ownership statement, ticked on the last step (lib/provenance-rules.ts).
+  const [owned, setOwned] = useState(false);
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
 
@@ -44,10 +48,15 @@ export function BrokerWizard({ licensed }: { licensed: boolean }) {
   }
 
   async function send() {
+    if (!owned) {
+      setError(STATEMENT_MISSING_TEXT);
+      return;
+    }
     setPending(true);
     setError("");
     const body = new FormData();
     Object.entries(fields).forEach(([key, value]) => body.set(key, value));
+    body.set("ownership", PROVENANCE_VERSION);
     if (authorization) body.set("authorization", authorization);
     if (tape) body.set("tape", tape);
     const result = await submitBrokerDeal(body);
@@ -204,6 +213,7 @@ export function BrokerWizard({ licensed }: { licensed: boolean }) {
             <Row k="Ask" v={fields.kind === "NOTE" && fields.askingPrice ? `$${Number(fields.askingPrice).toLocaleString("en-US")}` : "From the tape"} />
             <Row k="Letter" v={authorization?.name || "Missing"} />
           </div>
+          <OwnershipStatement kind="BROKER" checked={owned} onChange={setOwned} className="mt-5" />
           {error && <p className="mt-4 text-sm text-bad">{error}</p>}
           <div className="sticky bottom-[var(--dock,0px)] -mx-4 mt-8 flex gap-2 border-t border-border bg-card/92 px-4 py-4 backdrop-blur md:static md:mx-0 md:border-0 md:bg-transparent md:px-0">
             {back}

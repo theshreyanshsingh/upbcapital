@@ -2,7 +2,7 @@ import Link from "next/link";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { requireRole } from "@/lib/auth";
-import { cadenceLabel, PROGRAM_LABEL, programList } from "@/lib/flow-programs";
+import { cadenceLabel, PROGRAM_LABEL, programList, volumeLine } from "@/lib/flow-programs";
 import { money, prettyDate, q } from "@/lib/format";
 
 export const metadata = { title: "Forward flow" };
@@ -11,6 +11,7 @@ export default async function SellerFlowPage({ searchParams }: { searchParams: P
   const user = await requireRole(["INSTITUTIONAL_SELLER"]);
   const params = await searchParams;
   const programs = await programList({ sellerId: user.id });
+  const now = new Date();
   return (
     <div className="max-w-4xl">
       <PageIntro
@@ -34,8 +35,9 @@ export default async function SellerFlowPage({ searchParams }: { searchParams: P
                   <Link href={`/seller/flow/${program.id}`} className="font-medium text-link">{program.name}</Link>
                   <p className="text-sm text-muted-foreground">
                     {cadenceLabel(program.cadence)} · {program.firstLookHours}-hour first look
-                    {program.expectedVolumeCents ? ` · about ${money(program.expectedVolumeCents / 100)} a tranche` : ""} · started {prettyDate(program.createdAt)}
+                    {program.expectedVolumeCents ? ` · about ${money(program.expectedVolumeCents / 100)} a tranche` : ""} · filed {prettyDate(program.createdAt)}
                   </p>
+                  <p className="text-sm text-muted-foreground tabular-nums">{volumeLine(program, now)}</p>
                   <p className="text-sm text-muted-foreground tabular-nums">
                     {program.tranches.length} tranche{program.tranches.length === 1 ? "" : "s"} · {program.commitments.ACTIVE} committed buyer{program.commitments.ACTIVE === 1 ? "" : "s"}
                     {program.commitments.INVITED ? ` · ${program.commitments.INVITED} invited` : ""}

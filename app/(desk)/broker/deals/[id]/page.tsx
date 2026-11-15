@@ -10,6 +10,7 @@ import { RoomAccessPanel } from "@/components/room-access";
 import { PrivateSalePanel } from "@/components/private-sale";
 import { RoomFiles } from "@/components/room-files";
 import { MandateFile } from "@/components/seller-identity";
+import { AvailabilityPanel } from "@/components/listing-provenance";
 import { SubmitButton } from "@/components/submit-button";
 import { SaleApproval, WithdrawListing } from "@/components/sale-approval";
 import { Notice } from "@/components/notice";
@@ -116,6 +117,8 @@ export default async function BrokerDealPage({
         <Stat k="Filed" v={prettyDate(listing.submittedAt)} />
       </dl>
       {listing.summary && <p className="mt-6 text-sm leading-relaxed text-foreground/85">{listing.summary}</p>}
+      {/* The ownership statement, and the seller's word that the loans are still for sale. components/listing-provenance.tsx. */}
+      <AvailabilityPanel listing={listing} viewerId={user.id} from="broker" />
       <DiscrepancyAnswers
         rows={differences}
         loanLabels={Object.fromEntries(listing.notes.map((note) => [note.id, `${note.streetAddress || "No street"}, ${note.city}, ${note.state}`]))}

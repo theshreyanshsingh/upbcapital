@@ -117,7 +117,7 @@ export async function confirmDeskFiledTape(formData: FormData) {
   const user = await requireUser();
   const listingId = text(formData, "listingId");
   const page = sellerPage(listingId);
-  const confirmed = await confirmDeskTape(user, listingId);
+  const confirmed = await confirmDeskTape(user, listingId, new Date(), formData.get("ownership"));
   if (!confirmed.ok) back(page, "error", confirmed.error, "desk-intake");
   for (const path of [page, `/admin/listings/${listingId}`, "/admin/queue"]) revalidatePath(path);
   back(page, "notice", "Confirmed. The desk can now finish its review.", "desk-intake");

@@ -4,6 +4,7 @@ import {
   CREDIT_SCORE_MAX,
   CREDIT_SCORE_MIN,
   CREDIT_SCORE_TYPES,
+  LOAN_PROGRAMS,
   LOAN_PURPOSES,
   LOSS_MIT_STAGES,
   PAYMENT_TYPES,
@@ -23,8 +24,9 @@ import {
 // extension: nothing in MISMO is close. The field travels in a UPB extension, the way MISMO carries data it doesn't
 //   define.
 
-export const STANDARD_VERSION = "UPB tape standard v3";
-export const STANDARD_SET_ON = "2026-11-08";
+// v3.1 added the loan program and the FHA or VA partial claim.
+export const STANDARD_VERSION = "UPB tape standard v3.1";
+export const STANDARD_SET_ON = "2026-11-15";
 
 export type MismoMatch = "exact" | "approximate" | "extension";
 
@@ -164,6 +166,21 @@ const SPECS: Record<TapeFieldKey, Spec> = {
     allowed: "For a second or third lien. Zero or more",
     mismo: extension("SeniorLienUPBAmount", "In MISMO the senior loan is its own LOAN, with LienPriorityType FirstLien and its UPBAmount."),
   },
+  loanProgram: {
+    type: "choice",
+    allowed: choices(LOAN_PROGRAMS),
+    mismo: approximate(
+      `${LOAN}/TERMS_OF_LOAN`,
+      "MortgageType",
+      "MISMO's MortgageType has Conventional, FHA, VA and USDARuralDevelopment. UPB's PRIVATE, seller financing or private money, reads as Other.",
+    ),
+  },
+  partialClaim: {
+    type: "yes or no",
+    allowed: "Yes when HUD or VA holds a partial claim for arrears it paid",
+    mismo: extension("PartialClaimIndicator", "No MISMO data point UPB is sure of. The claim is the agency's own subordinate lien, which MISMO would carry as a separate LOAN."),
+  },
+  partialClaimBalance: { type: "money", allowed: "Above zero. Goes with a partial claim of yes", mismo: extension("PartialClaimBalanceAmount", "No MISMO data point UPB is sure of.") },
   scraFlag: { type: "yes or no", allowed: "Yes when the borrower has Servicemembers Civil Relief Act protection", mismo: extension("SCRAProtectionIndicator", "No MISMO data point UPB is sure of.") },
   borrowerDeceased: { type: "yes or no", mismo: extension("BorrowerDeceasedIndicator", "No MISMO data point UPB is sure of.") },
   litigationFlag: { type: "yes or no", allowed: "Yes when a case touches the loan or the property", mismo: extension("LitigationIndicator", "No MISMO data point UPB is sure of.") },
@@ -205,10 +222,11 @@ export const STANDARD_GROUPS = [
   { group: "core", title: "The loan", lede: "Required fields first. A row missing one is sent back with the reason." },
   { group: "servicing", title: "Servicing record", lede: "Optional. What the servicer's statement says about payments, workouts and filings." },
   { group: "terms", title: "Rate, credit and registry", lede: "Optional. An adjustable rate needs its index and margin. A credit score needs its model and date." },
-  { group: "risk", title: "Balances and risk flags", lede: "Optional. Balances a buyer prices from, how the payment is set, and flags that change what a buyer can do." },
+  { group: "risk", title: "Balances and risk flags", lede: "Optional. Balances a buyer prices from, how the payment is set, the loan program and any FHA or VA partial claim, and flags that change what a buyer can do." },
 ] as const;
 
-// Fields that find the borrower or the loan. They follow the street address: withheld until the viewer may open it.
+// Fields that find the borrower or the loan, or the seller (a MERS Org ID names the firm holding control or the file).
+// They follow the street address: withheld until the viewer may open it.
 export const WITHHELD_UNTIL_OPEN = new Set<TapeFieldKey>([
   "streetAddress",
   "zip",
@@ -217,6 +235,8 @@ export const WITHHELD_UNTIL_OPEN = new Set<TapeFieldKey>([
   "loanNumber",
   "mersMin",
   "eNoteId",
+  "eRegistryController",
+  "eRegistryLocation",
   "originatorLicense",
   "litigationNote",
 ]);

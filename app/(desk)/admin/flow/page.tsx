@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
-import { cadenceLabel, PROGRAM_LABEL, programList, timeLeft } from "@/lib/flow-programs";
+import { cadenceLabel, PROGRAM_LABEL, programList, timeLeft, volumeLine } from "@/lib/flow-programs";
 import { prettyDate, q } from "@/lib/format";
 import { launchTime } from "@/lib/launch-rules";
 import { prisma } from "@/lib/prisma";
@@ -66,6 +66,7 @@ export default async function AdminFlowPage({ searchParams }: { searchParams: Pr
                   <p className="text-sm text-muted-foreground">
                     {program.seller} · {cadenceLabel(program.cadence)} · {program.firstLookHours}-hour first look · since {prettyDate(program.createdAt)}
                   </p>
+                  <p className="text-sm text-muted-foreground tabular-nums">{volumeLine(program, now)}</p>
                 </div>
                 <p className="text-sm text-foreground tabular-nums">
                   {program.tranches.length} tranche{program.tranches.length === 1 ? "" : "s"} · {program.commitments.ACTIVE} active · {program.commitments.INVITED} invited · {program.commitments.PAUSED} paused

@@ -1,5 +1,11 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
+import { cookies } from "next/headers";
 import { audit } from "@/lib/audit";
-import { COMP_WINDOW_MONTHS, compsFor, loadClosedTrades, type ClosedTrade } from "@/lib/comps";
+import { COMP_WINDOW_MONTHS, MIN_TRADES, cellFacts, compsFor, loadClosedTrades, type ClosedTrade } from "@/lib/comps";
+import { unset } from "@/lib/db-filters";
+import { secureCookies } from "@/lib/deploy";
+import { MAX_INTAKE_BYTES, readIntakeTape, type PriceMode, type SplitRule, type StagedIntake } from "@/lib/desk-intake";
+import { DESK_DENIED, deskCan, type Staff } from "@/lib/desk-roles";
 import { notify, notifyDesk } from "@/lib/email";
 import { chargeFees, feeTerms } from "@/lib/fee-schedule";
 import { money, prettyDate } from "@/lib/format";
@@ -11,7 +17,9 @@ import { indicativeQuote } from "@/lib/quote";
 import { consumeRateLimit } from "@/lib/rate-limit";
 import { screenAndRecord, screenInBackground } from "@/lib/screening";
 import { getSettings } from "@/lib/settings";
-import { extensionOf, putBytes, safeBasename } from "@/lib/storage";
+import { extensionOf, getBytes, putBytes, safeBasename } from "@/lib/storage";
+import { saveTapeDraft } from "@/lib/tape-draft";
+import { uploadProblem } from "@/lib/uploads";
 
 // "Value my loans": a seller, with or without an account, sends a tape or up to ten loans and sees an indicative
 // range from the desk's own model and UPB's closed trades at once. The desk then works the request: it sends its own
@@ -164,13 +172,15 @@ function indicativeNote(loan: ValuationLoan): IndicativeNote {
 
 // The desk model at its target yield and the closed-trade comps for loans like these, as the book's indicative
 // price is built, without the buy-box standing bids, which stay with signed-in buyers. When neither can price the
-// loans, the desk's bands by performance from the single-note quote stand in.
+// loans, the desk's bands by performance from the single-note quote stand in. The public demand board shows how many
+// buyers there are, never what they would pay (lib/demand-board.ts).
 export function valuationRange(loans: ValuationLoan[], context: { targetYield: number | null | undefined; premiumBps: number; trades: ClosedTrade[]; now: Date }): ValuationRange {
   const notes = loans.map(indicativeNote);
+  const comps = notes.length ? compsFor(compSubjectOf(notes), context.trades, MIN_TRADES, context.now) : null;
   const range = indicativeRange({
     notes,
     targetYield: context.targetYield,
-    comps: notes.length ? compsFor(compSubjectOf(notes), context.trades) : null,
+    comps,
     compsWindowMonths: COMP_WINDOW_MONTHS,
     standing: [],
     premiumBps: context.premiumBps,
@@ -179,7 +189,9 @@ export function valuationRange(loans: ValuationLoan[], context: { targetYield: n
   const scope = `Priced on ${plural(loans.length, "loan")} as you entered ${loans.length === 1 ? "it" : "them"}, before the desk reads any file.`;
   if (range) {
     const value = range.valueBasis ? ` ${range.valueBasis}` : "";
-    return { lowPrice: range.lowPrice, highPrice: range.highPrice, low: range.low, high: range.high, basis: `${range.basis}${value} ${scope}` };
+    // How many trades the comps rest on and how recent the latest is (lib/comps.ts).
+    const traded = comps && range.sources.some((row) => row.key === "comps") ? ` Closed-trade comps: ${cellFacts(comps)}.` : "";
+    return { lowPrice: range.lowPrice, highPrice: range.highPrice, low: range.low, high: range.high, basis: `${range.basis}${value}${traded} ${scope}` };
   }
   let low = 0;
   let high = 0;
@@ -269,7 +281,248 @@ export async function requestValuation(input: RequestInput): Promise<RequestResu
     `${name}${company && company !== name ? ` at ${company}` : ""} asked for a valuation of ${plural(read.loans.length, "loan")}, ${money(upb)} UPB. The instant range was ${money(range.lowPrice)} to ${money(range.highPrice)}. Work it at /admin/valuations/${created.id}.`,
     { capability: "sales" },
   );
+  await rememberValuation(created.id);
   return { error: null, id: created.id, range };
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// From the result page to a seller account.
+
+// The browser that sent a request keeps a signed cookie naming it, so signing up there fills in the name, email and
+// company. The result page's link carries only the id, and the id alone shows nobody who asked: a forwarded link
+// fills in nothing, as the quote page's lead link fills in no address (app/signup/page.tsx).
+export const VALUATION_COOKIE = "upb-valuation";
+const COOKIE_DAYS = 30;
+const ROW_ID = /^[\w-]{1,64}$/;
+const SELLER_ROLES = new Set(["INDIVIDUAL_SELLER", "INSTITUTIONAL_SELLER"]);
+
+function cookieSig(id: string, secret: string) {
+  return createHmac("sha256", secret).update(`upb-valuation:${id}`).digest("base64url");
+}
+
+export function valuationCookieValue(id: string, secret = process.env.AUTH_SECRET || "") {
+  return secret && ROW_ID.test(id) ? `${id}.${cookieSig(id, secret)}` : null;
+}
+
+export function readValuationCookie(value: string | null | undefined, secret = process.env.AUTH_SECRET || "") {
+  const [id, given, extra] = (value ?? "").split(".");
+  if (!secret || extra !== undefined || !id || !given || !ROW_ID.test(id)) return null;
+  const expected = Buffer.from(cookieSig(id, secret));
+  const actual = Buffer.from(given);
+  return expected.length === actual.length && timingSafeEqual(expected, actual) ? id : null;
+}
+
+async function rememberValuation(id: string) {
+  const value = valuationCookieValue(id);
+  if (!value) return;
+  try {
+    (await cookies()).set(VALUATION_COOKIE, value, { httpOnly: true, sameSite: "lax", secure: secureCookies(), path: "/", maxAge: COOKIE_DAYS * 24 * 60 * 60 });
+  } catch {
+    // Outside a request, as in a job or a test, there is no browser to remember it.
+  }
+}
+
+// The same address however it was typed: case and spaces don't count.
+export function sameEmail(a: string, b: string) {
+  const norm = (value: string) => value.replace(/\s+/g, "").toLowerCase();
+  return norm(a).length > 0 && norm(a) === norm(b);
+}
+
+// One loan is a note seller's to list; several, or a tape, an institution's. The desk's invite picks the same way.
+export function sellerRoleFor(request: { loans: number; tapeKey?: string | null }) {
+  return request.loans === 1 && !request.tapeKey ? "INDIVIDUAL_SELLER" : "INSTITUTIONAL_SELLER";
+}
+
+export type SignupPrefill = { id: string; role: "INDIVIDUAL_SELLER" | "INSTITUTIONAL_SELLER"; name: string; email: string; company: string };
+
+// What the signup form starts with for a request. The seller role always; the name, email and company only in the
+// browser that sent it.
+export async function signupPrefill(id: string, cookie: string | null | undefined): Promise<SignupPrefill | null> {
+  const request = ROW_ID.test(id) ? await prisma.valuationRequest.findUnique({ where: { id }, select: { id: true, loans: true, tapeKey: true, name: true, email: true, company: true, userId: true } }) : null;
+  if (!request || request.userId) return null;
+  const own = readValuationCookie(cookie) === request.id;
+  return { id: request.id, role: sellerRoleFor(request), name: own ? request.name : "", email: own ? request.email : "", company: own ? request.company : "" };
+}
+
+// At signup: the request joins the new seller account only when the account's email is the request's, and only when
+// no account has it yet. The id from the form alone never attaches anyone's request.
+export async function linkValuationAtSignup(input: { valuationId: string; userId: string; email: string; role: string }) {
+  if (!SELLER_ROLES.has(input.role) || !input.valuationId) return false;
+  const request = ROW_ID.test(input.valuationId) ? await prisma.valuationRequest.findUnique({ where: { id: input.valuationId }, select: { id: true, email: true, userId: true } }) : null;
+  if (!request || request.userId || !sameEmail(request.email, input.email)) return false;
+  const claim = await prisma.valuationRequest.updateMany({ where: { id: request.id, ...unset("userId") }, data: { userId: input.userId } });
+  if (claim.count !== 1) return false;
+  await audit(input.userId, "VALUATION_SIGNUP", "valuation", request.id, "Joined the account that signed up with its email");
+  return true;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// From the request to a listing.
+
+// A listing comes from a request when it is the same seller's, filed after the request, and at least half its loans
+// are loans the request priced: the same state and the same balance to the dollar. That holds whether the seller
+// filed it or the desk filed it for them in intake, and it can't take another seller's listing.
+export function listingFromValuation(loans: { state: string; upb: number }[], notes: { state: string; upb: number }[]) {
+  if (!loans.length || !notes.length) return false;
+  const keyOf = (row: { state: string; upb: number }) => `${row.state.trim().toUpperCase()}:${Math.round(row.upb)}`;
+  const left = new Map<string, number>();
+  for (const loan of loans) left.set(keyOf(loan), (left.get(keyOf(loan)) ?? 0) + 1);
+  let matched = 0;
+  for (const note of notes) {
+    const count = left.get(keyOf(note)) ?? 0;
+    if (!count) continue;
+    left.set(keyOf(note), count - 1);
+    matched += 1;
+  }
+  return matched * 2 >= notes.length;
+}
+
+// Marks the request listed, once. The desk's own link and the match below both come here.
+export async function markValuationListed(input: { id: string; listingId: string; actorId: string | null; how: string }) {
+  const claim = await prisma.valuationRequest.updateMany({ where: { id: input.id, status: { in: ["NEW", "QUOTED"] }, ...unset("listingId") }, data: { listingId: input.listingId, status: "LISTED" } });
+  if (claim.count !== 1) return false;
+  await audit(input.actorId, "VALUATION_LISTED", "valuation", input.id, `${input.listingId} · ${input.how}`);
+  return true;
+}
+
+// Open requests on a seller's account, checked against that seller's listings filed since. A listing ties to one
+// request at most. Run when the seller's desk or the queue loads, so a listing from any path is found.
+export async function linkValuationListings(scope: { userId?: string; ids?: string[]; since?: Date }) {
+  const requests = await prisma.valuationRequest.findMany({
+    where: {
+      status: { in: ["NEW", "QUOTED"] },
+      userId: scope.userId ?? { not: null },
+      ...(scope.ids ? { id: { in: scope.ids } } : {}),
+      ...(scope.since ? { createdAt: { gte: scope.since } } : {}),
+      ...unset("listingId"),
+    },
+    select: { id: true, userId: true, rows: true, createdAt: true },
+    orderBy: { createdAt: "asc" },
+  });
+  let linked = 0;
+  for (const sellerId of new Set(requests.map((request) => request.userId).filter((id): id is string => Boolean(id)))) {
+    const own = requests.filter((request) => request.userId === sellerId);
+    const listings = await prisma.listing.findMany({
+      where: { sellerId, createdAt: { gte: own[0].createdAt }, status: { notIn: ["REJECTED", "WITHDRAWN"] } },
+      select: { id: true, createdAt: true, notes: { select: { state: true, upb: true } } },
+      orderBy: { createdAt: "asc" },
+    });
+    if (!listings.length) continue;
+    const taken = new Set(
+      (await prisma.valuationRequest.findMany({ where: { listingId: { in: listings.map((listing) => listing.id) } }, select: { listingId: true } })).map((row) => row.listingId),
+    );
+    for (const request of own) {
+      const loans = storedLoans(request.rows);
+      const listing = listings.find((row) => !taken.has(row.id) && row.createdAt >= request.createdAt && listingFromValuation(loans, row.notes.map((note) => ({ state: note.state, upb: Number(note.upb) }))));
+      if (!listing) continue;
+      if (await markValuationListed({ id: request.id, listingId: listing.id, actorId: null, how: "its loans match the request" })) {
+        taken.add(listing.id);
+        linked += 1;
+      }
+    }
+  }
+  return linked;
+}
+
+export type SellerValuation = { id: string; loans: number; upb: number; lowPrice: number | null; highPrice: number | null; quoted: boolean; tape: boolean; askedDesk: boolean };
+
+// The open requests on a seller's own account, for the seller's desk, newest first.
+export async function sellerValuations(userId: string): Promise<SellerValuation[]> {
+  await linkValuationListings({ userId });
+  const rows = await prisma.valuationRequest.findMany({
+    where: { userId, status: { in: ["NEW", "QUOTED"] }, ...unset("listingId") },
+    select: { id: true, loans: true, upb: true, lowPrice: true, highPrice: true, status: true, tapeKey: true },
+    orderBy: { createdAt: "desc" },
+    take: 3,
+  });
+  const asked = rows.length
+    ? new Set((await prisma.auditEvent.findMany({ where: { entityType: "valuation", entityId: { in: rows.map((row) => row.id) }, action: "VALUATION_FILE_ASKED" }, select: { entityId: true } })).map((row) => row.entityId))
+    : new Set<string>();
+  return rows.map((row) => ({ id: row.id, loans: row.loans, upb: row.upb, lowPrice: row.lowPrice, highPrice: row.highPrice, quoted: row.status === "QUOTED", tape: Boolean(row.tapeKey), askedDesk: asked.has(row.id) }));
+}
+
+// The seller asks the desk to file the tape they sent. The desk opens it in intake from the request; the seller then
+// confirms each listing it files before buyers see anything (lib/desk-intake.ts).
+export async function askDeskToFile(user: { id: string; name: string; companyName?: string | null }, id: string): Promise<DeskResult & { already?: boolean }> {
+  const request = ROW_ID.test(id) ? await prisma.valuationRequest.findUnique({ where: { id } }) : null;
+  if (!request || request.userId !== user.id) return { error: "That valuation isn't on your account." };
+  if (request.listingId || request.status === "LISTED" || request.status === "CLOSED") return { error: "This valuation is already listed or closed." };
+  if (!request.tapeKey) return { error: "The desk files from a tape. List these loans yourself, or send the tape from Value my loans." };
+  if (await prisma.auditEvent.findFirst({ where: { entityType: "valuation", entityId: request.id, action: "VALUATION_FILE_ASKED" }, select: { id: true } })) return { error: null, already: true };
+  const who = user.companyName || user.name;
+  await notifyDesk(
+    `File a tape · ${who}`,
+    `${who} asked the desk to file the tape from their valuation: ${plural(request.loans, "loan")}, ${money(request.upb)} UPB. Open it in desk intake from /admin/valuations/${request.id}.`,
+    { capability: "sales" },
+  );
+  await audit(user.id, "VALUATION_FILE_ASKED", "valuation", request.id, request.tapeName);
+  return { error: null };
+}
+
+// The desk opens a request's tape in desk intake: the file is staged as the desk member's tape draft for the
+// seller's account, with the desk's price and split, and the intake page shows the preview. Filing stays there.
+export async function stageValuationIntake(
+  actor: Staff & { id: string },
+  input: { id: string; priceMode: PriceMode; percent: number | null; rules: SplitRule[]; bands: number[] },
+): Promise<{ error: string; staged?: undefined } | { error: null; staged: StagedIntake }> {
+  if (actor.role !== "ADMIN" || !deskCan(actor, "sales")) return { error: DESK_DENIED };
+  const { request, error } = await openRequest(input.id);
+  if (!request) return { error };
+  if (request.listingId || request.status === "CLOSED") return { error: "This request is already listed or closed." };
+  if (!request.tapeKey) return { error: "This request has no tape. Ask the seller for one." };
+  const seller = request.userId ? await prisma.user.findUnique({ where: { id: request.userId }, select: { role: true, accountStatus: true, deletedAt: true } }) : null;
+  if (!seller || !SELLER_ROLES.has(seller.role) || seller.deletedAt) return { error: "Tie the request to the seller's account first: invite them to list." };
+  if (seller.accountStatus !== "APPROVED") return { error: "The seller's account isn't approved yet. Approve it in Accounts first." };
+  let bytes: Buffer;
+  try {
+    bytes = Buffer.from(await getBytes(request.tapeKey));
+  } catch {
+    return { error: "The tape file is missing. Ask the seller to send it again." };
+  }
+  const filename = (request.tapeName || "tape.csv").slice(0, 180);
+  // The same checks as a tape the desk uploads on the intake page, its 10 MB limit included.
+  if (bytes.length > MAX_INTAKE_BYTES) return { error: "Tapes are limited to 10 MB in desk intake. Ask the seller to split it." };
+  const problem = uploadProblem(filename, bytes.length, bytes, MAX_INTAKE_BYTES);
+  if (problem) return { error: problem };
+  const read = readIntakeTape({ filename, bytes, priceMode: input.priceMode, percent: input.percent ?? undefined });
+  if (!read.ok) return { error: read.error };
+  const token = crypto.randomUUID();
+  await saveTapeDraft({ token, userId: actor.id, filename, bytes });
+  await audit(actor.id, "VALUATION_INTAKE", "valuation", request.id, "Tape opened in desk intake");
+  return { error: null, staged: { token, sellerId: request.userId!, priceMode: input.priceMode, percent: input.percent, rules: input.rules, bands: input.bands } };
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The conversion line: requests, those with an account, those listed, and those whose listing closed a sale.
+
+export const FUNNEL_DAYS = 90;
+export type ValuationFunnel = { requests: number; signedUp: number; listed: number; closed: number };
+export type FunnelRow = { createdAt: Date; userId: string | null; listingId: string | null; sold: boolean };
+
+export function funnelOf(rows: FunnelRow[]): ValuationFunnel {
+  return {
+    requests: rows.length,
+    signedUp: rows.filter((row) => row.userId).length,
+    listed: rows.filter((row) => row.listingId).length,
+    closed: rows.filter((row) => row.listingId && row.sold).length,
+  };
+}
+
+// Requests made in the range, each with whether its listing has a completed closing yet.
+export async function funnelRows(range: { start: Date; end: Date }): Promise<FunnelRow[]> {
+  const rows = await prisma.valuationRequest.findMany({ where: { createdAt: { gte: range.start, lt: range.end } }, select: { createdAt: true, userId: true, listingId: true } });
+  const listingIds = [...new Set(rows.flatMap((row) => (row.listingId ? [row.listingId] : [])))];
+  const sold = new Set(
+    listingIds.length ? (await prisma.closing.findMany({ where: { listingId: { in: listingIds }, status: "COMPLETE" }, select: { listingId: true } })).map((row) => row.listingId) : [],
+  );
+  return rows.map((row) => ({ createdAt: row.createdAt, userId: row.userId ?? null, listingId: row.listingId ?? null, sold: Boolean(row.listingId && sold.has(row.listingId)) }));
+}
+
+// The queue's line over the last 90 days.
+export async function valuationFunnel(now = new Date()) {
+  const start = new Date(now.getTime() - FUNNEL_DAYS * 24 * 60 * 60 * 1000);
+  await linkValuationListings({ since: start });
+  return funnelOf(await funnelRows({ start, end: now }));
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -301,7 +554,7 @@ export async function quoteValuation(input: { id: string; low: unknown; high: un
   await notify(
     request.email,
     `Your valuation · ${plural(request.loans, "loan")}`,
-    `The UPB Capital desk looked at the ${plural(request.loans, "loan")} you sent, ${money(request.upb)} UPB.\n\nIndicative range: ${money(Math.round(low))} to ${money(Math.round(high))}.\n\n${note}\n\nThis is an estimate, not an offer to buy. A price is set only when buyers bid on a listing. To list the loans, reply to this email or create a seller account at /signup.`,
+    `The UPB Capital desk looked at the ${plural(request.loans, "loan")} you sent, ${money(request.upb)} UPB.\n\nIndicative range: ${money(Math.round(low))} to ${money(Math.round(high))}.\n\n${note}\n\nThis is an estimate, not an offer to buy. A price is set only when buyers bid on a listing. To list the loans, reply to this email or create a seller account at /signup?valuation=${request.id}.`,
   );
   await audit(input.actor.id, "VALUATION_QUOTED", "valuation", request.id, `Range ${before} to ${money(Math.round(low))} to ${money(Math.round(high))}`);
   return { error: null };

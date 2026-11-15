@@ -3,6 +3,7 @@ import { quoteSlice, relistBuyerNote } from "@/actions/assets";
 import { addOwnedNote, emailStatement, logBuyerPayment, setBuyerHoldingStatus } from "@/actions/portfolio";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
+import { OwnershipStatement } from "@/components/ownership-statement";
 import { SubmitButton } from "@/components/submit-button";
 import { ACCRETION_NOTE, accretedThrough, accretionByYear, type Accretion } from "@/lib/accretion";
 import { requireRole } from "@/lib/auth";
@@ -160,6 +161,7 @@ export default async function PortfolioPage({
                     <input type="hidden" name="holdingId" value={holding.id} />
                     <input name="askingPrice" inputMode="decimal" className="desk-input" aria-label={`Relist price for ${holding.title}`} placeholder="Ask" />
                     <SubmitButton variant="outline" className="h-11 text-[13px] font-medium">Relist</SubmitButton>
+                    <OwnershipStatement className="basis-full" />
                   </form>
                 )}
                 <form action={quoteSlice} className="flex flex-wrap items-center gap-2">

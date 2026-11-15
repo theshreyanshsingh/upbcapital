@@ -17,6 +17,8 @@ import { launchBlock } from "@/lib/launch-rules";
 import { bidExpired, buyerPrice, readGoodUntil } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
 import { canSeeListing, listingSight } from "@/lib/private-listings";
+import { pausedBidBlock } from "@/lib/provenance";
+import { rebidBlock } from "@/lib/retrade";
 import { getSettings, isPro } from "@/lib/settings";
 import { strikeStanding } from "@/lib/strikes";
 import { ensureInquiryThread } from "@/lib/threads";
@@ -198,6 +200,9 @@ export async function checkOffer(input: {
   const now = input.now ?? new Date();
   const blocked = await inquiryBlock(user, listing);
   if (blocked || !listing) return { error: blocked ?? "This listing is not taking new inquiries.", verification: false };
+  // A listing paused until its seller reconfirms it takes no new bid. Bids already in stay open (lib/provenance.ts).
+  const paused = await pausedBidBlock(listing);
+  if (paused) return { error: paused, verification: false };
   const profile = await prisma.buyerProfile.findUnique({ where: { userId: user.id } });
   const gate = canSubmitOffer({ role: user.role, accountStatus: user.accountStatus, verificationStatus: profile?.status ?? null });
   if (!gate.ok) return { error: "The desk has to approve your buyer file before you can offer.", verification: true };
@@ -250,6 +255,9 @@ export async function checkOffer(input: {
   if (!gateBid.ok) {
     return { error: gateBid.reason === "deadline" ? "The bid deadline has passed." : "Best and final allows one bid on this listing.", verification: false };
   }
+  // A firm that walked away from these loans in diligence bids them again at that price or more (lib/retrade.ts).
+  const retrade = await rebidBlock({ userIds: [user.id], listingId: listing.id, noteId: noteId || null, amount: input.amount, loanPrices: input.loanPrices });
+  if (retrade) return { error: retrade, verification: false };
   // The eligibility screen never refuses a buyer. A buyer who says they control 350 or more homes acknowledges the
   // notice once on the listing, and that is all it asks.
   const eligibility = eligibilityFor(loans, profile);

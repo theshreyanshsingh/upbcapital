@@ -1,7 +1,9 @@
 import Link from "next/link";
+import { cookies } from "next/headers";
 import { SignupForm } from "@/components/auth-forms";
 import { Logo } from "@/components/logo";
 import { safeNext } from "@/lib/safe-next";
+import { signupPrefill, VALUATION_COOKIE } from "@/lib/valuations";
 
 export const metadata = { title: "Request access" };
 
@@ -18,6 +20,10 @@ export default async function SignupPage({
   const referral = typeof params.ref === "string" ? params.ref : typeof params.referral === "string" ? params.referral : "";
   // Where to land after signing up, such as a private-sale invitation. Same-site paths only.
   const next = safeNext(params.next, "");
+  // From a valuation's result page: the seller role always, and the name, email and company only in the browser
+  // that sent the request (lib/valuations.ts). The account picks the request up only with the request's email.
+  const valuationId = typeof params.valuation === "string" ? params.valuation : "";
+  const valuation = valuationId ? await signupPrefill(valuationId, (await cookies()).get(VALUATION_COOKIE)?.value) : null;
   return (
     <main id="desk" className="mx-auto max-w-4xl px-5 py-16">
       <Logo />
@@ -27,9 +33,12 @@ export default async function SignupPage({
         Buyers, institutions, and brokers are approved by the desk before they can bid, upload a tape, or file for someone else. Individual note sellers can file their own loan immediately. The listing still waits on review.
       </p>
       <div className="mt-10">
-        <SignupForm lead={lead} email={email} referral={referral} next={next} />
+        <SignupForm lead={lead} email={email} referral={referral} next={next} valuation={valuation ?? undefined} />
       </div>
       <p className="mt-8 text-sm text-muted-foreground">
+        Selling? <Link href="/buying" className="text-link">See who&apos;s buying</Link>: approved buyers by lien, performance and region, counts only.
+      </p>
+      <p className="mt-3 text-sm text-muted-foreground">
         Already known here? <Link href={next ? `/login?next=${encodeURIComponent(next)}` : "/login"} className="text-link">Sign in</Link>
       </p>
       <p className="mt-3 text-xs text-muted-foreground">

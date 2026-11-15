@@ -19,11 +19,14 @@ import {
   FIRST_LOOK_HOURS,
   flagLine,
   PROGRAM_LABEL,
+  startDay,
+  startsLater,
   termsVersion,
   trancheCheck,
   trancheReports,
+  volumeLine,
 } from "@/lib/flow-programs";
-import { money, q } from "@/lib/format";
+import { isoDate, money, q } from "@/lib/format";
 import { labelOf } from "@/lib/labels";
 import { prisma } from "@/lib/prisma";
 
@@ -49,11 +52,15 @@ export default async function SellerFlowProgramPage({
   const program = await prisma.flowProgram.findUnique({ where: { id } });
   if (!program || program.sellerId !== user.id) notFound();
   const checkId = q(query, "check");
+  const now = new Date();
+  // An open programme with a start still ahead takes buyers now and tranches from that day.
+  const waiting = program.status === "OPEN" && startsLater(program, now);
+  const taking = program.status === "OPEN" && !waiting;
   const [reports, counts, candidates, check] = await Promise.all([
     trancheReports(program.id),
     commitmentCounts(program.id),
-    program.status === "OPEN" ? attachCandidates(user.id) : Promise.resolve([]),
-    program.status === "OPEN" && checkId ? trancheCheck(user, program.id, checkId) : Promise.resolve(null),
+    taking ? attachCandidates(user.id) : Promise.resolve([]),
+    taking && checkId ? trancheCheck(user, program.id, checkId) : Promise.resolve(null),
   ]);
   const criteria = criteriaOf(program.criteria);
   const open = program.status === "OPEN";
@@ -70,6 +77,10 @@ export default async function SellerFlowProgramPage({
         <div>
           <dt className="text-muted-foreground">Expected volume per tranche</dt>
           <dd className="text-foreground tabular-nums">{program.expectedVolumeCents ? money(program.expectedVolumeCents / 100) : "Not given"}</dd>
+        </div>
+        <div>
+          <dt className="text-muted-foreground">Monthly volume and start</dt>
+          <dd className="text-foreground tabular-nums">{volumeLine(program, now)}</dd>
         </div>
         <div className="sm:col-span-2">
           <dt className="text-muted-foreground">Loans it takes</dt>
@@ -94,6 +105,9 @@ export default async function SellerFlowProgramPage({
                 cadence: program.cadence,
                 firstLookHours: program.firstLookHours,
                 expectedVolume: program.expectedVolumeCents == null ? null : program.expectedVolumeCents / 100,
+                monthlyMin: program.monthlyMinCents == null ? null : program.monthlyMinCents / 100,
+                monthlyMax: program.monthlyMaxCents == null ? null : program.monthlyMaxCents / 100,
+                startsOn: isoDate(program.startsAt) ?? "",
                 terms: program.terms,
                 ...criteria,
               }}
@@ -102,7 +116,16 @@ export default async function SellerFlowProgramPage({
         </details>
       )}
 
-      {open && (
+      {waiting && program.startsAt && (
+        <section id="add" aria-labelledby="add-heading" className="mt-10 scroll-mt-6">
+          <h2 id="add-heading" className="eyebrow">Add a tranche</h2>
+          <p className="mt-2 max-w-2xl text-sm text-foreground">
+            Tranches join from the programme&apos;s start on {startDay(program.startsAt, now)}. Invite buyers now, so they have accepted the terms before the first one.
+          </p>
+        </section>
+      )}
+
+      {taking && (
         <section id="add" aria-labelledby="add-heading" className="mt-10 scroll-mt-6">
           <h2 id="add-heading" className="eyebrow">Add a tranche</h2>
           <p className="mt-2 max-w-2xl text-sm text-muted-foreground">

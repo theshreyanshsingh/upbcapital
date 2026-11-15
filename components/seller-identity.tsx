@@ -48,9 +48,10 @@ export async function SellerIdentityLine({ listing, viewer }: { listing: { id: s
         )}
       </p>
       {listing.brokerId && (
-        <p className={`mt-1 text-sm ${mandate || !required ? "text-foreground" : "text-warn"}`}>
+        <p className={`mt-1 text-sm ${mandate ? "text-foreground" : "text-warn"}`}>
           Note holder&apos;s mandate: {mandate ? <a href={`/api/documents/${mandate.id}`} className="text-link">{mandate.originalName}</a> : "not on file"}
-          {!mandate && (required ? " · approval waits on it" : " · not required by the desk's setting")}
+          {/* The mandate binds whatever the setting says (lib/seller-identity.ts mandateHold). */}
+          {!mandate && " · approval waits on it"}
         </p>
       )}
     </>
@@ -60,8 +61,8 @@ export async function SellerIdentityLine({ listing, viewer }: { listing: { id: s
 // On a broker's deal page: the note holder's mandate for this listing, and the way to add one. It goes to the desk
 // alone, through the same upload as the deal's other files.
 export async function MandateFile({ listingId, open }: { listingId: string; open: boolean }) {
-  const [mandates, settings] = await Promise.all([listingMandates(listingId), getSettings()]);
-  const required = sellerIdentityRequired(settings);
+  // The mandate binds whatever the desk's seller identity setting says (lib/seller-identity.ts mandateHold).
+  const mandates = await listingMandates(listingId);
   return (
     <section id="mandate" aria-labelledby="mandate-heading" className="mt-8 scroll-mt-6 space-y-3 border border-border p-5 rounded-xl">
       <p id="mandate-heading" className="eyebrow">Note holder&apos;s mandate</p>
@@ -74,8 +75,8 @@ export async function MandateFile({ listingId, open }: { listingId: string; open
           ))}
         </ul>
       ) : (
-        <p className={`text-sm ${required ? "text-warn" : "text-muted-foreground"}`}>
-          No mandate on file.{required ? " The desk approves this deal only once the note holder's signed mandate or listing agreement is here." : ""}
+        <p className="text-sm text-warn">
+          No mandate on file. The desk approves this deal only once the note holder&apos;s signed mandate or listing agreement is here.
         </p>
       )}
       <p className="text-xs text-muted-foreground">The signed mandate or listing agreement from the note holder for this listing. Only you and the desk read it. Buyers never see it.</p>

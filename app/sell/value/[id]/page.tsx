@@ -35,7 +35,8 @@ export default async function ValuationResultPage({ params }: { params: Promise<
         {quoted ? `The desk sent this range on ${prettyDate(request.updatedAt)}.` : "The desk has your request and will read what you sent. Expect an email with its own range."} To sell, the desk reviews the file and lists the loans for approved buyers.
       </p>
       <div className="flex flex-wrap gap-4">
-        <Link href={user ? "/seller" : "/signup"} className="inline-flex h-11 items-center rounded-lg bg-primary px-5 text-[13px] font-medium text-primary-foreground">
+        {/* The request's id goes along, so the new account picks it up when it signs up with the same email. */}
+        <Link href={user ? "/seller" : `/signup?valuation=${encodeURIComponent(request.id)}`} className="inline-flex h-11 items-center rounded-lg bg-primary px-5 text-[13px] font-medium text-primary-foreground">
           {user ? "Go to your desk" : "Create a seller account"}
         </Link>
         <Link href="/fees" className="inline-flex h-11 items-center text-[13px] font-medium text-muted-foreground">What a sale costs</Link>

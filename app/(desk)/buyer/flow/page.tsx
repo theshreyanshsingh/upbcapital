@@ -6,7 +6,7 @@ import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { SubmitButton } from "@/components/submit-button";
 import { requireRole } from "@/lib/auth";
-import { buyerPrograms, cadenceLabel, COMMITMENT_LABEL, criteriaLines, GRID_BLANKS, PROGRAM_LABEL, timeLeft } from "@/lib/flow-programs";
+import { buyerPrograms, cadenceLabel, COMMITMENT_LABEL, criteriaLines, GRID_BLANKS, PROGRAM_LABEL, timeLeft, volumeLine } from "@/lib/flow-programs";
 import { money, prettyDate, q } from "@/lib/format";
 import { launchTime } from "@/lib/launch-rules";
 
@@ -42,6 +42,7 @@ export default async function BuyerFlowPage({ searchParams }: { searchParams: Pr
                     {row.seller} · {cadenceLabel(row.program.cadence)} · {row.program.firstLookHours}-hour first look
                     {row.program.expectedVolumeCents ? ` · about ${money(row.program.expectedVolumeCents / 100)} a tranche` : ""}
                   </p>
+                  <p className="text-sm text-muted-foreground tabular-nums">{volumeLine(row.program, now)}</p>
                   <p className="mt-1 text-sm text-muted-foreground">{criteriaLines(row.criteria).join(" · ")}</p>
                 </div>
                 <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-foreground">

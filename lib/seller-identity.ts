@@ -329,6 +329,13 @@ export function identityGateMessage(status: string | null | undefined) {
   return `Approval waits on the seller of record's identity and signing authority. ${why} Decide it under Seller files first.`;
 }
 
+// A broker-filed listing waits on the note holder's mandate whatever the desk's setting says. The setting turns on
+// the seller file; a broker's authority to sell someone else's loans is checked on every listing they file.
+export async function mandateHold(listing: Pick<GateListing, "id" | "brokerId">) {
+  if (!listing.brokerId) return null;
+  return listing.id && (await listingMandates(listing.id)).length ? null : MANDATE_MISSING;
+}
+
 // Why this listing can't be approved yet for its seller's identity, or null. An approved file's entity and signer
 // are screened again with the listing, as every approval screens its parties.
 export async function sellerIdentityHold(listing: GateListing, settings: { requireSellerIdentity?: boolean | null }, env: Record<string, string | undefined> = process.env) {
@@ -336,7 +343,8 @@ export async function sellerIdentityHold(listing: GateListing, settings: { requi
   const profile = await prisma.sellerProfile.findUnique({ where: { userId: listing.sellerId }, select: { status: true } });
   const required = sellerIdentityRequired(settings, env);
   if (required && profile?.status !== "APPROVED") return identityGateMessage(profile?.status);
-  if (required && listing.brokerId && !(listing.id && (await listingMandates(listing.id)).length)) return MANDATE_MISSING;
+  const mandate = await mandateHold(listing);
+  if (mandate) return mandate;
   if (profile?.status === "APPROVED" && (await screenSellerIdentity(listing.sellerId, "Seller file on listing approval")).unavailable) return OFAC_DOWN_MESSAGE;
   return null;
 }

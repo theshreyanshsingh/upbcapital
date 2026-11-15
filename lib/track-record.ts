@@ -2,11 +2,13 @@ import { audit } from "@/lib/audit";
 import { notify } from "@/lib/email";
 import { prettyDate } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
+import { isWalkAway, walkAwayLine } from "@/lib/retrade";
 
 // Each account's record on UPB, built only from what happened: closes, days from award to close, deposits, failed
-// closings and whose fault, kick-outs, how fast the collateral arrived, repurchase claims and how they ended,
-// and the short yes-or-no answers each side gives after a confirmed close. Never stars, never a grade. Under
-// RECORD_MIN_CLOSES closes a share is shown as its counts, since a percentage of two deals says nothing.
+// closings and whose fault, walk-aways in diligence and what was found, kick-outs, how fast the collateral arrived,
+// repurchase claims and how they ended, and the short yes-or-no answers each side gives after a confirmed close.
+// Never stars, never a grade. Under RECORD_MIN_CLOSES closes a share is shown as its counts, since a percentage of
+// two deals says nothing.
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -28,11 +30,17 @@ export type RecordClosing = {
   depositDueAt?: Date | null;
   depositReceivedCents?: number | null;
   depositReceivedAt?: Date | null;
+  // A walk-away's finding (lib/retrade.ts), and the cancel reason that marks one made before the findings were kept.
+  walkAwayReason?: string | null;
+  cancelReason?: string | null;
 };
 
 export type BuyerRecord = {
   closes: number;
   failed: Faults;
+  // The finding of each walk-away in diligence, a code from lib/retrade.ts or null for one made before the list.
+  // Each is also a failure on neither side, never a strike.
+  walkAways: (string | null)[];
   medianDaysToClose: number | null;
   deposits: { due: number; onTime: number };
   claimsFiled: ClaimTally;
@@ -118,6 +126,7 @@ export function buildBuyerRecord(input: { closings: RecordClosing[]; claims: { s
   return {
     ...closeDays(input.closings),
     failed: faultsOf(input.closings),
+    walkAways: input.closings.filter((closing) => isWalkAway(closing)).map((closing) => closing.walkAwayReason ?? null),
     deposits: depositsOf(input.closings, input.now ?? new Date()),
     claimsFiled: tallyClaims(input.claims),
     fundedOnTime: yesCount(input.attestations.map((row) => row.fundedOnTime)),
@@ -248,6 +257,7 @@ export function buyerRecordLines(record: BuyerRecord, audience: RecordAudience, 
     daysLine(record.closes, record.medianDaysToClose),
     deposits ? `Deposits on time: ${deposits}` : null,
     failedLine(record.failed),
+    walkAwayLine(record.walkAways),
     saidLine(record.fundedOnTime, record.closes, "seller", "said the buyer funded on time"),
   ];
   if (audience !== "public") {
@@ -271,6 +281,8 @@ const CLOSING_FIELDS = {
   depositDueAt: true,
   depositReceivedCents: true,
   depositReceivedAt: true,
+  walkAwayReason: true,
+  cancelReason: true,
 } as const;
 
 // The closings each account bought on: as the bidder, or as a seat on a group.

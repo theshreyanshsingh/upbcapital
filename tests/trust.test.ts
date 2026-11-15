@@ -239,7 +239,7 @@ test("a strike is recorded on a buyer fault only, never on a seller fault, neith
     // The diligence window is the buyer's right under the terms, so a walk-away is nobody's fault.
     const walk = await awardedClosing(fixture, 2, 10000);
     await prisma.closing.update({ where: { id: walk.id }, data: { diligenceEndsAt: new Date(Date.now() + 3 * DAY) } });
-    assert.equal((await walkAwayFromClosing(walk.id, fixture.buyer.id, "The collateral file is missing the allonge.")).error, null);
+    assert.equal((await walkAwayFromClosing(walk.id, fixture.buyer.id, { reason: "COLLATERAL", words: "The collateral file is missing the allonge." })).error, null);
     assert.equal((await prisma.closing.findUniqueOrThrow({ where: { id: walk.id } })).cancelFault, "NEITHER");
     assert.equal((await strikes()).length, 0);
 

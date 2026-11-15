@@ -16,6 +16,7 @@ import { fundsLimitBlock } from "@/lib/inquiry";
 import { loanPricesFromForm } from "@/lib/loan-prices";
 import { bidExpired, canCounter, counterFrom, openCounter } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
+import { rebidBlock } from "@/lib/retrade";
 import { seatLimitBlock } from "@/lib/seats";
 import { recertBlock } from "@/lib/verification";
 import { emitWebhook } from "@/lib/webhooks";
@@ -89,6 +90,12 @@ export async function postOfferMessage(formData: FormData) {
     // And under the buyer's bid cap, as a new bid is (lib/bid-caps.ts).
     const capped = await bidCapBlock(user.id, amount);
     if (capped) redirect(`${back.split("?")[0]}?error=${encodeURIComponent(capped)}`);
+    // A buyer who walked away from these loans can't come back under the price they walked from by countering down
+    // either, as a new bid can't (lib/retrade.ts). Accepting the seller's own counter is the seller's choice.
+    if (!accepting) {
+      const retrade = await rebidBlock({ userIds: [user.id], listingId: inquiry.listingId, noteId: inquiry.noteId, amount });
+      if (retrade) redirect(`${back.split("?")[0]}?error=${encodeURIComponent(retrade)}`);
+    }
   }
   // A counter is a price for the whole bid, so loan prices under the old total clear, unless the buyer prices each
   // loan again with their own price.

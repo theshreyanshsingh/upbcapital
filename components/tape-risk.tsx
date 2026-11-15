@@ -1,7 +1,8 @@
 import { solExposure, type SolExposure } from "@/lib/statute-limits";
+import { asksForPartialClaim, PARTIAL_CLAIM_ASK, partialClaimLine, type PartialClaimNote } from "@/lib/tape-fields";
 
 // Tape v3's risk flags and the statute-of-limitations flag, as risk lines a buyer reads before the facts. The
-// litigation note can name the borrower, so it follows the street address.
+// litigation note can name the borrower, so it follows the street address. A partial claim's balance follows Pro.
 
 export type RiskNote = {
   state: string;
@@ -13,11 +14,11 @@ export type RiskNote = {
   borrowerDeceased?: boolean | null;
   litigationFlag?: boolean | null;
   litigationNote?: string | null;
-};
+} & PartialClaimNote;
 
-export type RiskLine = { key: "scra" | "deceased" | "litigation"; title: string; text: string };
+export type RiskLine = { key: "scra" | "deceased" | "litigation" | "partialClaim" | "partialClaimAsk"; title: string; text: string };
 
-export function riskLines(note: RiskNote, open: boolean): RiskLine[] {
+export function riskLines(note: RiskNote, open: boolean, pro = false): RiskLine[] {
   const lines: RiskLine[] = [];
   if (note.scraFlag) {
     lines.push({
@@ -37,6 +38,15 @@ export function riskLines(note: RiskNote, open: boolean): RiskLine[] {
       text: `A case touches the loan or the property.${detail ? (open ? ` ${detail}` : " The details open with confidentiality.") : ""}`,
     });
   }
+  const claim = partialClaimLine(note, pro);
+  if (claim) lines.push({ key: "partialClaim", title: "Partial claim", text: claim });
+  if (asksForPartialClaim(note)) {
+    lines.push({
+      key: "partialClaimAsk",
+      title: "Partial claim not stated",
+      text: `${note.loanProgram === "VA" ? "A VA" : "An FHA"} loan that was modified or caught up on its arrears may carry the agency's partial claim. ${PARTIAL_CLAIM_ASK}`,
+    });
+  }
   return lines;
 }
 
@@ -46,8 +56,8 @@ export function solFor(note: RiskNote, now = new Date()): SolExposure | null {
   return solExposure({ state: note.state, lastPaidDate: note.lastPaidDate, maturityDate: note.maturityDate, nextDueDate: note.nextDueDate, now });
 }
 
-export function TapeRisks({ note, open, now }: { note: RiskNote; open: boolean; now?: Date }) {
-  const lines = riskLines(note, open);
+export function TapeRisks({ note, open, now, pro = false }: { note: RiskNote; open: boolean; now?: Date; pro?: boolean }) {
+  const lines = riskLines(note, open, pro);
   const sol = solFor(note, now);
   if (!lines.length && !sol) return null;
   return (
@@ -86,12 +96,16 @@ export function PoolRisks({ notes, now }: { notes: RiskNote[]; now?: Date }) {
   const scra = count((note) => Boolean(note.scraFlag));
   const deceased = count((note) => Boolean(note.borrowerDeceased));
   const litigation = count((note) => Boolean(note.litigationFlag));
+  const claims = count((note) => note.partialClaim === true);
+  const ask = count(asksForPartialClaim);
   const sol = notes.map((note) => solFor(note, now)).filter((row): row is SolExposure => row != null);
   const near = sol.filter((row) => row.status === "PAST" || row.status === "RUNNING_OUT").length;
   const lines = [
     scra && `${scra} of ${notes.length} loans carry SCRA protection.`,
     deceased && `${deceased} of ${notes.length} loans have a deceased borrower.`,
     litigation && `${litigation} of ${notes.length} loans are in litigation.`,
+    claims && `${claims} of ${notes.length} loans carry an FHA or VA partial claim, which UPB reads as a subordinate lien due at payoff, sale or refinance. Each loan's file has the agency and the balance.`,
+    ask && `${ask} FHA or VA ${ask === 1 ? "loan was" : "loans were"} modified or caught up without saying whether a partial claim was filed. ${PARTIAL_CLAIM_ASK}`,
     sol.length > 0 &&
       `${sol.length} non-performing ${sol.length === 1 ? "loan" : "loans"}${near ? `, ${near} where the time to sue may be running out or past` : ""}. SOL exposure: check with counsel. Each loan's file has the dates and basis.`,
   ].filter((line): line is string => Boolean(line));

@@ -390,9 +390,10 @@ test("a broker listing needs the holder's mandate on that listing, and the manda
     const gated = () => prisma.listing.findUniqueOrThrow({ where: { id: listingId }, include: { seller: true } });
     const on = { requireSellerIdentity: true };
 
-    // An approved broker file isn't enough: the listing waits on its own mandate. With the gate off it doesn't.
+    // An approved broker file isn't enough: the listing waits on its own mandate, with the gate off too
+    // (lib/seller-identity.ts mandateHold).
     assert.equal(await sellerIdentityHold(await gated(), on, {}), MANDATE_MISSING);
-    assert.equal(await sellerIdentityHold(await gated(), { requireSellerIdentity: false }, {}), null);
+    assert.equal(await sellerIdentityHold(await gated(), { requireSellerIdentity: false }, {}), MANDATE_MISSING);
     const readiness = (await launchReadiness(on, {})).items.find((item) => item.label === "Broker mandates");
     assert.equal(readiness?.state, "off");
 

@@ -24,8 +24,10 @@ enum AccountStatus {
 
 enum CompanyType {
   BANK
+  CREDIT_UNION
   FUND
   SERVICER
+  LENDER
   OTHER
 }
 
@@ -600,6 +602,19 @@ model Listing {
   sellerConfirmedById  String?
   // Diligence items the desk waived before go-live: { item: { by, at, reason } }. lib/diligence-checklist.ts.
   diligenceWaivers     Json?
+  // Buyers see the seller as a type ("Credit union") until the desk lets them into the data room. True means the
+  // seller chose to be named to every approved buyer. lib/seller-anonymity.ts.
+  sellerNamed          Boolean?
+  // The seller's statement, at submission, that it owns these loans or holds the owner's mandate, and that they are
+  // not pledged or sold elsewhere: who made it, when, and the wording's version. lib/provenance.ts.
+  ownershipAttestedAt  DateTime?
+  ownershipAttestedById String?
+  ownershipAttestation String?
+  // The seller's latest confirmation that the loans are still available, the reminder that asked for it, and when a
+  // listing left unconfirmed too long was paused off the book. A paused listing takes no bids until reconfirmed.
+  availableConfirmedAt   DateTime?
+  availabilityRemindedAt DateTime?
+  stalePausedAt          DateTime?
   launchNotifiedAt     DateTime?
   notes                Note[]
   // A tranche of a seller's forward-flow programme. Committed buyers get a first look before it opens to all.
@@ -712,6 +727,13 @@ model Note {
   paymentType        String?
   // What is owed ahead of this lien, for a second or third.
   seniorLienBalance  Float?
+  // The program the loan was made under: CONVENTIONAL, FHA, VA, USDA, PRIVATE (seller-financed or private money) or
+  // OTHER. Missing means not stated.
+  loanProgram        String?
+  // A partial claim on an FHA or VA loan: the agency's subordinate lien for the arrears it paid, due at payoff, sale or
+  // refinance. True with no balance means one exists and its amount isn't known. lib/tape-fields.ts.
+  partialClaim       Boolean?
+  partialClaimBalance Float?
   // Servicemember protection, a deceased borrower, and litigation on the loan or property.
   scraFlag           Boolean?
   borrowerDeceased   Boolean?
@@ -1287,6 +1309,11 @@ model Closing {
   diligenceEndsAt       DateTime?
   // Whose failure ended a canceled closing: BUYER, SELLER or NEITHER. A buyer's failure records a strike.
   cancelFault           String?
+  // The finding a buyer walked away for in diligence, from a fixed list: TITLE, COLLATERAL, PAY_HISTORY, VALUE,
+  // DATA_MISMATCH, OCCUPANCY, LITIGATION or OTHER. The buyer's own words stay in cancelReason. lib/retrade.ts.
+  walkAwayReason        String?
+  // When the buyer and seller were asked for a review of a completed closing, so each is asked once.
+  reviewRequestedAt     DateTime?
   depositReceivedCents  Int?
   depositReceivedAt     DateTime?
   depositReference      String?
@@ -2138,6 +2165,12 @@ model Testimonial {
   role      String
   place     String  @default("")
   published Boolean @default(true)
+  // A review written by a party to a completed closing, at the desk's request. The desk publishes it, never edits it.
+  // Typed testimonials have none of these. lib/reviews.ts.
+  closingId String?
+  authorId  String?
+  // BUYER or SELLER.
+  side      String?
   createdAt DateTime @default(now())
 }
 
@@ -2544,6 +2577,9 @@ model FlowProgram {
   criteria            Json?
   firstLookHours      Int              @default(72)
   expectedVolumeCents Int?
+  // The volume the seller expects each month, as a range: "$5M to $50M a month". Missing means not stated.
+  monthlyMinCents     Int?
+  monthlyMaxCents     Int?
   terms               String           @default("")
   startsAt            DateTime?
   endsAt              DateTime?

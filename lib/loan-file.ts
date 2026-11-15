@@ -7,7 +7,7 @@ import { typedNumber } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
 import { extensionOf, mimeFor, putBytes, safeBasename } from "@/lib/storage";
 import { ENOTE_NOT_REQUIRED, isENote } from "@/lib/enotes";
-import { CREDIT_SCORE_TYPES, LOSS_MIT_STAGES, PAYMENT_TYPES } from "@/lib/tape-fields";
+import { CREDIT_SCORE_TYPES, LOAN_PROGRAMS, LOSS_MIT_STAGES, PAYMENT_TYPES } from "@/lib/tape-fields";
 import { uploadProblem } from "@/lib/uploads";
 import { watchNewFiles } from "@/lib/watchers";
 
@@ -385,7 +385,8 @@ export type FieldSpec = {
   label: string;
   kind: FieldKind;
   options?: readonly { value: string; label: string }[];
-  // Street, borrower and the servicer's loan number identify the borrower. They follow the loan's access rule.
+  // Street, borrower and the servicer's loan number identify the borrower, and MERS Org IDs the seller. They follow the
+  // loan's access rule.
   identity?: boolean;
   // Balances and rates sit behind Pro, as on the rest of the listing.
   pro?: boolean;
@@ -458,8 +459,10 @@ export const LOAN_FIELDS: FieldSpec[] = [
   { field: "originatorLicense", label: "Originator license", kind: "text", identity: true, optional: true, source: "Original note" },
   // An eNote on the MERS eRegistry. The desk checks these against the eVault's confirmation. lib/enotes.ts.
   { field: "eNote", label: "eNote on the MERS eRegistry", kind: "bool", optional: true, source: "eVault confirmation" },
-  { field: "eRegistryController", label: "eRegistry controller (MERS Org ID)", kind: "text", optional: true, source: "eVault confirmation" },
-  { field: "eRegistryLocation", label: "eRegistry location (MERS Org ID)", kind: "text", optional: true, source: "eVault confirmation" },
+  // A MERS Org ID names the firm holding control or the file, usually the seller, so both follow the loan's access rule
+  // like the street (lib/seller-anonymity.ts).
+  { field: "eRegistryController", label: "eRegistry controller (MERS Org ID)", kind: "text", identity: true, optional: true, source: "eVault confirmation" },
+  { field: "eRegistryLocation", label: "eRegistry location (MERS Org ID)", kind: "text", identity: true, optional: true, source: "eVault confirmation" },
   { field: "eVaultProvider", label: "eVault", kind: "text", optional: true, source: "eVault confirmation" },
   // Tape v3. Balances sit behind Pro like the UPB; the litigation note can name the borrower, so it follows the street.
   { field: "paymentType", label: "Payment type", kind: "choice", options: PAYMENT_TYPES, optional: true, source: "Original note" },
@@ -474,6 +477,10 @@ export const LOAN_FIELDS: FieldSpec[] = [
   { field: "borrowerDeceased", label: "Borrower deceased", kind: "bool", optional: true, source: "Servicer statement" },
   { field: "litigationFlag", label: "Litigation", kind: "bool", optional: true, source: "Court records" },
   { field: "litigationNote", label: "Litigation note", kind: "text", identity: true, optional: true, source: "Court records" },
+  // Tape v3.1. A partial claim is recorded as the agency's own mortgage, so the O&E report shows it.
+  { field: "loanProgram", label: "Loan program", kind: "choice", options: LOAN_PROGRAMS, optional: true, source: "Mortgage or deed of trust" },
+  { field: "partialClaim", label: "Partial claim", kind: "bool", optional: true, source: "O&E report" },
+  { field: "partialClaimBalance", label: "Partial claim balance", kind: "money", pro: true, optional: true, source: "Servicer statement" },
 ];
 
 const FIELD_BY_NAME = new Map(LOAN_FIELDS.map((spec) => [spec.field, spec]));

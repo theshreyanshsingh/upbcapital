@@ -15,6 +15,8 @@ import { rescoreListing } from "@/lib/matching";
 import { addPoolFiles } from "@/lib/room-files";
 import { screenInBackground, screenListing } from "@/lib/screening";
 import { prisma } from "@/lib/prisma";
+import { ownershipFields } from "@/lib/provenance";
+import { statementProblem } from "@/lib/provenance-rules";
 import { seatGate } from "@/lib/seats";
 import { DESK_DENIED, deskDenied } from "@/lib/staff";
 import { extensionOf, mimeFor, putBytes, safeBasename } from "@/lib/storage";
@@ -136,6 +138,9 @@ function servicingData(input: NoteInput, clearBlanks: boolean) {
     borrowerDeceased: input.borrowerDeceased,
     litigationFlag: input.litigationFlag,
     litigationNote: input.litigationNote,
+    loanProgram: input.loanProgram,
+    partialClaim: input.partialClaim,
+    partialClaimBalance: input.partialClaimBalance,
   };
   return Object.fromEntries(Object.entries(fields).filter(([, value]) => clearBlanks || value != null)) as Partial<typeof fields>;
 }
@@ -185,6 +190,9 @@ export async function createNoteListing(formData: FormData) {
   if (error) return { error };
   const parsed = readNoteForm(formData);
   if (!parsed.success) return { error: firstZodError(parsed.error) };
+  // Every filing carries the seller's word that the loans are theirs and free to sell (lib/provenance.ts).
+  const statement = statementProblem(formData.get("ownership"));
+  if (statement) return { error: statement };
   const input = parsed.data;
   const sellerFinanced = user.role === "INDIVIDUAL_SELLER" || formData.get("sellerFinanced") === "true";
   const listing = await prisma.listing.create({
@@ -192,6 +200,7 @@ export async function createNoteListing(formData: FormData) {
       kind: "SINGLE",
       sellerId: user.id,
       status: "SUBMITTED",
+      ...ownershipFields(user),
       sellerFinanced,
       title: noteTitle(input),
       summary: input.narrative,
@@ -230,6 +239,9 @@ export async function updateOwnNote(listingId: string, formData: FormData) {
   }
   const parsed = readNoteForm(formData);
   if (!parsed.success) return { error: firstZodError(parsed.error) };
+  // A resubmission is a filing too, so it takes the statement again, and a listing filed before it was asked gets one.
+  const statement = statementProblem(formData.get("ownership"));
+  if (statement) return { error: statement };
   const input = parsed.data;
   const note = listing.notes[0];
   if (!note) return { error: "The loan record is missing." };
@@ -258,6 +270,7 @@ export async function updateOwnNote(listingId: string, formData: FormData) {
       title: noteTitle(input),
       summary: input.narrative,
       status: "SUBMITTED",
+      ...ownershipFields(user),
       sellerFinanced: user.role === "INDIVIDUAL_SELLER" || formData.get("sellerFinanced") === "true",
     },
   });
@@ -284,9 +297,11 @@ export async function updateOwnListingMeta(formData: FormData) {
   const title = String(formData.get("title") || "").trim();
   const summary = String(formData.get("summary") || "").trim();
   if (title.length < 3) redirect(`/seller/listings/${listingId}?error=${encodeURIComponent("Give the pool a name.")}`);
+  const statement = statementProblem(formData.get("ownership"));
+  if (statement) redirect(`/seller/listings/${listingId}?error=${encodeURIComponent(statement)}`);
   await prisma.listing.update({
     where: { id: listing.id },
-    data: { title, summary, status: "SUBMITTED" },
+    data: { title, summary, status: "SUBMITTED", ...ownershipFields(user) },
   });
   redirect(`/seller/listings/${listing.id}?notice=resubmitted`);
 }
@@ -331,6 +346,8 @@ export async function createPoolListing(formData: FormData) {
   const summary = String(formData.get("summary") || "").trim();
   const priceMode = String(formData.get("priceMode") || "COLUMN") as "COLUMN" | "PERCENT" | "POOL_TOTAL";
   if (title.length < 3) return { error: "Name the pool." };
+  const statement = statementProblem(formData.get("ownership"));
+  if (statement) return { error: statement };
   // A tape uploaded into a forward-flow programme joins it as its next tranche (lib/flow-programs.ts).
   const flowProgramId = String(formData.get("flowProgramId") || "");
   if (flowProgramId && !(await tapeProgram(user.id, flowProgramId))) return { error: "That programme isn't taking tranches." };
@@ -363,6 +380,7 @@ export async function createPoolListing(formData: FormData) {
       kind: "POOL",
       sellerId: user.id,
       status: "SUBMITTED",
+      ...ownershipFields(user),
       title,
       summary,
       notes: { create: loans },

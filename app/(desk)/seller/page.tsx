@@ -3,11 +3,13 @@ import { MarketView } from "@/components/market-view";
 import { MasterAgreementBanner } from "@/components/master-agreement-banner";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
+import { SellerTypeForm } from "@/components/seller-anonymity";
 import { SellerIdentityBanner } from "@/components/seller-identity";
 import { YourRecord } from "@/components/track-record";
 import { StatusPill } from "@/components/status-pill";
+import { YourValuations } from "@/components/valuation-card";
 import { requireRole } from "@/lib/auth";
-import { compsFor, loadClosedTrades, marketView, suggestedPrice } from "@/lib/comps";
+import { cellFacts, compsFor, loadClosedTrades, marketView, suggestedPrice } from "@/lib/comps";
 import { isReleaseBuild } from "@/lib/deploy";
 import { money, num, q } from "@/lib/format";
 import { feeTerms, feesFor, rateText } from "@/lib/fee-schedule";
@@ -68,6 +70,8 @@ export default async function SellerHome({
         </p>
       )}
       <SellerIdentityBanner user={user} />
+      {/* A request from Value my loans on this account. components/valuation-card.tsx. */}
+      {user.role !== "ADMIN" && <YourValuations user={user} />}
       <div className="mt-8 grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-3">
         <Figure k="Live asking price" v={money(liveAsk)} />
         <Figure k="Estimated commission" v={money(commission)} />
@@ -78,6 +82,8 @@ export default async function SellerHome({
       </div>
       {/* Built from what happened on the seller's closings. components/track-record.tsx. */}
       {user.role !== "ADMIN" && <YourRecord user={user} className="mt-8" />}
+      {/* The type buyers read until the data room opens to them. components/seller-anonymity.tsx. */}
+      <SellerTypeForm user={user} />
       <div className="mt-8 flex flex-wrap gap-3">
         <Link href="/seller/notes/new" className="inline-flex h-11 items-center bg-primary px-5 text-[13px] font-medium text-primary-foreground rounded-lg">List a note</Link>
         {user.role === "INSTITUTIONAL_SELLER" && (
@@ -115,7 +121,7 @@ export default async function SellerHome({
                 )}
                 {closed && (
                   <p className="mt-1 text-sm text-muted-foreground tabular-nums">
-                    Closed trades like this: median {closed.median}% of UPB across {closed.count} ({closed.label}).
+                    Closed trades like this: median {closed.median}% of UPB across {cellFacts(closed)} ({closed.label}).
                   </p>
                 )}
               </div>

@@ -9,6 +9,7 @@ import { prisma } from "@/lib/prisma";
 import { API_LIMIT } from "@/lib/api-limit";
 import { deliveryState, endpointEvents, WEBHOOK_EVENTS, webhookUrlProblem } from "@/lib/webhooks";
 import { redirect } from "next/navigation";
+import { PROVENANCE_VERSION } from "@/lib/provenance-rules";
 
 export const metadata = { title: "Seller API" };
 
@@ -30,7 +31,7 @@ export default async function SellerApiPage({ searchParams }: { searchParams: Pr
       <PageIntro
         eyebrow="Institutional API"
         title="Push a tape. Pull the offers."
-        lede={`Keys belong to this account. Send Authorization: Bearer upb_… . POST /api/v1/tapes with JSON { title, csv }. GET /api/v1/offers lists bids on your listings. Each key may make ${API_LIMIT.requests} requests a minute. Webhooks are signed in x-upb-signature, and a failed delivery is tried again five times over the next day and a half.`}
+        lede={`Keys belong to this account. Send Authorization: Bearer upb_… . POST /api/v1/tapes with JSON { title, csv, ownership }, where ownership is "${PROVENANCE_VERSION}", the version of the ownership statement the seller gives. GET /api/v1/offers lists bids on your listings. Each key may make ${API_LIMIT.requests} requests a minute. Webhooks are signed in x-upb-signature, and a failed delivery is tried again five times over the next day and a half.`}
       />
       <Notice notice={q(query, "notice")} error={q(query, "error")} />
       <ul className="mt-8 space-y-3">

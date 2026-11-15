@@ -349,9 +349,9 @@ test("a buyer walks away inside the diligence window, and the closing cancels wi
     assert.equal(deskClosing.diligenceEndsAt ?? null, null);
     await prisma.closing.update({ where: { id: deskClosing.id }, data: { status: "CANCELED" } });
 
-    assert.equal((await walkAwayFromClosing(closing.id, deal.second.id, "Title search shows a second lien.")).error, "Only the buyer on this closing can walk away.");
-    assert.match((await walkAwayFromClosing(closing.id, deal.buyer.id, "No.")).error ?? "", /what you found/);
-    assert.equal((await walkAwayFromClosing(closing.id, deal.buyer.id, "Title search shows a second lien.")).error, null);
+    assert.equal((await walkAwayFromClosing(closing.id, deal.second.id, { reason: "TITLE", words: "Title search shows a second lien." })).error, "Only the buyer on this closing can walk away.");
+    assert.match((await walkAwayFromClosing(closing.id, deal.buyer.id, { reason: "OTHER", words: "No." })).error ?? "", /what you found/);
+    assert.equal((await walkAwayFromClosing(closing.id, deal.buyer.id, { reason: "TITLE", words: "Title search shows a second lien." })).error, null);
     const after = await prisma.closing.findUniqueOrThrow({ where: { id: closing.id } });
     assert.equal(after.status, "CANCELED");
     assert.match(after.cancelReason ?? "", /second lien/);
@@ -361,14 +361,14 @@ test("a buyer walks away inside the diligence window, and the closing cancels wi
     assert.equal(await mail(deal, deal.buyer.email, "Buyer walked away"), 1);
     assert.equal(await mail(deal, deal.desk.email, "Buyer walked away"), 1);
     assert.equal(await prisma.auditEvent.count({ where: { entityId: closing.id, action: "DILIGENCE_WALK_AWAY" } }), 1);
-    assert.match((await walkAwayFromClosing(closing.id, deal.buyer.id, "Title search shows a second lien.")).error ?? "", /already finished/);
+    assert.match((await walkAwayFromClosing(closing.id, deal.buyer.id, { reason: "TITLE", words: "Title search shows a second lien." })).error ?? "", /already finished/);
 
     // Once the window has closed the purchase terms govern, and the closing stays open.
     await prisma.listing.update({ where: { id: deal.listing.id }, data: { status: "PENDING" } });
     const again = await bid(deal, deal.buyer.id, 91000, { status: "ACCEPTED" });
     const late = await openClosing({ listingId: deal.listing.id, inquiryId: again.id, noteId: null, salePrice: 91000, title: deal.listing.title });
     await prisma.closing.update({ where: { id: late.id }, data: { diligenceEndsAt: new Date(Date.now() - 60_000) } });
-    assert.match((await walkAwayFromClosing(late.id, deal.buyer.id, "Changed my mind about the pool.")).error ?? "", /window has closed/);
+    assert.match((await walkAwayFromClosing(late.id, deal.buyer.id, { reason: "OTHER", words: "Changed my mind about the pool." })).error ?? "", /window has closed/);
     assert.equal((await prisma.closing.findUniqueOrThrow({ where: { id: late.id } })).status, "OPEN");
   } finally {
     await prisma.platformSettings.update({ where: { id: "default" }, data: { diligenceDays: before?.diligenceDays ?? null } });
