@@ -27,7 +27,7 @@ export default async function EventsPage() {
   const listings = events.length
     ? await prisma.listing.findMany({
         where: { saleEventId: { in: events.map((event) => event.id) }, status: { in: ["APPROVED", "PENDING", "SOLD"] }, AND: [await listingScope(user)] },
-        select: { saleEventId: true, sellerId: true, brokerId: true, status: true, notes: { select: { upb: true, askingPrice: true, tradeStatus: true } } },
+        select: { saleEventId: true, sellerId: true, brokerId: true, status: true, showBidderCount: true, notes: { select: { upb: true, askingPrice: true, tradeStatus: true } } },
       })
     : [];
 
@@ -84,6 +84,7 @@ export default async function EventsPage() {
                 </div>
               </dl>
               <p className="mt-4 text-sm text-foreground">{roundText(event)}</p>
+              {own.some((listing) => listing.showBidderCount) && <p className="mt-2 text-sm text-muted-foreground">{own.every((listing) => listing.showBidderCount) ? "Bidders" : `On ${own.filter((listing) => listing.showBidderCount).length} of its listings, bidders`} see how many others are bidding, never amounts.</p>}
               {(event.ndaDueAt || event.qaCutoffAt || event.awardTargetAt || event.closingTargetAt) && (
                 <div className="mt-4 border-t border-border pt-3">
                   <p className="text-xs text-muted-foreground">Process calendar</p>

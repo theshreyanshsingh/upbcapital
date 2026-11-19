@@ -103,6 +103,7 @@ export default async function MarketplacePage({
       propertyType: note.propertyType,
       occupancy: note.occupancy,
       foreclosureStatus: note.foreclosureStatus,
+      loanProgram: note.loanProgram ?? null,
       monthsDelinquent: note.monthsDelinquent,
       upb: num(note.upb),
       askingPrice: num(note.askingPrice),

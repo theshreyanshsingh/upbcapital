@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { ndaOpensRoom } from "@/lib/acl";
 import { actionGate, type GatedAction } from "@/lib/action-gates";
+import { bidderLimitBlock } from "@/lib/attestations";
 import { audit } from "@/lib/audit";
 import { requireUser } from "@/lib/auth";
 import { canSubmitBid, sealedFromSeller } from "@/lib/auction";
@@ -97,6 +98,10 @@ async function buyerReady(userId: string, listingId: string) {
   if (!nda) return "Sign the confidentiality agreement before taking a seat.";
   // Where the seller approves each bidder, a seat waits for that approval like the room does.
   if (!ndaOpensRoom(nda)) return nda.accessStatus === "DECLINED" ? "The seller didn't approve your access to this listing." : "The seller is still deciding on your access to this listing.";
+  // A sale open to banks and credit unions only, or asking bidder statements, holds a seat to them as it does a bid.
+  // A seat is for the main file (lib/attestations.ts).
+  const limited = await bidderLimitBlock({ user, listingId, buyerEntityId: null, seat: true });
+  if (limited) return limited.error;
   return null;
 }
 

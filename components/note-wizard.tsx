@@ -283,7 +283,7 @@ export function NoteWizard({
                 onClick={() => setStep(index)}
                 aria-label={index < step ? `Back to step ${index + 1}, ${label}` : `Step ${index + 1}, ${label}`}
                 aria-current={index === step ? "step" : undefined}
-                className="flex h-6 w-full items-center disabled:cursor-default"
+                className="flex h-6 w-full items-center disabled:cursor-default pointer-coarse:h-10"
               >
                 <span className={`step-bar h-1 w-full rounded-full ${index <= step ? "bg-link" : "bg-muted"}`} />
               </button>
@@ -555,7 +555,7 @@ export function NoteWizard({
           </div>
         )}
         {step === 4 && (
-          <div className="grid gap-6 lg:grid-cols-[1fr_280px]">
+          <div className="grid grid-cols-[minmax(0,1fr)] gap-6 lg:grid-cols-[minmax(0,1fr)_280px]">
             <div className="space-y-5">
               <Field label="Asking price" hint="What you want for the note, before the desk's buyer premium.">
                 <Input className="h-11 bg-card" inputMode="decimal" value={draft.askingPrice} onChange={(event) => set("askingPrice", event.target.value)} />

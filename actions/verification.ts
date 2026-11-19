@@ -8,6 +8,7 @@ import { addBeneficialOwner, fileGaps, removeBeneficialOwner } from "@/lib/benef
 import { confirmRecertification, reviewBuyerFile } from "@/lib/buyer-file";
 import { ROAD_THRESHOLD, readEligibility, reoStrategyLabel } from "@/lib/eligibility";
 import { prettyDate } from "@/lib/format";
+import { charterLine, readCharter } from "@/lib/institutions";
 import { MAIN_FILE_ENTITIES } from "@/lib/labels";
 import { requireUser } from "@/lib/auth";
 import { requireDesk } from "@/lib/staff";
@@ -38,6 +39,9 @@ export async function submitVerification(formData: FormData) {
   // The last four only. Anything longer is refused rather than cut down, so the whole number is never kept.
   const taxId = readTaxIdLast4(formData.get("taxIdLast4"));
   if (taxId.error !== null) redirect(`/buyer/verification?error=${encodeURIComponent(taxId.error)}`);
+  // A bank or credit union gives its charter number and regulator, which the desk checks before approving.
+  const charter = readCharter(entityType, { charterNumber: formData.get("charterNumber"), regulator: formData.get("regulator") });
+  if (charter.error !== null) redirect(`/buyer/verification?error=${encodeURIComponent(charter.error)}`);
   // An entity lists its owners and a control person before the file goes to the desk.
   const gaps = await fileGaps(user.id, null, entityType);
   if (gaps.length) redirect(`/buyer/verification?error=${encodeURIComponent(`${gaps.join(" ")} Add them under Owners, then submit.`)}#owners`);
@@ -95,6 +99,7 @@ export async function submitVerification(formData: FormData) {
       proofExpiresAt: null,
       proofVerifiedAt: null,
       taxIdLast4: taxId.value,
+      ...charter.data,
       status: "SUBMITTED",
       submittedAt: new Date(),
       reviewerNote: "",
@@ -112,6 +117,7 @@ export async function submitVerification(formData: FormData) {
       proofMime,
       proofAmount,
       taxIdLast4: taxId.value,
+      ...charter.data,
       status: "SUBMITTED",
       submittedAt: new Date(),
       ...(eligibility ?? {}),
@@ -121,7 +127,8 @@ export async function submitVerification(formData: FormData) {
   screenInBackground(() => screenUser(user.id, "Buyer file"));
   if (eligibility) await audit(user.id, "ELIGIBILITY_ANSWERS", "user", user.id, `${eligibility.homesControlled} homes · ${reoStrategyLabel(eligibility.reoStrategy)}`);
   const homes = eligibility ? ` They state ${eligibility.homesControlled.toLocaleString("en-US")} single-family homes controlled.` : "";
-  await notifyDesk(`Verification submitted · ${user.name}`, `${entityName} (${entityType}) in ${jurisdiction} is waiting on the desk.${homes}`);
+  const charterNote = charter.data.charterNumber ? ` ${charterLine({ entityType, ...charter.data })}. Check it on the regulator's record before approving.` : "";
+  await notifyDesk(`Verification submitted · ${user.name}`, `${entityName} (${entityType}) in ${jurisdiction} is waiting on the desk.${homes}${charterNote}`);
   revalidatePath("/buyer/verification");
   revalidatePath("/admin/verification");
   redirect("/buyer/verification?notice=submitted_kyc");
@@ -160,6 +167,7 @@ export async function reviewVerification(formData: FormData) {
     reviewerNote: field("reviewerNote"),
     proofAmount: field("proofAmount"),
     proofExpiresAt: field("proofExpiresAt"),
+    charterChecked: field("charterChecked") === "yes",
   });
   if (result.error !== null) redirect(`/admin/verification?error=${encodeURIComponent(result.error)}#buyer-${field("userId")}`);
   revalidatePath("/admin/verification");

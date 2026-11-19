@@ -17,7 +17,7 @@ const DAY = 24 * 60 * 60 * 1000;
 const ON_BOOK = ["APPROVED", "PENDING", "SOLD"];
 
 type Viewer = { id: string; role: string; accountStatus: string };
-type EventListing = { id: string; title: string; status: string; kind: string; sellerId: string; brokerId: string | null; loans: number };
+type EventListing = { id: string; title: string; status: string; kind: string; sellerId: string; brokerId: string | null; loans: number; showBidderCount?: boolean | null };
 
 // Who may read an event's letter and calendar: the desk, any approved buyer, and the seller or filing broker of a
 // listing in the event. Null means no.
@@ -28,10 +28,10 @@ export async function eventPapers(eventId: string, viewer: Viewer) {
   // listing of a seller who excludes them (lib/private-listings.ts).
   const rows = await prisma.listing.findMany({
     where: { saleEventId: event.id, AND: [await listingScope(viewer)] },
-    select: { id: true, title: true, status: true, kind: true, sellerId: true, brokerId: true, _count: { select: { notes: true } } },
+    select: { id: true, title: true, status: true, kind: true, sellerId: true, brokerId: true, showBidderCount: true, _count: { select: { notes: true } } },
     orderBy: { approvedAt: "asc" },
   });
-  const listings: EventListing[] = rows.map((row) => ({ id: row.id, title: row.title, status: row.status, kind: row.kind, sellerId: row.sellerId, brokerId: row.brokerId, loans: row._count.notes }));
+  const listings: EventListing[] = rows.map((row) => ({ id: row.id, title: row.title, status: row.status, kind: row.kind, sellerId: row.sellerId, brokerId: row.brokerId, loans: row._count.notes, showBidderCount: row.showBidderCount }));
   const desk = viewer.role === "ADMIN";
   const buyer = viewer.role === "BUYER" && viewer.accountStatus === "APPROVED";
   const own = (listing: EventListing) => listing.sellerId === viewer.id || listing.brokerId === viewer.id;
@@ -63,7 +63,7 @@ function plural(count: number, word: string) {
 // The letter's words, apart from the page, so the content can be checked without reading a PDF.
 export function letterContent(input: {
   event: Pick<SaleEvent, "name" | "status" | "summary" | "indicationsAt" | "bestFinalAt" | "ndaDueAt" | "qaCutoffAt" | "awardTargetAt" | "closingTargetAt" | "processNotes">;
-  listings: Pick<EventListing, "title" | "kind" | "loans">[];
+  listings: Pick<EventListing, "title" | "kind" | "loans" | "showBidderCount">[];
   others: number;
   settings: { depositBps?: number | null; depositDays?: number | null; diligenceDays?: number | null };
   contact: string;
@@ -97,7 +97,8 @@ export function letterContent(input: {
     name: event.name,
     status: EVENT_STATUS_LABEL[event.status] ?? event.status,
     summary: event.summary,
-    listings: input.listings.map((listing) => `${listing.title} · ${listing.kind === "POOL" ? plural(listing.loans, "loan") : "one note"}`),
+    // A listing whose seller chose to show the bidder count says so (lib/bidder-count.ts).
+    listings: input.listings.map((listing) => `${listing.title} · ${listing.kind === "POOL" ? plural(listing.loans, "loan") : "one note"}${listing.showBidderCount ? " · bidders see how many others are bidding, never amounts" : ""}`),
     others: input.others,
     dates: milestones(event).map((milestone) => [milestone.label, when(milestone.at)]),
     rules,

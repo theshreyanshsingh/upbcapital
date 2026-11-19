@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { deskBookBlock } from "@/lib/attestations";
 import { requireUser } from "@/lib/auth";
 import { openClosing, tradeConflict } from "@/lib/closing-service";
 import { notify, notifyDesk } from "@/lib/email";
@@ -32,6 +33,9 @@ export async function placeDeskBid(formData: FormData) {
   if (!listing || !["APPROVED", "SUBMITTED", "UNDER_REVIEW", "PENDING"].includes(listing.status)) {
     redirect(`/admin/listings/${listingId}?error=That listing is not open for a desk bid.`);
   }
+  // A sale open to banks and credit unions only, or asking bidder statements, takes no desk book bid (lib/attestations.ts).
+  const limited = deskBookBlock(listing);
+  if (limited) redirect(`/admin/listings/${listingId}?error=${encodeURIComponent(limited)}`);
   const amount = amountOf(formData);
   if (!(amount > 0)) redirect(`/admin/listings/${listingId}?error=Enter a bid.`);
   const noteId = String(formData.get("noteId") || "");

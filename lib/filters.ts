@@ -2,6 +2,7 @@ import { money } from "@/lib/format";
 import { FORECLOSURES, labelOf, LIEN_POSITIONS, OCCUPANCIES, PAYMENT_STATUSES, PROPERTY_TYPES, US_STATES } from "@/lib/labels";
 import { listingFigures } from "@/lib/metrics";
 import { typedNumber } from "@/lib/money";
+import { LOAN_PROGRAMS } from "@/lib/tape-fields";
 
 // A filter that takes several values matches any one of them. Older saved searches hold a single string.
 type Many = string | string[];
@@ -21,6 +22,8 @@ export type BookFilters = {
   // Facts from the loan file and tape v2.
   occupancy?: Many;
   foreclosureStatus?: Many;
+  // The program each loan was made under (tape v3.1). A pool matches when any loan carries one picked.
+  loanProgram?: Many;
   dlqMin?: number;
   dlqMax?: number;
   modified?: Flag;
@@ -61,7 +64,14 @@ export const KINDS = [
   { value: "POOL", label: "Pools" },
 ] as const;
 
-export const MULTI_KEYS = ["paymentStatus", "lienPosition", "propertyType", "occupancy", "foreclosureStatus", "bidMode"] as const;
+// The tape's loan programs, with private money named briefly for a filter's chip and a buy box's reason.
+export const PROGRAM_CHOICES = LOAN_PROGRAMS.map((program) => ({ value: program.value, label: program.value === "PRIVATE" ? "Private or seller-financed" : program.label }));
+
+export function programLabel(value: string) {
+  return PROGRAM_CHOICES.find((program) => program.value === value)?.label ?? value;
+}
+
+export const MULTI_KEYS = ["paymentStatus", "lienPosition", "propertyType", "occupancy", "foreclosureStatus", "loanProgram", "bidMode"] as const;
 export type MultiKey = (typeof MULTI_KEYS)[number];
 export const FLAG_KEYS = ["modified", "bankruptcy", "hoaLien", "taxDelinquent", "deadline"] as const;
 
@@ -69,10 +79,10 @@ export const FLAG_KEYS = ["modified", "bankruptcy", "hoaLien", "taxDelinquent", 
 export const FIGURE_KEYS = ["upbMin", "upbMax", "priceMin", "priceMax", "rateMin", "rateMax", "ptuMin", "ptuMax", "yieldMin", "yieldMax", "valueMin", "valueMax", "ltvMin", "ltvMax"] as const;
 
 // Facts that show only on a listing the viewer can open: its loan file and tape flags.
-export const FILE_KEYS = ["occupancy", "foreclosureStatus", "dlqMin", "dlqMax", "modified", "bankruptcy", "hoaLien", "taxDelinquent"] as const;
+export const FILE_KEYS = ["occupancy", "foreclosureStatus", "loanProgram", "dlqMin", "dlqMax", "modified", "bankruptcy", "hoaLien", "taxDelinquent"] as const;
 
 const KEY_ORDER: (keyof BookFilters)[] = [
-  "q", "state", "kind", "status", "paymentStatus", "lienPosition", "propertyType", "occupancy", "foreclosureStatus",
+  "q", "state", "kind", "status", "paymentStatus", "lienPosition", "propertyType", "occupancy", "foreclosureStatus", "loanProgram",
   "dlqMin", "dlqMax", "modified", "bankruptcy", "hoaLien", "taxDelinquent", "bidMode", "deadline",
   "upbMin", "upbMax", "priceMin", "priceMax", "rateMin", "rateMax", "ptuMin", "ptuMax", "yieldMin", "yieldMax", "valueMin", "valueMax",
   "ltvMin", "ltvMax",
@@ -84,6 +94,7 @@ const CHOICES: Record<MultiKey, readonly { value: string }[]> = {
   propertyType: PROPERTY_TYPES,
   occupancy: OCCUPANCIES,
   foreclosureStatus: FORECLOSURES,
+  loanProgram: PROGRAM_CHOICES,
   bidMode: BID_MODES,
 };
 
@@ -134,6 +145,7 @@ export function parseFilters(input: Raw): BookFilters {
     q: first("q")?.slice(0, 80),
     occupancy: many("occupancy"),
     foreclosureStatus: many("foreclosureStatus"),
+    loanProgram: many("loanProgram"),
     dlqMin: dlqMin ? dlqMin : undefined,
     dlqMax: months("dlqMax"),
     modified: flag("modified"),
@@ -197,6 +209,8 @@ export type MatchNote = {
   // out never matches, so a saved search can't alert on something nobody checked.
   occupancy?: string;
   foreclosureStatus?: string;
+  // Null where the tape states no program.
+  loanProgram?: string | null;
   monthsDelinquent?: number;
   interestRate?: number;
   monthlyPi?: number;
@@ -254,6 +268,8 @@ export function noteMatches(note: MatchNote, filters: BookFilters) {
   if (filters.q && !`${note.city} ${note.state}`.toLowerCase().includes(filters.q.toLowerCase())) return false;
   if (!inList(note.occupancy, filters.occupancy)) return false;
   if (!inList(note.foreclosureStatus, filters.foreclosureStatus)) return false;
+  // A loan with no program on its tape matches only "Any", never a program picked.
+  if (!inList(note.loanProgram ?? undefined, filters.loanProgram)) return false;
   if (!inRange(note.monthsDelinquent, filters.dlqMin, filters.dlqMax)) return false;
   if (!inRange(note.interestRate, filters.rateMin, filters.rateMax)) return false;
   if (!flagMatches(note.modified, filters.modified)) return false;
@@ -364,6 +380,7 @@ function choiceLabel(key: MultiKey, value: string) {
   if (key === "lienPosition") return `${labelOf("lien", value)} lien`;
   if (key === "foreclosureStatus") return `Foreclosure: ${labelOf("foreclosure", value)}`;
   if (key === "occupancy") return labelOf("occupancy", value);
+  if (key === "loanProgram") return `Program: ${programLabel(value)}`;
   if (key === "propertyType") return labelOf("property", value);
   return labelOf("payment", value);
 }

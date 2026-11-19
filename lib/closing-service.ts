@@ -462,7 +462,19 @@ export type TimelineInput = {
   now?: Date;
 };
 
-export const TIMELINE_ACTIONS = ["CLOSING", "CLOSING_CANCELED", "CLOSING_DATES", "CLOSING_OVERRIDE", "WIRE_EDIT", "FUNDS_RECEIVED", "DEPOSIT_RECEIVED", "PROCEEDS_SENT", "SHARE_FUNDED", "DILIGENCE_WALK_AWAY", ...DEPOSIT_TIMELINE_ACTIONS];
+// Custody events on the deal timeline: who holds the collateral file, the bailee letter, the custodian's receipt and its
+// exceptions (lib/custody.ts).
+const CUSTODY_TITLES: Record<string, { title: string; owner: "buyer" | "seller" | "desk" }> = {
+  CUSTODIAN_NAMED: { title: "Custodian named", owner: "buyer" },
+  CUSTODIAN_CHANGED: { title: "Custodian changed", owner: "buyer" },
+  BAILEE_LETTER: { title: "Bailee letter issued", owner: "seller" },
+  CUSTODIAN_RECEIPT: { title: "Custodian received the file", owner: "buyer" },
+  CUSTODY_EXCEPTIONS: { title: "Custodian exceptions recorded", owner: "buyer" },
+  CUSTODY_CLEARED: { title: "Custodian exceptions cleared", owner: "seller" },
+};
+const CUSTODY_TIMELINE_ACTIONS = Object.keys(CUSTODY_TITLES);
+
+export const TIMELINE_ACTIONS = ["CLOSING", "CLOSING_CANCELED", "CLOSING_DATES", "CLOSING_OVERRIDE", "WIRE_EDIT", "FUNDS_RECEIVED", "DEPOSIT_RECEIVED", "PROCEEDS_SENT", "SHARE_FUNDED", "DILIGENCE_WALK_AWAY", ...CUSTODY_TIMELINE_ACTIONS, ...DEPOSIT_TIMELINE_ACTIONS];
 
 export function ownerWord(owner: TimelineOwner) {
   return owner === "both" ? "Buyer and seller" : owner === "desk" ? "Desk" : owner === "buyer" ? "Buyer" : "Seller";
@@ -574,6 +586,9 @@ export function dealTimeline(input: TimelineInput, side: TimelineSide): { entrie
     }
     if (event.action === "CLOSING_OVERRIDE" && desk) entries.push({ ...base, title: "Step marked without the wire on record", detail: readable(event.detail), owner: "desk" });
     if (event.action === "DILIGENCE_WALK_AWAY") entries.push({ ...base, title: "The buyer walked away in diligence", detail: event.detail, owner: "buyer" });
+    // The collateral file's custody, which both sides follow (lib/custody.ts).
+    const custody = party ? CUSTODY_TITLES[event.action] : undefined;
+    if (custody) entries.push({ ...base, title: custody.title, detail: event.detail, owner: custody.owner });
     // What became of the deposit and its four-eyes decision, for the buyer side like the deposit wire.
     const deposit = buyerSide ? depositTimelineEntry(event, desk) : null;
     if (deposit) entries.push({ ...base, ...deposit });

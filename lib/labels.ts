@@ -61,12 +61,15 @@ export const DOC_TYPES = [
 ] as const;
 
 // The kinds of buying entity a buyer file or an extra buying entity can be. The main file is never an IRA, since
-// an IRA needs a custodian and an account title the main file doesn't carry.
+// an IRA needs a custodian and an account title the main file doesn't carry. A bank or credit union gives its charter
+// number and regulator (lib/institutions.ts).
 export const INVESTOR_ENTITIES = [
   { value: "INDIVIDUAL", label: "Individual" },
   { value: "LLC", label: "Limited liability company" },
   { value: "TRUST", label: "Trust" },
   { value: "FUND", label: "Fund" },
+  { value: "BANK", label: "Bank" },
+  { value: "CREDIT_UNION", label: "Credit union" },
   { value: "OTHER", label: "Other entity" },
   { value: "IRA", label: "Self-directed IRA" },
 ] as const;

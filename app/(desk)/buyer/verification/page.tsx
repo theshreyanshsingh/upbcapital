@@ -17,7 +17,9 @@ import { strikeLimitOf, strikesFor } from "@/lib/strikes";
 import { ACCREDITATION_TEXT, TAX_ID_NOTE, recertLapsed, recertOpen } from "@/lib/verification";
 import { OWNERS_INTRO, fileKey, needsOwners, ownerGaps, ownerLine } from "@/lib/beneficial-owners";
 import { BuyerEntityForm } from "@/components/buyer-entity-form";
+import { BuyerAttestations } from "@/components/bidder-attestations";
 import { ENTITY_TYPES, IRA_NOTE, IRA_TITLE_EXAMPLE } from "@/lib/buyer-entities";
+import { CHARTER_NOTE, REGULATORS, charterLine, isInstitution } from "@/lib/institutions";
 import { INVESTOR_ENTITIES, MAIN_FILE_ENTITIES, entityLabel } from "@/lib/labels";
 import { redirect } from "next/navigation";
 
@@ -26,6 +28,8 @@ export const metadata = { title: "Verification" };
 const ENTITIES = MAIN_FILE_ENTITIES.map((entity) => [entity.value, entity.label] as const);
 // Extra entities list the usual buying vehicles first.
 const ENTITY_KINDS = ENTITY_TYPES.map((value) => INVESTOR_ENTITIES.find((entity) => entity.value === value)!);
+// Plain values for the entity form, a client component.
+const REGULATOR_OPTIONS = REGULATORS.map((regulator) => ({ value: regulator.value, label: regulator.label, kinds: [...regulator.kinds] }));
 
 export default async function VerificationPage({
   searchParams,
@@ -185,7 +189,7 @@ export default async function VerificationPage({
         <section id="entities" aria-labelledby="entities-heading" className="mt-8 scroll-mt-6 border border-border p-6 rounded-xl">
           <p id="entities-heading" className="eyebrow">Other buying entities</p>
           <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-            Buy through another LLC, a trust or a self-directed IRA. Once the desk approves one, you choose it when you bid, and the closing papers name it. Your funds credential and record stay with your login.
+            Buy through another LLC, a trust, a bank or credit union, or a self-directed IRA. Once the desk approves one, you choose it when you bid, and the closing papers name it. Your funds credential and record stay with your login.
           </p>
           {entities.length > 0 && (
             <ul className="mt-4 divide-y divide-border border border-border rounded-xl">
@@ -201,6 +205,7 @@ export default async function VerificationPage({
                     {entityLabel(entity.entityType)}
                     {entity.entityType === "IRA" ? ` · custodian ${entity.iraCustodian} · vests as ${entity.iraAccountTitle}` : entity.jurisdiction ? ` · formed in ${entity.jurisdiction}` : ""}
                     {entity.taxIdLast4 ? ` · tax ID ending ${entity.taxIdLast4}` : ""}
+                    {isInstitution(entity.entityType) ? ` · ${charterLine(entity)}` : ""}
                   </p>
                   {entity.reviewerNote && <p className="mt-1 text-muted-foreground">The desk: {entity.reviewerNote}</p>}
                   {needsOwners(entity.entityType) && entity.status !== "REJECTED" && (
@@ -221,11 +226,21 @@ export default async function VerificationPage({
             </ul>
           )}
           {profile?.status === "APPROVED" ? (
-            <BuyerEntityForm kinds={ENTITY_KINDS} iraNote={IRA_NOTE} titleExample={IRA_TITLE_EXAMPLE} taxNote={TAX_ID_NOTE} />
+            <BuyerEntityForm kinds={ENTITY_KINDS} iraNote={IRA_NOTE} titleExample={IRA_TITLE_EXAMPLE} taxNote={TAX_ID_NOTE} regulators={REGULATOR_OPTIONS} charterNote={CHARTER_NOTE} />
           ) : (
             <p className="mt-4 text-sm text-muted-foreground">New entities open again once the desk approves your main file.</p>
           )}
         </section>
+      )}
+      {/* Statements some sales ask each bidder for, given per buying entity (lib/attestations.ts). */}
+      {profile && profile.status !== "REJECTED" && (
+        <BuyerAttestations
+          userId={user.id}
+          files={[
+            { id: null, name: profile.entityName.trim() || "Your main buyer file", entityType: profile.entityType },
+            ...entities.filter((entity) => entity.status !== "REJECTED").map((entity) => ({ id: entity.id, name: entity.name, entityType: entity.entityType })),
+          ]}
+        />
       )}
       {/* The main file's owners, for an LLC, trust, fund or other entity. Their own forms, so they sit outside the file's. */}
       {(!profile || needsOwners(profile.entityType) || profile.status !== "APPROVED" || mainOwners.length > 0) && (
@@ -256,6 +271,26 @@ export default async function VerificationPage({
           <span className="text-[13px] text-muted-foreground">Formed in</span>
           <Input name="jurisdiction" defaultValue={profile?.jurisdiction} placeholder="Florida" className="mt-2 h-11 bg-card" />
         </label>
+        {/* A bank or credit union names its charter. The action reads these only for those two kinds. */}
+        <fieldset className="min-w-0 space-y-3 rounded-lg border border-border p-3" aria-describedby="charter-note">
+          <legend className="px-1 text-[13px] text-muted-foreground">For a bank or credit union</legend>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="block min-w-0">
+              <span className="text-[13px] text-muted-foreground">FDIC certificate or NCUA charter number</span>
+              <Input name="charterNumber" inputMode="numeric" pattern="[0-9 ]*" maxLength={8} autoComplete="off" defaultValue={profile?.charterNumber ?? ""} placeholder="12345" className="mt-2 h-11 w-full bg-card tabular-nums" />
+            </label>
+            <label className="block min-w-0">
+              <span className="text-[13px] text-muted-foreground">Regulator</span>
+              <select name="regulator" defaultValue={profile?.regulator ?? ""} className="desk-input mt-2">
+                <option value="">Not a bank or credit union</option>
+                {REGULATORS.map((regulator) => (
+                  <option key={regulator.value} value={regulator.value}>{regulator.label}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <p id="charter-note" className="text-xs text-muted-foreground">A bank gives its FDIC certificate number and a credit union its NCUA charter number. {CHARTER_NOTE}</p>
+        </fieldset>
         <label className="block">
           <span className="text-[13px] text-muted-foreground">Last four digits of the tax ID: the EIN, or your SSN as an individual</span>
           <Input name="taxIdLast4" inputMode="numeric" pattern="[0-9]{4}" minLength={4} maxLength={4} autoComplete="off" required defaultValue={profile?.taxIdLast4 ?? ""} placeholder="1234" className="mt-2 h-11 w-32 bg-card tabular-nums" aria-describedby="tax-id-note" />

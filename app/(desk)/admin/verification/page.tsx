@@ -3,6 +3,7 @@ import { reviewVerification } from "@/actions/verification";
 import { reviewEntity } from "@/actions/buyer-entities";
 import { ConfirmSubmit } from "@/components/confirm-submit";
 import { FileOwners } from "@/components/file-owners";
+import { CharterCheck, CharterReview } from "@/components/institution-charter";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { SellerFilesLink } from "@/components/seller-identity";
@@ -63,6 +64,8 @@ export default async function AdminVerificationPage({
               <p className="text-[13px] font-medium text-link">{profile.status.replaceAll("_", " ").toLowerCase()}</p>
             </div>
             <p className="mt-2 text-xs text-muted-foreground">Submitted {prettyDate(profile.submittedAt)}</p>
+            {/* A bank or credit union's charter, with the regulator's public record to check it on (lib/institutions.ts). */}
+            <CharterReview file={profile} />
             <p className="mt-1 text-sm text-foreground">
               {profile.proofVerifiedAt && profile.proofAmount != null
                 ? `Verified funds ${money(profile.proofAmount)} through ${prettyDate(profile.proofExpiresAt)}${profile.proofExpiresAt && profile.proofExpiresAt.getTime() < Date.now() ? " · expired" : ""}`
@@ -99,6 +102,7 @@ export default async function AdminVerificationPage({
                 </label>
               </div>
               <p className="text-xs text-muted-foreground">Needed to approve. With no date, the proof is good for 90 days. Bids whose all-in runs above it are flagged on the bid sheet.</p>
+              <CharterCheck file={profile} />
               <div className="flex flex-wrap gap-2">
                 <button type="submit" name="decision" value="APPROVED" className="h-9 bg-primary px-3 text-[13px] font-medium text-primary-foreground rounded-lg">Approve</button>
                 <button type="submit" name="decision" value="CHANGES_REQUESTED" className="h-9 border border-border px-3 text-[13px] font-medium text-foreground rounded-lg">Request changes</button>
@@ -124,6 +128,8 @@ type EntityRow = {
   reviewedAt: Date | null;
   createdAt: Date;
   taxIdLast4?: string | null;
+  charterNumber?: string | null;
+  regulator?: string | null;
 };
 
 // The buyer's other buying entities. Each is approved or declined with a note, and approval screens it again.
@@ -145,11 +151,13 @@ function Entities({ userId, rows, canReview, owners }: { userId: string; rows: E
               {` · added ${prettyDate(entity.createdAt)}`}
               {entity.reviewedAt ? ` · decided ${prettyDate(entity.reviewedAt)}` : ""}
             </p>
+            <CharterReview file={entity} />
             {entity.reviewerNote && <p className="text-xs text-muted-foreground">Note: {entity.reviewerNote}</p>}
             <FileOwners owners={owners.get(fileKey(userId, entity.id)) ?? []} entityType={entity.entityType} taxIdLast4={entity.taxIdLast4 ?? null} />
             {canReview && <form action={reviewEntity} className="mt-2 flex flex-wrap items-end gap-2">
               <input type="hidden" name="entityId" value={entity.id} />
               <input type="hidden" name="userId" value={userId} />
+              {entity.status !== "APPROVED" && <CharterCheck file={entity} />}
               <label className="block min-w-56 flex-1">
                 <span className="text-xs text-muted-foreground">Note to the buyer</span>
                 <input name="note" maxLength={600} className="desk-input mt-1" placeholder={entity.status === "APPROVED" ? "Why it is declined" : "Optional when approving"} />

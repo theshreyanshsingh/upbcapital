@@ -149,6 +149,10 @@ enum InvestorEntity {
   OTHER
   // A self-directed IRA, held by a custodian for the buyer's benefit.
   IRA
+  // A chartered bank or credit union. The desk checks the charter number against the regulator's records before the
+  // entity counts as a regulated institution (lib/institutions.ts).
+  BANK
+  CREDIT_UNION
 }
 
 enum OfferMessageKind {
@@ -605,6 +609,15 @@ model Listing {
   // Buyers see the seller as a type ("Credit union") until the desk lets them into the data room. True means the
   // seller chose to be named to every approved buyer. lib/seller-anonymity.ts.
   sellerNamed          Boolean?
+  // Who may bid: REGULATED means only a desk-checked bank or credit union. Missing means any approved buyer.
+  // lib/institutions.ts.
+  buyerLimit           String?
+  // Attestations every bidder must have on file for the buying entity before bidding, by kind, such as an agency
+  // sale's bidder certification. lib/attestations.ts.
+  requiredAttestations String[]      @default([])
+  // The seller's choice to show bidders how many others are bidding during the round: counts only, never amounts.
+  // lib/bidder-count.ts.
+  showBidderCount      Boolean?
   // The seller's statement, at submission, that it owns these loans or holds the owner's mandate, and that they are
   // not pledged or sold elsewhere: who made it, when, and the wording's version. lib/provenance.ts.
   ownershipAttestedAt  DateTime?
@@ -1125,6 +1138,9 @@ model BuyerEntity {
   // For an IRA: the custodian, and the account title the paper vests in, such as "Custodian FBO Name IRA #1234".
   iraCustodian    String?
   iraAccountTitle String?
+  // For a bank or credit union, as on the buyer's main file.
+  charterNumber   String?
+  regulator       String?
   // The last four digits of the entity's EIN. UPB never stores the whole number.
   taxIdLast4      String?
   status          VerificationStatus @default(SUBMITTED)
@@ -1221,6 +1237,10 @@ model BuyerProfile {
   entityType        InvestorEntity     @default(INDIVIDUAL)
   entityName        String             @default("")
   jurisdiction      String             @default("")
+  // For a bank or credit union: the FDIC certificate or NCUA charter number, and the regulator (OCC, FDIC, FRB, NCUA
+  // or STATE). The desk checks both before the file counts as a regulated institution. lib/institutions.ts.
+  charterNumber     String?
+  regulator         String?
   accredited        Boolean            @default(false)
   certificationText String             @default("")
   proofKey          String             @default("")
@@ -1314,6 +1334,15 @@ model Closing {
   walkAwayReason        String?
   // When the buyer and seller were asked for a review of a completed closing, so each is asked once.
   reviewRequestedAt     DateTime?
+  // The collateral file's custody: the custodian holding it for the buyer, how to reach it, the bailee letter the
+  // collateral shipped under while funds were pending, the custodian's receipt, and the exceptions it found on
+  // review and when they cleared. lib/custody.ts.
+  custodianName         String?
+  custodianContact      String?
+  baileeLetterAt        DateTime?
+  custodianReceiptAt    DateTime?
+  custodianExceptions   String?
+  exceptionsClearedAt   DateTime?
   depositReceivedCents  Int?
   depositReceivedAt     DateTime?
   depositReference      String?
@@ -1572,6 +1601,9 @@ model BuyBox {
   // The highest loan-to-value the buyer takes, as a percent, and the fewest months since origination.
   maxLtv        Float?
   minSeasoningMonths Int?
+  // Loan programs the box takes, comma-separated like states (CONVENTIONAL, FHA, VA, USDA, PRIVATE, OTHER). Blank
+  // means any.
+  programs      String         @default("")
   // A standing price rule: every new tape that fits this box gets an indicative bid at once, which the desk
   // reviews and the buyer confirms before it is a bid. Basis UPB prices at bidPercent of UPB; basis YIELD solves
   // for the price that returns targetYield.
@@ -2745,4 +2777,27 @@ model BoardSnapshot {
   lockedById String
   note       String   @default("")
   createdAt  DateTime @default(now())
+}
+
+// A buyer's standing certification for one buying entity, given once and reused at each bid: for example an agency
+// sale's bidder certification or a debt-buyer licence statement. A new version of the wording needs a new one, and an
+// expired or revoked one doesn't count. lib/attestations.ts.
+model BidderAttestation {
+  id            String    @id @default(cuid()) @map("_id")
+  userId        String
+  // The entity it is for: one of the buyer's BuyerEntity rows, or the buyer's main file when null.
+  buyerEntityId String?
+  kind          String
+  version       String
+  // The wording as given, so a later change to the text doesn't rewrite what was certified.
+  text          String
+  // A licence or registration number the attestation names, when the kind asks for one.
+  reference     String?
+  attestedAt    DateTime  @default(now())
+  attestedById  String
+  expiresAt     DateTime?
+  revokedAt     DateTime?
+
+  @@index([userId])
+  @@index([userId, kind])
 }

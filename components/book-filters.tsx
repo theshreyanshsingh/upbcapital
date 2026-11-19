@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { BID_MODES, BOOK_STATUSES, KINDS, listOf, SORTS, type BookFilters, type BookSort, type Flag } from "@/lib/filters";
+import { BID_MODES, BOOK_STATUSES, KINDS, listOf, PROGRAM_CHOICES, SORTS, type BookFilters, type BookSort, type Flag } from "@/lib/filters";
 import { FORECLOSURES, LIEN_POSITIONS, OCCUPANCIES, PAYMENT_STATUSES, PROPERTY_TYPES } from "@/lib/labels";
 import { cn } from "@/lib/utils";
 
@@ -92,6 +92,7 @@ export function BookFiltersForm({
           <Checks legend="Property" name="propertyType" options={PROPERTY_TYPES} picked={filters.propertyType} />
           <Checks legend="Occupancy" name="occupancy" options={OCCUPANCIES} picked={filters.occupancy} />
           <Checks legend="Foreclosure" name="foreclosureStatus" options={FORECLOSURES} picked={filters.foreclosureStatus} />
+          <Checks legend="Loan program" name="loanProgram" options={PROGRAM_CHOICES} picked={filters.loanProgram} />
           <Checks legend="Bid style" name="bidMode" options={BID_MODES} picked={filters.bidMode} />
           <fieldset className={cn("space-y-2", sheet && "col-span-2")}>
             <legend className="text-[13px] font-semibold text-foreground">Sale</legend>
@@ -147,7 +148,7 @@ export function BookFiltersForm({
         </div>
         {!pro && (
           <p className="mt-4 text-xs leading-relaxed text-muted-foreground">
-            Occupancy, foreclosure, months delinquent and tape flags come from the loan file, so they skip listings you can&apos;t open yet.
+            Occupancy, foreclosure, loan program, months delinquent and tape flags come from the loan file, so they skip listings you can&apos;t open yet.
           </p>
         )}
         {!sheet && <Button type="submit" className="mt-4 h-10 px-4 text-[13px] font-medium">Apply filters</Button>}

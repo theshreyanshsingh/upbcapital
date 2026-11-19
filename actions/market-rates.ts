@@ -193,6 +193,7 @@ export async function checkTapeMarket(input: TapeCheck): Promise<Checked> {
     tradeStatus: "AVAILABLE",
     state: loan.state,
     lienPosition: loan.lienPosition,
+    loanProgram: loan.loanProgram ?? null,
     occupancy: loan.occupancy,
     estimatedValue: loan.estimatedValue,
     monthsDelinquent: loan.monthsDelinquent,

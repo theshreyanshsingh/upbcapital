@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { apiCaller } from "@/lib/api-limit";
+import { bidderCountFor } from "@/lib/bidder-count";
 import { isLive, listingDetail } from "@/lib/buyer-api";
 import { prisma } from "@/lib/prisma";
 import { canSeeListing } from "@/lib/private-listings";
@@ -26,11 +27,15 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
   const detail = listingDetail(listing);
   // A seller servicing its own loans is named in the servicer field, so until the name shows that reads as the type.
   const loans = detail.loans.map((loan) => ({ ...loan, servicerName: servicerShown(listing, loan.servicerName as string | null, allowed) }));
+  // How many other firms hold a live bid, where the seller chose to show it, as on the listing page. Counts only, and
+  // null when hidden (lib/bidder-count.ts).
+  const otherBidders = await bidderCountFor(listing, caller.user);
   return NextResponse.json({
     ...detail,
     loans,
     seller: sellerShown(listing, allowed),
     paused: Boolean(listing.stalePausedAt),
     confirmedAvailableAt: (listing.availableConfirmedAt ?? listing.approvedAt)?.toISOString() ?? null,
+    otherBidders,
   });
 }

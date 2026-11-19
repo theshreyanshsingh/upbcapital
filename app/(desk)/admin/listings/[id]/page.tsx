@@ -6,6 +6,7 @@ import { placeDeskBid } from "@/actions/desk-book";
 import { addEventListing, removeEventListing } from "@/actions/sale-events";
 import { sendToBuyers } from "@/actions/outreach";
 import { AuctionForm } from "@/components/auction-form";
+import { BidderCountChoice } from "@/components/bidder-count";
 import { ComplianceNote } from "@/components/compliance-note";
 import { SellerIdentityLine } from "@/components/seller-identity";
 import { ProvenanceDesk } from "@/components/listing-provenance";
@@ -18,6 +19,7 @@ import { DocumentReaderPanel } from "@/components/document-reader";
 import { QuestionQueue } from "@/components/listing-questions";
 import { RoomAccessPanel } from "@/components/room-access";
 import { PrivateSalePanel } from "@/components/private-sale";
+import { BidderLimits } from "@/components/bidder-limits";
 import { LoanFileDesk } from "@/components/loan-file-desk";
 import { PhotoManager } from "@/components/photo-manager";
 import { ResultConsent } from "@/components/result-consent";
@@ -159,7 +161,7 @@ export default async function AdminListingPage({
   const [owners, owner] = await Promise.all([sells ? dealOwners() : Promise.resolve([]), deskContact(listing.deskOwnerId)]);
 
   return (
-    <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_340px]">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-8 xl:grid-cols-[minmax(0,1fr)_340px]">
       <div>
         <Notice notice={q(query, "notice")} error={q(query, "error")} />
         <div className="mt-4 flex flex-wrap items-center gap-3">
@@ -282,6 +284,8 @@ export default async function AdminListingPage({
           engagement={log.status === 200 ? log.engagement : []}
         />
         <PrivateSalePanel listingId={listing.id} from="admin" readOnly={!sells} />
+        {/* Who may bid: banks and credit unions only, and the statements each bidder needs (lib/attestations.ts). */}
+        <BidderLimits listingId={listing.id} from="admin" canEdit={sells} />
         <QuestionQueue
           rows={questions.map((row) => ({ ...row, asker: realName(row.asker) }))}
           from="admin"
@@ -659,6 +663,7 @@ export default async function AdminListingPage({
             )}
           </>
         )}
+        <BidderCountChoice listing={listing} desk readOnly={!sells} />
         <ResultConsent listing={listing} desk readOnly={!sells} />
         <DeskNotes subjectType="listing" subjectId={listing.id} back={listingHref} viewerId={user.id} readOnly={!deskWrites(user)} />
       </aside>

@@ -68,7 +68,7 @@ export function EmailConfirmState({ user, canResend }: { user: Holder & { id: st
       {canResend && (
         <form action={deskResendConfirmation}>
           <input type="hidden" name="userId" value={user.id} />
-          <button type="submit" className="font-medium text-link">Resend the link</button>
+          <button type="submit" className="font-medium text-link pointer-coarse:inline-flex pointer-coarse:min-h-10 pointer-coarse:items-center">Resend the link</button>
         </form>
       )}
     </div>

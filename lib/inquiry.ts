@@ -1,6 +1,7 @@
 import type { Listing, User } from "@prisma/client";
 import { canOpenListing, openableListingIds } from "@/lib/access";
 import { canSubmitBid, sealedFromSeller } from "@/lib/auction";
+import { bidderLimitBlock } from "@/lib/attestations";
 import { audit } from "@/lib/audit";
 import { awardOffer } from "@/lib/awards";
 import { bidCapBlock, bidCapFor, capHint } from "@/lib/bid-caps";
@@ -211,6 +212,10 @@ export async function checkOffer(input: {
   if (lapsed) return { error: lapsed, verification: true };
   const entity = await chosenEntity(user.id, input.buyerEntityId);
   if (entity.error !== null) return { error: entity.error, verification: false };
+  // A sale open to banks and credit unions only, or asking bidder statements, holds the bid's entity to them: the one
+  // chosen, or the main file (lib/institutions.ts, lib/attestations.ts).
+  const limited = await bidderLimitBlock({ user, listingId: listing.id, buyerEntityId: entity.entityId, now });
+  if (limited) return limited;
   // Strikes pause bids only. Information and data room requests still go through.
   const strikes = await strikeStanding(user.id);
   if (strikes.paused) return { error: strikes.paused, verification: true };

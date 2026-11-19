@@ -57,6 +57,8 @@ export const AUTHORITY_HELP: Record<string, string> = {
   LLC: "The operating agreement, or a resolution of the members, naming the person who signs.",
   TRUST: "A certificate of trust naming the trustee who signs.",
   FUND: "A resolution, or the fund's governing documents, naming the person who signs.",
+  BANK: "A board resolution, or an officer's certificate, naming the officer who signs.",
+  CREDIT_UNION: "A board resolution, or an officer's certificate, naming the officer who signs.",
   OTHER: "A resolution, or the entity's governing documents, naming the person who signs.",
 };
 

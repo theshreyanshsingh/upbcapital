@@ -4,6 +4,7 @@ import { unset } from "@/lib/db-filters";
 import { digestSince } from "@/lib/digest";
 import { notify } from "@/lib/email";
 import { filtersFromSaved, listingMatches } from "@/lib/filters";
+import { keepRegulated, listingsForBuyer } from "@/lib/institutions";
 import { launchPending } from "@/lib/launch-rules";
 import { prisma } from "@/lib/prisma";
 import { audienceOf, listingScope } from "@/lib/private-listings";
@@ -47,6 +48,7 @@ function matchInput(listing: Listing & { notes: Note[] }) {
     tradeStatus: note.tradeStatus,
     occupancy: note.occupancy,
     foreclosureStatus: note.foreclosureStatus,
+    loanProgram: note.loanProgram,
     monthsDelinquent: note.monthsDelinquent,
     interestRate: Number(note.interestRate),
     monthlyPi: Number(note.monthlyPi),
@@ -75,8 +77,9 @@ export async function alertMatchingSearches(listingId: string, now = new Date())
     include: { user: true },
   });
   const input = matchInput(listing);
-  // A private listing alerts its invitees only, and never a buyer its seller excludes (lib/private-listings.ts).
-  const shown = new Set((await audienceOf(listing, [...new Map(searches.map((search) => [search.user.id, search.user])).values()])).map((user) => user.id));
+  // A private listing alerts its invitees only, and never a buyer its seller excludes (lib/private-listings.ts). A sale
+  // open to banks and credit unions only alerts theirs alone (lib/institutions.ts).
+  const shown = new Set((await keepRegulated(listing, await audienceOf(listing, [...new Map(searches.map((search) => [search.user.id, search.user])).values()]))).map((user) => user.id));
   for (const search of searches) {
     if (!alertsOn(search.user) || !shown.has(search.user.id)) continue;
     if (!listingMatches(input, filtersFromSaved(search.filters))) continue;
@@ -132,7 +135,8 @@ export async function sendSearchRoundup(search: SavedSearch & { user: User }, no
   const filters = filtersFromSaved(search.filters);
   // approvedAt is the launch time, so a coming-soon listing waits for the roundup after it goes live. The check holds
   // if a launch was ever written without it.
-  const matches = listings.filter((listing) => !launchPending(listing, now) && listingMatches(matchInput(listing), filters));
+  // A sale open to banks and credit unions only is left out for any other buyer (lib/institutions.ts).
+  const matches = (await listingsForBuyer(search.user.id, listings)).filter((listing) => !launchPending(listing, now) && listingMatches(matchInput(listing), filters));
   if (!matches.length) return false;
   await notify(search.user.email, `${CADENCE_LABEL[cadence]} · ${search.name}`, roundupBody(search.name, matches), searchMail(search));
   return true;

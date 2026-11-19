@@ -28,12 +28,13 @@ const at = (iso: string) => new Date(`${iso}Z`);
 const IRA = { name: "Jane Doe IRA", entityType: "IRA", iraCustodian: "Equity Trust Company", iraAccountTitle: "Equity Trust Company Custodian FBO Jane Doe IRA #12345" };
 
 test("an extra buying entity needs a kind, a name and where it is formed, and an IRA its custodian and account title", () => {
-  assert.match(readEntity({ name: "Harbor LLC", entityType: "BANK", jurisdiction: "DE" }).error ?? "", /kind of entity/);
+  // BANK is a kind now (a bank needs its charter, tests/institutions-attestations.test.ts), so an unknown kind stands in.
+  assert.match(readEntity({ name: "Harbor LLC", entityType: "CORPORATION", jurisdiction: "DE" }).error ?? "", /kind of entity/);
   assert.match(readEntity({ name: " ", entityType: "LLC", jurisdiction: "DE" }).error ?? "", /Name the buying entity/);
   assert.match(readEntity({ name: "Harbor LLC", entityType: "LLC", jurisdiction: "" }).error ?? "", /where the entity is formed/);
   const llc = readEntity({ name: "  Harbor   Note LLC ", entityType: "LLC", jurisdiction: "Delaware", iraCustodian: "ignored", taxIdLast4: "4321" });
   assert.equal(llc.error, null);
-  assert.deepEqual(llc.error === null && llc.data, { name: "Harbor Note LLC", entityType: "LLC", jurisdiction: "Delaware", iraCustodian: null, iraAccountTitle: null, taxIdLast4: "4321" });
+  assert.deepEqual(llc.error === null && llc.data, { name: "Harbor Note LLC", entityType: "LLC", jurisdiction: "Delaware", iraCustodian: null, iraAccountTitle: null, charterNumber: null, regulator: null, taxIdLast4: "4321" });
   // An IRA needs no jurisdiction, but it needs the custodian and a title that vests for the owner's benefit.
   assert.match(readEntity({ ...IRA, iraCustodian: "" }).error ?? "", /custodian/);
   assert.match(readEntity({ ...IRA, iraAccountTitle: "" }).error ?? "", /account title/);

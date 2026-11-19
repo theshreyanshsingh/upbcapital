@@ -74,7 +74,7 @@ export default async function AdminEventPage({
   const holder = (seller: { name: string; companyName: string | null }) => seller.companyName || seller.name;
 
   return (
-    <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_360px]">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-8 xl:grid-cols-[minmax(0,1fr)_360px]">
       <div className="min-w-0">
         <Link href="/admin/events" className="text-[13px] font-medium text-link">All events</Link>
         <Notice notice={q(query, "notice")} error={q(query, "error")} />

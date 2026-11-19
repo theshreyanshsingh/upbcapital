@@ -24,6 +24,8 @@ export const ENTITY_LABELS: Record<string, string> = {
   LLC: "Limited liability company",
   TRUST: "Trust",
   FUND: "Fund",
+  BANK: "Bank",
+  CREDIT_UNION: "Credit union",
   OTHER: "Other entity",
   IRA: "Self-directed IRA",
 };

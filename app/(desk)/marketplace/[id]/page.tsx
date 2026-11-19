@@ -3,6 +3,8 @@ import { notFound, redirect } from "next/navigation";
 import { acknowledgeRoadNotice } from "@/actions/buyer";
 import { AccessLadder } from "@/components/access-ladder";
 import { BidBar } from "@/components/bid-bar";
+import { BidderCountLine } from "@/components/bidder-count";
+import { BidderLimitNote } from "@/components/bidder-limits";
 import { ComingSoonCard } from "@/components/coming-soon-card";
 import { CapitalStack, Donut, HorizontalBars } from "@/components/charts";
 import { CollateralPanel } from "@/components/collateral-panel";
@@ -34,6 +36,7 @@ import { canManageRoom, canReadDocument, dataRoomOpenTo, isPrivateDocument, loan
 import { dealAccess } from "@/lib/data-room";
 import { requireUser } from "@/lib/auth";
 import { canOpenListing, openableListingIds } from "@/lib/access";
+import { bidderCountFor } from "@/lib/bidder-count";
 import { buyNowOffer } from "@/lib/buy-now";
 import {
   acknowledgementMissing,
@@ -63,6 +66,7 @@ import { diligenceDays } from "@/lib/closing-service";
 import { allInYield, noteMetrics, poolMetrics } from "@/lib/metrics";
 import { prisma } from "@/lib/prisma";
 import { listingSight } from "@/lib/private-listings";
+import { regulatedLineFor } from "@/lib/institutions";
 import { firstLookView } from "@/lib/flow-programs";
 import { FirstLookBanner } from "@/components/flow-banner";
 import { publishedQuestions, questionsAskedBy } from "@/lib/questions";
@@ -316,7 +320,10 @@ export default async function ListingPage({
   })));
   const compSubject = commonLoan(forSale);
   const comps = trades ? compsFor(compSubject, trades) : null;
-  const canOffer = listing.status === "APPROVED" && wholeOpen && user.role === "BUYER";
+  // A sale open to banks and credit unions only stays on the book, and a buyer with neither on file reads why in place
+  // of the bid form (lib/institutions.ts).
+  const limitLine = await regulatedLineFor(listing, user);
+  const canOffer = listing.status === "APPROVED" && wholeOpen && user.role === "BUYER" && !limitLine;
   // The eligibility screen informs and is logged. Its one ask is the 350-home acknowledgement before a bid.
   const eligibility = eligibilityFor(forSale, profile);
   const acknowledgedAt = user.role === "BUYER" && eligibility.acknowledge ? await roadAcknowledgedAt(user.id, listing.id) : null;
@@ -326,6 +333,8 @@ export default async function ListingPage({
   const standing = user.role === "BUYER" ? await bidStanding(user.id) : null;
   // The buying entities a bid here can be for: the main file and each one the desk approved.
   const entities = user.role === "BUYER" ? await bidEntities(user.id) : [];
+  // How many other firms are bidding, where the seller chose to show it. Counts only (lib/bidder-count.ts).
+  const otherBidders = await bidderCountFor(listing, user).catch(() => null);
   // Shared Q&A: answers read inside the room, a bidder's own questions, and the form for a bidder in the room.
   const managesRoom = canManageRoom(user, listing);
   const [answered, myQuestions] = await Promise.all([
@@ -711,6 +720,8 @@ export default async function ListingPage({
           aria-label="Bid"
           className="scroll-mt-6 space-y-4 lg:mt-6 lg:self-start [@media(min-width:64rem)_and_(min-height:50rem)]:sticky [@media(min-width:64rem)_and_(min-height:50rem)]:top-6 [@media(min-width:64rem)_and_(min-height:50rem)]:max-h-[calc(100dvh-3rem)] [@media(min-width:64rem)_and_(min-height:50rem)]:overflow-y-auto"
         >
+          {/* Who may bid and the statements each bidder needs on file (lib/attestations.ts). */}
+          <BidderLimitNote listing={listing} viewerRole={user.role} blocked={Boolean(limitLine)} />
           <OfferPanel
             listingId={listing.id}
             premiumBps={fees.premiumBps}
@@ -728,8 +739,9 @@ export default async function ListingPage({
             suggested={flow?.suggestion && wholeOpen ? { amount: flow.suggestion.amount, line: flow.suggestion.line } : undefined}
             heading={listing.kind === "POOL" ? "Bid the whole pool" : undefined}
             loans={listing.kind === "POOL" && canOffer ? notes.map((note, index) => ({ id: note.id, label: `Loan ${index + 1} · ${note.open && note.streetAddress ? `${note.streetAddress}, ` : ""}${note.city}, ${note.state}`, ask: pro ? note.askingPrice : null })) : []}
-            closedText={listing.status === "APPROVED" && !wholeOpen ? "Some loans in this pool have traded, so it can't be bid whole. Bid the loans still for sale in the table." : undefined}
+            closedText={limitLine ?? (listing.status === "APPROVED" && !wholeOpen ? "Some loans in this pool have traded, so it can't be bid whole. Bid the loans still for sale in the table." : undefined)}
           />
+          <BidderCountLine count={otherBidders} />
           <p className="text-xs leading-relaxed text-muted-foreground">
             Seller: {seller}.{" "}
             {withheld ? "The name shows once the data room opens to you. " : managesRoom && buyersSee !== seller && !namedToEveryBuyer(listing) ? `Buyers outside the data room see ${buyersSee}. ` : ""}

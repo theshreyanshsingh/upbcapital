@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { apiCaller } from "@/lib/api-limit";
 import { badRequest, listingSummary, liveWhere, matchesFilters, paginate, readListingFilters, readPage } from "@/lib/buyer-api";
+import { PROGRAM_CHOICES } from "@/lib/filters";
 import { prisma } from "@/lib/prisma";
 import { listingScope } from "@/lib/private-listings";
 import { sellerNameSight, sellerShown } from "@/lib/seller-anonymity";
@@ -16,6 +17,9 @@ export async function GET(request: Request) {
   if ("error" in page) return badRequest(page.error);
   const filters = readListingFilters(url);
   if ("error" in filters) return badRequest(filters.error);
+  const programs = programParam(url.searchParams.get("loan_program"));
+  if (programs === null) return badRequest(`loan_program takes ${PROGRAMS.join(", ")}, comma-separated.`);
+  if (programs.length) filters.loanProgram = programs;
   const listings = await prisma.listing.findMany({
     where: { AND: [liveWhere(), await listingScope(caller.user), ...(page.since ? [{ updatedAt: { gte: page.since } }] : [])] },
     include: { notes: { orderBy: { createdAt: "asc" } }, seller: { select: { role: true, name: true, companyName: true, companyType: true } } },
@@ -26,4 +30,13 @@ export async function GET(request: Request) {
     listings: shown.rows.map((listing) => ({ ...listingSummary(listing), seller: sellerShown(listing, named.get(listing.id) ?? false) })),
     nextCursor: shown.nextCursor,
   });
+}
+
+const PROGRAMS = PROGRAM_CHOICES.map((program) => program.value);
+
+// loan_program, comma-separated like lien_position: the programs asked for, or null when one isn't a program. A loan
+// whose tape states no program matches none, as on the book.
+function programParam(raw: string | null): string[] | null {
+  const values = [...new Set((raw ?? "").split(",").map((value) => value.trim().toUpperCase()).filter(Boolean))];
+  return values.every((value) => (PROGRAMS as string[]).includes(value)) ? values : null;
 }

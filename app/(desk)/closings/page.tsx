@@ -3,6 +3,7 @@ import { PageIntro } from "@/components/page-intro";
 import { requireUser } from "@/lib/auth";
 import { q } from "@/lib/format";
 import { closingClock, targetDays } from "@/lib/closing-clock";
+import { exceptionsLine } from "@/lib/custody";
 import { getSettings } from "@/lib/settings";
 import { money, prettyDate } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
@@ -79,6 +80,8 @@ export default async function ClosingsPage({ searchParams }: { searchParams: Pro
           const done = closing.steps.filter((step) => step.status === "COMPLETE").length;
           const clock = closingClock(closing, closing.steps, days);
           const amount = figure(closing);
+          // The seller sees any exception the buyer's custodian found in the collateral file and hasn't cleared, to cure. lib/custody.ts.
+          const exceptions = closing.listing.sellerId === user.id ? exceptionsLine(closing) : null;
           return (
             <li key={closing.id} className="flex flex-wrap items-baseline justify-between gap-3 px-5 py-5">
               <div>
@@ -94,6 +97,7 @@ export default async function ClosingsPage({ searchParams }: { searchParams: Pro
                     {clock.late ? "past the target close" : ""}
                   </p>
                 )}
+                {exceptions && <p className="mt-1 text-[13px] font-medium wrap-anywhere text-bad">Custodian exceptions open: {exceptions}</p>}
               </div>
               {amount && <p className="text-sm text-foreground">{amount}</p>}
             </li>

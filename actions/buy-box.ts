@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireRole } from "@/lib/auth";
 import { parseList } from "@/lib/buy-box";
+import { PROGRAM_CHOICES } from "@/lib/filters";
 import { rescoreBox } from "@/lib/matching";
 import { prisma } from "@/lib/prisma";
 import { LIEN_POSITIONS, PAYMENT_STATUSES, US_STATES } from "@/lib/labels";
@@ -24,11 +25,13 @@ export async function saveBuyBox(formData: FormData) {
   const states = parseList(String(formData.get("states") || "")).filter((state) => (US_STATES as readonly string[]).includes(state));
   const liens = LIEN_POSITIONS.map((item) => item.value).filter((value) => formData.get(`lien_${value}`) === "on");
   const statuses = PAYMENT_STATUSES.map((item) => item.value).filter((value) => formData.get(`status_${value}`) === "on");
+  const programs = PROGRAM_CHOICES.map((item) => item.value).filter((value) => formData.get(`program_${value}`) === "on");
   const data = {
     name,
     states: states.join(","),
     liens: liens.join(","),
     statuses: statuses.join(","),
+    programs: programs.join(","),
     upbMin: optionalNumber(formData, "upbMin"),
     upbMax: optionalNumber(formData, "upbMax"),
     priceMin: optionalNumber(formData, "priceMin"),
@@ -43,7 +46,7 @@ export async function saveBuyBox(formData: FormData) {
   if (data.minSeasoningMonths != null && !(Number.isInteger(data.minSeasoningMonths) && data.minSeasoningMonths >= 1 && data.minSeasoningMonths <= 480)) {
     redirect(`/buyer/buy-box?error=${encodeURIComponent("Enter the seasoning as whole months, from 1 to 480.")}`);
   }
-  const constrained = data.states || data.liens || data.statuses || data.upbMin != null || data.upbMax != null || data.priceMin != null || data.priceMax != null || data.maxPriceToUpb != null || data.targetYield != null || data.maxLtv != null || data.minSeasoningMonths != null;
+  const constrained = data.states || data.liens || data.statuses || data.programs || data.upbMin != null || data.upbMax != null || data.priceMin != null || data.priceMax != null || data.maxPriceToUpb != null || data.targetYield != null || data.maxLtv != null || data.minSeasoningMonths != null;
   if (!constrained) redirect("/buyer/buy-box?error=Set at least one limit so the box can score paper.");
   const id = String(formData.get("id") || "");
   const box = id

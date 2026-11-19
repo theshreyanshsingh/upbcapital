@@ -83,14 +83,14 @@ export default function DevelopersPage() {
       <Heading>Buyer endpoints</Heading>
       <Endpoint>GET /api/v1/listings</Endpoint>
       <p>Live listings this account may see: taking bids or in contract, and past any launch date. A private sale shows only to the buyers its seller invited, and a seller who excludes the account shows none of theirs. Scope listings:read.</p>
-      <p>Filters, all optional: state (two letters), lien_position (FIRST, SECOND, THIRD, OTHER), payment_status (PERFORMING, SUB_PERFORMING, NON_PERFORMING), max_ltv (percent), min_upb and max_upb (dollars). Lien and status take several values, comma-separated. A pool is judged as the book judges it: its balance and LTV on the loans still for sale, its state, lien and performance on any one loan.</p>
+      <p>Filters, all optional: state (two letters), lien_position (FIRST, SECOND, THIRD, OTHER), payment_status (PERFORMING, SUB_PERFORMING, NON_PERFORMING), loan_program (CONVENTIONAL, FHA, VA, USDA, PRIVATE, OTHER), max_ltv (percent), min_upb and max_upb (dollars). Lien, status and program take several values, comma-separated. A pool is judged as the book judges it: its balance and LTV on the loans still for sale, its state, lien, performance and program on any one loan. A loan whose tape states no program matches no loan_program filter.</p>
       <Example label="Request">{`curl -H "Authorization: Bearer upb_…" \\
   "${APP}/api/v1/listings?state=FL&lien_position=FIRST&max_ltv=80&limit=50"`}</Example>
       <Example label="Response">{{ listings: [summary], nextCursor: "WyIyMDI2LTExLTA4VDA5OjEyOjQ0LjAwMFoiLCJjbTNrOXgyYWIwMDAxIl0" }}</Example>
       <p>Money is in dollars and ratios in percent. saleFormat is NONE for open offers, SEALED or BEST_AND_FINAL. bidDeadline is set when a round has one. updatedAt moves when the listing or its price changes.</p>
 
       <Endpoint>GET /api/v1/listings/:id</Endpoint>
-      <p>One live listing&apos;s summary and loan tape, as a signed-in buyer reads it before the confidentiality agreement. It never carries data-room files, the street, zip or borrower, the loan number, MERS or eNote ids, the seller&apos;s memo, or anyone&apos;s bid. seller is the seller&apos;s type, such as Credit union or Bank, until this account is in the listing&apos;s data room, and then the seller&apos;s name. paused is true when the seller hasn&apos;t reconfirmed the loans are still available: the listing is off the book and takes no bids until they do. confirmedAvailableAt is the seller&apos;s latest confirmation. Each loan lists every other tape field, null where the tape lacks it. A value estimate shows only where it came from a real provider. Scope listings:read.</p>
+      <p>One live listing&apos;s summary and loan tape, as a signed-in buyer reads it before the confidentiality agreement. It never carries data-room files, the street, zip or borrower, the loan number, MERS or eNote ids, the seller&apos;s memo, or anyone&apos;s bid. seller is the seller&apos;s type, such as Credit union or Bank, until this account is in the listing&apos;s data room, and then the seller&apos;s name. paused is true when the seller hasn&apos;t reconfirmed the loans are still available: the listing is off the book and takes no bids until they do. confirmedAvailableAt is the seller&apos;s latest confirmation. otherBidders is how many other firms hold a live bid, where the seller chose to show it: count runs from 0 to 5, orMore is true at 5 or more, and label is the line the listing page shows. A firm counts once however many seats it has, a group once, and the desk&apos;s own book once. It is null when the seller hasn&apos;t chosen it, once the round&apos;s deadline passes, or once a bid is accepted, and it never carries an amount, a rank or when anyone bid. Each loan lists every other tape field, null where the tape lacks it. A value estimate shows only where it came from a real provider. Scope listings:read.</p>
       <Example label="Response, shortened">{{
         ...summary,
         summary: "Vacant SFR, foreclosure filed, BPO in the room.",
@@ -119,6 +119,7 @@ export default function DevelopersPage() {
           valueEstimateProvider: null,
           valueEstimateAsOf: null,
         }],
+        otherBidders: { count: 2, orMore: false, label: "2 other bidders" },
       }}</Example>
 
       <Endpoint>GET /api/v1/matches</Endpoint>

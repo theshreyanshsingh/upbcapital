@@ -1,9 +1,11 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { setBuyerBidCap } from "@/actions/desk-tools";
+import { DeskAttestations } from "@/components/bidder-attestations";
 import { DeskNotes } from "@/components/desk-notes";
 import { DeskRecord } from "@/components/track-record";
 import { FileOwners } from "@/components/file-owners";
+import { CharterReview } from "@/components/institution-charter";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { SubmitButton } from "@/components/submit-button";
@@ -94,6 +96,7 @@ export default async function BuyerDeskPage({
                     ? `Buyer states ${money(file.proofAmount)} · not verified yet`
                     : "No funds amount stated"}
               </p>
+              <CharterReview file={file} />
               {file.reviewerNote && <p className="mt-1 text-xs text-muted-foreground">Desk note to the buyer: {file.reviewerNote}</p>}
               <FileOwners owners={profile.owners.get(fileKey(buyer.id, null)) ?? []} entityType={file.entityType} taxIdLast4={file.taxIdLast4 ?? null} />
             </>
@@ -113,6 +116,7 @@ export default async function BuyerDeskPage({
                       {entity.entityType === "IRA" ? ` · custodian ${entity.iraCustodian}` : entity.jurisdiction ? ` · formed in ${entity.jurisdiction}` : ""}
                       {entity.reviewedAt ? ` · decided ${prettyDate(entity.reviewedAt)}` : ` · added ${prettyDate(entity.createdAt)}`}
                     </p>
+                    <CharterReview file={entity} />
                     <FileOwners owners={profile.owners.get(fileKey(buyer.id, entity.id)) ?? []} entityType={entity.entityType} taxIdLast4={entity.taxIdLast4 ?? null} />
                   </li>
                 ))}
@@ -169,6 +173,13 @@ export default async function BuyerDeskPage({
           )}
         </section>
       </div>
+
+      {/* The statements the buyer gave per buying entity, with the wording as given. Compliance revokes (lib/attestations.ts). */}
+      <DeskAttestations
+        userId={buyer.id}
+        names={new Map([["", file?.entityName || "Main buyer file"], ...profile.entities.map((entity) => [entity.id, entity.name] as [string, string])])}
+        canRevoke={vets}
+      />
 
       <section aria-labelledby="bids-heading" className="mt-8">
         <p id="bids-heading" className="eyebrow">Bids</p>

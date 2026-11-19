@@ -59,7 +59,9 @@ export const KIND_LABELS: Record<TrailingKind, string> = {
 };
 
 export const KIND_HINTS: Record<TrailingKind, string> = {
-  ORIGINAL_NOTE: "The original note, by courier to the buyer or its custodian.",
+  // Its receipt here is the courier's leg; the custodian's own receipt and exceptions are kept under Collateral
+  // custody, which suggests this item's received date for it (noteReceipt in lib/custody.ts).
+  ORIGINAL_NOTE: "The original note, by courier to the buyer or its custodian. The custodian's own receipt, and any exceptions it finds, go under Collateral custody.",
   ALLONGE: "The allonge endorsing the note to the buyer. It travels fixed to the note.",
   ENOTE_CONTROL: "The eRegistry names the buyer, or its custodian, as the eNote's controller.",
   ENOTE_LOCATION: "The eRegistry names the eVault that holds the authoritative copy.",
@@ -653,10 +655,18 @@ async function redateLetters(closingId: string, clocks: NoticeClocks, now: Date)
   }
 }
 
-// Once every item is received or waived, the file is complete. Claimed once, so both sides hear once.
+// An exception the buyer's document custodian found in the collateral file and hasn't cleared. It keeps the file
+// open like an item still due. lib/custody.ts records and clears them, and tries the file again once they clear.
+export function custodyExceptionOpen(closing: { custodianExceptions?: string | null; exceptionsClearedAt?: Date | null } | null | undefined) {
+  return Boolean(closing?.custodianExceptions?.trim()) && !closing?.exceptionsClearedAt;
+}
+
+// Once every item is received or waived, and no custodian exception is open, the file is complete. Claimed once, so
+// both sides hear once.
 export async function completeIfDone(closingId: string, now = new Date()) {
   const docs = await prisma.trailingDoc.findMany({ where: { closingId }, select: { status: true } });
   if (!docs.length || docs.some((doc) => doc.status !== "RECEIVED" && doc.status !== "WAIVED")) return false;
+  if (custodyExceptionOpen(await prisma.closing.findUnique({ where: { id: closingId }, select: { custodianExceptions: true, exceptionsClearedAt: true } }))) return false;
   const claim = await prisma.closing.updateMany({ where: { id: closingId, status: "COMPLETE", ...unset("postCloseCompleteAt") }, data: { postCloseCompleteAt: now } });
   if (claim.count !== 1) return false;
   const closing = await prisma.closing.findUnique({ where: { id: closingId }, select: { id: true, deskBidId: true, listing: { select: { title: true, seller: { select: { email: true } } } } } });

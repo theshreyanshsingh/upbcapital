@@ -6,6 +6,7 @@ import { cancelClosing, completeClosingStep, recordSettlement, saveWireInstructi
 import { BorrowerNotices } from "@/components/borrower-notices";
 import { ClosingMasters } from "@/components/closing-masters";
 import { ClaimsPanel } from "@/components/claims-panel";
+import { CustodyPanel } from "@/components/custody-panel";
 import { BackupPanel } from "@/components/backup-panel";
 import { DepositPanel } from "@/components/deposit-panel";
 import { InvoicePanel, PayoutPanel, ProrationPanel, verifiedPayoutChoices } from "@/components/finance-panels";
@@ -393,6 +394,8 @@ export default async function ClosingPage({
             />
           </section>
         )}
+        {/* Who holds the collateral file, its bailee letter, the custodian's receipt and exceptions. components/custody-panel.tsx. */}
+        {party && <CustodyPanel closing={closing} buyerId={inquiry?.buyerId ?? null} viewer={user} />}
         {/* What arrives after the close, for each side's own part. components/trailing-docs.tsx. */}
         {party && <TrailingDocsPanel closing={closing} buyerId={inquiry?.buyerId ?? null} viewer={user} />}
         {/* Each side's answers after close, and repurchase claims on the seller's representations. components/claims-panel.tsx. */}

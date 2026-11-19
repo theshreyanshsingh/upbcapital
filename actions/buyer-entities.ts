@@ -22,6 +22,8 @@ export async function addEntity(formData: FormData) {
     iraCustodian: field(formData, "iraCustodian"),
     iraAccountTitle: field(formData, "iraAccountTitle"),
     taxIdLast4: field(formData, "taxIdLast4"),
+    charterNumber: field(formData, "charterNumber"),
+    regulator: field(formData, "regulator"),
   });
   if (result.error !== null) redirect(`/buyer/verification?error=${encodeURIComponent(result.error)}#entities`);
   const entity = result.entity;
@@ -52,7 +54,12 @@ export async function submitEntity(formData: FormData) {
 // The desk approves or rejects one entity, with a note.
 export async function reviewEntity(formData: FormData) {
   const reviewer = await requireDesk("compliance", "/admin/verification");
-  const result = await reviewBuyerEntity(reviewer, { entityId: field(formData, "entityId"), decision: field(formData, "decision"), note: field(formData, "note") });
+  const result = await reviewBuyerEntity(reviewer, {
+    entityId: field(formData, "entityId"),
+    decision: field(formData, "decision"),
+    note: field(formData, "note"),
+    charterChecked: field(formData, "charterChecked") === "yes",
+  });
   const back = `/admin/verification${field(formData, "userId") ? `#buyer-${field(formData, "userId")}` : ""}`;
   if (result.error !== null) redirect(`/admin/verification?error=${encodeURIComponent(result.error)}${back.slice("/admin/verification".length)}`);
   revalidatePath("/admin/verification");

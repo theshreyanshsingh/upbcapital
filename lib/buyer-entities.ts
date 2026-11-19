@@ -2,6 +2,7 @@ import type { BuyerEntity, InvestorEntity } from "@prisma/client";
 import { audit } from "@/lib/audit";
 import { needsOwners, ownerApprovalBlock, ownerGaps, ownersOf } from "@/lib/beneficial-owners";
 import { notify, notifyDesk } from "@/lib/email";
+import { charterApprovalBlock, charterLine, isInstitution, readCharter, rematchInstitution } from "@/lib/institutions";
 import { entityLabel, IRA_NOTE, IRA_TITLE_EXAMPLE } from "@/lib/labels";
 import { prisma } from "@/lib/prisma";
 import { OFAC_DOWN_MESSAGE, OFAC_HOLD_MESSAGE, ofacHold, screenAndRecord } from "@/lib/screening";
@@ -12,16 +13,26 @@ import { entityVestingName } from "@/lib/vesting";
 // self-directed IRA the desk vets one by one. A bid names the entity it is for, and the closing papers name that
 // entity, fixed at award (lib/vesting.ts). The funds credential and the strikes stay with the login.
 
-export const ENTITY_TYPES = ["LLC", "TRUST", "FUND", "IRA", "INDIVIDUAL", "OTHER"] as const;
+export const ENTITY_TYPES = ["LLC", "TRUST", "FUND", "IRA", "BANK", "CREDIT_UNION", "INDIVIDUAL", "OTHER"] as const;
 export const MAX_ENTITIES = 12;
 export { IRA_NOTE, IRA_TITLE_EXAMPLE };
 
-type EntityInput = { name: unknown; entityType: unknown; jurisdiction?: unknown; iraCustodian?: unknown; iraAccountTitle?: unknown; taxIdLast4?: unknown };
+type EntityInput = {
+  name: unknown;
+  entityType: unknown;
+  jurisdiction?: unknown;
+  iraCustodian?: unknown;
+  iraAccountTitle?: unknown;
+  taxIdLast4?: unknown;
+  charterNumber?: unknown;
+  regulator?: unknown;
+};
 
 const text = (value: unknown, max: number) => String(value ?? "").replace(/\s+/g, " ").trim().slice(0, max);
 
-// The fields as the form sent them, checked. An IRA needs its custodian and the account title the paper vests in. Every
-// other entity gives the last four digits of its EIN; an IRA may.
+// The fields as the form sent them, checked. An IRA needs its custodian and the account title the paper vests in, and a
+// bank or credit union its charter number and regulator. Every other entity gives the last four digits of its EIN;
+// an IRA may.
 export function readEntity(input: EntityInput) {
   const entityType = text(input.entityType, 20);
   if (!(ENTITY_TYPES as readonly string[]).includes(entityType)) return { error: "Choose the kind of entity." } as const;
@@ -37,6 +48,8 @@ export function readEntity(input: EntityInput) {
   if (ira && (iraAccountTitle.length < 10 || !/\bFBO\b|benefit/i.test(iraAccountTitle))) {
     return { error: `Write the account title the way your custodian vests it, such as “${IRA_TITLE_EXAMPLE}”.` } as const;
   }
+  const charter = readCharter(entityType, input);
+  if (charter.error !== null) return { error: charter.error } as const;
   const taxId = readTaxIdLast4(input.taxIdLast4, ira);
   if (taxId.error !== null) return { error: taxId.error } as const;
   return {
@@ -47,6 +60,7 @@ export function readEntity(input: EntityInput) {
       jurisdiction,
       iraCustodian: ira ? iraCustodian : null,
       iraAccountTitle: ira ? iraAccountTitle : null,
+      ...charter.data,
       taxIdLast4: taxId.value,
     },
   } as const;
@@ -74,7 +88,9 @@ export async function addBuyerEntity(user: { id: string; name: string }, input: 
 }
 
 async function entityToDesk(user: { name: string }, entity: BuyerEntity) {
-  const detail = entity.entityType === "IRA" ? `Custodian ${entity.iraCustodian}. Account title ${entity.iraAccountTitle}.` : `Formed in ${entity.jurisdiction}.`;
+  const detail = entity.entityType === "IRA"
+    ? `Custodian ${entity.iraCustodian}. Account title ${entity.iraAccountTitle}.`
+    : `Formed in ${entity.jurisdiction}.${isInstitution(entity.entityType) ? ` ${charterLine(entity)}. Check it on the regulator's record before approving.` : ""}`;
   await notifyDesk(`Buying entity submitted · ${user.name}`, `${entity.name} (${entityLabel(entity.entityType)}) is waiting on the desk. ${detail} Review it on the buyer files page.`);
 }
 
@@ -116,8 +132,9 @@ export async function screenEntity(entity: Pick<BuyerEntity, "userId" | "name" |
 const LIVE_BIDS = ["OPEN", "REVIEWED"] as const;
 
 // The desk approves or rejects one entity, with a note. Approval screens again and waits for the answer, as the main
-// file's approval does, and an open or confirmed match on the account stops it.
-export async function reviewBuyerEntity(reviewer: { id: string }, input: { entityId: string; decision: string; note: unknown }, now = new Date()) {
+// file's approval does, and an open or confirmed match on the account stops it. A bank or credit union is approved
+// only with its charter checked on the regulator's record (lib/institutions.ts).
+export async function reviewBuyerEntity(reviewer: { id: string }, input: { entityId: string; decision: string; note: unknown; charterChecked?: boolean }, now = new Date()) {
   const entity = await prisma.buyerEntity.findUnique({ where: { id: input.entityId }, include: { user: { select: { email: true, name: true } } } });
   if (!entity) return { error: "That buying entity no longer exists." } as const;
   const status = input.decision === "APPROVED" ? "APPROVED" : input.decision === "REJECTED" ? "REJECTED" : null;
@@ -126,6 +143,8 @@ export async function reviewBuyerEntity(reviewer: { id: string }, input: { entit
   if (status === "REJECTED" && note.length < 3) return { error: "Tell the buyer why the entity is declined." } as const;
   if (status === "APPROVED") {
     if (entity.status === "NOT_STARTED") return { error: "The buyer hasn't sent this entity to the desk yet." } as const;
+    const charter = charterApprovalBlock(entity, Boolean(input.charterChecked));
+    if (charter) return { error: charter } as const;
     const owners = await ownerApprovalBlock({ userId: entity.userId, buyerEntityId: entity.id, entityType: entity.entityType }, now);
     if (owners) return { error: owners } as const;
     if ((await screenEntity(entity, "Buying entity approval")).unavailable) return { error: OFAC_DOWN_MESSAGE } as const;
@@ -137,7 +156,8 @@ export async function reviewBuyerEntity(reviewer: { id: string }, input: { entit
     data: { status, reviewerNote: note, reviewedById: reviewer.id, reviewedAt: now },
   });
   if (claimed.count !== 1) return { error: "The entity changed a moment ago. Check it and try again." } as const;
-  await audit(reviewer.id, "BUYER_ENTITY_REVIEW", "user", entity.userId, `${entity.id} · ${entity.name} · ${status}${note ? ` · ${note}` : ""}`);
+  const checked = status === "APPROVED" && isInstitution(entity.entityType) ? ` · ${charterLine(entity)} checked` : "";
+  await audit(reviewer.id, "BUYER_ENTITY_REVIEW", "user", entity.userId, `${entity.id} · ${entity.name} · ${status}${checked}${note ? ` · ${note}` : ""}`);
   // Bids already placed for an entity the desk now declines can't be awarded under it.
   const stranded = status === "REJECTED" ? await prisma.inquiry.count({ where: { buyerEntityId: entity.id, type: "OFFER", status: { in: [...LIVE_BIDS] } } }) : 0;
   await notify(
@@ -147,6 +167,7 @@ export async function reviewBuyerEntity(reviewer: { id: string }, input: { entit
       ? `The desk approved ${entity.name}. You can choose it when you bid.${note ? ` ${note}` : ""}`
       : `The desk declined ${entity.name}. ${note}${stranded ? ` ${stranded} open bid${stranded === 1 ? " is" : "s are"} for it, so ${stranded === 1 ? "it" : "they"} can't be awarded. Withdraw and bid again under another entity.` : ""}`,
   );
+  if (status === "APPROVED") await rematchInstitution(entity.userId, entity.entityType);
   return { error: null, status } as const;
 }
 

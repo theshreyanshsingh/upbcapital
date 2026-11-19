@@ -1,4 +1,6 @@
 import { counterBid, saveFeePayer, saveResponseWindow } from "@/actions/seller-decisions";
+import { BidderCountChoice } from "@/components/bidder-count";
+import { BidderLimits } from "@/components/bidder-limits";
 import { ConfirmSubmit } from "@/components/confirm-submit";
 import { SellerNameChoice } from "@/components/seller-anonymity";
 import { SubmitButton } from "@/components/submit-button";
@@ -79,6 +81,10 @@ type TermsListing = ListingFees & {
   brokerId?: string | null;
   clientSellerName?: string | null;
   sellerNamed?: boolean | null;
+  // The round, and whether bidders see how many others are bidding (lib/bidder-count.ts).
+  bidMode?: string;
+  bidDeadline?: Date | null;
+  showBidderCount?: boolean | null;
 };
 
 // The seller's own terms: how long they have to answer the desk, who pays UPB's fees, and how buyers see the seller
@@ -149,6 +155,9 @@ export function SellerTerms({ listing, canAnswer, settings }: { listing: TermsLi
         </form>
       )}
       {listing.sellerId && <SellerNameChoice listing={{ ...listing, sellerId: listing.sellerId }} canAnswer={canAnswer} />}
+      <BidderCountChoice listing={listing} canAnswer={canAnswer} />
+      {/* Who may bid: banks and credit unions only, and the statements each bidder needs (lib/attestations.ts). */}
+      <BidderLimits listingId={listing.id} from="seller" canEdit={canAnswer} />
     </div>
   );
 }

@@ -9,6 +9,7 @@ import { requireRole } from "@/lib/auth";
 import { depositTerms } from "@/lib/closing-clock";
 import { diligenceDays } from "@/lib/closing-service";
 import { effectiveBps, feesFor } from "@/lib/fee-schedule";
+import { programLabel, PROGRAM_CHOICES } from "@/lib/filters";
 import { money, prettyDate, q } from "@/lib/format";
 import { marketRate, rateStamp, type MarketRate } from "@/lib/indicative";
 import { LIEN_POSITIONS, PAYMENT_STATUSES } from "@/lib/labels";
@@ -42,9 +43,9 @@ export default async function BuyBoxPage({
   const deposit: [number, number] | undefined = terms.bps > 0 ? [terms.bps / 100, terms.days] : undefined;
   const diligence = diligenceDays(settings.diligenceDays) || undefined;
   return (
-    <div className="grid gap-10 xl:grid-cols-[minmax(0,1fr)_360px]">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-10 xl:grid-cols-[minmax(0,1fr)_360px]">
       <div>
-        <PageIntro eyebrow="Buy box" title="Paper that fits." lede="States, lien, performance, balance, price, a ceiling as a percent of UPB, a target IRR from the deal analyzer, the highest LTV and the fewest months of seasoning. New listings are scored against every active box. A match on the live book sends a notice. On Pro, a box can carry a standing price too, an indicative figure for every new tape that fits." />
+        <PageIntro eyebrow="Buy box" title="Paper that fits." lede="States, lien, performance, loan program, balance, price, a ceiling as a percent of UPB, a target IRR from the deal analyzer, the highest LTV and the fewest months of seasoning. New listings are scored against every active box. A match on the live book sends a notice. On Pro, a box can carry a standing price too, an indicative figure for every new tape that fits." />
         <Notice notice={q(params, "notice")} error={q(params, "error")} />
         {invitations.length > 0 && (
           <section id="invitations" className="mt-8 scroll-mt-6" aria-labelledby="invitations-heading">
@@ -90,6 +91,7 @@ export default async function BuyBoxPage({
                   <p className="font-semibold tracking-tight text-3xl text-foreground">{box.name}</p>
                   <p className="mt-2 text-sm text-muted-foreground">
                     {[box.states || "Any state", box.liens || "Any lien", box.statuses || "Any status"].join(" · ")}
+                    {box.programs ? ` · ${box.programs.split(",").map(programLabel).join(", ")}` : ""}
                     {box.maxPriceToUpb != null ? ` · max ${Number(box.maxPriceToUpb)}% of UPB` : ""}
                     {box.targetYield != null ? ` · IRR ${Number(box.targetYield)}%` : ""}
                     {box.maxLtv != null ? ` · LTV up to ${Number(box.maxLtv)}%` : ""}
@@ -141,6 +143,15 @@ export default async function BuyBoxPage({
               <label key={item.value} className="inline-flex items-center gap-2"><input type="checkbox" name={`status_${item.value}`} />{item.label}</label>
             ))}
           </div>
+        </fieldset>
+        <fieldset>
+          <legend className="text-[13px] text-muted-foreground">Loan program</legend>
+          <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-sm text-foreground">
+            {PROGRAM_CHOICES.map((item) => (
+              <label key={item.value} className="inline-flex items-center gap-2 pointer-coarse:min-h-10"><input type="checkbox" name={`program_${item.value}`} />{item.label}</label>
+            ))}
+          </div>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">Leave all off for any program. A loan whose tape states no program doesn&apos;t fit a program you pick.</p>
         </fieldset>
         <div className="grid grid-cols-2 gap-3">
           <label className="block"><span className="text-[13px] text-muted-foreground">UPB min</span><input name="upbMin" className="desk-input mt-2" aria-label="UPB minimum" /></label>

@@ -1,7 +1,9 @@
 import type { Prisma } from "@prisma/client";
-import { parseList, scoreAgainstBox, seasoningMonths, type BoxCriteria, type ScoreNote } from "@/lib/buy-box";
+import { boxHasConstraint, parseList, scoreAgainstBox, seasoningMonths, type BoxCriteria, type BoxScore, type ScoreNote } from "@/lib/buy-box";
 import { unset } from "@/lib/db-filters";
 import { notify, notifyDesk } from "@/lib/email";
+import { programLabel } from "@/lib/filters";
+import { keepRegulated, REGULATED, regulatedOnly } from "@/lib/institutions";
 import { launchPending } from "@/lib/launch-rules";
 import { prisma } from "@/lib/prisma";
 import { audienceOf, canSee, listingAccess } from "@/lib/private-listings";
@@ -38,7 +40,8 @@ export function criteriaFrom(box: {
   targetYield: { toString(): string } | null;
   maxLtv?: { toString(): string } | null;
   minSeasoningMonths?: number | null;
-}): BoxCriteria {
+  programs?: string;
+}): BoxRules {
   return {
     states: parseList(box.states),
     liens: parseList(box.liens),
@@ -51,19 +54,52 @@ export function criteriaFrom(box: {
     targetYield: num(box.targetYield),
     maxLtv: num(box.maxLtv ?? null),
     minSeasoningMonths: box.minSeasoningMonths ?? null,
+    programs: parseList(box.programs ?? ""),
   };
 }
 
-// A draft at upload may not carry a value or an origination date. Without them a box's LTV or seasoning limit
-// can't be met, so it doesn't count the draft.
+// A box's limits with the loan programs it takes. A box saved before programs existed takes any.
+export type BoxRules = BoxCriteria & { programs: string[] };
+// A loan as a box scores it, with its program. Null or left out where the tape states none.
+export type ProgramNote = ScoreNote & { loanProgram?: string | null };
+
+// The loan programs a box takes, judged as its lien and performance are: a pool fits when at least half its UPB
+// carries one of them. A loan whose tape states no program never counts toward the limit, as on the book's filter.
+// The reason names the programs the paper carries, in the box's words.
+export function programFit(notes: ProgramNote[], programs: string[]): { fit: boolean; reason: string | null } {
+  if (!programs.length) return { fit: true, reason: null };
+  const total = notes.reduce((sum, note) => sum + note.upb, 0);
+  const carried = notes.filter((note) => note.loanProgram != null && programs.includes(note.loanProgram));
+  const covered = total > 0 ? carried.reduce((sum, note) => sum + note.upb, 0) / total : 0;
+  if (covered < 0.5) return { fit: false, reason: null };
+  const named = programs.filter((program) => carried.some((note) => note.loanProgram === program)).map(programLabel);
+  const list = named.length > 1 ? `${named.slice(0, -1).join(", ")} and ${named.at(-1)}` : named[0];
+  return { fit: true, reason: covered >= 0.999 ? `${list}, as your box asks` : `${Math.round(covered * 100)}% of UPB is ${list}, as your box asks` };
+}
+
+// The box test with its programs. A box whose only limit is its programs leaves lib/buy-box.ts nothing else to check,
+// so the paper scores the base any fit starts at, 55, once it has a balance and a price, as every scored tape must.
+export function scoreBox(notes: ProgramNote[], box: BoxRules): BoxScore | null {
+  const programs = programFit(notes, box.programs);
+  if (!programs.fit) return null;
+  const upb = notes.reduce((sum, note) => sum + note.upb, 0);
+  const price = notes.reduce((sum, note) => sum + note.askingPrice, 0);
+  const result = boxHasConstraint(box) ? scoreAgainstBox(notes, box) : box.programs.length && upb > 0 && price > 0 ? { score: 55, reasons: [] } : null;
+  if (!result || !programs.reason) return result;
+  return { score: result.score, reasons: [...result.reasons, programs.reason] };
+}
+
+// A draft at upload may not carry a value, an origination date or a loan program. Without them a box's LTV, seasoning
+// or program limit can't be met, so it doesn't count the draft.
 type ScoredLoan = Pick<StandingNote, "upb" | "askingPrice" | "monthlyPi" | "interestRate" | "maturityDate" | "paymentStatus"> & {
   state: string;
   lienPosition: string;
   estimatedValue?: number;
   originationDate?: Date | null;
+  loanProgram?: string | null;
 };
 
-function notesOf(notes: ScoredLoan[], now: Date): ScoreNote[] {
+function notesOf(notes: ScoredLoan[], now: Date): ProgramNote[] {
   return notes.map((note) => ({
     state: note.state,
     lienPosition: note.lienPosition,
@@ -75,6 +111,7 @@ function notesOf(notes: ScoredLoan[], now: Date): ScoreNote[] {
     termMonths: remainingTerm(note.maturityDate, now),
     estimatedValue: note.estimatedValue === undefined ? undefined : Number(note.estimatedValue),
     seasoningMonths: seasoningMonths(note.originationDate, now),
+    loanProgram: note.loanProgram ?? null,
   }));
 }
 
@@ -86,7 +123,7 @@ export function scoreMatch(
   kind: string,
   standingNotes: StandingNote[],
   box: BoxRow,
-  notes: ScoreNote[],
+  notes: ProgramNote[],
   now: Date,
   premiumBps: number,
   rate: MarketRate | null,
@@ -98,10 +135,10 @@ export function scoreMatch(
     const atBid = notes.map((note, index) => ({ ...note, askingPrice: priced.loans[index]?.price ?? note.askingPrice }));
     const solved = box.bidBasis === "YIELD" || box.bidBasis === "SPREAD";
     const limits = solved ? { ...criteria, targetYield: null, statuses: criteria.statuses.length ? criteria.statuses : ["PERFORMING"] } : criteria;
-    const result = scoreAgainstBox(atBid, limits);
+    const result = scoreBox(atBid, limits);
     if (result) return { result: { ...result, reasons: [...result.reasons, "At the standing price"] }, price: priced.price, rateAsOf: priced.rateAsOf };
   }
-  return { result: scoreAgainstBox(notes, criteriaFrom(box)), price: null, rateAsOf: null };
+  return { result: scoreBox(notes, criteriaFrom(box)), price: null, rateAsOf: null };
 }
 
 function sameTime(a: Date | null | undefined, b: Date | null | undefined) {
@@ -130,7 +167,7 @@ async function reprice(
   });
 }
 
-async function writeMatch(listing: ListingRow, box: BoxRow, notes: ScoreNote[], now: Date, premiumBps: number, rate: MarketRate | null) {
+async function writeMatch(listing: ListingRow, box: BoxRow, notes: ProgramNote[], now: Date, premiumBps: number, rate: MarketRate | null) {
   const { result, price, rateAsOf } = scoreMatch(listing.kind, listing.notes, box, notes, now, premiumBps, rate);
   if (!result) {
     await prisma.listingMatch.deleteMany({ where: { listingId: listing.id, buyBoxId: box.id } });
@@ -179,8 +216,9 @@ export async function rescoreListing(listingId: string, alert: boolean, now = ne
   const mail = alert && !coming;
   const boxes = await boxesWithOwners({ active: true });
   // A private listing matches its invitees' boxes only, and none of a buyer its seller excludes. Their open matches
-  // go, so neither the buyer nor the desk's standing-bid sheet keeps them (lib/private-listings.ts).
-  const shown = new Set((await audienceOf(listing, [...new Map(boxes.map((box) => [box.userId, box.user])).values()])).map((user) => user.id));
+  // go, so neither the buyer nor the desk's standing-bid sheet keeps them (lib/private-listings.ts). A sale open to banks
+  // and credit unions only matches theirs alone (lib/institutions.ts).
+  const shown = new Set((await keepRegulated(listing, await audienceOf(listing, [...new Map(boxes.map((box) => [box.userId, box.user])).values()]))).map((user) => user.id));
   // Yield and spread rules hold on what the buyer pays, premium included. Spread rules price on the desk's rate.
   const settings = await getSettings();
   const premiumBps = settings.buyerPremiumBps;
@@ -242,9 +280,11 @@ export async function rescoreBox(boxId: string, options: { quiet?: boolean } = {
   const rate = marketRate(settings);
   // Listings hidden from the box's owner don't match it, as in rescoreListing.
   const access = await listingAccess(box.user);
+  // Nor do sales open to banks and credit unions only, unless the owner has one on file (lib/institutions.ts).
+  const regulated = (await keepRegulated({ buyerLimit: REGULATED }, [box.user])).length > 0;
   let live = 0;
   for (const listing of listings) {
-    if (!canSee(access, listing)) {
+    if (!canSee(access, listing) || (regulatedOnly(listing) && !regulated)) {
       await prisma.listingMatch.deleteMany({ where: { listingId: listing.id, buyBoxId: box.id, ...unset("answeredAt") } });
       continue;
     }
@@ -264,7 +304,7 @@ export async function rescoreSpreadBoxes() {
   return boxes.length;
 }
 
-export type DraftLoan = StandingNote & { state: string; lienPosition: string };
+export type DraftLoan = StandingNote & { state: string; lienPosition: string; loanProgram?: string | null };
 
 export type StandingDemand = {
   // Each fitting box's own price for the whole draft, before the ask caps it. No buyer or box is named.

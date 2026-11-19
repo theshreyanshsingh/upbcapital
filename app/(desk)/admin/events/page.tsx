@@ -66,7 +66,7 @@ export default async function AdminEventsPage({
   };
 
   return (
-    <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_360px]">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-8 xl:grid-cols-[minmax(0,1fr)_360px]">
       <div className="min-w-0">
         <PageIntro
           eyebrow="Desk"
