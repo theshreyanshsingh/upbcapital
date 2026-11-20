@@ -283,6 +283,37 @@ export async function diligenceHold(listingId: string) {
   return loaded ? diligenceGateMessage(loaded.diligence, loaded.listing.kind) : null;
 }
 
+// Every listing in review whose assignment chain holds its approval, read in two queries for the desk's risk queue
+// (lib/risk-queue.ts). The same checklist as the approval gate, with the same holder; only the ASSIGNMENTS line is
+// returned, with the loans still missing it.
+export async function assignmentChainHolds() {
+  const listings = await prisma.listing.findMany({
+    where: { status: { in: ["SUBMITTED", "UNDER_REVIEW", "CHANGES_REQUESTED"] } },
+    select: {
+      id: true,
+      title: true,
+      kind: true,
+      submittedAt: true,
+      deskOwnerId: true,
+      diligenceWaivers: true,
+      clientSellerName: true,
+      seller: { select: { name: true, companyName: true } },
+      notes: { select: { id: true, streetAddress: true, city: true, state: true, lienPosition: true, paymentStatus: true, avmValue: true, avmProvider: true, avmAsOf: true, servicerSourcedAt: true, eNote: true, mersMin: true, verifiedFields: true } },
+      documents: { where: { type: { notIn: ["PHOTO", "NDA", "MANDATE"] } }, select: { type: true, noteId: true, originalName: true } },
+    },
+  });
+  const noteIds = listings.flatMap((listing) => listing.notes.map((note) => note.id));
+  const collateral = noteIds.length ? await prisma.collateralItem.findMany({ where: { noteId: { in: noteIds } }, orderBy: [{ sequence: "asc" }, { createdAt: "asc" }] }) : [];
+  const byNote = groupByNote(collateral);
+  return listings.flatMap((listing) => {
+    const holder = listing.clientSellerName || listing.seller.companyName || listing.seller.name || null;
+    const rows = listing.notes.flatMap((note) => byNote.get(note.id) ?? []);
+    const diligence = diligenceChecklist({ kind: listing.kind, notes: listing.notes, collateral: rows, documents: listing.documents, waivers: listing.diligenceWaivers, holder });
+    const line = diligence.lines.find((row) => row.key === "ASSIGNMENTS");
+    return line?.state === "missing" ? [{ id: listing.id, title: listing.title, kind: listing.kind, submittedAt: listing.submittedAt, deskOwnerId: listing.deskOwnerId, missing: line.missing }] : [];
+  });
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Waiving, by a compliance desk member with a reason
 

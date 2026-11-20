@@ -10,6 +10,7 @@ import { audit } from "@/lib/audit";
 import { requireUser } from "@/lib/auth";
 import { canSubmitBid, sealedFromSeller } from "@/lib/auction";
 import { bidCapBlock } from "@/lib/bid-caps";
+import { recordCovenantAck, seatCovenantCheck, syncGroupCovenants } from "@/lib/covenants";
 import { guardDesk, requireDesk } from "@/lib/staff";
 import { notify, notifyDesk } from "@/lib/email";
 import { fillState, resolvePositionAmount } from "@/lib/group-buy";
@@ -23,6 +24,7 @@ import { rebidBlock } from "@/lib/retrade";
 import { seatGate, seatLimitBlock, type ActingUser } from "@/lib/seats";
 import { lapsedFileBlock } from "@/lib/buyer-file";
 import { canSubmitOffer } from "@/lib/verification";
+import { GROUPS_NOT_IN_ROUNDS, twoRounds } from "@/lib/sale-rounds";
 
 // A seat commits money like a bid, so a file past its yearly re-certification sends the buyer to re-certify first.
 async function seatRecertGate(userId: string) {
@@ -59,6 +61,16 @@ async function seatEligibilityGate(user: User | ActingUser, listingId: string, n
   return check;
 }
 
+// A seat on loans that carry servicing covenants takes the tick a bid does, on the version the form showed.
+// Reconfirming a counter asks nothing unless the covenants changed after the seat's acknowledgement, which the buyer
+// then gives again on the listing (lib/covenants.ts). The desk has no buyer file, so it passes.
+async function seatCovenantGate(user: User | ActingUser, input: { listingId: string; noteId: string | null; groupId?: string; ack?: FormDataEntryValue | null; reconfirm?: boolean }, back: string) {
+  if (user.role === "ADMIN") return null;
+  const check = await seatCovenantCheck({ userId: user.id, ...input, ack: typeof input.ack === "string" ? input.ack : "" });
+  if (check.error !== null) redirect(`${back}?error=${encodeURIComponent(check.error)}`);
+  return check.ack;
+}
+
 // A buyer who walked away from these loans in diligence can't come back lower through a group: not by opening one,
 // taking a seat in one, or sending a part bid from the seats that are pledged (lib/retrade.ts).
 async function rebidGate(user: User | ActingUser, userIds: string[], listingId: string, noteId: string | null, price: number, back: string) {
@@ -84,7 +96,7 @@ async function buyerReady(userId: string, listingId: string) {
     prisma.user.findUnique({ where: { id: userId } }),
     prisma.buyerProfile.findUnique({ where: { userId } }),
     prisma.ndaAcknowledgment.findUnique({ where: { userId_listingId: { userId, listingId } } }),
-    prisma.listing.findUnique({ where: { id: listingId }, select: { id: true, sellerId: true, brokerId: true, visibility: true } }),
+    prisma.listing.findUnique({ where: { id: listingId }, select: { id: true, sellerId: true, brokerId: true, visibility: true, bidMode: true, bidDeadline: true, roundOneEndsAt: true, saleEventId: true } }),
   ]);
   if (!user) return "Sign in again.";
   if (user.role === "ADMIN") return null;
@@ -93,6 +105,9 @@ async function buyerReady(userId: string, listingId: string) {
   // A paused listing takes no new group or seat, as it takes no new bid. Seats already pledged stay (lib/provenance.ts).
   const paused = await pausedBidBlock(listing);
   if (paused) return paused;
+  // A two-round sale takes each firm's own indicative and final bids. A group's offer can't move from one round to the
+  // next, so groups don't form on one (lib/sale-rounds.ts).
+  if (twoRounds(listing)) return GROUPS_NOT_IN_ROUNDS;
   const gate = canSubmitOffer({ role: user.role, accountStatus: user.accountStatus, verificationStatus: profile?.status ?? null });
   if (!gate.ok) return gate.reason === "verification" ? "Verify the buyer file before joining a group." : "This account cannot join a group.";
   if (!nda) return "Sign the confidentiality agreement before taking a seat.";
@@ -177,6 +192,8 @@ async function publishOffer(groupId: string) {
     await notifyDesk(`Group offer · ${group.listing.title}`, message, { capability: "sealedBids" });
   }
   await prisma.groupBuy.update({ where: { id: group.id }, data: { status: "OFFERED" } });
+  // The offer carries the covenants once every seat acknowledged them as they stand (lib/covenants.ts).
+  await syncGroupCovenants(group.id);
 }
 
 export async function openGroup(formData: FormData) {
@@ -197,6 +214,7 @@ export async function openGroup(formData: FormData) {
   if (existing) redirect(`/groups/${existing.id}?error=This listing already has a group.`);
   // Opening a group sets the price its offer goes in at, so the acknowledgement comes first, seat or not.
   const screen = await seatEligibilityGate(user, listingId, null, back);
+  const covenants = await seatCovenantGate(user, { listingId, noteId: null, ack: formData.get("covenantsAck") }, back);
   const target = dollars(formData.get("targetAmount"));
   const min = dollars(formData.get("minPosition"));
   const deadline = new Date(String(formData.get("deadline") || ""));
@@ -237,6 +255,7 @@ export async function openGroup(formData: FormData) {
         data: { groupId: group.id, userId: user.id, seat: 1, amount: sized, percent: (sized / target) * 100, slice, status: "PLEDGED" },
       });
       if (screen) await logSeatEligibility(user.id, group.id, screen);
+      if (covenants) await recordCovenantAck(user.id, "group", group.id, covenants);
       await publishOffer(group.id);
     }
   }
@@ -259,6 +278,7 @@ export async function joinGroup(formData: FormData) {
   // Taking a seat, or taking a dropped one back at a new size.
   await seatRecertGate(user.id);
   const screen = await seatEligibilityGate(user, group.listingId, group.noteId, back);
+  const covenants = await seatCovenantGate(user, { listingId: group.listingId, noteId: group.noteId, groupId: group.id, ack: formData.get("covenantsAck") }, back);
   if (group.positions.some((seat) => seat.userId === user.id && seat.status !== "DROPPED")) redirect(`${back}?error=You already have a seat.`);
   const state = fillState(Number(group.targetAmount), group.positions.map((seat) => ({ amount: Number(seat.amount), status: seat.status })));
   const sized = resolvePositionAmount({
@@ -286,6 +306,7 @@ export async function joinGroup(formData: FormData) {
     });
   }
   if (screen) await logSeatEligibility(user.id, group.id, screen);
+  if (covenants) await recordCovenantAck(user.id, "group", group.id, covenants);
   await publishOffer(group.id);
   revalidatePath(`/marketplace/${group.listingId}`);
   redirect(`${back}?notice=joined`);
@@ -302,6 +323,7 @@ export async function reconfirmSeat(formData: FormData) {
   // Reconfirming holds the seat to the counter's price, so it meets the screens a new seat does.
   await seatRecertGate(user.id);
   await seatEligibilityGate(user, seat.group.listingId, seat.group.noteId, `/groups/${groupId}`);
+  await seatCovenantGate(user, { listingId: seat.group.listingId, noteId: seat.group.noteId, groupId, reconfirm: true }, `/groups/${groupId}`);
   await seatCapGate(user.id, Number(seat.amount), `/groups/${groupId}`);
   await firmSeatGate(user, `/groups/${groupId}`, Number(seat.amount));
   await prisma.groupPosition.update({ where: { id: seat.id }, data: { status: "PLEDGED" } });

@@ -5,8 +5,9 @@ import { bidderNamer } from "@/lib/bidder-alias";
 import { buyerOfferResponse } from "@/lib/buyer-api";
 import { prisma } from "@/lib/prisma";
 import { DESK_DENIED, deskCan } from "@/lib/staff";
+import { withCallLog } from "@/lib/api-log";
 
-export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
+async function handleGet(request: Request, context: { params: Promise<{ id: string }> }) {
   const caller = await apiCaller(request, "offers:read");
   if (caller.response) return caller.response;
   const user = caller.user;
@@ -38,3 +39,6 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     })),
   });
 }
+
+// Logged with the status this route answers (lib/api-log.ts).
+export const GET = withCallLog(handleGet);

@@ -93,6 +93,15 @@ export function BookFiltersForm({
           <Checks legend="Occupancy" name="occupancy" options={OCCUPANCIES} picked={filters.occupancy} />
           <Checks legend="Foreclosure" name="foreclosureStatus" options={FORECLOSURES} picked={filters.foreclosureStatus} />
           <Checks legend="Loan program" name="loanProgram" options={PROGRAM_CHOICES} picked={filters.loanProgram} />
+          {/* lib/cra.ts: UPB's reading of the tape, which a bank's CRA officer confirms. */}
+          <fieldset className={cn("space-y-2", sheet && "col-span-2")}>
+            <legend className="text-[13px] font-semibold text-foreground">CRA</legend>
+            <label className="flex min-h-6 items-center gap-2 text-sm text-foreground pointer-coarse:min-h-10 pointer-coarse:gap-2.5">
+              <input type="checkbox" name="cra" value="1" defaultChecked={Boolean(filters.cra)} className="size-4 accent-link" />
+              CRA-eligible only
+            </label>
+            <p className="text-xs leading-relaxed text-muted-foreground">A low- or moderate-income tract or borrower, as UPB reads the tape. Your CRA officer decides what counts.</p>
+          </fieldset>
           <Checks legend="Bid style" name="bidMode" options={BID_MODES} picked={filters.bidMode} />
           <fieldset className={cn("space-y-2", sheet && "col-span-2")}>
             <legend className="text-[13px] font-semibold text-foreground">Sale</legend>
@@ -148,7 +157,7 @@ export function BookFiltersForm({
         </div>
         {!pro && (
           <p className="mt-4 text-xs leading-relaxed text-muted-foreground">
-            Occupancy, foreclosure, loan program, months delinquent and tape flags come from the loan file, so they skip listings you can&apos;t open yet.
+            Occupancy, foreclosure, loan program, CRA, months delinquent and tape flags come from the loan file, so they skip listings you can&apos;t open yet.
           </p>
         )}
         {!sheet && <Button type="submit" className="mt-4 h-10 px-4 text-[13px] font-medium">Apply filters</Button>}

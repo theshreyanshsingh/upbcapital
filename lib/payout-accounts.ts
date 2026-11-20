@@ -120,8 +120,29 @@ export async function vettedPayeeNames(userId: string) {
     prisma.user.findUnique({ where: { id: userId }, select: { name: true, companyName: true } }),
     prisma.sellerProfile.findUnique({ where: { userId }, select: { status: true, entityName: true } }),
   ]);
+  return vettedNames(user, file);
+}
+
+function vettedNames(user: { name: string; companyName: string | null } | null, file: { status: string; entityName: string } | null) {
   if (file?.status === "APPROVED" && file.entityName.trim()) return [file.entityName.trim()];
   return [...new Set([user?.companyName ?? "", user?.name ?? ""].map((name) => name.trim()).filter(Boolean))];
+}
+
+// Every account still in use that is waiting for its call-back or verification, or that a sanctions match holds, with
+// whether its name is the vetted one. Read in two queries for the desk's risk queue (lib/risk-queue.ts).
+export async function payoutAccountsToCheck() {
+  const accounts = await prisma.payoutAccount.findMany({
+    where: { AND: [unset("retiredAt"), { OR: [{ status: "PENDING" }, { screenResult: "REVIEW" }] }] },
+    select: { id: true, userId: true, status: true, bankName: true, accountName: true, accountLast4: true, screenResult: true, screenedAt: true, callbackAt: true, callbackById: true, createdAt: true, user: { select: { name: true, companyName: true, role: true } } },
+    orderBy: { createdAt: "asc" },
+  });
+  const userIds = [...new Set(accounts.map((account) => account.userId))];
+  const files = userIds.length ? await prisma.sellerProfile.findMany({ where: { userId: { in: userIds } }, select: { userId: true, status: true, entityName: true } }) : [];
+  const fileOf = new Map(files.map((file) => [file.userId, file]));
+  return accounts.map((account) => {
+    const vetted = vettedNames(account.user, fileOf.get(account.userId) ?? null);
+    return { ...account, held: account.screenResult === "REVIEW", vetted, nameMatches: sameHolder(account.accountName, vetted) };
+  });
 }
 
 // The same party, like sameParty in lib/broker-fees.ts, but blind to punctuation and accents too, so "Harbor
@@ -361,4 +382,22 @@ export async function recordBrokerFeePaid(actor: Actor, input: { feeId: string }
   await audit(actor.id, "broker.paid", "BrokerFee", fee.id, `${feeDollars(fee.amountCents)} to ${payoutLabel(account)} (${account.id}) · approved by ${fee.approvedById} · ${fee.broker.email}`);
   await notify(fee.broker.email, "Broker fee marked paid", `The desk marked ${feeDollars(fee.amountCents)} paid on ${fee.closing.listing.title}, to ${payoutLabel(account)}.`);
   return { error: null } as const;
+}
+
+// Every fee still owed: one waiting for its approval to an account, and one approved and waiting for a second desk
+// member to record it paid. For the desk's risk queue (lib/risk-queue.ts).
+export async function owedBrokerFees() {
+  return prisma.brokerFee.findMany({
+    where: { status: "OWED" },
+    select: {
+      id: true,
+      amountCents: true,
+      createdAt: true,
+      approvedAt: true,
+      approvedById: true,
+      broker: { select: { name: true } },
+      closing: { select: { id: true, deskOwnerId: true, listing: { select: { title: true, bidMode: true, bidDeadline: true, status: true } } } },
+    },
+    orderBy: { createdAt: "asc" },
+  });
 }

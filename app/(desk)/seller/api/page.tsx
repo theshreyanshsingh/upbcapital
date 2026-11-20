@@ -1,4 +1,5 @@
 import { deleteWebhook, redeliverWebhook, revokeApiKey, saveWebhookEvents } from "@/actions/keys";
+import { RecentCalls } from "@/components/api-calls";
 import { MintKeyForm, WebhookForm } from "@/components/api-forms";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
@@ -7,6 +8,7 @@ import { requireUser } from "@/lib/auth";
 import { q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 import { API_LIMIT } from "@/lib/api-limit";
+import { recentCalls } from "@/lib/api-log";
 import { deliveryState, endpointEvents, WEBHOOK_EVENTS, webhookUrlProblem } from "@/lib/webhooks";
 import { redirect } from "next/navigation";
 import { PROVENANCE_VERSION } from "@/lib/provenance-rules";
@@ -22,9 +24,10 @@ export default async function SellerApiPage({ searchParams }: { searchParams: Pr
   const user = await requireUser();
   if (user.role !== "INSTITUTIONAL_SELLER" && user.role !== "ADMIN") redirect("/");
   const query = await searchParams;
-  const [keys, hooks] = await Promise.all([
+  const [keys, hooks, calls] = await Promise.all([
     prisma.apiKey.findMany({ where: { userId: user.id }, orderBy: { createdAt: "desc" } }),
     prisma.webhookEndpoint.findMany({ where: { userId: user.id }, include: { deliveries: { orderBy: { createdAt: "desc" }, take: 10 } }, orderBy: { createdAt: "desc" } }),
+    recentCalls(user.id),
   ]);
   return (
     <div>
@@ -107,6 +110,7 @@ export default async function SellerApiPage({ searchParams }: { searchParams: Pr
           </li>
         ))}
       </ul>
+      {keys.length > 0 && <RecentCalls groups={calls} csvHref="/api/security/api-calls" />}
     </div>
   );
 }

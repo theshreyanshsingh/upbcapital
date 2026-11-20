@@ -9,9 +9,12 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { flatTerms, payerText, premiumOn, type FeeTerms } from "@/lib/fee-schedule";
 import { ConfirmRows, ConfirmSubmit } from "@/components/confirm-submit";
+import { BidTapeUpload } from "@/components/bid-tape-upload";
+import { CovenantAck } from "@/components/covenant-ack";
 import { EntityField, EntityPicker, entityRows, useEntityChoice, type EntityOption } from "@/components/entity-picker";
 import { LoanPriceFields, type LoanPriceSummary, type PricedLoan } from "@/components/loan-price-fields";
 import { BUY_NOW_BUYER_SUMMARY, buyNowTerms } from "@/lib/buy-now";
+import type { BidCovenants } from "@/lib/covenants";
 import { ACKNOWLEDGE_FIRST } from "@/lib/eligibility";
 import { money } from "@/lib/format";
 import { bidTerms, goodUntilRow } from "@/lib/offers";
@@ -36,6 +39,8 @@ export function OfferPanel({
   loans = [],
   entities = [],
   suggested,
+  covenants = null,
+  round,
 }: {
   listingId: string;
   premiumBps: number;
@@ -66,6 +71,10 @@ export function OfferPanel({
   entities?: EntityOption[];
   // A forward-flow buyer's price grid pre-fills the bid, with a line saying how (lib/flow-programs.ts). They still confirm.
   suggested?: { amount: number; line: string };
+  // The servicing covenants on the listing's loans, which a whole-listing bid acknowledges (lib/covenants.ts).
+  covenants?: BidCovenants | null;
+  // On a two-round sale, which round this bid is in: indicative bids bind nobody, final ones bind (lib/sale-rounds.ts).
+  round?: "INDICATIVE" | "FINAL" | null;
 }) {
   const [amount, setAmount] = useState(suggested ? String(suggested.amount) : "");
   const [entity] = useEntityChoice(listingId, entities);
@@ -90,6 +99,7 @@ export function OfferPanel({
         ["Part of the pool", partial ? "The seller may take part at your loan prices" : "Whole pool only"],
       ]
     : [];
+  const covenantRows: [string, string][] = covenants?.hash ? [["Covenants", "Read, and you'll service to them"]] : [];
   return (
     <div className="glass p-5">
       <p className="eyebrow">Make a bid</p>
@@ -108,7 +118,7 @@ export function OfferPanel({
       {bidding && standing?.cap && <p className="mt-2 text-[13px] text-foreground tabular-nums">{standing.cap.line}</p>}
       {/* Loan bids in the pool table carry the same choice, so it shows whenever the buyer can bid at all. */}
       {verified && !stopped && !acknowledgeFirst && <EntityPicker listingId={listingId} options={entities} />}
-      {bidding && buyNow && <BuyNowForm listingId={listingId} terms={terms} buyNow={buyNow} deposit={deposit} diligenceDays={diligenceDays} notice={notice} standing={standing} entity={entity} buyingAs={buyingAs} />}
+      {bidding && buyNow && <BuyNowForm listingId={listingId} terms={terms} buyNow={buyNow} deposit={deposit} diligenceDays={diligenceDays} notice={notice} standing={standing} entity={entity} buyingAs={buyingAs} covenants={covenants} covenantRows={covenantRows} />}
       {canOffer && verified && stopped ? (
         <p className="mt-4 text-sm leading-relaxed text-foreground">
           {stopped}{" "}
@@ -126,7 +136,7 @@ export function OfferPanel({
           {noteId ? <input type="hidden" name="noteId" value={noteId} /> : null}
           <EntityField chosen={entity} />
           <label className="block text-[13px] text-muted-foreground">
-            Your bid
+            {round === "INDICATIVE" ? "Your indicative bid" : round === "FINAL" ? "Your final bid" : "Your bid"}
             <Input
               name="amount"
               inputMode="decimal"
@@ -152,7 +162,7 @@ export function OfferPanel({
               {room != null && room < 0 && <p className="text-xs text-bad">This all-in is over your verified funds, so the desk will refuse it. Bid less, or withdraw another bid.</p>}
             </div>
           )}
-          {pricedPool && <LoanPriceFields loans={loans} total={offer > 0 ? offer : null} onSummary={setPriced} />}
+          {pricedPool && <LoanPriceFields loans={loans} total={offer > 0 ? offer : null} onSummary={setPriced} bidTape />}
           {/* Optional terms fold away, so the panel fits beside the page and the bid button stays in view. */}
           <details className="rounded-lg border border-border px-3 py-2">
             <summary className="cursor-pointer text-[13px] font-medium text-foreground">Good-until date or a note (optional)</summary>
@@ -168,15 +178,18 @@ export function OfferPanel({
               </label>
             </div>
           </details>
+          <CovenantAck covenants={covenants} />
           <ConfirmSubmit
-            title={`Bid ${money(offer)}?`}
-            consequence={`If the desk accepts it, you're committed to buy ${partial ? "the whole pool, or the part of it the desk awards at your loan prices," : "at this price"} plus the buyer premium${deposit ? `, and a ${deposit[0]}% deposit is due within ${deposit[1]} day${deposit[1] === 1 ? "" : "s"}` : ""}.${bidTerms(diligenceDays)}${notice}`}
-            details={<ConfirmRows rows={[["Your bid", money(offer)], ["Buyer premium", money(premium)], ["All-in", money(offer + premium)], ...loanRows, ...buyingAs, ...credentialRows(credential?.line ?? null, room), goodUntilRow(goodUntil)]} />}
+            title={round === "INDICATIVE" ? `Send an indicative bid of ${money(offer)}?` : `Bid ${money(offer)}?`}
+            consequence={round === "INDICATIVE"
+              ? `An indicative bid isn't binding, and it can't be accepted or awarded. The seller and the desk read it to choose a shortlist. If your firm is on it, you place a binding final bid, which can be higher or lower.${notice}`
+              : `If the desk accepts it, you're committed to buy ${partial ? "the whole pool, or the part of it the desk awards at your loan prices," : "at this price"} plus the buyer premium${deposit ? `, and a ${deposit[0]}% deposit is due within ${deposit[1]} day${deposit[1] === 1 ? "" : "s"}` : ""}.${bidTerms(diligenceDays)}${notice}`}
+            details={<ConfirmRows rows={[["Your bid", money(offer)], ["Buyer premium", money(premium)], ["All-in", money(offer + premium)], ...loanRows, ...buyingAs, ...credentialRows(credential?.line ?? null, room), goodUntilRow(goodUntil), ...covenantRows]} />}
             confirmLabel="Place the bid"
             pendingLabel="Sending…"
             className="h-11 w-full text-[13px] font-medium"
           >
-            {buyNow?.price != null ? "Submit a different offer" : "Submit offer"}
+            {round === "INDICATIVE" ? "Submit indicative bid" : round === "FINAL" ? "Submit final bid" : buyNow?.price != null ? "Submit a different offer" : "Submit offer"}
           </ConfirmSubmit>
         </form>
       ) : canOffer ? (
@@ -189,6 +202,10 @@ export function OfferPanel({
         </p>
       ) : (
         <p className="mt-4 text-sm text-muted-foreground">{closedText}</p>
+      )}
+      {/* A whole-pool bid priced from the buyer's own spreadsheet, confirmed on the same terms (lib/bid-tape.ts). */}
+      {bidding && pricedPool && (
+        <BidTapeUpload listingId={listingId} terms={terms} deposit={deposit} diligenceDays={diligenceDays} notice={notice} credential={credential} entity={entity} buyingAs={buyingAs} covenants={covenants} covenantRows={covenantRows} round={round} />
       )}
       <div className="mt-3 grid gap-2">
         <form action={submitInquiry}>
@@ -227,6 +244,8 @@ function BuyNowForm({
   standing,
   entity,
   buyingAs,
+  covenants,
+  covenantRows,
 }: {
   listingId: string;
   terms: FeeTerms;
@@ -237,6 +256,8 @@ function BuyNowForm({
   standing: BidStanding | null;
   entity: EntityOption | null;
   buyingAs: [string, string][];
+  covenants: BidCovenants | null;
+  covenantRows: [string, string][];
 }) {
   if (buyNow.price == null) {
     return <p className="mt-4 rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground">The seller set a buy-it-now price. It shows on Pro, like the ask.</p>;
@@ -256,6 +277,8 @@ function BuyNowForm({
       </div>
       <p className="text-xs leading-relaxed text-muted-foreground">{BUY_NOW_BUYER_SUMMARY}</p>
       {standing?.cap && Math.round(price * 100) > standing.cap.cents + 1 && <p className="text-[13px] text-bad tabular-nums">This price is over your cap. {standing.cap.line}</p>}
+      {/* The bid form below shows the same covenants open, so here they fold. */}
+      <CovenantAck covenants={covenants} fold />
       <ConfirmSubmit
         title={`Buy it now at ${money(price)}?`}
         consequence={`${buyNowTerms({ pool: buyNow.pool, deposit, diligenceDays })}${notice}`}
@@ -269,6 +292,7 @@ function BuyNowForm({
               ...credentialRows(standing?.credential?.line ?? null, room),
               ["Deposit", deposit ? `${money((price * deposit[0]) / 100)} within ${deposit[1]} day${deposit[1] === 1 ? "" : "s"}` : "None"],
               ["Diligence window", diligenceDays ? `${diligenceDays} day${diligenceDays === 1 ? "" : "s"} after the award` : "None"],
+              ...covenantRows,
             ]}
           />
         }

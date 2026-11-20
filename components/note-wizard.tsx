@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { CENSUS_TRACT_MESSAGE, FFIEC_GEOCODER_URL, parseCensusTract, TRACT_INCOME_LEVELS } from "@/lib/cra";
 import { chargeFees, effectiveBps, flatTerms, type FeeTerms } from "@/lib/fee-schedule";
 import { money } from "@/lib/format";
 import type { PriceLadder } from "@/lib/indicative";
@@ -180,6 +181,7 @@ export function NoteWizard({
       if (senior != null && !(senior >= 0)) return "The senior lien balance can't be below zero.";
       const claim = amount(draft.partialClaimBalance);
       if (claim != null && !(claim > 0)) return "The partial claim balance must be greater than zero.";
+      if (draft.censusTract.trim() && !parseCensusTract(draft.censusTract)) return CENSUS_TRACT_MESSAGE;
     }
     if (name === "Price" && Number(draft.askingPrice) <= 0) return "Enter an asking price.";
     return "";
@@ -552,6 +554,24 @@ export function NoteWizard({
                 <Input className="h-11 bg-card tabular-nums" inputMode="decimal" value={draft.partialClaimBalance} onChange={(event) => set("partialClaimBalance", event.target.value)} />
               </Field>
             )}
+
+            {/* CRA details: what a bank or credit-union buyer screens for (lib/cra.ts). */}
+            <div className="pt-4 md:col-span-2">
+              <p className="eyebrow">CRA details</p>
+              <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                Optional. Banks and credit unions look for loans in low- or moderate-income census tracts, or to borrowers who were low or moderate income. The{" "}
+                <a href={FFIEC_GEOCODER_URL} target="_blank" rel="noreferrer" className="text-link">FFIEC geocoder</a> gives a property&apos;s tract and the tract&apos;s income level from its address.
+              </p>
+            </div>
+            <Field label="Census tract" hint="11 digits: the state, county and tract codes, such as 12086010500.">
+              <Input className="h-11 bg-card tabular-nums" autoComplete="off" spellCheck={false} value={draft.censusTract} onChange={(event) => set("censusTract", event.target.value)} />
+            </Field>
+            <Field label="Tract income level" hint="As the FFIEC census file gives it for that tract.">
+              <OptionalSelect value={draft.tractIncomeLevel} options={TRACT_INCOME_LEVELS} onChange={(value) => set("tractIncomeLevel", value)} />
+            </Field>
+            <Field label="LMI borrower?" hint="Was the borrower's income at or under 80% of the area median when the loan was made?">
+              <OptionalSelect value={draft.lmiBorrower} options={YES_NO} onChange={(value) => set("lmiBorrower", value)} />
+            </Field>
           </div>
         )}
         {step === 4 && (

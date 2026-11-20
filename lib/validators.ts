@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { Note } from "@prisma/client";
+import { CENSUS_TRACT_MESSAGE, parseCensusTract, TRACT_INCOME_LEVELS } from "@/lib/cra";
 import { isoDate } from "@/lib/format";
 import { FORECLOSURES, LIEN_POSITIONS, OCCUPANCIES, PAYMENT_STATUSES, PROPERTY_TYPES, US_STATES } from "@/lib/labels";
 import {
@@ -154,6 +155,20 @@ export const noteSchema = z.object({
   loanProgram: optionalEnum(values(LOAN_PROGRAMS), "Choose the loan program."),
   partialClaim: yesNo,
   partialClaimBalance: optionalNumber(z.coerce.number({ error: "Enter the partial claim balance as an amount." }).positive("The partial claim balance must be greater than zero.")),
+  // Tape v3.2: CRA and LMI (lib/cra.ts). A tract typed as "12086.0105" or "12-086-010500" is stored as its 11 digits.
+  censusTract: z
+    .preprocess(blank, z.string().optional())
+    .transform((value, context) => {
+      if (!value) return null;
+      const tract = parseCensusTract(value);
+      if (!tract) {
+        context.addIssue({ code: "custom", message: CENSUS_TRACT_MESSAGE });
+        return z.NEVER;
+      }
+      return tract;
+    }),
+  tractIncomeLevel: optionalEnum(values(TRACT_INCOME_LEVELS), "Choose the tract income level."),
+  lmiBorrower: yesNo,
 }).superRefine((input, context) => {
   if (input.partialClaimBalance != null && input.partialClaim !== true) {
     context.addIssue({ code: "custom", path: ["partialClaimBalance"], message: "Answer yes to the partial claim to give its balance." });
@@ -222,5 +237,8 @@ export function servicingDraft(note: Pick<Note, ServicingKey>): Record<Servicing
     loanProgram: note.loanProgram ?? "",
     partialClaim: flag(note.partialClaim),
     partialClaimBalance: amount(note.partialClaimBalance),
+    censusTract: note.censusTract ?? "",
+    tractIncomeLevel: note.tractIncomeLevel ?? "",
+    lmiBorrower: flag(note.lmiBorrower),
   };
 }

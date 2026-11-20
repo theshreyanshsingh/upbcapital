@@ -40,6 +40,8 @@ export async function confirmStandingBid(formData: FormData) {
     price,
     goodUntil: String(formData.get("goodUntil") || ""),
     buyerEntityId: String(formData.get("buyerEntityId") || ""),
+    // The tick on the covenants that pass with these loans, naming the version shown (lib/covenants.ts).
+    covenantsAck: String(formData.get("covenantsAck") || ""),
   });
   if (result.error !== null) {
     redirect(result.verification ? `/buyer/verification?error=${encodeURIComponent(result.error)}` : `/buyer/buy-box?error=${encodeURIComponent(result.error)}#invitations`);

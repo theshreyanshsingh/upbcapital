@@ -54,6 +54,24 @@ export function provenanceHold(listing: { ownershipAttestedAt?: Date | null; app
   return statementHoldText(listing);
 }
 
+// Every listing in review held for want of the statement, in one query, for the desk's risk queue (lib/risk-queue.ts).
+export async function statementHolds() {
+  const rows = await prisma.listing.findMany({
+    where: { status: { in: IN_REVIEW }, AND: [unset("ownershipAttestedAt"), unset("approvedAt")] },
+    select: { id: true, title: true, submittedAt: true, deskOwnerId: true, brokerId: true, ownershipAttestedAt: true, approvedAt: true, seller: { select: { role: true } } },
+  });
+  return rows.filter((row) => provenanceHold(row));
+}
+
+// Every live listing paused for want of its seller's reconfirmation, for the same queue.
+export async function pausedListings() {
+  const rows = await prisma.listing.findMany({
+    where: { status: "APPROVED", stalePausedAt: { not: null } },
+    select: { id: true, title: true, status: true, stalePausedAt: true, deskOwnerId: true },
+  });
+  return rows.filter(stalePaused);
+}
+
 function owns(user: { id: string }, listing: { sellerId: string; brokerId?: string | null }) {
   return listing.sellerId === user.id || (Boolean(listing.brokerId) && listing.brokerId === user.id);
 }

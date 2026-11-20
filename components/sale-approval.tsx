@@ -17,6 +17,7 @@ import { feeTerms, feesFor, rateText } from "@/lib/fee-schedule";
 import { getSettings } from "@/lib/settings";
 import { prisma } from "@/lib/prisma";
 import { standingLoanPrices } from "@/lib/loan-prices";
+import { roundLabel } from "@/lib/sale-rounds";
 import { sellerCounterBlock, trackRecordsFor, type TrackRecord } from "@/lib/seller-decisions";
 
 type Offer = {
@@ -44,6 +45,8 @@ type Offer = {
   // When the seller's answer to the desk's ask is due, and the entity the bid is for (lib/seller-decisions.ts).
   sellerRespondBy?: Date | null;
   buyerEntityId?: string | null;
+  // On a two-round sale, 1 for an indicative bid and 2 for a final one (lib/sale-rounds.ts).
+  round?: number | null;
 };
 
 type Listing = {
@@ -256,9 +259,10 @@ async function LiveBids({
   const placeOf = new Map(loans.map((note) => [note.id, `${note.city}, ${note.state}`]));
   const priceOf = (offer: Offer) => buyerPrice(offer.amount, offer.messages, offer.buyerId);
   const round = (offer: Offer) =>
-    event && offer.createdAt
+    roundLabel(offer.round) ??
+    (event && offer.createdAt
       ? offer.createdAt.getTime() < event.indicationsAt.getTime() ? "Indication" : "Best and final"
-      : listing.bidMode === "SEALED" ? "Sealed bid" : listing.bidMode === "BEST_AND_FINAL" ? "Best and final" : "Open offer";
+      : listing.bidMode === "SEALED" ? "Sealed bid" : listing.bidMode === "BEST_AND_FINAL" ? "Best and final" : "Open offer");
   const reserve = listing.reservePrice != null && listing.reservePrice > 0 ? Number(listing.reservePrice) : null;
   const sorted = sealed ? bids : [...bids].sort((a, b) => (priceOf(b) ?? 0) - (priceOf(a) ?? 0));
   const waitsForDeadline = listing.bidMode !== "NONE" && !deadlinePassed(listing.bidDeadline);
@@ -295,11 +299,11 @@ async function LiveBids({
                 {/* Any bid the seller can see can be countered, under the same sealed rules. The placeholder figure is
                     above the bid, so only the bid's and the listing's state decide whether the form shows. */}
                 {canAnswer && !asked && price != null && price > 0 &&
-                  !sellerCounterBlock({ type: offer.type, status: offer.status, listing, expiresAt: offer.expiresAt ?? null, current: price, amount: price + 1, picked }) && (
+                  !sellerCounterBlock({ type: offer.type, status: offer.status, listing, expiresAt: offer.expiresAt ?? null, current: price, amount: price + 1, picked, round: offer.round }) && (
                   <CounterBid offerId={offer.id} who={who(offer)} price={price} scope={scope} />
                 )}
               </div>
-              {canAnswer && !sealed && !asked && !picked && price != null && listing.status === "APPROVED" && (
+              {canAnswer && !sealed && !asked && !picked && price != null && listing.status === "APPROVED" && offer.round !== 1 && (
                 <form action={pickBid}>
                   <input type="hidden" name="inquiryId" value={offer.id} />
                   <input type="hidden" name="price" value={price} />

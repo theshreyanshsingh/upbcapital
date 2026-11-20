@@ -17,6 +17,7 @@ import { prisma } from "@/lib/prisma";
 import { getSettings, isPro } from "@/lib/settings";
 import { openInvitations, ruleLabel, ruleOf, type StandingBox } from "@/lib/standing-bids";
 import { bidEntities } from "@/lib/buyer-entities";
+import { bidCovenantsFor } from "@/lib/covenants";
 
 export const metadata = { title: "Buy box" };
 
@@ -34,6 +35,8 @@ export default async function BuyBoxPage({
     orderBy: { createdAt: "desc" },
   });
   const [invitations, settings, entities] = await Promise.all([openInvitations(user.id), getSettings(), bidEntities(user.id)]);
+  // The covenants each invitation's loans carry, which confirming it acknowledges (lib/covenants.ts).
+  const covenants = new Map(await Promise.all(invitations.map(async (invite) => [invite.id, await bidCovenantsFor(user.id, invite.listingId)] as const)));
   const pro = isPro(user);
   const rate = marketRate(settings);
   // Spread-priced invitations whose rate is over a week old, so the buyer knows before confirming.
@@ -45,7 +48,7 @@ export default async function BuyBoxPage({
   return (
     <div className="grid grid-cols-[minmax(0,1fr)] gap-10 xl:grid-cols-[minmax(0,1fr)_360px]">
       <div>
-        <PageIntro eyebrow="Buy box" title="Paper that fits." lede="States, lien, performance, loan program, balance, price, a ceiling as a percent of UPB, a target IRR from the deal analyzer, the highest LTV and the fewest months of seasoning. New listings are scored against every active box. A match on the live book sends a notice. On Pro, a box can carry a standing price too, an indicative figure for every new tape that fits." />
+        <PageIntro eyebrow="Buy box" title="Paper that fits." lede="States, lien, performance, loan program, CRA eligibility, balance, price, a ceiling as a percent of UPB, a target IRR from the deal analyzer, the highest LTV and the fewest months of seasoning. New listings are scored against every active box. A match on the live book sends a notice. On Pro, a box can carry a standing price too, an indicative figure for every new tape that fits." />
         <Notice notice={q(params, "notice")} error={q(params, "error")} />
         {invitations.length > 0 && (
           <section id="invitations" className="mt-8 scroll-mt-6" aria-labelledby="invitations-heading">
@@ -76,6 +79,7 @@ export default async function BuyBoxPage({
                     deposit={deposit}
                     diligenceDays={diligence}
                     entities={entities}
+                    covenants={covenants.get(invite.id) ?? null}
                   />
                 );
               })}
@@ -96,6 +100,7 @@ export default async function BuyBoxPage({
                     {box.targetYield != null ? ` · IRR ${Number(box.targetYield)}%` : ""}
                     {box.maxLtv != null ? ` · LTV up to ${Number(box.maxLtv)}%` : ""}
                     {box.minSeasoningMonths != null ? ` · seasoned ${box.minSeasoningMonths}+ months` : ""}
+                    {box.craOnly ? " · CRA-eligible only" : ""}
                   </p>
                 </div>
                 <form action={retireBuyBox}>
@@ -152,6 +157,13 @@ export default async function BuyBoxPage({
             ))}
           </div>
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">Leave all off for any program. A loan whose tape states no program doesn&apos;t fit a program you pick.</p>
+        </fieldset>
+        <fieldset>
+          <legend className="text-[13px] text-muted-foreground">CRA</legend>
+          <label className="mt-2 inline-flex items-center gap-2 text-sm text-foreground pointer-coarse:min-h-10"><input type="checkbox" name="craOnly" />CRA-eligible only</label>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+            A loan in a low- or moderate-income census tract, or to an LMI borrower, as UPB reads the tape. A pool fits when at least half its UPB is, and a standing price applies only when every loan is. Your CRA officer decides what counts.
+          </p>
         </fieldset>
         <div className="grid grid-cols-2 gap-3">
           <label className="block"><span className="text-[13px] text-muted-foreground">UPB min</span><input name="upbMin" className="desk-input mt-2" aria-label="UPB minimum" /></label>

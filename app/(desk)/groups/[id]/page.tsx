@@ -4,9 +4,11 @@ import { allowPartialGroup, bidPartial, dissolveGroup, dropSeat, extendGroup, jo
 import { FillBar } from "@/components/fill-bar";
 import { Notice } from "@/components/notice";
 import { ConfirmSubmit } from "@/components/confirm-submit";
+import { CovenantAck } from "@/components/covenant-ack";
 import { SubmitButton } from "@/components/submit-button";
 import { requireUser } from "@/lib/auth";
 import { bidCapFor, capHint } from "@/lib/bid-caps";
+import { bidCovenantsFor } from "@/lib/covenants";
 import {
   ACKNOWLEDGE_FIRST,
   acknowledgementMissing,
@@ -63,6 +65,8 @@ export default async function GroupPage({
   const acknowledgedAt = user.role === "BUYER" && eligibility.acknowledge ? await roadAcknowledgedAt(user.id, group.listingId) : null;
   const acknowledgeFirst = user.role === "BUYER" && acknowledgementMissing(eligibility, acknowledgedAt, profile?.eligibilityAt);
   const notices = confirmNotices(eligibility);
+  // The servicing covenants a seat acknowledges, as a bid does (lib/covenants.ts).
+  const covenants = user.role === "BUYER" ? await bidCovenantsFor(user.id, group.listingId, group.noteId) : null;
   // A senior and junior group takes no new seat and sends no first offer while counsel reviews tranches.
   const paused = trancheBlock(group.structure);
   const upb = notes.reduce((sum, note) => sum + Number(note.upb), 0);
@@ -171,6 +175,7 @@ export default async function GroupPage({
             </select>
           )}
           {notices.length > 0 && <p className="text-xs leading-relaxed text-muted-foreground">{notices.join(" ")}</p>}
+          <CovenantAck covenants={covenants} />
           <SubmitButton className="h-11 text-[13px] font-medium">Join</SubmitButton>
         </form>
       )}

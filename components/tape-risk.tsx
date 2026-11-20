@@ -1,3 +1,4 @@
+import { CRA_CAVEAT, craCount, craCountLine, tractIncomeLabel, type CraNote } from "@/lib/cra";
 import { solExposure, type SolExposure } from "@/lib/statute-limits";
 import { asksForPartialClaim, PARTIAL_CLAIM_ASK, partialClaimLine, type PartialClaimNote } from "@/lib/tape-fields";
 
@@ -115,6 +116,64 @@ export function PoolRisks({ notes, now }: { notes: RiskNote[]; now?: Date }) {
       <p className="eyebrow text-warn">Risk flags</p>
       {lines.map((line) => <p key={line} className="text-sm leading-relaxed text-foreground">{line}</p>)}
       {sol.length > 0 && <p className="text-xs text-muted-foreground">Not legal advice.</p>}
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// CRA: the tag a bank or credit-union buyer screens for (lib/cra.ts). It isn't a risk or a grade, only what the tape
+// says about the tract and the borrower, so it sits in its own block in the link tone.
+
+// "CRA" with the reason for one loan, or the count for a pool: "LMI tract", "6 of 16 loans CRA-eligible".
+export function CraBadge({ text, className }: { text: string | null; className?: string }) {
+  if (!text) return null;
+  return (
+    <span className={`inline-flex min-w-0 flex-wrap items-center gap-1.5 text-[13px] text-muted-foreground ${className ?? ""}`}>
+      <span className="rounded-full bg-link/10 px-2 py-0.5 text-xs font-semibold text-link">CRA</span>
+      <span>{text}</span>
+    </span>
+  );
+}
+
+type CraLoan = CraNote & { censusTract?: string | null };
+
+// The sentence for one loan's CRA reading, or null when it doesn't read as eligible.
+export function craSentence(note: CraLoan) {
+  const parts: string[] = [];
+  const level = note.tractIncomeLevel === "LOW" || note.tractIncomeLevel === "MODERATE" ? tractIncomeLabel(note.tractIncomeLevel)?.toLowerCase() : null;
+  if (level) parts.push(`The property is in a ${level}-income census tract${note.censusTract ? `, ${note.censusTract}` : ""}.`);
+  if (note.lmiBorrower === true) parts.push("The borrower's income was at or under 80% of the area median when the loan was made.");
+  return parts.length ? parts.join(" ") : null;
+}
+
+// The CRA block on a listing: one loan's reading, or a pool's count with each reason. The desk also gets the FFIEC
+// geocoder and the address to search, to check a stated tract before it marks the fields verified in the loan file.
+export function CraFacts({ kind, notes, geocode = null }: { kind: string; notes: CraLoan[]; geocode?: { href: string; address: string } | null }) {
+  const count = craCount(notes);
+  if (!count.eligible && !geocode) return null;
+  const pool = kind === "POOL" && notes.length > 1;
+  const single = !pool && notes[0] ? craSentence(notes[0]) : null;
+  const reasons = [
+    count.tract && `${count.tract} in a low- or moderate-income tract`,
+    count.borrower && `${count.borrower} to an LMI borrower`,
+  ].filter((line): line is string => Boolean(line));
+  return (
+    <section aria-label="CRA" className="mt-8 space-y-2 rounded-xl border border-link/30 bg-link/5 p-5">
+      <p className="eyebrow text-link">CRA</p>
+      {pool && count.eligible > 0 && (
+        <p className="text-sm leading-relaxed text-foreground">
+          {craCountLine(count)}: {reasons.join(", ")}. Each loan&apos;s file has its tract.
+        </p>
+      )}
+      {single && <p className="text-sm leading-relaxed text-foreground">{single}</p>}
+      {count.eligible > 0 && <p className="text-xs leading-relaxed text-muted-foreground">{CRA_CAVEAT}</p>}
+      {geocode && (
+        <p className="text-[13px] leading-relaxed text-muted-foreground">
+          Desk: check the tract and its income level on the{" "}
+          <a href={geocode.href} target="_blank" rel="noreferrer" className="font-medium text-link">FFIEC geocoder</a> by searching{" "}
+          <span className="break-words text-foreground">{geocode.address}</span>, then mark the fields verified in the loan file.
+        </p>
+      )}
     </section>
   );
 }

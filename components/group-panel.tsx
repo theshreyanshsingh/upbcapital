@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { openGroup } from "@/actions/group";
+import { CovenantAck } from "@/components/covenant-ack";
 import { FillBar } from "@/components/fill-bar";
 import { SubmitButton } from "@/components/submit-button";
+import type { BidCovenants } from "@/lib/covenants";
 import { ACKNOWLEDGE_FIRST } from "@/lib/eligibility";
 import { fillState, seatName } from "@/lib/group-buy";
 import { money } from "@/lib/format";
@@ -18,6 +20,7 @@ export function GroupPanel({
   capLine = null,
   acknowledgeFirst = false,
   notices = [],
+  covenants = null,
 }: {
   listingId: string;
   asking: number | null;
@@ -30,6 +33,8 @@ export function GroupPanel({
   acknowledgeFirst?: boolean;
   // The listing's eligibility notices in brief, as a bid confirmation restates them.
   notices?: string[];
+  // The servicing covenants on the listing's loans, which opening a group acknowledges as a bid does (lib/covenants.ts).
+  covenants?: BidCovenants | null;
 }) {
   if (!group && !canStart) return null;
   const state = group ? fillState(group.targetAmount, group.positions) : null;
@@ -101,6 +106,7 @@ export function GroupPanel({
             {capLine && <span className="mt-1 block text-foreground">{capLine}</span>}
           </label>
           {notices.length > 0 && <p className="text-xs leading-relaxed text-muted-foreground">{notices.join(" ")}</p>}
+          {viewer.role !== "ADMIN" && <CovenantAck covenants={covenants} />}
           <SubmitButton className="h-11 text-[13px] font-medium">Start the group</SubmitButton>
         </form>
       )}

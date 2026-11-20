@@ -58,6 +58,7 @@ export default async function BuyerDeskPage({
       <div className="mt-6 flex flex-wrap gap-4 text-[13px] font-medium">
         <Link className="text-link" href={`/admin/verification#buyer-${buyer.id}`}>Open in buyer files</Link>
         <Link className="text-link" href={`/admin/audit?${new URLSearchParams({ entityType: "user", entityId: buyer.id }).toString()}`}>Account in the audit log</Link>
+        <Link className="text-link" href={`/admin/api?${new URLSearchParams({ account: buyer.id }).toString()}`}>API calls</Link>
       </div>
       {seatLine && <p className="mt-3 text-sm text-muted-foreground">{seatLine}</p>}
 

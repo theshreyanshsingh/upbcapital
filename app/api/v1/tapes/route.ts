@@ -2,8 +2,9 @@ import { NextResponse } from "next/server";
 import { apiCaller } from "@/lib/api-limit";
 import { ingestTape } from "@/lib/ingest";
 import { DESK_DENIED, deskCan } from "@/lib/staff";
+import { withCallLog } from "@/lib/api-log";
 
-export async function POST(request: Request) {
+async function handlePost(request: Request) {
   const caller = await apiCaller(request, "tapes:write");
   if (caller.response) return caller.response;
   const user = caller.user;
@@ -21,3 +22,6 @@ export async function POST(request: Request) {
   if ("error" in result) return NextResponse.json(result, { status: 400 });
   return NextResponse.json(result, { status: 201 });
 }
+
+// Logged with the status this route answers (lib/api-log.ts).
+export const POST = withCallLog(handlePost);

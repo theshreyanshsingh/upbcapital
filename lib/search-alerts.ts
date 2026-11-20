@@ -49,6 +49,7 @@ function matchInput(listing: Listing & { notes: Note[] }) {
     occupancy: note.occupancy,
     foreclosureStatus: note.foreclosureStatus,
     loanProgram: note.loanProgram,
+    tractIncomeLevel: note.tractIncomeLevel, lmiBorrower: note.lmiBorrower,
     monthsDelinquent: note.monthsDelinquent,
     interestRate: Number(note.interestRate),
     monthlyPi: Number(note.monthlyPi),

@@ -3,6 +3,7 @@ import { DeletionQueue } from "@/components/deletion-queue";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { SubmitButton } from "@/components/submit-button";
+import { VendorPackSettings } from "@/components/vendor-pack-settings";
 import { requireRole } from "@/lib/auth";
 import { FLORIDA_DISCLOSURE } from "@/lib/compliance";
 import { prettyDate, q } from "@/lib/format";
@@ -12,6 +13,7 @@ import { prisma } from "@/lib/prisma";
 import { openReviewWhere, reviewKey } from "@/lib/screening";
 import { getSettings } from "@/lib/settings";
 import { deskCan } from "@/lib/staff";
+import { readSecurityPack } from "@/lib/vendor-pack";
 
 export const metadata = { title: "Compliance" };
 
@@ -169,6 +171,8 @@ export default async function CompliancePage({
           )}
         </div>
       </section>
+
+      <VendorPackSettings pack={readSecurityPack(settings.securityPack)} readOnly={!vets} />
 
       <DeletionQueue readOnly={!vets} />
     </div>

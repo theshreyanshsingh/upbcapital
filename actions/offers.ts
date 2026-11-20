@@ -20,6 +20,7 @@ import { rebidBlock } from "@/lib/retrade";
 import { seatLimitBlock } from "@/lib/seats";
 import { recertBlock } from "@/lib/verification";
 import { emitWebhook } from "@/lib/webhooks";
+import { INDICATIVE_CLOSED } from "@/lib/sale-rounds";
 
 function money(amount: number) {
   return `$${Math.round(amount).toLocaleString("en-US")}`;
@@ -92,6 +93,11 @@ export async function postOfferMessage(formData: FormData) {
     if (capped) redirect(`${back.split("?")[0]}?error=${encodeURIComponent(capped)}`);
     // A buyer who walked away from these loans can't come back under the price they walked from by countering down
     // either, as a new bid can't (lib/retrade.ts). Accepting the seller's own counter is the seller's choice.
+    // An indicative bid stands as it was when round one closed: the shortlist was read from it, and only a final bid
+    // can be awarded (lib/sale-rounds.ts).
+    if (inquiry.round === 1 && inquiry.listing.roundOneEndsAt && deadlinePassed(inquiry.listing.roundOneEndsAt)) {
+      redirect(`${back.split("?")[0]}?error=${encodeURIComponent(INDICATIVE_CLOSED)}`);
+    }
     if (!accepting) {
       const retrade = await rebidBlock({ userIds: [user.id], listingId: inquiry.listingId, noteId: inquiry.noteId, amount });
       if (retrade) redirect(`${back.split("?")[0]}?error=${encodeURIComponent(retrade)}`);

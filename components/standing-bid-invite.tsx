@@ -4,9 +4,11 @@ import { useState } from "react";
 import Link from "next/link";
 import { confirmStandingBid, passStandingBid } from "@/actions/standing-bids";
 import { ConfirmRows, ConfirmSubmit } from "@/components/confirm-submit";
+import { CovenantAck } from "@/components/covenant-ack";
 import { entityRows, type EntityOption } from "@/components/entity-picker";
 import { SubmitButton } from "@/components/submit-button";
 import { Input } from "@/components/ui/input";
+import type { BidCovenants } from "@/lib/covenants";
 import { money } from "@/lib/format";
 import { bidTerms, goodUntilRow } from "@/lib/offers";
 
@@ -25,6 +27,7 @@ export function StandingBidInvite({
   deposit,
   diligenceDays,
   entities = [],
+  covenants = null,
 }: {
   matchId: string;
   listingId: string;
@@ -40,6 +43,8 @@ export function StandingBidInvite({
   diligenceDays?: number;
   // The buying entities the bid can be for. With more than one, the buyer picks here.
   entities?: EntityOption[];
+  // The servicing covenants on the listing's loans, which the bid acknowledges (lib/covenants.ts).
+  covenants?: BidCovenants | null;
 }) {
   const [goodUntil, setGoodUntil] = useState("");
   const [entityId, setEntityId] = useState("");
@@ -52,6 +57,7 @@ export function StandingBidInvite({
     ...entityRows(entity, entities),
     ["Deposit at award", deposit ? `${money((price * deposit[0]) / 100)} within ${deposit[1]} day${deposit[1] === 1 ? "" : "s"}` : "None"],
     goodUntilRow(goodUntil),
+    ...(covenants?.hash ? [["Covenants", "Read, and you'll service to them"] as [string, string]] : []),
   ];
   return (
     <li className="glass p-5">
@@ -88,6 +94,7 @@ export function StandingBidInvite({
           <Input name="goodUntil" type="date" value={goodUntil} onChange={(event) => setGoodUntil(event.target.value)} className="mt-1 h-11 bg-card" />
           <span className="mt-1 block text-xs">Leave it blank and the bid stands until you withdraw it or the desk decides it.</span>
         </label>
+        <CovenantAck covenants={covenants} />
         <ConfirmSubmit
           title={`Bid ${money(price)}?`}
           consequence={`If the desk accepts it, you're committed to buy at this price plus the buyer premium${deposit ? `, and a ${deposit[0]}% deposit is due within ${deposit[1]} day${deposit[1] === 1 ? "" : "s"}` : ""}.${bidTerms(diligenceDays)}`}

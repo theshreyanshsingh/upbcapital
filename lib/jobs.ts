@@ -121,6 +121,8 @@ export async function runJobs(now = new Date()) {
     ["Review requests", () => import("@/lib/reviews").then((reviews) => reviews.requestReviews(now))],
     ["Closed auctions", () => notifyClosedAuctions().then(() => "closed auctions checked")],
     ["Retention", () => cleanRetention(now)],
+    // API calls older than 90 days go from the call log (lib/api-log.ts).
+    ["API call log", () => import("@/lib/api-log").then((log) => log.purgeApiCalls(now))],
     ["Abandoned tapes", () => purgeTapeDrafts(now).then((count) => `abandoned tapes ${count}`)],
     // The first run of each month sends the market dispatch; later runs find the month claimed.
     ["Market dispatch", () => sendMarketDispatch(now)],
@@ -135,6 +137,8 @@ export async function runJobs(now = new Date()) {
     ["Search roundups", () => sendSearchRoundups(now)],
     // Each seller or broker with a live listing hears how it did, once a week.
     ["Seller reports", () => sendSellerReports(now)],
+    // Each holder with a watched note last read 30 or more days ago hears once, claimed on each note's reading.
+    ["Note watch", () => import("@/lib/note-watch").then((watch) => watch.sendNoteWatch(now))],
     // Failed webhook deliveries whose next try is due.
     ["Webhook retries", () => retryWebhooks(now)],
     // Losing bidders are asked once to certify they destroyed the room's files, and reminded once a week later.

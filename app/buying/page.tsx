@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { RequestTeaser } from "@/components/bids-wanted";
 import { PublicPage } from "@/components/public-page";
 import { getCurrentUser } from "@/lib/auth";
 import { currentDemandBoard, HIDDEN_LINE, MIN_FIRMS, type DemandCell } from "@/lib/demand-board";
@@ -75,6 +76,7 @@ export default async function BuyingPage() {
         </dl>
         <p className="mt-4 text-xs text-muted-foreground">U.S. Census regions.</p>
       </section>
+      <RequestTeaser />
       <p className="text-sm leading-relaxed text-muted-foreground">
         A buy box is a buyer&apos;s standing interest, not a bid. A price is set only when buyers bid on a listing, after the desk reviews the file.
       </p>

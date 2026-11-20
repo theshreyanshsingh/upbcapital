@@ -18,6 +18,7 @@ import {
 } from "@/lib/ai-reading";
 import { prettyDate } from "@/lib/format";
 import { docLabel } from "@/lib/labels";
+import { draftCitation } from "@/lib/qa-citations";
 
 const COMPARISON: Record<Comparison, { tone: "good" | "warn" | "plain"; label: string }> = {
   match: { tone: "good", label: "Matches the tape" },
@@ -200,26 +201,41 @@ export async function ReaderSettings({ owns }: { owns: boolean }) {
 }
 
 // Beside an open question's answer form: the reader's draft and the files it came from. In shadow mode only the desk
-// sees it. Buyers never do; their pages read published answers only.
-export async function AiDraftNote({ question, from }: { question: { id: string; status: string; aiDraft?: string | null; aiSources?: string | null }; from: string }) {
+// sees it. Buyers never do; their pages read published answers only. Using the draft also fills the answer's source
+// from the draft's first source still in the room: the file, the words and the page where the reader knew it
+// (lib/qa-citations.ts draftCitation; the field ids are components/listing-questions.tsx SourceFields).
+export async function AiDraftNote({
+  question,
+  from,
+  documents = [],
+}: {
+  question: { id: string; status: string; aiDraft?: string | null; aiSources?: string | null };
+  from: string;
+  documents?: { id: string }[];
+}) {
   if (question.status !== "OPEN" || !question.aiDraft) return null;
   if (!draftVisible(await readingMode(), from)) return null;
   const sources = draftSources(question.aiSources);
+  const cited = draftCitation(question.aiSources, documents);
+  const fields = cited
+    ? { [`source-doc-${question.id}`]: cited.documentId, [`source-page-${question.id}`]: cited.page ? String(cited.page) : "", [`source-quote-${question.id}`]: cited.quote ?? "" }
+    : undefined;
   return (
     <div className="mt-3 rounded-lg border border-border bg-muted/40 p-3">
       <p className="text-[13px] font-medium text-foreground">Drafted by the document reader from these files. Check it before you publish.</p>
       <p className="mt-2 whitespace-pre-line text-sm text-foreground/85">{question.aiDraft}</p>
       {sources.length > 0 && (
-        <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
+        <ul className="mt-2 space-y-1 break-words text-xs text-muted-foreground">
           {sources.map((source, index) => (
             <li key={`${source.documentId}-${index}`}>
-              {source.name}: &ldquo;{source.quote}&rdquo;
+              {source.name}{source.page ? `, page ${source.page}` : ""}: &ldquo;{source.quote}&rdquo;
             </li>
           ))}
         </ul>
       )}
-      <div className="mt-2">
-        <DraftInsert target={`answer-${question.id}`} text={question.aiDraft} />
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <DraftInsert target={`answer-${question.id}`} text={question.aiDraft} fields={fields} />
+        {cited && <span className="text-xs text-muted-foreground">It fills in the source too.</span>}
       </div>
     </div>
   );

@@ -11,7 +11,8 @@ import { prisma } from "@/lib/prisma";
 
 // "announcements" is a member's place on the deal-announcement list. Someone on the list without an account leaves
 // with their own subscriber link instead (lib/announcements.ts).
-export const UNSUBSCRIBE_CATEGORIES = ["watch", "search", "deals", "dispatch", "report", "digest", "announcements"] as const;
+// "notewatch" is a seller's monthly note watch email (lib/note-watch.ts).
+export const UNSUBSCRIBE_CATEGORIES = ["watch", "search", "deals", "dispatch", "report", "digest", "announcements", "notewatch"] as const;
 export type UnsubscribeCategory = (typeof UNSUBSCRIBE_CATEGORIES)[number];
 
 // What a sender passes to notify: whose mail this is and which kind. A search alert can name its one saved search.
@@ -71,6 +72,7 @@ export function categoryText(found: Pick<Unsubscribe, "category" | "searchId">) 
     report: "the weekly report on your listings",
     digest: "the buy box digest",
     announcements: "deal announcements",
+    notewatch: "the monthly note watch email",
   };
   return text[found.category];
 }
@@ -91,6 +93,8 @@ export async function applyUnsubscribe(found: Unsubscribe) {
     await prisma.user.updateMany({ where: user, data: { sellerReport: false } });
   } else if (found.category === "announcements") {
     await prisma.user.updateMany({ where: user, data: { announcements: false } });
+  } else if (found.category === "notewatch") {
+    await prisma.trackedNote.updateMany({ where: { userId: found.userId }, data: { alertsOn: false } });
   } else {
     await prisma.user.updateMany({ where: user, data: { digest: "OFF" } });
   }
@@ -176,7 +180,7 @@ export async function preferenceLinkForUser(userId: string, origin = "") {
   return user && !user.deletedAt ? preferenceLink({ source: "account", id: user.id, email: user.email }, origin) : null;
 }
 
-export const MAILING_KEYS = ["announcements", "dispatch", "deals", "watch", "search", "digest", "report"] as const;
+export const MAILING_KEYS = ["announcements", "dispatch", "deals", "watch", "search", "digest", "report", "notewatch"] as const;
 export type MailingKey = (typeof MAILING_KEYS)[number];
 export type Mailing = { key: MailingKey; label: string; on: boolean };
 
@@ -189,6 +193,7 @@ export const MAILING_LABELS: Record<MailingKey, string> = {
   search: "Saved-search alerts and roundups",
   digest: "The buy box digest",
   report: "The weekly report on your listings",
+  notewatch: "Note watch",
 };
 
 // The account is found by its address as stored; the list stores addresses in lower case (lib/announcements.ts).
@@ -206,13 +211,15 @@ async function addressRows(email: string) {
   // A firm's seat reads the firm's mail and gets none of these lists itself (lib/seats.ts).
   const live = account && !account.deletedAt && !account.principalId ? account : null;
   const searches = live ? await prisma.savedSearch.findMany({ where: { userId: live.id }, select: { alertEnabled: true } }) : [];
-  return { account: live, subscriber, searches, reports: (REPORT_ROLES as readonly string[]).includes(live?.role ?? "") };
+  // Notes on watch that aren't listed yet: a listed note gets no monthly email (lib/note-watch.ts).
+  const watched = live ? await prisma.trackedNote.findMany({ where: { userId: live.id, ...unset("listingId") }, select: { alertsOn: true } }) : [];
+  return { account: live, subscriber, searches, watched, reports: (REPORT_ROLES as readonly string[]).includes(live?.role ?? "") };
 }
 
 // Each mailing the address can receive, account-based and list-based, as the senders decide who gets them: a
 // buyer's lists for buyers, the weekly report for sellers and brokers, the deal list for anyone. When an address is
 // both a member and a subscriber, the account's own setting decides, as lib/announcements.ts sends.
-function mailingsOf({ account, subscriber, searches, reports }: Awaited<ReturnType<typeof addressRows>>): Mailing[] {
+function mailingsOf({ account, subscriber, searches, watched, reports }: Awaited<ReturnType<typeof addressRows>>): Mailing[] {
   const listed = Boolean(subscriber?.confirmedAt && !subscriber.unsubscribedAt);
   const keys: [MailingKey, boolean][] = [];
   if (account || subscriber) keys.push(["announcements", account?.announcements === true || (listed && account?.announcements == null)]);
@@ -224,6 +231,7 @@ function mailingsOf({ account, subscriber, searches, reports }: Awaited<ReturnTy
       keys.push(["digest", account.digest !== "OFF"]);
     }
     if (reports) keys.push(["report", account.sellerReport !== false]);
+    if (watched.length) keys.push(["notewatch", watched.some((note) => note.alertsOn)]);
   }
   return keys.map(([key, on]) => ({ key, label: MAILING_LABELS[key], on }));
 }
@@ -251,6 +259,9 @@ export async function applyMailings(email: string, wanted: Partial<Record<Mailin
     if (mailing.key === "digest") user.digest = on ? "WEEKLY" : "OFF";
   }
   if (account && Object.keys(user).length) await prisma.user.update({ where: { id: account.id }, data: user });
+  if (account && changed.some((mailing) => mailing.key === "notewatch")) {
+    await prisma.trackedNote.updateMany({ where: { userId: account.id, ...unset("listingId") }, data: { alertsOn: wanted.notewatch === true } });
+  }
   if (account && changed.some((mailing) => mailing.key === "search")) {
     await prisma.savedSearch.updateMany({ where: { userId: account.id }, data: { alertEnabled: wanted.search === true } });
   }

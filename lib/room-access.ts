@@ -6,6 +6,7 @@ import { notify } from "@/lib/email";
 import { launchPending } from "@/lib/launch-rules";
 import { prisma } from "@/lib/prisma";
 import { canSeeListing } from "@/lib/private-listings";
+import { finalRoundShut } from "@/lib/sale-rounds";
 import { isPro } from "@/lib/settings";
 
 // A seller can ask to approve each bidder before the room opens. The NDA is signed as always; with approval on, it
@@ -144,6 +145,8 @@ export async function documentGate(user: DocumentViewer, documentId: string) {
   ]);
   // A room on a listing hidden from this buyer is shut, whatever they signed; their own signed NDA still comes back.
   if (!owner && !admin && !ownNda && !(await canSeeListing(user, document.listing))) return { document, allowed: false, buyerCopy: false };
+  // A final-round file on a two-round sale shows in the room but opens only to a shortlisted firm (lib/sale-rounds.ts).
+  if (!owner && !admin && !ownNda && (await finalRoundShut(document, document.listing, user.id))) return { document, allowed: false, buyerCopy: false };
   const deal = owner || admin ? { whole: false, loans: new Set<string>() } : await dealAccess(document.listingId, user.id);
   // A loan's own file follows that loan: sold out of a pool, it closes to everyone but its buyer.
   const note = document.noteId

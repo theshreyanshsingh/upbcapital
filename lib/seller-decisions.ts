@@ -18,6 +18,7 @@ import { standingLoanPrices } from "@/lib/loan-prices";
 import { pdfSafe, wrap } from "@/lib/memo-pdf";
 import { bidExpired, buyerPrice, type OfferMoney } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
+import { roundLabel, roundOf } from "@/lib/sale-rounds";
 import { RECORD_MIN_CLOSES, bidderFacts } from "@/lib/track-record";
 
 // The seller's decision tools: a dated window to answer the desk, counters to any bid they can see, a bid summary
@@ -154,6 +155,8 @@ export function sellerCounterBlock(input: {
   current: number | null;
   amount: number;
   picked: boolean;
+  // The round on a two-round sale, from lib/sale-rounds.ts roundOf. Missing on a one-round sale.
+  round?: number | null;
   now?: Date;
 }) {
   const now = input.now ?? new Date();
@@ -162,6 +165,7 @@ export function sellerCounterBlock(input: {
   if (sealedFromSeller(input.listing, now)) return "Bids are sealed until the deadline, so you can counter once it passes.";
   if (input.listing.bidMode !== "NONE" && !deadlinePassed(input.listing.bidDeadline, now)) return "Best and final gives each bidder one bid, so you can counter once the deadline passes.";
   if (bidExpired(input.expiresAt, now)) return "That bid passed its good-until date, so there is nothing to counter.";
+  if (input.round === 1) return "This is an indicative bid from round one. It isn't binding, so there is nothing to counter.";
   if (input.picked) return "You already agreed to this bid's price when you picked it, so the desk can award it as it stands.";
   if (!Number.isFinite(input.amount) || input.amount <= 0 || input.amount > 1_000_000_000) return "Enter your counter in dollars.";
   if (input.current == null || input.current <= 0) return "That bid has no amount.";
@@ -180,7 +184,7 @@ export async function counterAnyBid(input: { inquiryId: string; sellerId: string
   if (awaitingSeller(offer)) return recordSellerCounter(offer.id, input.sellerId, input.amount, now);
   const current = buyerPrice(offer.amount, priced(offer.messages), offer.buyerId);
   const picked = Boolean(offer.sellerRequestedAt) && askedPriceStands(offer.sellerApprovedAmount, current);
-  const block = sellerCounterBlock({ type: offer.type, status: offer.status, listing: offer.listing, expiresAt: offer.expiresAt, current, amount: input.amount, picked, now });
+  const block = sellerCounterBlock({ type: offer.type, status: offer.status, listing: offer.listing, expiresAt: offer.expiresAt, current, amount: input.amount, picked, round: roundOf(offer, offer.listing), now });
   if (block) return { error: block } as const;
   const amount = input.amount;
   // Claimed on the bid as read: a desk question, another counter, an award or the good-until date landing in the
@@ -431,6 +435,8 @@ export async function bidSummary(listingId: string, viewer: Viewer, now = new Da
   const totalUpb = listing.notes.reduce((sum, note) => sum + Number(note.upb), 0);
   const reserve = listing.reservePrice != null && listing.reservePrice > 0 ? Number(listing.reservePrice) : null;
   const bids = listing.inquiries.map((offer) => ({ offer, price: buyerPrice(offer.amount, priced(offer.messages), offer.buyerId) }));
+  // A bid placed from a bid tape says so, with its loan count: never a price, so it shows while sealed too (lib/bid-tape.ts).
+  const byTape = await import("@/lib/bid-tape").then(({ tapeBidNotes }) => tapeBidNotes(listing.inquiries.map((offer) => offer.id)));
   // Highest first once amounts show, as on the seller's page. While sealed, the order the bids came in.
   if (!sealed) bids.sort((a, b) => (b.price ?? 0) - (a.price ?? 0));
   const rows: BidSummaryRow[] = bids.map(({ offer, price }) => {
@@ -441,14 +447,15 @@ export async function bidSummary(listingId: string, viewer: Viewer, now = new Da
     const shown = !sealed && price != null && price > 0;
     return {
       bidder: nameOf(offer.buyer),
-      scope: note ? `Loan ${position.get(note.id)} in ${note.city}, ${note.state}` : "Whole listing",
+      scope: note ? `Loan ${position.get(note.id)} in ${note.city}, ${note.state}` : byTape.has(offer.id) ? `Whole listing · ${byTape.get(offer.id)}` : "Whole listing",
       price: sealed ? SEALED : shown ? price.toFixed(2) : "",
       pct_of_upb: shown && upb > 0 ? ((price / upb) * 100).toFixed(2) : "",
       loan_prices: prices
         ? listing.notes.filter((item) => prices[item.id] != null).map((item) => `Loan ${position.get(item.id)} ${prices[item.id].toFixed(2)}`).join("; ")
         : "",
       good_until: offer.expiresAt ? offer.expiresAt.toISOString().slice(0, 10) : "No end date",
-      status: statusText(offer, sealed, now),
+      // An indicative bid says so beside its status, so nobody reads it as binding (lib/sale-rounds.ts).
+      status: [statusText(offer, sealed, now), roundLabel(roundOf(offer, listing))].filter(Boolean).join(" · "),
       reserve_met: shown ? (reserve == null ? "No reserve set" : price >= reserve ? "Yes" : "No") : "",
       verified_funds: record?.funds ?? "",
       entity: record?.entity ?? "",

@@ -3,6 +3,7 @@ import Link from "next/link";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { money, prettyDate, q } from "@/lib/format";
+import { noteWatchCounts } from "@/lib/note-watch";
 import { prisma } from "@/lib/prisma";
 import { requireDesk } from "@/lib/staff";
 import { FUNNEL_DAYS, VALUATION_STATUSES, statusLabel, valuationFunnel } from "@/lib/valuations";
@@ -21,6 +22,8 @@ export default async function ValuationsPage({ searchParams }: { searchParams: P
   const filter = FILTERS.find((item) => item.key === q(params, "show")) ?? FILTERS[0];
   // The line first: it ties listings filed since to their requests, which the list below then shows as listed.
   const funnel = await valuationFunnel();
+  // Counts only. A holder's watched notes are private until listed, so the desk never sees one on its own.
+  const watch = await noteWatchCounts();
   const [requests, waiting] = await Promise.all([
     prisma.valuationRequest.findMany({ where: filter.where, orderBy: { createdAt: "desc" }, take: 200 }),
     prisma.valuationRequest.count({ where: { status: "NEW" } }),
@@ -38,6 +41,9 @@ export default async function ValuationsPage({ searchParams }: { searchParams: P
       </p>
       <p className="mt-1 text-xs text-muted-foreground">
         Requests sent in the window. Signed up means the request is on a seller account; listed, that a listing came from it; closed, that a sale from that listing closed. The board pack carries the same line by month.
+      </p>
+      <p className="mt-2 text-sm text-foreground tabular-nums">
+        Note watch: {watch.watched} {watch.watched === 1 ? "note" : "notes"} watched by sellers not ready to sell, {watch.listed} of them since listed.
       </p>
       <nav aria-label="Filter requests" className="mt-4 flex flex-wrap gap-2">
         {FILTERS.map((item) => (

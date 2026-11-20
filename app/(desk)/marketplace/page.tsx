@@ -14,6 +14,7 @@ import { StateMap } from "@/components/us-map";
 import { Button } from "@/components/ui/button";
 import { requireUser } from "@/lib/auth";
 import { openableListingIds } from "@/lib/access";
+import { craBadgeText } from "@/lib/cra";
 import {
   appliedChips,
   BID_MODES,
@@ -40,6 +41,7 @@ import {
   type SortKey,
 } from "@/lib/filters";
 import { foreclosureFor } from "@/lib/foreclosure";
+import { regulatedUserIds } from "@/lib/institutions";
 import { money, num, pct, q } from "@/lib/format";
 import { loadIndicatives } from "@/lib/indicative";
 import { labelOf, LIEN_POSITIONS, PAYMENT_STATUSES, US_STATES } from "@/lib/labels";
@@ -104,6 +106,8 @@ export default async function MarketplacePage({
       occupancy: note.occupancy,
       foreclosureStatus: note.foreclosureStatus,
       loanProgram: note.loanProgram ?? null,
+      tractIncomeLevel: note.tractIncomeLevel ?? null,
+      lmiBorrower: note.lmiBorrower ?? null,
       monthsDelinquent: note.monthsDelinquent,
       upb: num(note.upb),
       askingPrice: num(note.askingPrice),
@@ -157,6 +161,9 @@ export default async function MarketplacePage({
     return range ? { low: range.low, high: range.high, rate: range.rate } : null;
   };
   const heldSkipped = !pro && fileFiltersActive(applied) ? book.filter((row) => row.held).length : 0;
+  // A bank or credit union on the buyer's file, main or entity, gets one line pointing at the CRA filter. Nothing is
+  // switched on for them (lib/cra.ts).
+  const suggestCra = user.role === "BUYER" && !applied.cra && (await regulatedUserIds([user.id])).has(user.id);
 
   const href = (next: { filters?: BookFilters; view?: string; sort?: BookSort; page?: number; event?: string | null } = {}) => {
     const search = filtersQuery(next.filters ?? applied);
@@ -277,6 +284,13 @@ export default async function MarketplacePage({
         <BookFiltersForm {...filterProps} layout="sheet" />
       </BookFilterSheet>
       <BookChips groups={groups} applied={appliedList} clearHref={href({ filters: {}, event: null })} />
+      {suggestCra && (
+        <p className="mt-3 max-w-3xl text-sm leading-relaxed text-muted-foreground">
+          Buying for CRA credit?{" "}
+          <Link href={href({ filters: { ...applied, cra: true } })} className="font-medium text-link">Show CRA-eligible loans only</Link>: a low- or moderate-income
+          tract or borrower, as UPB reads the tape. Your CRA officer decides what counts.
+        </p>
+      )}
 
       {user.role === "BUYER" && pro ? (
         <section aria-labelledby="saved-views" className="mt-5 flex flex-wrap items-center gap-x-3 gap-y-2">
@@ -392,6 +406,7 @@ export default async function MarketplacePage({
               deadline={deadline == null ? null : new Date(deadline).toISOString()}
               comparable
               indicative={veil.figures ? indicativeOf(listing.id) : null}
+              cra={veil.hold === null ? craBadgeText(listing.kind, forSale) : null}
             />
           ))}
         </div>

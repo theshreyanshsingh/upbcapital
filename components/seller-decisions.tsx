@@ -2,6 +2,7 @@ import { counterBid, saveFeePayer, saveResponseWindow } from "@/actions/seller-d
 import { BidderCountChoice } from "@/components/bidder-count";
 import { BidderLimits } from "@/components/bidder-limits";
 import { ConfirmSubmit } from "@/components/confirm-submit";
+import { SaleRounds } from "@/components/sale-rounds";
 import { SellerNameChoice } from "@/components/seller-anonymity";
 import { SubmitButton } from "@/components/submit-button";
 import { FEE_PAYERS, FEE_PAYER_LABELS, feePayerOf, feesFor, type FeeSettings, type ListingFees } from "@/lib/fee-schedule";
@@ -158,6 +159,8 @@ export function SellerTerms({ listing, canAnswer, settings }: { listing: TermsLi
       <BidderCountChoice listing={listing} canAnswer={canAnswer} />
       {/* Who may bid: banks and credit unions only, and the statements each bidder needs (lib/attestations.ts). */}
       <BidderLimits listingId={listing.id} from="seller" canEdit={canAnswer} />
+      {/* Two rounds: indicative bids, a shortlist, then final bids, and the files held for the final round (lib/sale-rounds.ts). */}
+      <SaleRounds listingId={listing.id} from="seller" canEdit={canAnswer} />
     </div>
   );
 }

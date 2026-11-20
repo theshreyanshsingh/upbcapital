@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { actionGate } from "@/lib/action-gates";
 import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { citationInput, citeAnswer, sourceLine } from "@/lib/qa-citations";
 import { answerQuestion, askQuestion, declineQuestion } from "@/lib/questions";
 import { seatGate } from "@/lib/seats";
 import { deskDenied } from "@/lib/staff";
@@ -51,9 +52,21 @@ export async function answerListingQuestion(formData: FormData) {
   const listingId = await listingOf(questionId);
   const gated = await actionGate(user, "message");
   if (gated) back(formData, listingId, { ok: false, error: gated }, "");
-  const outcome = deskDenied(user, "sales") ?? (await answerQuestion(user, { questionId, answer: formData.get("answer") }));
+  const outcome = deskDenied(user, "sales") ?? (await answerQuestion(user, { questionId, answer: formData.get("answer"), source: citationInput(formData) }));
   const told = outcome.ok ? outcome.value.told : 0;
-  back(formData, listingId, outcome, `The answer is published to every bidder in the room, and ${told} bidder${told === 1 ? " was" : "s were"} told.`);
+  const source = outcome.ok ? sourceLine(outcome.value.cited, outcome.value.check) : "";
+  back(formData, listingId, outcome, `The answer is published to every bidder in the room, and ${told} bidder${told === 1 ? " was" : "s were"} told.${source ? ` ${source}` : ""}`);
+}
+
+// A source added to an answer already published without one (lib/qa-citations.ts).
+export async function citeListingAnswer(formData: FormData) {
+  const user = await requireUser();
+  const questionId = String(formData.get("questionId") || "");
+  const listingId = await listingOf(questionId);
+  const gated = await actionGate(user, "message");
+  if (gated) back(formData, listingId, { ok: false, error: gated }, "");
+  const outcome = deskDenied(user, "sales") ?? (await citeAnswer(user, { questionId, source: citationInput(formData) }));
+  back(formData, listingId, outcome, outcome.ok ? sourceLine(true, outcome.value.check) : "");
 }
 
 export async function declineListingQuestion(formData: FormData) {

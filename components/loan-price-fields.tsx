@@ -19,6 +19,7 @@ export function LoanPriceFields({
   onSummary,
   defaultPrices,
   defaultAllow = false,
+  bidTape = false,
 }: {
   loans: PricedLoan[];
   // The bid the prices must add up to, when the form knows it.
@@ -26,6 +27,8 @@ export function LoanPriceFields({
   onSummary?: (summary: LoanPriceSummary) => void;
   defaultPrices?: Record<string, number> | null;
   defaultAllow?: boolean;
+  // A new bid on the pool can come as a bid tape instead (lib/bid-tape.ts). A counter in a thread can't.
+  bidTape?: boolean;
 }) {
   const [prices, setPrices] = useState<Record<string, string>>(() =>
     Object.fromEntries(loans.map((loan) => [loan.id, defaultPrices?.[loan.id] != null ? String(defaultPrices[loan.id]) : ""])),
@@ -34,7 +37,8 @@ export function LoanPriceFields({
   if (loans.length > MAX_PRICED_LOANS) {
     return (
       <p className="rounded-lg border border-border px-3 py-2 text-xs leading-relaxed text-muted-foreground">
-        Loan prices can be set here on pools of up to {MAX_PRICED_LOANS} loans. For a larger pool, send the desk your loan-level prices with the bid.
+        Loan prices can be set here on pools of up to {MAX_PRICED_LOANS} loans.{" "}
+        {bidTape ? "For a larger pool, upload a bid tape: download the template under the loan tape, price each loan and upload it below." : "For a larger pool, send the desk your loan-level prices with the bid."}
       </p>
     );
   }

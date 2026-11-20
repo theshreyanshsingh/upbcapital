@@ -5,6 +5,7 @@ import { BoardingForm } from "@/components/boarding-form";
 import { cancelClosing, completeClosingStep, recordSettlement, saveWireInstructions, setClosingDates, uploadClosingFile } from "@/actions/closing";
 import { BorrowerNotices } from "@/components/borrower-notices";
 import { ClosingMasters } from "@/components/closing-masters";
+import { ClosingCovenants } from "@/components/covenants";
 import { ClaimsPanel } from "@/components/claims-panel";
 import { CustodyPanel } from "@/components/custody-panel";
 import { BackupPanel } from "@/components/backup-panel";
@@ -354,6 +355,8 @@ export default async function ClosingPage({
               {closing.depositCents != null && <a className="text-link" href={`/api/closings/${closing.id}/packet?kind=DEPOSIT_AGREEMENT`}>Deposit agreement</a>}
             </div>
             <ClosingMasters closingId={closing.id} viewerId={user.id} />
+            {/* The purchase agreement's schedule of covenants that pass to the buyer, when any loan carries them. */}
+            <ClosingCovenants closing={closing} />
           </section>
         )}
         {party && <SignaturePanel closingId={closing.id} open={closing.status === "OPEN"} viewer={user} />}

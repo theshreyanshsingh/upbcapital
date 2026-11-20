@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { canSee, listingAccess } from "@/lib/private-listings";
 import { resolveSessionUser } from "@/lib/seats";
 import { milestones, when } from "@/lib/sale-events";
+import { twoRounds } from "@/lib/sale-rounds";
 import { kindLabel, LIVE_STATUSES, readSigners } from "@/lib/signatures";
 
 // A private calendar feed: one secret link per account that Google, Apple or Outlook subscribes to, carrying the
@@ -128,9 +129,9 @@ export async function userForCalendarToken(raw: string) {
 // What goes in one account's feed.
 
 type FeedUser = { id: string; role: string; email: string };
-type FeedListing = { id: string; title: string; status: string; sellerId: string; brokerId: string | null; visibility: string | null; bidDeadline: Date | null; saleEventId: string | null };
+type FeedListing = { id: string; title: string; status: string; sellerId: string; brokerId: string | null; visibility: string | null; bidDeadline: Date | null; saleEventId: string | null; bidMode: string; roundOneEndsAt: Date | null };
 
-const LISTING_FIELDS = { id: true, title: true, status: true, sellerId: true, brokerId: true, visibility: true, bidDeadline: true, saleEventId: true } as const;
+const LISTING_FIELDS = { id: true, title: true, status: true, sellerId: true, brokerId: true, visibility: true, bidDeadline: true, saleEventId: true, bidMode: true, roundOneEndsAt: true } as const;
 const LIVE_BIDS = ["OPEN", "REVIEWED"] as const;
 const ON_BOOK = ["APPROVED", "PENDING"];
 
@@ -156,11 +157,22 @@ export async function feedEvents(user: FeedUser, options: { now?: Date; appUrl?:
   const ownPage = (listing: FeedListing) => (listing.brokerId === user.id && listing.sellerId !== user.id ? `/broker/deals/${listing.id}` : sellerPage(listing, user.role));
   const deadline = (listing: FeedListing, path: string) => {
     if (listing.status !== "APPROVED" || !listing.bidDeadline || listing.bidDeadline < since) return;
+    // A two-round sale's indicative bids are due first, and its deadline is the final round's (lib/sale-rounds.ts).
+    const rounds = twoRounds(listing);
+    if (rounds && listing.roundOneEndsAt && listing.roundOneEndsAt >= since) {
+      events.push({
+        uid: `listing-${listing.id}-round-one@upbcapital`,
+        start: listing.roundOneEndsAt,
+        summary: `Indicative bids due: ${listing.title}`,
+        description: told(`Indicative bids on ${listing.title} are due ${when(listing.roundOneEndsAt)}. Final bids from the shortlist are due ${when(listing.bidDeadline)}.`, path),
+        url: link(path),
+      });
+    }
     events.push({
       uid: `listing-${listing.id}-bids@upbcapital`,
       start: listing.bidDeadline,
-      summary: `Bids due: ${listing.title}`,
-      description: told(`Bids on ${listing.title} close ${when(listing.bidDeadline)}.`, path),
+      summary: `${rounds ? "Final bids due" : "Bids due"}: ${listing.title}`,
+      description: told(`${rounds ? "Final bids from the shortlist" : "Bids"} on ${listing.title} close ${when(listing.bidDeadline)}.`, path),
       url: link(path),
     });
   };

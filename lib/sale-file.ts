@@ -4,6 +4,7 @@ import { listingActivity } from "@/lib/activity";
 import { deskWalled, sealedFromSeller } from "@/lib/auction";
 import { bidderNamer } from "@/lib/bidder-alias";
 import { closingLoans } from "@/lib/closing";
+import { covenantSaleRow } from "@/lib/covenants";
 import { custodyRows } from "@/lib/custody";
 import { toCsv } from "@/lib/csv";
 import type { Staff } from "@/lib/desk-roles";
@@ -212,6 +213,9 @@ export async function saleFile(listingId: string, viewer: Staff, now = new Date(
     }
     // The collateral file's custody: the custodian, the bailee letter, the receipt and exceptions. lib/custody.ts.
     for (const line of custodyRows(closing, party)) row({ section: "Custody", ...line });
+    // The servicing covenants that pass with the loans, and when the buyer acknowledged them (lib/covenants.ts).
+    const covenants = await covenantSaleRow(closing);
+    if (covenants) row({ section: "Covenants", party, ...covenants });
     if (closing.closedAt) row({ section: "Closing outcome", at: closing.closedAt, party, amount: Number(closing.salePrice), status: "Closed", detail: `Net to seller ${money(closing.netToSellerCents / 100, 2)}` });
     if (closing.canceledAt || closing.status === "CANCELED") {
       row({ section: "Closing outcome", at: closing.canceledAt, party, status: "Canceled", detail: [closing.cancelFault ? `Fault: ${words(closing.cancelFault)}` : "", closing.cancelReason ?? ""].filter(Boolean).join(" · ") });
@@ -444,6 +448,9 @@ export async function sellerSaleFile(listingId: string, viewer: { id: string; ro
     }
     // The collateral file's custody: the custodian, the bailee letter, the receipt and exceptions. lib/custody.ts.
     for (const line of custodyRows(closing, party)) row({ section: "Custody", ...line });
+    // The servicing covenants that pass with the loans, and when the buyer acknowledged them (lib/covenants.ts).
+    const covenants = await covenantSaleRow(closing);
+    if (covenants) row({ section: "Covenants", party, ...covenants });
     if (closing.closedAt) row({ section: "Closing outcome", at: closing.closedAt, party, amount: Number(closing.salePrice), status: "Closed", detail: `Net to seller ${money(closing.netToSellerCents / 100, 2)}` });
     if (closing.canceledAt || closing.status === "CANCELED") {
       // The seller reads a finding against itself, never one against the buyer (lib/closing-service.ts faultLine).
@@ -543,6 +550,11 @@ export async function saleFilePdf(file: SaleFile, generatedAt = new Date()) {
   y -= 8;
   line("Closing outcome", { size: 12, face: bold, gap: 2 });
   for (const outcome of outcomes) line(`${when(outcome.at)} · ${outcome.section === "Closing opened" ? "Opened" : outcome.status} · ${outcome.party || ""}${outcome.amount != null ? ` · ${money(outcome.amount, 2)}` : ""}${outcome.detail ? ` · ${outcome.detail}` : ""}`);
+  for (const covenant of file.rows.filter((row) => row.section === "Covenants")) {
+    y -= 8;
+    line("Covenants that pass to the buyer", { size: 12, face: bold, gap: 2 });
+    line(`${covenant.status}${covenant.at ? ` ${prettyDate(covenant.at)}` : ""} · ${covenant.party} · ${covenant.detail}`);
+  }
   const custody = file.rows.filter((row) => row.section === "Custody");
   if (custody.length) {
     y -= 8;

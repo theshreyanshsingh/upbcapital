@@ -93,6 +93,23 @@ export const DEFAULT_TEMPLATES: Record<TemplateKey, { title: string; body: strin
   },
 };
 
+export const COVENANT_SCHEDULE_TITLE = "Schedule: Covenants that pass to the buyer";
+
+// The purchase agreement's schedule of servicing covenants that pass with the loans, appended after the loan schedule
+// when any loan carries them (lib/covenants.ts). No covenants, no schedule. Like the rest of the papers, it is the
+// desk's draft until counsel settles the wording.
+export function covenantScheduleText(input: { loans: { place: string; text: string; verified: boolean }[]; acknowledgement: string }) {
+  if (!input.loans.length) return "";
+  return [
+    "",
+    "",
+    COVENANT_SCHEDULE_TITLE,
+    `${DESK_DRAFT} Each loan below carries servicing covenants from an earlier sale, as the tape states them. The buyer takes the loans subject to them and services the loans to them. UPB reads them as binding the buyer and anyone it later sells the loans to. [Counsel to confirm the wording, and how the covenants bind a later holder.]`,
+    ...input.loans.map((loan, index) => `${index + 1}. ${loan.place} ${loan.verified ? "Desk-verified against a document" : "Seller-stated"}: ${loan.text.replace(/\s+/g, " ")}`),
+    input.acknowledgement,
+  ].join("\n");
+}
+
 export function fillTemplate(body: string, vars: Record<string, string>) {
   return body.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_match, key: string) => vars[key] ?? "");
 }

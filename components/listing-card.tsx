@@ -3,6 +3,7 @@ import { Heart } from "lucide-react";
 import { toggleFavorite } from "@/actions/buyer";
 import { CompareToggle } from "@/components/compare-picker";
 import { StatusPill } from "@/components/status-pill";
+import { CraBadge } from "@/components/tape-risk";
 import { Button } from "@/components/ui/button";
 import { BID_MODES } from "@/lib/filters";
 import { money, pct, prettyDate } from "@/lib/format";
@@ -29,6 +30,7 @@ export function ListingCard({
   deadline = null,
   comparable = false,
   indicative = null,
+  cra = null,
 }: {
   href: string;
   title: string;
@@ -53,6 +55,9 @@ export function ListingCard({
   // The desk's indicative range in whole percent of UPB, from loadIndicatives(). Shown with the figures, so only on
   // Pro. rate is set when a spread-priced standing bid is part of it.
   indicative?: { low: number; high: number; rate?: RateStamp | null } | null;
+  // The CRA badge's words from lib/cra.ts craBadgeText(), on a card the viewer can open. It is a loan-file fact, so a
+  // held card leaves it off, as the book's CRA filter skips held listings.
+  cra?: string | null;
 }) {
   const style = BID_MODES.find((mode) => mode.value === bidMode)?.label ?? "Open offers";
   return (
@@ -75,6 +80,7 @@ export function ListingCard({
         <p className="mt-1 text-[13px] text-muted-foreground tabular-nums">
           {deadline ? `${style} · closes ${prettyDate(deadline)}` : style}
         </p>
+        {!locked && <CraBadge text={cra} className="mt-2 tabular-nums" />}
       </div>
       <div className="mt-5 border-t border-border pt-4 sm:mt-8">
         {lockReason === "early" && (

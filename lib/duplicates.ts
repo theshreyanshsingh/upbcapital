@@ -1,5 +1,6 @@
 import type { ListingStatus } from "@prisma/client";
 import { audit } from "@/lib/audit";
+import { unset } from "@/lib/db-filters";
 import { notifyDesk } from "@/lib/email";
 import { deskDecisionAllowed } from "@/lib/listing-status";
 import type { Outcome } from "@/lib/loan-file";
@@ -259,6 +260,37 @@ export async function duplicateHold(listingId: string) {
   const listing = await prisma.listing.findUnique({ where: { id: listingId }, select: { duplicateClearedAt: true } });
   if (!listing || listing.duplicateClearedAt) return null;
   return duplicateGateMessage((await duplicatesFor(listingId)).length, null);
+}
+
+const IN_REVIEW = DUPLICATE_STATUSES.filter((status) => status !== "APPROVED" && status !== "PENDING");
+
+// Every listing in review whose duplicate hold stands now, for the desk's risk queue (lib/risk-queue.ts). The flag
+// comment finds the candidates in one query, and duplicatesFor decides each, as duplicateHold does. A listing in review
+// that a flagged one matches is held too, whether or not the flagged one was cleared, since its own approval reads the
+// same match; it dates from that flag. A cleared listing is left out at the end.
+export async function openDuplicateHolds() {
+  const flagged = await prisma.listing.findMany({
+    where: { status: { in: IN_REVIEW }, reviews: { some: { comment: { startsWith: DUPLICATE_COMMENT } } } },
+    select: { id: true, reviews: { where: { comment: { startsWith: DUPLICATE_COMMENT } }, select: { createdAt: true }, orderBy: { createdAt: "desc" }, take: 1 } },
+  });
+  const since = new Map<string, Date>();
+  const hold = (id: string, at: Date) => {
+    const known = since.get(id);
+    if (!known || at > known) since.set(id, at);
+  };
+  const checked = await Promise.all(flagged.map(async (listing) => ({ listing, matches: await duplicatesFor(listing.id) })));
+  for (const { listing, matches } of checked) {
+    if (!duplicateGateMessage(matches.length, null)) continue;
+    const at = listing.reviews[0].createdAt;
+    hold(listing.id, at);
+    for (const match of matches) if ((IN_REVIEW as readonly string[]).includes(match.listing.status)) hold(match.listing.id, at);
+  }
+  if (!since.size) return [];
+  const rows = await prisma.listing.findMany({
+    where: { id: { in: [...since.keys()] }, status: { in: IN_REVIEW }, AND: [unset("duplicateClearedAt")] },
+    select: { id: true, title: true, deskOwnerId: true },
+  });
+  return rows.map((row) => ({ ...row, flaggedAt: since.get(row.id)! }));
 }
 
 const fail = (error: string): Outcome<never> => ({ ok: false, error });

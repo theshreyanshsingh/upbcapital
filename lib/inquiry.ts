@@ -8,6 +8,7 @@ import { bidCapBlock, bidCapFor, capHint } from "@/lib/bid-caps";
 import { bidderAlias } from "@/lib/bidder-alias";
 import { chosenEntity } from "@/lib/buyer-entities";
 import { buyNowOffer, samePrice } from "@/lib/buy-now";
+import { covenantCheck, recordCovenantAck, type CovenantAck } from "@/lib/covenants";
 import { unset } from "@/lib/db-filters";
 import { ACKNOWLEDGE_FIRST, acknowledgementMissing, eligibilityFor, eligibilityLog, type Eligibility } from "@/lib/eligibility";
 import { notify, notifyDesk } from "@/lib/email";
@@ -20,6 +21,7 @@ import { prisma } from "@/lib/prisma";
 import { canSeeListing, listingSight } from "@/lib/private-listings";
 import { pausedBidBlock } from "@/lib/provenance";
 import { rebidBlock } from "@/lib/retrade";
+import { roundBidBlock, roundForNewBid, supersedeIndicative } from "@/lib/sale-rounds";
 import { getSettings, isPro } from "@/lib/settings";
 import { strikeStanding } from "@/lib/strikes";
 import { ensureInquiryThread } from "@/lib/threads";
@@ -97,7 +99,7 @@ export async function acknowledgeRoad(user: Buyer, listingId: string) {
 
 export type OfferCheck =
   | { error: string; verification: boolean }
-  | { error: null; expiresAt: Date | null; eligibility: Eligibility; acknowledgedAt: Date | null; headroomAfter: number | null; buyerEntityId: string | null };
+  | { error: null; expiresAt: Date | null; eligibility: Eligibility; acknowledgedAt: Date | null; headroomAfter: number | null; buyerEntityId: string | null; covenants?: CovenantAck | null };
 
 // ---------------------------------------------------------------------------------------------------------------
 // The bid limit. A buyer's open bids, all-in, may not together run past the funds the desk verified.
@@ -195,6 +197,8 @@ export async function checkOffer(input: {
   allowPartial?: boolean;
   // The buying entity the bid is for, from the buyer's approved ones. Blank or missing means the main file.
   buyerEntityId?: string | null;
+  // The form's tick on the covenants that pass with these loans, naming the version shown (lib/covenants.ts).
+  covenantsAck?: string | null;
   now?: Date;
 }): Promise<OfferCheck> {
   const { user, listing, noteId } = input;
@@ -260,6 +264,10 @@ export async function checkOffer(input: {
   if (!gateBid.ok) {
     return { error: gateBid.reason === "deadline" ? "The bid deadline has passed." : "Best and final allows one bid on this listing.", verification: false };
   }
+  // A two-round sale: anyone eligible in round one, nobody while the shortlist is chosen, then the shortlisted firms
+  // only, through any of their seats (lib/sale-rounds.ts).
+  const rounds = await roundBidBlock(listing.id, user.id, now);
+  if (rounds) return { error: rounds, verification: false };
   // A firm that walked away from these loans in diligence bids them again at that price or more (lib/retrade.ts).
   const retrade = await rebidBlock({ userIds: [user.id], listingId: listing.id, noteId: noteId || null, amount: input.amount, loanPrices: input.loanPrices });
   if (retrade) return { error: retrade, verification: false };
@@ -268,13 +276,17 @@ export async function checkOffer(input: {
   const eligibility = eligibilityFor(loans, profile);
   const acknowledgedAt = eligibility.acknowledge ? await roadAcknowledgedAt(user.id, listing.id) : null;
   if (acknowledgementMissing(eligibility, acknowledgedAt, profile?.eligibilityAt)) return { error: ACKNOWLEDGE_FIRST, verification: false };
+  // Loans that carry servicing covenants from an earlier sale bind the buyer to them, so the bid form shows them and
+  // the buyer ticks that they read them, against the text as it stands (lib/covenants.ts).
+  const covenants = await covenantCheck({ userId: user.id, listingId: listing.id, noteId: noteId || null, ack: input.covenantsAck, now });
+  if (covenants.error !== null) return { error: covenants.error, verification: false };
   // Last, since it needs the price: the bid's all-in with the buyer's other open bids must fit the verified funds.
   const limit = await fundsLimitBlock({ userId: user.id, listingId: listing.id, noteId: noteId || null, amount: input.amount, now });
   if (limit.error !== null) return { error: limit.error, verification: limit.verification };
   // The bid cap on one bid's price: the desk's own cap for this buyer, and the new-bidder cap (lib/bid-caps.ts).
   const capped = await bidCapBlock(user.id, input.amount, { now });
   if (capped) return { error: capped, verification: false };
-  return { error: null, expiresAt: goodUntil.expiresAt, eligibility, acknowledgedAt, headroomAfter: limit.headroomAfter, buyerEntityId: entity.entityId };
+  return { error: null, expiresAt: goodUntil.expiresAt, eligibility, acknowledgedAt, headroomAfter: limit.headroomAfter, buyerEntityId: entity.entityId, covenants: covenants.ack };
 }
 
 // What the buyer was shown on this bid goes into the log beside it. Nothing is written when no notice applied.
@@ -298,11 +310,15 @@ type InquiryInput = {
   allowPartial?: boolean;
   // The approved buying entity checkOffer passed. Missing means the main file.
   buyerEntityId?: string | null;
+  // The covenants acknowledgement checkOffer passed, dated on the bid and logged with its version.
+  covenants?: CovenantAck | null;
 };
 
 // The row and the opening bid message. Callers that claim something first write this, link it, then announce it.
 export async function writeInquiry(input: InquiryInput) {
   const offer = input.type === "OFFER";
+  // A bid on a two-round sale carries its round: 1 indicative, 2 final (lib/sale-rounds.ts).
+  const round = offer ? await roundForNewBid(input.listing.id) : null;
   const inquiry = await prisma.inquiry.create({
     data: {
       listingId: input.listing.id,
@@ -315,29 +331,41 @@ export async function writeInquiry(input: InquiryInput) {
       ...(offer && input.buyNow ? { buyNow: true } : {}),
       ...(offer && !input.noteId && input.loanPrices ? { loanPrices: input.loanPrices, allowPartial: Boolean(input.allowPartial) } : {}),
       ...(offer && input.buyerEntityId ? { buyerEntityId: input.buyerEntityId } : {}),
+      ...(offer && input.covenants ? { covenantsAcknowledgedAt: input.covenants.at } : {}),
+      ...(round ? { round } : {}),
     },
   });
+  // A final bid replaces its firm's indicative bid on the same loans.
+  if (round === 2) await supersedeIndicative(inquiry);
+  if (offer && input.covenants) await recordCovenantAck(input.user.id, "inquiry", inquiry.id, input.covenants);
   if (offer && input.amount != null) {
     await prisma.offerMessage.create({
       data: { inquiryId: inquiry.id, authorId: input.user.id, kind: "OFFER", amount: input.amount, body: input.message || "Opening bid." },
     });
   }
+  // A bid on a listing a seller sent in answer to this buyer's request marks the answer bid (lib/bids-wanted.ts).
+  if (offer) await import("@/lib/bids-wanted").then(({ answerBid }) => answerBid(input.listing.id, input.user.id)).catch(() => undefined);
   return inquiry;
 }
 
 // The thread, the seller's and the desk's notices, and the seller's webhook. A sealed bid reaches the seller
 // without its amount. A buy-it-now bid's notices wait for the award, which decides what they say.
-export async function announceInquiry(inquiry: { id: string; status: string }, input: InquiryInput) {
+export async function announceInquiry(inquiry: { id: string; status: string; round?: number | null }, input: InquiryInput) {
   const { user, listing, type, amount, message, expiresAt } = input;
   await ensureInquiryThread(inquiry.id);
-  const label = type === "OFFER" ? `Offer of $${Math.round(amount || 0).toLocaleString("en-US")}` : type === "DATA_ROOM" ? "Data room request" : "Information request";
+  // On a two-round sale every notice says which round the bid is in (lib/sale-rounds.ts).
+  const label = type === "OFFER" ? `${inquiry.round === 1 ? "Indicative bid" : inquiry.round === 2 ? "Final bid" : "Offer"} of $${Math.round(amount || 0).toLocaleString("en-US")}` : type === "DATA_ROOM" ? "Data room request" : "Information request";
   const until = expiresAt ? ` Good until ${expiresAt.toISOString().slice(0, 10)}.` : "";
   const sealed = type === "OFFER" && sealedFromSeller(listing);
   if (!input.buyNow) {
     // The seller hears the bidder's letter, not who they are, until an award. The desk's notice names them.
     const alias = await bidderAlias(listing.id, user.id);
     if (sealed) {
-      await notify(listing.seller.email, `Sealed bid · ${listing.title}`, `${alias} placed a sealed bid. The amount opens at the deadline.`);
+      await notify(
+        listing.seller.email,
+        `Sealed bid · ${listing.title}`,
+        inquiry.round === 1 ? `${alias} placed an indicative bid. It isn't binding, and the amount opens when round one closes.` : `${alias} placed a sealed bid. The amount opens at the deadline.`,
+      );
     } else {
       await notify(listing.seller.email, `${label} · ${listing.title}`, `${alias} wrote: ${message || "No message."}`);
     }
@@ -366,7 +394,7 @@ export type BuyNowResult =
 // at once, and the first buyer whose award claims the listing wins. A buyer who lost the race, or whose price the
 // seller changed in that instant, has their bid closed and owes nothing. Anything else that stops the award, such
 // as a screening hold, leaves the bid open at the seller's price for the desk to clear.
-export async function placeBuyNow(input: { user: Buyer; listingId: string; price: number; buyerEntityId?: string | null; now?: Date }): Promise<BuyNowResult> {
+export async function placeBuyNow(input: { user: Buyer; listingId: string; price: number; buyerEntityId?: string | null; covenantsAck?: string | null; now?: Date }): Promise<BuyNowResult> {
   const { user } = input;
   const now = input.now ?? new Date();
   const listing = await prisma.listing.findUnique({ where: { id: input.listingId }, include: { seller: true } });
@@ -378,11 +406,11 @@ export async function placeBuyNow(input: { user: Buyer; listingId: string; price
   if (!samePrice(input.price, offer.price)) return { error: "The buy-it-now price changed. Check the new figure and confirm again.", verification: false };
   // The price is veiled on the free desk like the ask, so taking it is a Pro privilege like seeing it.
   if (!isPro(user)) return { error: "Buy it now is a Pro privilege.", verification: false };
-  const check = await checkOffer({ user, listing, noteId: "", amount: offer.price, goodUntil: "", buyerEntityId: input.buyerEntityId, now });
+  const check = await checkOffer({ user, listing, noteId: "", amount: offer.price, goodUntil: "", buyerEntityId: input.buyerEntityId, covenantsAck: input.covenantsAck, now });
   if (check.error !== null) return check;
   const mine = await prisma.inquiry.findFirst({ where: { listingId: listing.id, buyerId: user.id, type: "OFFER", buyNow: true, status: { in: [...LIVE, "ACCEPTED"] } }, select: { id: true } });
   if (mine) return { error: "You already confirmed buy it now on this listing.", verification: false };
-  const bid = { user, listing, type: "OFFER", noteId: "", amount: offer.price, message: "Confirmed at the seller's buy-it-now price.", expiresAt: null, buyNow: true, buyerEntityId: check.buyerEntityId };
+  const bid = { user, listing, type: "OFFER", noteId: "", amount: offer.price, message: "Confirmed at the seller's buy-it-now price.", expiresAt: null, buyNow: true, buyerEntityId: check.buyerEntityId, covenants: check.covenants };
   const inquiry = await writeInquiry(bid);
   await announceInquiry(inquiry, bid);
   await logEligibility(user.id, inquiry.id, check);

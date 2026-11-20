@@ -2,6 +2,7 @@ import { estimateProperty } from "@/lib/enrichment";
 import { notify, notifyDesk } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
 import { unset } from "@/lib/db-filters";
+import { twoRounds } from "@/lib/sale-rounds";
 
 async function writeEstimate(note: { id: string; city: string; state: string; zip: string; streetAddress: string; estimatedValue: unknown }) {
   const estimate = await estimateProperty({
@@ -32,6 +33,8 @@ export async function enrichListing(listingId: string, limit = 12) {
 }
 
 export async function rememberView(listingId: string, userId: string) {
+  // A listing a seller sent in answer to this buyer's request reads as opened on it (lib/bids-wanted.ts).
+  await import("@/lib/bids-wanted").then(({ answerViewed }) => answerViewed(listingId, userId)).catch(() => undefined);
   const since = new Date(Date.now() - 60 * 60 * 1000);
   const recent = await prisma.listingView.findFirst({ where: { listingId, userId, createdAt: { gte: since } } });
   if (recent) return;
@@ -66,6 +69,14 @@ export async function notifyIfAuctionClosed(listingId: string) {
   const claimed = await prisma.listing.updateMany({ where: { id: listingId, ...unset("auctionNotifiedAt") }, data: { auctionNotifiedAt: new Date() } });
   if (claimed.count !== 1 || listing.status !== "APPROVED") return;
   const subject = `Bids closed · ${listing.title}`;
+  // A two-round sale with no shortlist by the final deadline ends with no award (lib/sale-rounds.ts).
+  if (twoRounds(listing) && !listing.shortlistedAt) {
+    const ended = `The final deadline on ${listing.title} passed with no shortlist from round one, so the sale ends with no award.`;
+    await notify(listing.seller.email, subject, ended);
+    await notifyDesk(subject, ended);
+    for (const email of new Set(listing.inquiries.map((inquiry) => inquiry.buyer.email))) await notify(email, subject, ended);
+    return;
+  }
   const body = `${listing.inquiries.length} bid${listing.inquiries.length === 1 ? "" : "s"} are in. The desk can award from the offer book.`;
   await notify(listing.seller.email, subject, body);
   await notifyDesk(subject, body);

@@ -9,6 +9,7 @@ import { AuctionForm } from "@/components/auction-form";
 import { BidderCountChoice } from "@/components/bidder-count";
 import { ComplianceNote } from "@/components/compliance-note";
 import { SellerIdentityLine } from "@/components/seller-identity";
+import { RoundTag, RoundsLine, SaleRounds } from "@/components/sale-rounds";
 import { ProvenanceDesk } from "@/components/listing-provenance";
 import { DeskDiligence } from "@/components/diligence-checklist";
 import { DeskNotes } from "@/components/desk-notes";
@@ -171,6 +172,7 @@ export default async function AdminListingPage({
         <h1 className="mt-3 font-semibold tracking-tight text-[28px] text-foreground">{listing.title}</h1>
         <p className="mt-3 max-w-2xl text-sm text-muted-foreground">{listing.summary}</p>
         <FlowTrancheNote listingId={listing.id} />
+        <RoundsLine listing={listing} />
         {listing.broker && (
           <p className="mt-3 text-sm text-foreground">
             {listing.brokerRole === "AFFILIATE" ? "Referring affiliate" : "Seller's broker"} {listing.broker.name}
@@ -489,6 +491,8 @@ export default async function AdminListingPage({
 
         {standingOpen && <StandingBidSheet listingId={listing.id} status={listing.status} rows={standing} walled={walled} canInvite={sells} />}
 
+        {/* Two rounds: the setting, round one's bids and the shortlist, and the final-round files (lib/sale-rounds.ts). */}
+        <SaleRounds listingId={listing.id} from="admin" canEdit={sells} />
         <PhotoManager listing={listing} desk readOnly={!sells} />
         <section id="bids" className="mt-8 scroll-mt-6">
           <p className="eyebrow">Bid sheet</p>
@@ -509,7 +513,7 @@ export default async function AdminListingPage({
                       <td className="px-3 py-2 text-muted-foreground">{bid.rank}</td>
                       <td className="px-3 py-2">
                         <p className="text-foreground">{bid.buyerName}</p>
-                        <p className="text-xs text-muted-foreground">{bid.noteLabel ? `Loan in ${bid.noteLabel}` : "Whole listing"} · {bid.status.toLowerCase()} · {prettyDate(bid.createdAt)}</p>
+                        <p className="text-xs text-muted-foreground">{bid.noteLabel ? `Loan in ${bid.noteLabel}` : "Whole listing"} · {bid.status.toLowerCase()} · {prettyDate(bid.createdAt)}<RoundTag round={inquiryOf.get(bid.inquiryId)?.round} /></p>
                         {entityOf.get(inquiryOf.get(bid.inquiryId)?.buyerEntityId ?? "") && (
                           <p className="text-xs text-muted-foreground">For {entityOf.get(inquiryOf.get(bid.inquiryId)?.buyerEntityId ?? "")!.name}</p>
                         )}
@@ -551,7 +555,7 @@ export default async function AdminListingPage({
           <ul className="mt-3 space-y-3">
             {listing.inquiries.map((inquiry) => (
               <li key={inquiry.id} className="border border-border p-4 rounded-xl">
-                <p className="text-sm text-foreground">{inquiry.buyer.name} · {inquiry.type.replaceAll("_", " ").toLowerCase()} · {inquiry.status.toLowerCase()}</p>
+                <p className="text-sm text-foreground">{inquiry.buyer.name} · {inquiry.type.replaceAll("_", " ").toLowerCase()} · {inquiry.status.toLowerCase()}<RoundTag round={inquiry.round} /></p>
                 {inquiry.amount && walled && inquiry.type === "OFFER" && <p className="text-sm text-muted-foreground">Amount sealed until the deadline.</p>}
                 {inquiry.amount && !(walled && inquiry.type === "OFFER") && (
                   <p className="font-semibold tracking-tight text-3xl tabular-nums">

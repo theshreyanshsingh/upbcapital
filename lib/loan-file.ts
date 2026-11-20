@@ -6,6 +6,7 @@ import { FORECLOSURES, LIEN_POSITIONS, OCCUPANCIES, PAYMENT_STATUSES, PROPERTY_T
 import { typedNumber } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
 import { extensionOf, mimeFor, putBytes, safeBasename } from "@/lib/storage";
+import { parseCensusTract, TRACT_INCOME_LEVELS } from "@/lib/cra";
 import { ENOTE_NOT_REQUIRED, isENote } from "@/lib/enotes";
 import { CREDIT_SCORE_TYPES, LOAN_PROGRAMS, LOSS_MIT_STAGES, PAYMENT_TYPES } from "@/lib/tape-fields";
 import { uploadProblem } from "@/lib/uploads";
@@ -481,6 +482,12 @@ export const LOAN_FIELDS: FieldSpec[] = [
   { field: "loanProgram", label: "Loan program", kind: "choice", options: LOAN_PROGRAMS, optional: true, source: "Mortgage or deed of trust" },
   { field: "partialClaim", label: "Partial claim", kind: "bool", optional: true, source: "O&E report" },
   { field: "partialClaimBalance", label: "Partial claim balance", kind: "money", pro: true, optional: true, source: "Servicer statement" },
+  // Tape v3.2: CRA and LMI (lib/cra.ts). A census tract covers a few thousand people, so it isn't an identity field. The
+  // desk checks the tract and its income level on the FFIEC geocoder, and the borrower's income on the application in
+  // the origination file.
+  { field: "censusTract", label: "Census tract", kind: "text", optional: true, source: "FFIEC geocoder" },
+  { field: "tractIncomeLevel", label: "Tract income level", kind: "choice", options: TRACT_INCOME_LEVELS, optional: true, source: "FFIEC geocoder" },
+  { field: "lmiBorrower", label: "LMI borrower", kind: "bool", optional: true, source: "Other" },
 ];
 
 const FIELD_BY_NAME = new Map(LOAN_FIELDS.map((spec) => [spec.field, spec]));
@@ -511,6 +518,8 @@ export const VERIFY_SOURCES = [
   "County records",
   "Court records",
   "Borrower contact",
+  // The FFIEC's public geocoder, for a census tract and its income level (lib/cra.ts).
+  "FFIEC geocoder",
   "Other",
 ] as const;
 
@@ -536,6 +545,8 @@ export function canonical(spec: FieldSpec, raw: unknown): string | null {
   }
   const text = String(raw).replace(/\s+/g, " ").trim();
   if (!text) return null;
+  // A tract written "12086.0105" or "12-086-010500" is the same 11 digits.
+  if (spec.field === "censusTract") return parseCensusTract(text) ?? text;
   if (spec.kind === "choice" && spec.options) {
     const lower = text.toLowerCase();
     return spec.options.find((option) => option.value.toLowerCase() === lower || option.label.toLowerCase() === lower)?.value ?? text;

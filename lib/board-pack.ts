@@ -16,6 +16,7 @@ import { prisma } from "@/lib/prisma";
 import { awardCover, priceAt, type AwardCover, type BidOnRecord } from "@/lib/sale-file";
 import { reviewKey } from "@/lib/screening";
 import { ownAccounts } from "@/lib/seats";
+import { loadServiceEvents, SERVICE_METRICS, SERVICE_MIN_EVENTS, serviceFigures, type ServiceFigures } from "@/lib/service-metrics";
 import { getSettings } from "@/lib/settings";
 import { funnelOf, funnelRows, type FunnelRow, type ValuationFunnel } from "@/lib/valuations";
 
@@ -251,6 +252,8 @@ export type BoardFigures = {
     ofacHits: number;
     ofacConfirmed: number;
   };
+  // How fast the desk works (lib/service-metrics.ts). Missing from a pack locked before it was counted.
+  service?: ServiceFigures;
 };
 
 export type BoardCohort = { month: string; signedUp: number; everBid: number; bidThisMonth: number; retention: number | null };
@@ -748,16 +751,21 @@ export async function boardPack(month: string, options: { now?: Date } = {}): Pr
   if (monthStart(chosen).getTime() > now.getTime()) throw new Error("That month hasn't started.");
   const prior = shiftMonth(chosen, -1);
   const window = { start: monthStart(shiftMonth(chosen, -2)), end: monthRange(chosen).end };
-  const [rows, priorLock] = await Promise.all([loadRows(window, monthStart(shiftMonth(chosen, -COHORT_MONTHS))), prisma.boardSnapshot.findUnique({ where: { month: prior } })]);
+  const [rows, priorLock, events] = await Promise.all([
+    loadRows(window, monthStart(shiftMonth(chosen, -COHORT_MONTHS))),
+    prisma.boardSnapshot.findUnique({ where: { month: prior } }),
+    loadServiceEvents(window),
+  ]);
   const locked = priorLock ? readPack(priorLock.data) : null;
+  const withService = (range: Range) => ({ ...figuresFor(rows, range, now), service: serviceFigures(events, range) });
   return {
     version: BOARD_PACK_VERSION,
     month: chosen,
     generatedAt: now.toISOString(),
-    current: figuresFor(rows, monthRange(chosen), now),
-    prior: locked?.current ?? figuresFor(rows, monthRange(prior), now),
+    current: withService(monthRange(chosen)),
+    prior: locked?.current ?? withService(monthRange(prior)),
     priorLocked: Boolean(locked),
-    trailing: figuresFor(rows, window, now),
+    trailing: withService(window),
     cohorts: cohortsFor(rows, chosen, now),
     demoAccounts: rows.demoAccounts,
   };
@@ -780,7 +788,7 @@ export type BoardMetric = {
   digits?: number;
 };
 
-export const BOARD_SECTIONS = ["Volume", "Revenue", "Speed and fall-through", "Liquidity", "Supply and demand", "Pipeline", "Risk"] as const;
+export const BOARD_SECTIONS = ["Volume", "Revenue", "Speed and fall-through", "Liquidity", "Supply and demand", "Pipeline", "Risk", "Service"] as const;
 
 const define = (section: (typeof BOARD_SECTIONS)[number], key: string, label: string, unit: MetricUnit, extra: Partial<BoardMetric> = {}): BoardMetric => ({ key, section, label, unit, ...extra });
 
@@ -866,6 +874,12 @@ export const BOARD_METRICS: BoardMetric[] = [
   define("Risk", "risk.depositsForfeitedCents", "Deposits forfeited, amount", "cents", { better: "down" }),
   define("Risk", "risk.ofacHits", "OFAC hits", "count", { better: "down" }),
   define("Risk", "risk.ofacConfirmed", "OFAC matches confirmed", "count", { better: "down" }),
+  // How fast the desk works. A median from fewer than SERVICE_MIN_EVENTS events is blank, with its count beside it.
+  ...SERVICE_METRICS.flatMap((metric) => [
+    define("Service", `service.${metric.key}.median`, `${metric.label}, median ${metric.unit}`, "number", { better: "down", digits: 1 }),
+    ...(metric.p90 ? [define("Service", `service.${metric.key}.p90`, `${metric.label}, 90th percentile ${metric.unit}`, "number", { better: "down", digits: 1 })] : []),
+    define("Service", `service.${metric.key}.count`, `${metric.label}, events counted`, "count"),
+  ]),
 ];
 
 // The headline tiles, in order.
@@ -1276,6 +1290,14 @@ export function boardDefinitions(demoAccounts: number) {
         { term: "Strikes", text: "Strikes issued in the month, whether or not they were later cleared." },
         { term: "Deposits forfeited", text: "Forfeits approved in the month, and the deposits received on them." },
         { term: "OFAC hits", text: "Screens that needed review, opened in the month, one per party, name and list entry, as the compliance page counts them. Confirmed are those the desk confirmed as a true match." },
+      ],
+    },
+    {
+      section: "Service",
+      items: [
+        ...SERVICE_METRICS.map((metric) => ({ term: metric.label, text: `${metric.definition} In ${metric.unit}, counted in the month it ended.` })),
+        { term: "Not enough data", text: `A median or 90th percentile needs at least ${SERVICE_MIN_EVENTS} events, so one from fewer shows as a dash, with the count beside it.` },
+        { term: "Closing, beside Speed", text: "The Speed section's award to close counts whole days with no minimum. This one keeps part days and needs five closings." },
       ],
     },
   ];

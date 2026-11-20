@@ -19,6 +19,7 @@ import { QuestionQueue } from "@/components/listing-questions";
 import { RoomAccessPanel } from "@/components/room-access";
 import { PrivateSalePanel } from "@/components/private-sale";
 import { RoomFiles } from "@/components/room-files";
+import { RoundTag } from "@/components/sale-rounds";
 import { ServicerReportPanel } from "@/components/loan-file-desk";
 import { Notice } from "@/components/notice";
 import { PhotoManager } from "@/components/photo-manager";
@@ -198,7 +199,7 @@ export default async function SellerListingPage({
             {listing.inquiries.length === 0 && <li className="px-4 py-4 text-sm text-muted-foreground">No inquiries yet.</li>}
             {listing.inquiries.map((inquiry) => (
               <li key={inquiry.id} className="px-4 py-4">
-                <p className="text-sm text-foreground">{nameOf(inquiry.buyer)} · {inquiry.type.replaceAll("_", " ").toLowerCase()} · {inquiry.status.toLowerCase()}</p>
+                <p className="text-sm text-foreground">{nameOf(inquiry.buyer)} · {inquiry.type.replaceAll("_", " ").toLowerCase()} · {inquiry.status.toLowerCase()}<RoundTag round={inquiry.round} /></p>
                 {latest(inquiry) && !sealed && <p className="mt-1 font-semibold tracking-tight text-2xl">{money(num(latest(inquiry)))}</p>}
                 {/* A pool bid's loan prices, under the bidder's letter like the rest of the bid. */}
                 {!sealed && inquiry.type === "OFFER" && !inquiry.noteId && listing.kind === "POOL" && (

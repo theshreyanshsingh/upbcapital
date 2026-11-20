@@ -4,10 +4,11 @@ import { badRequest, isLive, paginate, readPage } from "@/lib/buyer-api";
 import { prisma } from "@/lib/prisma";
 import { canSee, listingAccess } from "@/lib/private-listings";
 import { watchLink } from "@/lib/watchers";
+import { withCallLog } from "@/lib/api-log";
 
 // The account's buy-box matches on the live book. A match changes when it is made and when its box's standing price
 // moves, so updated_since and the order read the later of the two.
-export async function GET(request: Request) {
+async function handleGet(request: Request) {
   const caller = await apiCaller(request, "matches:read");
   if (caller.response) return caller.response;
   const page = readPage(new URL(request.url));
@@ -44,3 +45,6 @@ export async function GET(request: Request) {
     nextCursor: shown.nextCursor,
   });
 }
+
+// Logged with the status this route answers (lib/api-log.ts).
+export const GET = withCallLog(handleGet);

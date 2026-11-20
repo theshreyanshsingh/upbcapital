@@ -176,8 +176,9 @@ const wizard = { streetAddress: "1 Main St", city: "Tampa", state: "FL", zip: "3
 
 test("the note wizard checks the v3 fields and round-trips them for an edit", () => {
   for (const key of RISK_KEYS) assert.ok((SERVICING_KEYS as readonly string[]).includes(key), key);
-  // Twelve from tape v3, and the loan program and partial claim from v3.1 (tests/partial-claim-flow.test.ts).
-  assert.equal(RISK_KEYS.length, 15);
+  // Twelve from tape v3, the loan program and partial claim from v3.1 (tests/partial-claim-flow.test.ts), and the census
+  // tract, tract income level and LMI borrower from v3.2 (tests/cra-tags.test.ts).
+  assert.equal(RISK_KEYS.length, 18);
   const bare = noteSchema.parse(wizard);
   for (const key of RISK_KEYS) assert.equal(bare[key], null, key);
   const full = noteSchema.parse({

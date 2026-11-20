@@ -3,6 +3,7 @@ import { CURE_DAYS, FEE_TAIL_MONTHS, REPURCHASE_DAYS, masterLines, masterStatus,
 import { closingLoans } from "@/lib/closing";
 import { isPaperForm, paperLoans } from "@/lib/enotes";
 import { PER_LOAN_TEMPLATES, buildClosingPdf, fillTemplate, formBody, type TemplateKey } from "@/lib/closing-docs";
+import { covenantScheduleFor } from "@/lib/covenants";
 import { money } from "@/lib/format";
 import { pricesFor } from "@/lib/loan-prices";
 import { prisma } from "@/lib/prisma";
@@ -120,6 +121,9 @@ export async function closingPacket(closingId: string, kind: TemplateKey, viewer
   const schedule = funders.length
     ? `\n\nCo-ownership schedule\n${funders.map((funder) => `${names.funder(funder) || funder.user.name}: ${Number(funder.percent).toFixed(2)}% of the price ($${Number(funder.amount).toLocaleString("en-US")}), premium $${(funder.premiumCents / 100).toLocaleString("en-US")}.`).join("\n")}\nThe buyers take title together, each for the percentage above.`
     : "";
+  // The purchase agreement carries the servicing covenants that pass with its loans, and the buyer's acknowledgement,
+  // as a schedule. None, no schedule (lib/covenants.ts).
+  const covenants = kind === "PSA" ? await covenantScheduleFor(closing, closing.listing.notes) : "";
   // The agreements are one document with a loan schedule. An assignment, an allonge and an affidavit travel with
   // each loan.
   const perLoan = pool && PER_LOAN_TEMPLATES.includes(kind);
@@ -128,7 +132,7 @@ export async function closingPacket(closingId: string, kind: TemplateKey, viewer
     title: template.title,
     pages: perLoan
       ? loans.map((note) => `${fillTemplate(body, forLoan(note))}${schedule}`)
-      : [`${fillTemplate(body, vars)}${loanSchedule}${schedule}`],
+      : [`${fillTemplate(body, vars)}${loanSchedule}${covenants}${schedule}`],
     fields: [
       { name: "buyer", value: vars.buyer },
       { name: "seller", value: vars.seller },

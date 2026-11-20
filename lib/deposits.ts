@@ -254,3 +254,34 @@ export async function decideDepositOutcome(actor: Actor, input: { closingId: str
   );
   return { error: null, applied: true } as const;
 }
+
+// Every canceled deal's deposit still to decide: owed back or held with nothing proposed yet, or a proposal waiting
+// for its second desk member. For the desk's risk queue (lib/risk-queue.ts).
+export async function openDepositDecisions() {
+  const rows = await prisma.closing.findMany({
+    where: { status: "CANCELED", depositReceivedCents: { gt: 0 } },
+    select: {
+      id: true,
+      status: true,
+      openedAt: true,
+      canceledAt: true,
+      cancelFault: true,
+      cancelReason: true,
+      diligenceEndsAt: true,
+      depositReceivedCents: true,
+      depositStatus: true,
+      depositProposal: true,
+      depositProposedById: true,
+      depositProposedAt: true,
+      depositResolvedAt: true,
+      deskOwnerId: true,
+      listing: { select: { title: true, bidMode: true, bidDeadline: true, status: true } },
+    },
+  });
+  return rows.flatMap((row) => {
+    const { status, suggested } = depositState(row);
+    if (!status || DECIDED.includes(status)) return [];
+    const waiting = Boolean(row.depositProposal && isDepositProposal(row.depositProposal) && row.depositProposedAt && !row.depositResolvedAt);
+    return [{ ...row, state: status, suggested, waiting }];
+  });
+}

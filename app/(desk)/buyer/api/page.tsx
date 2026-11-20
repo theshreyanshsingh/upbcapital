@@ -1,12 +1,14 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { deleteBuyerWebhook, redeliverBuyerWebhook, revokeBuyerKey, saveBuyerWebhookEvents } from "@/actions/buyer-api";
+import { RecentCalls } from "@/components/api-calls";
 import { BuyerKeyForm, BuyerWebhookForm } from "@/components/buyer-api-forms";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { SubmitButton } from "@/components/submit-button";
 import { BUYER_SCOPES, buyerApiProblem, buyerKeyProblem, proLapse, SCOPE_LABELS, scopesOf } from "@/lib/api-keys";
 import { API_LIMIT } from "@/lib/api-limit";
+import { recentCalls } from "@/lib/api-log";
 import { requireRole } from "@/lib/auth";
 import { q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
@@ -24,10 +26,11 @@ export default async function BuyerApiPage({ searchParams }: { searchParams: Pro
   const user = await requireRole(["BUYER"]);
   if (user.accountStatus !== "APPROVED") redirect("/buyer/pending");
   const query = await searchParams;
-  const [file, keys, hooks] = await Promise.all([
+  const [file, keys, hooks, calls] = await Promise.all([
     prisma.buyerProfile.findUnique({ where: { userId: user.id }, select: { status: true } }),
     prisma.apiKey.findMany({ where: { userId: user.id }, orderBy: { createdAt: "desc" } }),
     prisma.webhookEndpoint.findMany({ where: { userId: user.id }, include: { deliveries: { orderBy: { createdAt: "desc" }, take: 10 } }, orderBy: { createdAt: "desc" } }),
+    recentCalls(user.id),
   ]);
   // Pro runs the keys and the webhooks. A key minted under Pro is kept when Pro lapses, paused until it returns.
   const paused = buyerApiProblem(user);
@@ -82,6 +85,8 @@ export default async function BuyerApiPage({ searchParams }: { searchParams: Pro
         ))}
       </ul>
       {!mintBlock && manage && <BuyerKeyForm scopes={BUYER_SCOPES.map((scope) => ({ scope, label: SCOPE_LABELS[scope] }))} />}
+
+      {keys.length > 0 && <RecentCalls groups={calls} csvHref="/api/security/api-calls" />}
 
       <h2 className="eyebrow mt-10">Webhooks</h2>
       <p className="mt-2 max-w-2xl text-sm text-muted-foreground">

@@ -5,6 +5,7 @@ import { bidderAlias, realName } from "@/lib/bidder-alias";
 import { notify, notifyDesk } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
 import { audienceOf, canSeeListing } from "@/lib/private-listings";
+import { checkCitation, citationData, sourcesFor, type CitationInput, type QuoteCheck, type SourceView } from "@/lib/qa-citations";
 import { consumeRateLimit } from "@/lib/rate-limit";
 import { qaCutoffBlock } from "@/lib/sale-events";
 import { notifyWatchers, watchLink } from "@/lib/watchers";
@@ -104,22 +105,30 @@ async function openQuestion(actor: { id: string; role: string }, questionId: str
   return question;
 }
 
-export async function answerQuestion(actor: { id: string; role: string }, input: { questionId: string; answer: unknown }): Promise<Outcome<{ told: number }>> {
+export async function answerQuestion(
+  actor: { id: string; role: string },
+  input: { questionId: string; answer: unknown; source?: CitationInput },
+): Promise<Outcome<{ told: number; cited: boolean; check: QuoteCheck }>> {
   const question = await openQuestion(actor, input.questionId);
   if (!question) return fail("That question isn't on your listing.");
   if (question.status !== "OPEN") return fail("That question is already closed.");
   if (question.listing.status !== "APPROVED") return fail("This listing isn't live, so an answer has no bidders to go to. Decline it instead.");
   const answer = clean(input.answer, ANSWER_MAX);
   if (answer.length < 2) return fail("Write the answer.");
+  // The optional source in the data room, checked before anything is published (lib/qa-citations.ts).
+  const source = await checkCitation(question.listingId, input.source ?? {});
+  if (!source.ok) return source;
+  const { citation, check } = source.value;
   // Claimed while still open, so two people answering at once publish once.
   const claimed = await prisma.listingQuestion.updateMany({
     where: { id: question.id, status: "OPEN" },
-    data: { status: "ANSWERED", answer, answeredById: actor.id, answeredAt: new Date() },
+    data: { status: "ANSWERED", answer, answeredById: actor.id, answeredAt: new Date(), ...(citation ? citationData(citation) : {}) },
   });
   if (claimed.count !== 1) return fail("That question is already closed.");
   await audit(actor.id, "QUESTION_ANSWER", "listing", question.listingId, question.id);
+  if (citation) await audit(actor.id, "QUESTION_SOURCE", "listing", question.listingId, `${question.id} · ${citation.documentId} · ${check}`);
   const told = await publishAnswer({ listingId: question.listingId, title: question.listing.title, askerId: question.askerId, askerEmail: question.asker.email });
-  return { ok: true, value: { told } };
+  return { ok: true, value: { told, cited: Boolean(citation), check } };
 }
 
 // Every bidder in the room hears once. Watchers hear through their saved-listing notices, other NDA signers directly,
@@ -173,13 +182,25 @@ export async function declineQuestion(actor: { id: string; role: string }, input
   return { ok: true, value: null };
 }
 
-// What a bidder in the room reads: the question and its answer, nothing about who asked.
-export async function publishedQuestions(listingId: string) {
-  return prisma.listingQuestion.findMany({
+// What a bidder in the room reads: the question and its answer, nothing about who asked. With the viewer, each answer
+// carries its source as the room's rules let that viewer read it (lib/qa-citations.ts); without one, no source.
+export async function publishedQuestions(listingId: string, viewer?: Parameters<typeof sourcesFor>[0] | null) {
+  const rows = await prisma.listingQuestion.findMany({
     where: { listingId, status: "ANSWERED" },
     orderBy: { answeredAt: "desc" },
-    select: { id: true, noteId: true, question: true, answer: true, answeredAt: true, createdAt: true },
+    select: { id: true, listingId: true, noteId: true, question: true, answer: true, answeredAt: true, createdAt: true, answerSourceDocId: true, answerSourcePage: true, answerSourceQuote: true },
   });
+  const sources = viewer ? await sourcesFor(viewer, rows) : new Map<string, SourceView>();
+  // The stored source never leaves here as it is: a quote from a file the viewer can't open stays behind.
+  return rows.map((row) => ({
+    id: row.id,
+    noteId: row.noteId,
+    question: row.question,
+    answer: row.answer,
+    answeredAt: row.answeredAt,
+    createdAt: row.createdAt,
+    source: sources.get(row.id) ?? null,
+  }));
 }
 
 export async function questionsAskedBy(listingId: string, userId: string) {

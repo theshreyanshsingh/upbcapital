@@ -1,3 +1,4 @@
+import { isCraEligible } from "@/lib/cra";
 import { money } from "@/lib/format";
 import { FORECLOSURES, labelOf, LIEN_POSITIONS, OCCUPANCIES, PAYMENT_STATUSES, PROPERTY_TYPES, US_STATES } from "@/lib/labels";
 import { listingFigures } from "@/lib/metrics";
@@ -24,6 +25,9 @@ export type BookFilters = {
   foreclosureStatus?: Many;
   // The program each loan was made under (tape v3.1). A pool matches when any loan carries one picked.
   loanProgram?: Many;
+  // CRA-eligible only: a loan in a low- or moderate-income tract or to an LMI borrower, as lib/cra.ts reads the tape.
+  // A pool matches when any loan still for sale is, as with the program. Older saved searches don't carry it.
+  cra?: boolean;
   dlqMin?: number;
   dlqMax?: number;
   modified?: Flag;
@@ -79,10 +83,10 @@ export const FLAG_KEYS = ["modified", "bankruptcy", "hoaLien", "taxDelinquent", 
 export const FIGURE_KEYS = ["upbMin", "upbMax", "priceMin", "priceMax", "rateMin", "rateMax", "ptuMin", "ptuMax", "yieldMin", "yieldMax", "valueMin", "valueMax", "ltvMin", "ltvMax"] as const;
 
 // Facts that show only on a listing the viewer can open: its loan file and tape flags.
-export const FILE_KEYS = ["occupancy", "foreclosureStatus", "loanProgram", "dlqMin", "dlqMax", "modified", "bankruptcy", "hoaLien", "taxDelinquent"] as const;
+export const FILE_KEYS = ["occupancy", "foreclosureStatus", "loanProgram", "cra", "dlqMin", "dlqMax", "modified", "bankruptcy", "hoaLien", "taxDelinquent"] as const;
 
 const KEY_ORDER: (keyof BookFilters)[] = [
-  "q", "state", "kind", "status", "paymentStatus", "lienPosition", "propertyType", "occupancy", "foreclosureStatus", "loanProgram",
+  "q", "state", "kind", "status", "paymentStatus", "lienPosition", "propertyType", "occupancy", "foreclosureStatus", "loanProgram", "cra",
   "dlqMin", "dlqMax", "modified", "bankruptcy", "hoaLien", "taxDelinquent", "bidMode", "deadline",
   "upbMin", "upbMax", "priceMin", "priceMax", "rateMin", "rateMax", "ptuMin", "ptuMax", "yieldMin", "yieldMax", "valueMin", "valueMax",
   "ltvMin", "ltvMax",
@@ -146,6 +150,8 @@ export function parseFilters(input: Raw): BookFilters {
     occupancy: many("occupancy"),
     foreclosureStatus: many("foreclosureStatus"),
     loanProgram: many("loanProgram"),
+    // cra=1 from the address bar or the API, true from a saved search.
+    cra: ["1", "true", "yes", "on"].includes(first("cra")?.toLowerCase() ?? "") ? true : undefined,
     dlqMin: dlqMin ? dlqMin : undefined,
     dlqMax: months("dlqMax"),
     modified: flag("modified"),
@@ -211,6 +217,9 @@ export type MatchNote = {
   foreclosureStatus?: string;
   // Null where the tape states no program.
   loanProgram?: string | null;
+  // The CRA facts lib/cra.ts reads. Null where the tape doesn't state them.
+  tractIncomeLevel?: string | null;
+  lmiBorrower?: boolean | null;
   monthsDelinquent?: number;
   interestRate?: number;
   monthlyPi?: number;
@@ -270,6 +279,8 @@ export function noteMatches(note: MatchNote, filters: BookFilters) {
   if (!inList(note.foreclosureStatus, filters.foreclosureStatus)) return false;
   // A loan with no program on its tape matches only "Any", never a program picked.
   if (!inList(note.loanProgram ?? undefined, filters.loanProgram)) return false;
+  // A loan whose tape states neither CRA fact never reads as eligible.
+  if (filters.cra && !isCraEligible(note)) return false;
   if (!inRange(note.monthsDelinquent, filters.dlqMin, filters.dlqMax)) return false;
   if (!inRange(note.interestRate, filters.rateMin, filters.rateMax)) return false;
   if (!flagMatches(note.modified, filters.modified)) return false;
@@ -355,7 +366,8 @@ export function filtersQuery(filters: BookFilters) {
   for (const key of KEY_ORDER) {
     const value = filters[key];
     if (Array.isArray(value)) value.forEach((item) => search.append(key, item));
-    else if (value !== undefined && value !== "") search.set(key, String(value));
+    else if (value === true) search.set(key, "1");
+    else if (value !== undefined && value !== "" && value !== false) search.set(key, String(value));
   }
   return search;
 }
@@ -408,6 +420,7 @@ export function appliedChips(filters: BookFilters) {
       const [yes, no] = FLAG_COPY[key as (typeof FLAG_KEYS)[number]];
       chips.push({ label: value === "yes" ? yes : no, without: drop(key) });
     } else if (key === "q") chips.push({ label: `Place: ${value}`, without: drop("q") });
+    else if (key === "cra") chips.push({ label: "CRA-eligible only", without: drop("cra") });
     else if (key === "state") chips.push({ label: String(value), without: drop("state") });
     else if (key === "kind") chips.push({ label: KINDS.find((kind) => kind.value === value)?.label ?? String(value), without: drop("kind") });
     else if (key === "status") chips.push({ label: BOOK_STATUSES.find((status) => status.value === value)?.label ?? String(value), without: drop("status") });

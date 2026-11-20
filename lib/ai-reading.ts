@@ -510,7 +510,8 @@ export function extractFindings(text: string, options: { csv?: boolean } = {}): 
 export type ReaderFile = { name: string; mime: string; bytes: Buffer };
 export type ReadOutcome = { status: "READ" | "SKIPPED" | "FAILED"; reason: string; text: string; findings: Finding[]; rejected: number };
 export type RoomText = { documentId: string; name: string; text: string };
-export type DraftSource = { documentId: string; name: string; quote: string };
+// `page` is set only where the reader knows it (see draftPage), so a published answer's citation can carry it.
+export type DraftSource = { documentId: string; name: string; quote: string; page?: number };
 export type Draft = { answer: string; sources: DraftSource[] };
 
 export type Reader = {
@@ -727,6 +728,15 @@ const PHRASES: Record<ReadField, (value: string) => string> = {
 
 const joinNames = (names: string[]) => (names.length <= 2 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`);
 
+// A draft source's page, as the reader's findings record it: from the file's page breaks (form feeds). A text with
+// no page break is one page, which says nothing worth citing, so its sources carry none. `page` is the page already
+// known, such as a finding's; otherwise the page whose words hold the quote.
+function draftPage(text: string, quote: string, page?: number | null): { page?: number } {
+  if (!text.includes("\f")) return {};
+  const found = page ?? text.split("\f").findIndex((words) => quoteFound(words, quote)) + 1;
+  return found >= 1 ? { page: found } : {};
+}
+
 // The rules reader drafts only when the question names a field it finds in the room's files, and says what each
 // file shows. Anything else is left for the seller to write.
 export function rulesDraft(question: string, files: RoomText[]): Draft | null {
@@ -745,7 +755,9 @@ export function rulesDraft(question: string, files: RoomText[]): Draft | null {
       const agree = reads.filter((read) => sameRead(field, read.finding.value, finding.value));
       const names = [...new Set(agree.map((read) => read.file.name))];
       sentences.push(`${joinNames(names)} ${names.length === 1 ? "shows" : "show"} ${PHRASES[field](shown(field, finding.value))}.`);
-      for (const read of agree) sources.push({ documentId: read.file.documentId, name: read.file.name, quote: read.finding.quote });
+      for (const read of agree) {
+        sources.push({ documentId: read.file.documentId, name: read.file.name, quote: read.finding.quote, ...draftPage(read.file.text, read.finding.quote, read.finding.page) });
+      }
     }
   }
   return sentences.length ? { answer: sentences.join(" "), sources } : null;
@@ -788,7 +800,7 @@ export async function modelDraft(question: string, files: RoomText[], env: Recor
     const row = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
     const file = byId.get(String(row.documentId ?? ""));
     const quote = typeof row.quote === "string" ? row.quote.replace(/\s+/g, " ").trim().slice(0, 300) : "";
-    if (file && quoteFound(file.text, quote)) sources.push({ documentId: file.documentId, name: file.name, quote });
+    if (file && quoteFound(file.text, quote)) sources.push({ documentId: file.documentId, name: file.name, quote, ...draftPage(file.text, quote) });
   }
   // An answer with nothing in the files behind it isn't a draft from the files.
   return sources.length ? { answer: text, sources } : null;
@@ -801,8 +813,10 @@ export function draftSources(json: string | null | undefined): DraftSource[] {
     if (!Array.isArray(list)) return [];
     return list.flatMap((item) => {
       const row = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
+      // Drafts written before sources carried a page have none; a page that isn't a whole number from 1 is dropped.
+      const page = Number.isInteger(row.page) && Number(row.page) >= 1 ? { page: Number(row.page) } : {};
       return typeof row.documentId === "string" && typeof row.name === "string" && typeof row.quote === "string"
-        ? [{ documentId: row.documentId, name: row.name, quote: row.quote }]
+        ? [{ documentId: row.documentId, name: row.name, quote: row.quote, ...page }]
         : [];
     });
   } catch {
@@ -1119,9 +1133,19 @@ export async function draftAnswer(questionId: string, options: ReadOptions = {})
   if (reader.source === "rules" && (listing?.notes.length ?? 0) > 1 && !question.noteId) return { ok: true, value: { drafted: false } };
   const draft = await reader.draft(question.question, await roomTexts(question));
   if (!draft) return { ok: true, value: { drafted: false } };
+  // A PDF's extracted text has no page breaks, so a source quoting words the model reader already found in that file
+  // takes the page the finding recorded. The rules reader's pages come from the text itself (draftPage).
+  const known = await prisma.aiFinding.findMany({
+    where: { documentId: { in: draft.sources.map((source) => source.documentId) }, source: { not: "rules" } },
+    select: { documentId: true, quote: true, page: true },
+  });
+  const sources = draft.sources.slice(0, 12).map((source) => {
+    const page = source.page ?? known.find((finding) => finding.page && finding.documentId === source.documentId && (quoteFound(source.quote, finding.quote) || quoteFound(finding.quote, source.quote)))?.page;
+    return page ? { ...source, page } : source;
+  });
   await prisma.listingQuestion.updateMany({
     where: { id: question.id, status: "OPEN" },
-    data: { aiDraft: draft.answer, aiSources: JSON.stringify(draft.sources.slice(0, 12)), aiDraftedAt: new Date() },
+    data: { aiDraft: draft.answer, aiSources: JSON.stringify(sources), aiDraftedAt: new Date() },
   });
   await audit(null, "AI_DRAFT", "listing", question.listingId, `${question.id} · ${reader.source}`);
   return { ok: true, value: { drafted: true } };

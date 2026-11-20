@@ -447,6 +447,9 @@ model PlatformSettings {
   aiReading            String?
   // A graduated fee schedule, { tiers: [{ upTo, premiumBps, commissionBps }], minPremiumCents, minCommissionCents }.
   // Missing means the flat buyerPremiumBps and sellerCommissionBps above. lib/fee-schedule.ts reads it.
+  // Facts for the vendor pack the desk keeps by hand: the last penetration test, insurance, recovery targets and the
+  // incident contact. { penTestDate, penTestFirm, cyberInsurer, rtoHours, rpoHours, incidentContact }. lib/vendor-pack.ts.
+  securityPack         Json?
   feeSchedule          Json?
   // Where tenYearRate came from: MANUAL, or TREASURY when the job read it from Treasury's daily par yield curve.
   tenYearSource        String?
@@ -618,6 +621,10 @@ model Listing {
   // The seller's choice to show bidders how many others are bidding during the round: counts only, never amounts.
   // lib/bidder-count.ts.
   showBidderCount      Boolean?
+  // A two-round sale: indicative bids are due at roundOneEndsAt; the seller and the desk then shortlist bidders, who
+  // get the final-round files and bid binding by bidDeadline. Missing means a one-round sale. lib/sale-rounds.ts.
+  roundOneEndsAt       DateTime?
+  shortlistedAt        DateTime?
   // The seller's statement, at submission, that it owns these loans or holds the owner's mandate, and that they are
   // not pledged or sold elsewhere: who made it, when, and the wording's version. lib/provenance.ts.
   ownershipAttestedAt  DateTime?
@@ -747,6 +754,12 @@ model Note {
   // refinance. True with no balance means one exists and its amount isn't known. lib/tape-fields.ts.
   partialClaim       Boolean?
   partialClaimBalance Float?
+  // CRA and LMI: the 11-digit census tract (state, county and tract FIPS), the tract's income level from the FFIEC
+  // census file (LOW, MODERATE, MIDDLE, UPPER or UNKNOWN), and whether the borrower's income was at or under 80% of
+  // area median at origination. Seller-stated until the desk verifies them. lib/cra.ts.
+  censusTract        String?
+  tractIncomeLevel   String?
+  lmiBorrower        Boolean?
   // Servicemember protection, a deceased borrower, and litigation on the loan or property.
   scraFlag           Boolean?
   borrowerDeceased   Boolean?
@@ -776,6 +789,8 @@ model Document {
   listing      Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
   // Set when the file belongs to one loan of the listing, such as a desk's O&E report.
   noteId       String?
+  // On a two-round sale, a file only shortlisted bidders open, such as full collateral images. lib/sale-rounds.ts.
+  finalRoundOnly Boolean?
   type         DocType
   originalName String
   storedName   String
@@ -790,6 +805,13 @@ model Document {
 
 model Inquiry {
   id        String        @id @default(cuid()) @map("_id")
+  // When the buyer acknowledged the servicing covenants that pass with the loans, on a listing that carries any.
+  // lib/covenants.ts.
+  covenantsAcknowledgedAt DateTime?
+  // On a two-round sale: the round the bid was made in (1 indicative, 2 final), and when its bidder was shortlisted
+  // for the final round. lib/sale-rounds.ts.
+  round     Int?
+  shortlistedAt DateTime?
   listingId String
   listing   Listing       @relation(fields: [listingId], references: [id], onDelete: Cascade)
   buyerId   String
@@ -1009,6 +1031,11 @@ model ListingQuestion {
   aiDraft      String?
   aiSources    String?
   aiDraftedAt  DateTime?
+  // Where a published answer comes from in the data room: the file, the page, and the words relied on, so a buyer can
+  // check it. lib/qa-citations.ts.
+  answerSourceDocId String?
+  answerSourcePage  Int?
+  answerSourceQuote String?
   createdAt    DateTime  @default(now())
 
   @@index([listingId])
@@ -1604,6 +1631,8 @@ model BuyBox {
   // Loan programs the box takes, comma-separated like states (CONVENTIONAL, FHA, VA, USDA, PRIVATE, OTHER). Blank
   // means any.
   programs      String         @default("")
+  // Only paper that counts toward CRA: a low- or moderate-income tract or borrower. lib/cra.ts.
+  craOnly       Boolean?
   // A standing price rule: every new tape that fits this box gets an indicative bid at once, which the desk
   // reviews and the buyer confirms before it is a bid. Basis UPB prices at bidPercent of UPB; basis YIELD solves
   // for the price that returns targetYield.
@@ -2800,4 +2829,97 @@ model BidderAttestation {
 
   @@index([userId])
   @@index([userId, kind])
+}
+
+// A buyer's standing request for paper: what it wants to buy, shown to sellers and brokers with the buyer named only by
+// type. A seller answers by sending a private listing to that buyer. lib/bids-wanted.ts.
+model BuyerRequest {
+  id            String   @id @default(cuid()) @map("_id")
+  userId        String
+  buyerEntityId String?
+  title         String
+  // { liens, statuses, states, programs, upbMin, upbMax, minLoans, maxLoans, priceToUpbMax, targetYield, craOnly }.
+  criteria      Json
+  notes         String   @default("")
+  // OPEN, PAUSED, FILLED or CLOSED.
+  status        String   @default("OPEN")
+  expiresAt     DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([userId])
+  @@index([status])
+}
+
+// A seller's or broker's answer to a buyer request: the private listing sent to the buyer, and where it stands.
+model RequestResponse {
+  id        String   @id @default(cuid()) @map("_id")
+  requestId String
+  listingId String
+  sellerId  String
+  // SENT, VIEWED, DECLINED or BID.
+  status    String   @default("SENT")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([requestId])
+  @@index([listingId])
+  @@index([sellerId])
+}
+
+// One call made with an API key: what was asked, the answer's status, and from where. Kept for 90 days.
+// lib/api-log.ts.
+model ApiCall {
+  id        String   @id @default(cuid()) @map("_id")
+  keyId     String
+  userId    String
+  method    String
+  path      String
+  status    Int
+  // A keyed hash of the caller's address, never the address itself.
+  ipHash    String   @default("")
+  createdAt DateTime @default(now())
+
+  @@index([keyId, createdAt])
+  @@index([userId, createdAt])
+  @@index([createdAt])
+}
+
+// A note its holder keeps watch on without listing it: what it is, and the indicative value and buyer demand UPB last
+// sent. The holder can list it from here. lib/note-watch.ts.
+model TrackedNote {
+  id               String    @id @default(cuid()) @map("_id")
+  userId           String
+  label            String
+  state            String
+  propertyType     String?
+  lienPosition     String
+  paymentStatus    String
+  occupancy        String?
+  loanProgram      String?
+  upb              Float
+  interestRate     Float?
+  monthlyPi        Float?
+  estimatedValue   Float?
+  seniorLienBalance Float?
+  originationDate  DateTime?
+  maturityDate     DateTime?
+  // The last monthly reading: the indicative range, the count of buyer firms whose boxes fit, and when.
+  lastLow          Float?
+  lastHigh         Float?
+  lastDemand       Int?
+  lastValuedAt     DateTime?
+  // The reading before the last, so the page can say what moved since.
+  prevLow          Float?
+  prevHigh         Float?
+  prevDemand       Int?
+  prevValuedAt     DateTime?
+  alertsOn         Boolean   @default(true)
+  // Set when the holder lists it, so the watch stops and points at the listing.
+  listingId        String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([userId])
+  @@index([lastValuedAt])
 }

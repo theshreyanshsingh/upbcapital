@@ -40,13 +40,15 @@ export async function saveBuyBox(formData: FormData) {
     targetYield: optionalNumber(formData, "targetYield"),
     maxLtv: optionalNumber(formData, "maxLtv"),
     minSeasoningMonths: optionalNumber(formData, "minSeasoningMonths"),
+    // CRA-eligible paper only, as lib/cra.ts reads the tape. Scored in lib/matching.ts.
+    craOnly: formData.get("craOnly") === "on",
     active: true,
   };
   if (data.maxLtv != null && !(data.maxLtv > 0 && data.maxLtv <= 200)) redirect(`/buyer/buy-box?error=${encodeURIComponent("Enter the highest LTV as a percent, above 0 and up to 200.")}`);
   if (data.minSeasoningMonths != null && !(Number.isInteger(data.minSeasoningMonths) && data.minSeasoningMonths >= 1 && data.minSeasoningMonths <= 480)) {
     redirect(`/buyer/buy-box?error=${encodeURIComponent("Enter the seasoning as whole months, from 1 to 480.")}`);
   }
-  const constrained = data.states || data.liens || data.statuses || data.programs || data.upbMin != null || data.upbMax != null || data.priceMin != null || data.priceMax != null || data.maxPriceToUpb != null || data.targetYield != null || data.maxLtv != null || data.minSeasoningMonths != null;
+  const constrained = data.states || data.liens || data.statuses || data.programs || data.upbMin != null || data.upbMax != null || data.priceMin != null || data.priceMax != null || data.maxPriceToUpb != null || data.targetYield != null || data.maxLtv != null || data.minSeasoningMonths != null || data.craOnly;
   if (!constrained) redirect("/buyer/buy-box?error=Set at least one limit so the box can score paper.");
   const id = String(formData.get("id") || "");
   const box = id

@@ -39,7 +39,19 @@ export async function placeInquiry(user: ActingUser, formData: FormData, options
     if (priced.error) return refuse(priced.error, back, "#offer");
     loanPrices = priced.prices;
     allowPartial = priced.allowPartial;
-    const check = await checkOffer({ user, listing, noteId, amount, goodUntil: String(formData.get("goodUntil") || ""), loanPrices, allowPartial, buyerEntityId: String(formData.get("buyerEntityId") || ""), now: options.now });
+    const check = await checkOffer({
+      user,
+      listing,
+      noteId,
+      amount,
+      goodUntil: String(formData.get("goodUntil") || ""),
+      loanPrices,
+      allowPartial,
+      buyerEntityId: String(formData.get("buyerEntityId") || ""),
+      // The tick on the covenants that pass with these loans, naming the version the form showed (lib/covenants.ts).
+      covenantsAck: String(formData.get("covenantsAck") || ""),
+      now: options.now,
+    });
     if (check.error !== null) return check.verification ? refuse(check.error, "/buyer/verification") : refuse(check.error);
     expiresAt = check.expiresAt;
     passed = check;
@@ -56,7 +68,7 @@ export async function placeInquiry(user: ActingUser, formData: FormData, options
     if (type === "DATA_ROOM" && !isPro(user)) return { error: "Data room requests are a Pro privilege.", redirect: "/buyer/subscription?reason=dataroom" };
   }
   if (!listing) return { error: "This listing is not taking new inquiries.", redirect: back };
-  const input = { user, listing, type, noteId, amount, message, expiresAt, loanPrices, allowPartial, buyerEntityId };
+  const input = { user, listing, type, noteId, amount, message, expiresAt, loanPrices, allowPartial, buyerEntityId, covenants: passed?.covenants ?? null };
   const inquiry = await writeInquiry(input);
   await announceInquiry(inquiry, input);
   if (passed) await logEligibility(user.id, inquiry.id, passed);

@@ -5,6 +5,7 @@ import { API_LIMIT } from "@/lib/api-limit";
 import { getCurrentUser } from "@/lib/auth";
 import { SANCTIONS_RECORD_YEARS } from "@/lib/ofac";
 import { getSettings } from "@/lib/settings";
+import { auditStatement, PACK_REQUEST, packRefusal, readSecurityPack } from "@/lib/vendor-pack";
 import { subprocessors } from "./subprocessors";
 
 export const metadata: Metadata = {
@@ -19,6 +20,8 @@ export default async function SecurityPage() {
   const twoStep = settings.requireTwoStep !== false;
   const vendors = subprocessors(settings);
   const contact = process.env.SECURITY_EMAIL?.trim() || process.env.DESK_EMAIL?.trim() || "";
+  // The vendor pack is for approved institutions, approved buyers and the desk. Others ask the desk for it.
+  const packOpen = !packRefusal(user);
   const sections: [string, string[]][] = [
     [
       "Signing in",
@@ -95,7 +98,28 @@ export default async function SecurityPage() {
 
       <section aria-label="Audits" className="space-y-3">
         <h2 className="font-semibold tracking-tight text-2xl text-foreground">Audits</h2>
-        <p>UPB Capital has no SOC 2 report yet, and no outside firm has tested these controls. We answer vendor questionnaires plainly, including when the answer is no.</p>
+        <p>{auditStatement(readSecurityPack(settings.securityPack))}</p>
+      </section>
+
+      <section className="glass p-5 md:p-6" aria-labelledby="vendor-pack-heading">
+        <h2 id="vendor-pack-heading" className="eyebrow">Vendor pack</h2>
+        <p className="mt-2 text-sm text-muted-foreground">
+          For a bank&apos;s or credit union&apos;s third-party risk review: a dated PDF of what this page says, the outside services, recovery targets,
+          testing and insurance, with answers to a standard vendor questionnaire as a spreadsheet. It is read from the code and the configuration
+          the site runs with, and says so where something isn&apos;t in place. It is UPB&apos;s own statement, for counsel and security review.
+        </p>
+        {packOpen ? (
+          <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+            <a href="/api/security/pack" className="inline-flex h-10 items-center justify-center rounded-lg bg-primary px-4 text-[13px] font-medium text-primary-foreground">Download the pack (PDF)</a>
+            <a href="/api/security/pack?format=csv" className="inline-flex h-10 items-center justify-center rounded-lg border border-border px-4 text-[13px] font-medium text-foreground hover:bg-hover">Questionnaire answers (CSV)</a>
+          </div>
+        ) : (
+          <p className="mt-4 text-sm text-foreground">
+            {PACK_REQUEST} Write to{" "}
+            {contact ? <a href={`mailto:${contact}`} className="text-link break-all">{contact}</a> : "the desk at the address in the privacy policy"}. Approved
+            institutions and buyers download it here once signed in.
+          </p>
+        )}
       </section>
 
       <section aria-label="Reporting a problem" className="space-y-3">

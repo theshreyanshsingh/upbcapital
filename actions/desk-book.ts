@@ -13,6 +13,7 @@ import { deskEligibilityLog } from "@/lib/eligibility";
 import { OFAC_HOLD_MESSAGE, ofacHold } from "@/lib/screening";
 import { sendOnAward } from "@/lib/signatures";
 import { DESK_ROLE_LABELS, deskRoleOf, requireDesk } from "@/lib/staff";
+import { DESK_NOT_IN_ROUNDS, twoRounds } from "@/lib/sale-rounds";
 
 // Who on the desk placed or decided a book bid, for the audit log: the book's buyer is a named person.
 function staffLine(user: { id: string; name: string; role: string; deskRole?: string | null }) {
@@ -36,6 +37,8 @@ export async function placeDeskBid(formData: FormData) {
   // A sale open to banks and credit unions only, or asking bidder statements, takes no desk book bid (lib/attestations.ts).
   const limited = deskBookBlock(listing);
   if (limited) redirect(`/admin/listings/${listingId}?error=${encodeURIComponent(limited)}`);
+  // A two-round sale awards only shortlisted buyers' final bids, and the desk book is never on a shortlist.
+  if (twoRounds(listing)) redirect(`/admin/listings/${listingId}?error=${encodeURIComponent(DESK_NOT_IN_ROUNDS)}`);
   const amount = amountOf(formData);
   if (!(amount > 0)) redirect(`/admin/listings/${listingId}?error=Enter a bid.`);
   const noteId = String(formData.get("noteId") || "");

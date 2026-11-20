@@ -1,6 +1,8 @@
 import Link from "next/link";
+import { BidTapeLinks } from "@/components/bid-tape-upload";
 import { LoanBid } from "@/components/loan-bid";
 import type { EntityOption } from "@/components/entity-picker";
+import type { BidCovenants } from "@/lib/covenants";
 import type { FeeTerms } from "@/lib/fee-schedule";
 import type { BidStanding } from "@/lib/verification";
 import { money, pct } from "@/lib/format";
@@ -33,14 +35,17 @@ export function PoolTape({
   bidding,
   fileHref,
   fileSummary,
+  bidTape = null,
 }: {
   listingId: string;
   loans: TapeLoan[];
   pro: boolean;
   // Set for a buyer: the bid terms each loan's box restates, and whether the listing takes bids.
-  bidding: { deposit?: [number, number]; diligenceDays?: number; premiumBps: number; fees?: FeeTerms; verified: boolean; listingOpen: boolean; noticesFor?: (noteId: string) => string[]; standing?: BidStanding | null; entities?: EntityOption[] } | null;
+  bidding: { deposit?: [number, number]; diligenceDays?: number; premiumBps: number; fees?: FeeTerms; verified: boolean; listingOpen: boolean; noticesFor?: (noteId: string) => string[]; standing?: BidStanding | null; entities?: EntityOption[]; covenantsFor?: (noteId: string) => BidCovenants | null } | null;
   fileHref: (noteId: string) => string;
   fileSummary: (noteId: string) => ReturnType<typeof completeness> | null;
+  // For a buyer: the bid template when they may bid the pool, and their own priced bids as filled tapes (lib/bid-tape.ts).
+  bidTape?: { template: boolean; bids: { id: string; label: string }[] } | null;
 }) {
   const headings = ["Collateral", "Lien", "Status", "Months late", "Rate", "UPB", "Ask", "Value", "Trade", "File"].concat(bidding ? ["Bid"] : []);
   const numeric = new Set(["Months late", "Rate", "UPB", "Ask", "Value"]);
@@ -59,11 +64,13 @@ export function PoolTape({
         notices={bidding.noticesFor?.(note.id) ?? []}
         standing={bidding.standing ?? null}
         entities={bidding.entities}
+        covenants={bidding.covenantsFor?.(note.id) ?? null}
       />
     );
   return (
     <section aria-labelledby="tape-heading" className="mt-8">
       <h2 id="tape-heading" className="eyebrow">Loan tape</h2>
+      {bidTape && <BidTapeLinks listingId={listingId} template={bidTape.template} bids={bidTape.bids} />}
       <ul className="mt-3 space-y-3 md:hidden">
         {loans.map((note) => (
           <li key={note.id} className="rounded-xl border border-border bg-card p-4">

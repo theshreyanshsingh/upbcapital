@@ -9,6 +9,7 @@ import { ComingSoonCard } from "@/components/coming-soon-card";
 import { CapitalStack, Donut, HorizontalBars } from "@/components/charts";
 import { CollateralPanel } from "@/components/collateral-panel";
 import { ComplianceNote } from "@/components/compliance-note";
+import { CovenantsSection } from "@/components/covenants";
 import { BuyerDiligenceLine } from "@/components/diligence-checklist";
 import { CompsPanel } from "@/components/comps-panel";
 import { IndicativePrice } from "@/components/indicative-price";
@@ -29,7 +30,7 @@ import { StatusPill } from "@/components/status-pill";
 import { SellerVerifiedBadge } from "@/components/seller-identity";
 import { StrataPanel } from "@/components/strata-panel";
 import { SubmitButton } from "@/components/submit-button";
-import { PoolRisks, TapeRisks } from "@/components/tape-risk";
+import { CraBadge, CraFacts, PoolRisks, TapeRisks } from "@/components/tape-risk";
 import { ENoteLine } from "@/components/enote-line";
 import { TabsContent } from "@/components/ui/tabs";
 import { canManageRoom, canReadDocument, dataRoomOpenTo, isPrivateDocument, loanFileAccess, loanOpenTo, ndaOpensRoom } from "@/lib/acl";
@@ -37,6 +38,8 @@ import { dealAccess } from "@/lib/data-room";
 import { requireUser } from "@/lib/auth";
 import { canOpenListing, openableListingIds } from "@/lib/access";
 import { bidderCountFor } from "@/lib/bidder-count";
+import { covenantsOwed, covenantView } from "@/lib/covenants";
+import { craBadgeText, ffiecGeocoderLink } from "@/lib/cra";
 import { buyNowOffer } from "@/lib/buy-now";
 import {
   acknowledgementMissing,
@@ -53,6 +56,7 @@ import {
 } from "@/lib/eligibility";
 import { bidStanding, roadAcknowledgedAt } from "@/lib/inquiry";
 import { bidEntities } from "@/lib/buyer-entities";
+import { tapeDownloads } from "@/lib/bid-tape";
 import { compsFor, loadClosedTrades } from "@/lib/comps";
 import { loadIndicative } from "@/lib/indicative";
 import { enrichListing, notifyIfAuctionClosed, rememberView } from "@/lib/listing-intel";
@@ -73,6 +77,8 @@ import { publishedQuestions, questionsAskedBy } from "@/lib/questions";
 import { deskWalled, eventSetsTerms } from "@/lib/auction";
 import { currentSaleEvent, qaClosed, qaClosedText, roundText, when } from "@/lib/sale-events";
 import { EventPaperLinks } from "@/components/event-papers";
+import { RoundRail, RoundsLine } from "@/components/sale-rounds";
+import { roundStateFor } from "@/lib/sale-rounds";
 import { SellerRecordCard } from "@/components/track-record";
 import { maySeeSellerName, namedToEveryBuyer, sellerLabel, sellerShown, servicerShown } from "@/lib/seller-anonymity";
 import { chargeFees, effectiveBps, feeTerms } from "@/lib/fee-schedule";
@@ -252,6 +258,11 @@ export default async function ListingPage({
     ...mapPoint(note.latitude, note.longitude),
     avm: showableAvm({ avmValue: note.avmValue == null ? null : num(note.avmValue), avmProvider: note.avmProvider }),
   }));
+  // The servicing covenants that pass with these loans (lib/covenants.ts). A text that names the borrower waits for the
+  // loan to open, like the street, so until then it comes off the notes the facts and the loan file read.
+  const covenants = covenantView(listing, loanOpen);
+  for (const note of listing.notes) if (covenants.withheld.has(note.id)) note.inheritedCovenants = null;
+  const covenantsDue = user.role === "BUYER" && covenants.hash ? await covenantsOwed(user.id, listing.id) : null;
   // A pool sold loan by loan prices only what's left, and can't be bid whole once any loan has traded.
   const forSale = listing.kind === "POOL" && notes.some((note) => note.tradeStatus === "AVAILABLE") ? notes.filter((note) => note.tradeStatus === "AVAILABLE") : notes;
   const wholeOpen = forSale.length === notes.length;
@@ -309,6 +320,11 @@ export default async function ListingPage({
     return raw ? completeness(raw, collateralByNote.get(noteId) ?? [], risksByNote.get(noteId) ?? [], { holder }) : null;
   };
   const rawLead = listing.notes[0];
+  // The loans still for sale as stored, for the CRA badge and the pool's counts.
+  const forSaleRaw = listing.notes.filter((note) => forSale.some((loan) => loan.id === note.id));
+  // The desk checks a stated tract on the FFIEC geocoder before it verifies it (lib/cra.ts). The link carries no address;
+  // the desk searches the one shown beside it.
+  const geocodeFor = (note: (typeof listing.notes)[number]) => (user.role === "ADMIN" && (note.censusTract || note.tractIncomeLevel) ? ffiecGeocoderLink(note) : null);
   const poolStrata = stratify(notes.map((note) => ({
     state: note.state,
     lien: note.lienPosition,
@@ -323,7 +339,9 @@ export default async function ListingPage({
   // A sale open to banks and credit unions only stays on the book, and a buyer with neither on file reads why in place
   // of the bid form (lib/institutions.ts).
   const limitLine = await regulatedLineFor(listing, user);
-  const canOffer = listing.status === "APPROVED" && wholeOpen && user.role === "BUYER" && !limitLine;
+  // A two-round sale: which round is open, and whether this buyer bids in it (lib/sale-rounds.ts).
+  const rounds = await roundStateFor(listing, user);
+  const canOffer = listing.status === "APPROVED" && wholeOpen && user.role === "BUYER" && !limitLine && (rounds?.canBid ?? true);
   // The eligibility screen informs and is logged. Its one ask is the 350-home acknowledgement before a bid.
   const eligibility = eligibilityFor(forSale, profile);
   const acknowledgedAt = user.role === "BUYER" && eligibility.acknowledge ? await roadAcknowledgedAt(user.id, listing.id) : null;
@@ -338,7 +356,8 @@ export default async function ListingPage({
   // Shared Q&A: answers read inside the room, a bidder's own questions, and the form for a bidder in the room.
   const managesRoom = canManageRoom(user, listing);
   const [answered, myQuestions] = await Promise.all([
-    publishedQuestions(listing.id),
+    // Each answer's source as this viewer may read it: a link and the quote only where the room opens the file to them.
+    publishedQuestions(listing.id, user),
     user.role === "BUYER" && !managesRoom ? questionsAskedBy(listing.id, user.id) : Promise.resolve(null),
   ]);
   // A loan bid restates only that loan's notices: a pool can hold one non-performing house among performing paper.
@@ -367,6 +386,7 @@ export default async function ListingPage({
           <p className="eyebrow">{lead?.state} · {listing.kind === "POOL" ? `Pool of ${notes.length}` : `${labelOf("lien", lead.lienPosition)} lien`} · {bidModeLabel(listing.bidMode)}</p>
           <StatusPill status={listing.status} />
           <SellerVerifiedBadge sellerId={listing.sellerId} />
+          <CraBadge text={craBadgeText(listing.kind, forSaleRaw)} />
         </div>
         <h1 className="mt-3 font-semibold tracking-tight text-[28px] leading-tight text-foreground">{listing.title}</h1>
         <p className="mt-3 max-w-3xl text-sm leading-relaxed text-muted-foreground">{listing.summary || "No narrative from the seller."}</p>
@@ -386,6 +406,7 @@ export default async function ListingPage({
             {(user.role === "BUYER" || user.role === "ADMIN" || listing.sellerId === user.id || listing.brokerId === user.id) && <EventPaperLinks eventId={event.id} className="mt-2" />}
           </p>
         )}
+        <RoundsLine listing={listing} />
         {listing.broker && (
           <p className="mt-2 text-sm text-foreground">
             {listing.brokerRole === "AFFILIATE" ? "Referring affiliate" : "Seller's broker"} {listing.broker.name}
@@ -485,6 +506,8 @@ export default async function ListingPage({
               {listing.kind === "SINGLE"
                 ? <TapeRisks note={rawLead} open={lead.open} pro={pro} />
                 : <PoolRisks notes={listing.notes.filter((note) => forSale.some((loan) => loan.id === note.id))} />}
+              {/* CRA: the reason for one loan, the count for a pool, with UPB's caution (lib/cra.ts). */}
+              <CraFacts kind={listing.kind} notes={listing.kind === "SINGLE" ? [rawLead] : forSaleRaw} geocode={listing.kind === "SINGLE" ? geocodeFor(rawLead) : null} />
               {/* An eNote moves by eRegistry transfer, not endorsement and courier. lib/enotes.ts. */}
               <ENoteLine notes={listing.kind === "SINGLE" ? [rawLead] : listing.notes.filter((note) => forSale.some((loan) => loan.id === note.id))} />
               {listing.kind === "SINGLE" ? (
@@ -505,13 +528,24 @@ export default async function ListingPage({
                     premiumBps: fees.premiumBps,
                     fees: listingFees,
                     verified,
-                    listingOpen: listing.status === "APPROVED",
+                    listingOpen: listing.status === "APPROVED" && (rounds?.canBid ?? true),
                     noticesFor: loanNotices,
                     standing,
                     entities,
+                    covenantsFor: (noteId) => covenants.forBid(noteId),
                   } : null}
+                  // The bid template while the pool can be bid whole, and the buyer's own priced bids as tapes (lib/bid-tape.ts).
+                  bidTape={user.role === "BUYER" ? { template: canOffer, bids: tapeDownloads(mine ?? []) } : null}
                 />
               )}
+              {/* The covenants that pass with these loans, and the acknowledgement a buyer's live bids still owe on them. */}
+              <CovenantsSection
+                listingId={listing.id}
+                summary={covenants.summary}
+                rows={covenants.rows}
+                fileHref={listing.kind === "POOL" ? loanFileHref : undefined}
+                owed={covenantsDue ? { count: covenantsDue.bids.length + covenantsDue.groups.length, covenants: covenants.forBid(null) } : null}
+              />
               <div className="mt-8 max-w-xl">
                 <GroupPanel
                   listingId={listing.id}
@@ -521,6 +555,7 @@ export default async function ListingPage({
                   capLine={standing?.cap?.line ?? null}
                   acknowledgeFirst={acknowledgeFirst}
                   notices={notices}
+                  covenants={covenants.forBid(null)}
                   group={liveGroup ? {
                     id: liveGroup.id,
                     status: liveGroup.status,
@@ -546,6 +581,8 @@ export default async function ListingPage({
 
             <TabsContent value="file">
               {listing.kind === "POOL" && <TapeRisks note={fileNote} open={fileOpen} pro={pro} />}
+              {listing.kind === "POOL" && <CraFacts kind="SINGLE" notes={[fileNote]} geocode={geocodeFor(fileNote)} />}
+              {listing.kind === "POOL" && <CovenantsSection listingId={listing.id} summary={covenants.summary} rows={covenants.rows.filter((row) => row.noteId === fileNote.id)} one />}
               <LoanFileView
                 note={fileNote}
                 collateral={collateralByNote.get(fileNote.id) ?? []}
@@ -572,6 +609,7 @@ export default async function ListingPage({
                 roomClosed={roomClosed}
                 canOpen={(document) => ((pro || closingParty) && unlocked) || document.id === ownNdaId}
                 gate={roomClosed ? "Closed" : accessWaiting ? "Not open yet" : pro ? "NDA required" : "Pro"}
+                finalRound={rounds ? { open: user.role !== "BUYER" || managesRoom || rounds.shortlisted } : null}
               />
               <QuestionBoard
                 listingId={listing.id}
@@ -722,6 +760,7 @@ export default async function ListingPage({
         >
           {/* Who may bid and the statements each bidder needs on file (lib/attestations.ts). */}
           <BidderLimitNote listing={listing} viewerRole={user.role} blocked={Boolean(limitLine)} />
+          {rounds && <RoundRail state={rounds} />}
           <OfferPanel
             listingId={listing.id}
             premiumBps={fees.premiumBps}
@@ -736,10 +775,12 @@ export default async function ListingPage({
             acknowledgeFirst={acknowledgeFirst}
             standing={standing}
             entities={entities}
+            covenants={covenants.forBid(null)}
             suggested={flow?.suggestion && wholeOpen ? { amount: flow.suggestion.amount, line: flow.suggestion.line } : undefined}
-            heading={listing.kind === "POOL" ? "Bid the whole pool" : undefined}
+            heading={rounds?.form ? `${rounds.form === "INDICATIVE" ? "Indicative bid" : "Final bid"}${listing.kind === "POOL" ? " on the whole pool" : ""}` : listing.kind === "POOL" ? "Bid the whole pool" : undefined}
+            round={rounds?.form}
             loans={listing.kind === "POOL" && canOffer ? notes.map((note, index) => ({ id: note.id, label: `Loan ${index + 1} · ${note.open && note.streetAddress ? `${note.streetAddress}, ` : ""}${note.city}, ${note.state}`, ask: pro ? note.askingPrice : null })) : []}
-            closedText={limitLine ?? (listing.status === "APPROVED" && !wholeOpen ? "Some loans in this pool have traded, so it can't be bid whole. Bid the loans still for sale in the table." : undefined)}
+            closedText={limitLine ?? (rounds && !rounds.canBid && listing.status === "APPROVED" ? rounds.title : undefined) ?? (listing.status === "APPROVED" && !wholeOpen ? "Some loans in this pool have traded, so it can't be bid whole. Bid the loans still for sale in the table." : undefined)}
           />
           <BidderCountLine count={otherBidders} />
           <p className="text-xs leading-relaxed text-muted-foreground">

@@ -7,6 +7,7 @@ import { MasterAgreementBanner } from "@/components/master-agreement-banner";
 import { OfferThread } from "@/components/offer-thread";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
+import { RoundTag } from "@/components/sale-rounds";
 import { requireRole } from "@/lib/auth";
 import { money, num, prettyDate, q } from "@/lib/format";
 import { standingLoanPrices } from "@/lib/loan-prices";
@@ -59,7 +60,7 @@ export default async function OffersPage({
             <li key={inquiry.id} id={`inquiry-${inquiry.id}`} className="glass scroll-mt-6 p-5">
               <div className="flex flex-wrap items-baseline justify-between gap-3">
                 <Link href={`/marketplace/${inquiry.listingId}`} className="font-semibold tracking-tight text-2xl text-foreground">{inquiry.listing.title}</Link>
-                <span className="text-[13px] font-medium text-link">{inquiry.status.toLowerCase()}</span>
+                <span className="text-[13px] font-medium text-link">{inquiry.status.toLowerCase()}<RoundTag round={inquiry.round} /></span>
               </div>
               <p className="mt-2 text-sm text-muted-foreground">
                 {inquiry.type.replaceAll("_", " ").toLowerCase()}
@@ -72,6 +73,8 @@ export default async function OffersPage({
               {loanPrices && (
                 <p className="mt-1 text-sm text-muted-foreground">
                   Priced loan by loan · {inquiry.allowPartial ? "the seller may take part of the pool at your loan prices" : "whole pool only"}
+                  {/* The bid as a filled bid tape, by the listing's rules for what shows (lib/bid-tape.ts). */}
+                  {" · "}<a href={`/api/listings/${inquiry.listingId}/bid-tape?bid=${inquiry.id}`} className="inline-flex min-h-10 items-center font-medium text-link">Download as a bid tape</a>
                 </p>
               )}
               {closingId && <Link href={`/closings/${closingId}`} className="mt-3 inline-block text-[13px] font-medium text-link">Closing checklist</Link>}

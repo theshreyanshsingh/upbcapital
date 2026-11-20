@@ -5,12 +5,13 @@ import { isLive, listingDetail } from "@/lib/buyer-api";
 import { prisma } from "@/lib/prisma";
 import { canSeeListing } from "@/lib/private-listings";
 import { sellerNameSight, sellerShown, servicerShown } from "@/lib/seller-anonymity";
+import { withCallLog } from "@/lib/api-log";
 
 // One live listing's summary and loan tape, as a signed-in Pro buyer reads it before the confidentiality agreement.
 // No data-room file, borrower or street, and no one's bid. The seller reads as a type until the account is in the
 // room (lib/seller-anonymity.ts). A listing this account may not see is not found, and nothing says why, as on the
 // listing page.
-export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
+async function handleGet(request: Request, context: { params: Promise<{ id: string }> }) {
   const caller = await apiCaller(request, "listings:read");
   if (caller.response) return caller.response;
   const { id } = await context.params;
@@ -39,3 +40,6 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     otherBidders,
   });
 }
+
+// Logged with the status this route answers (lib/api-log.ts).
+export const GET = withCallLog(handleGet);

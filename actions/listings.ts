@@ -141,6 +141,10 @@ function servicingData(input: NoteInput, clearBlanks: boolean) {
     loanProgram: input.loanProgram,
     partialClaim: input.partialClaim,
     partialClaimBalance: input.partialClaimBalance,
+    // CRA and LMI (lib/cra.ts).
+    censusTract: input.censusTract,
+    tractIncomeLevel: input.tractIncomeLevel,
+    lmiBorrower: input.lmiBorrower,
   };
   return Object.fromEntries(Object.entries(fields).filter(([, value]) => clearBlanks || value != null)) as Partial<typeof fields>;
 }

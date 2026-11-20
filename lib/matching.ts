@@ -1,5 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { boxHasConstraint, parseList, scoreAgainstBox, seasoningMonths, type BoxCriteria, type BoxScore, type ScoreNote } from "@/lib/buy-box";
+import { craCount, craCountLine, craReasonText, craShare, isCraEligible } from "@/lib/cra";
 import { unset } from "@/lib/db-filters";
 import { notify, notifyDesk } from "@/lib/email";
 import { programLabel } from "@/lib/filters";
@@ -14,6 +15,7 @@ import {
   indicativeFor,
   remainingTerm,
   ruleHolder,
+  ruleOf,
   sheetShows,
   standingNotice,
   type StandingNote,
@@ -41,6 +43,7 @@ export function criteriaFrom(box: {
   maxLtv?: { toString(): string } | null;
   minSeasoningMonths?: number | null;
   programs?: string;
+  craOnly?: boolean | null;
 }): BoxRules {
   return {
     states: parseList(box.states),
@@ -55,13 +58,15 @@ export function criteriaFrom(box: {
     maxLtv: num(box.maxLtv ?? null),
     minSeasoningMonths: box.minSeasoningMonths ?? null,
     programs: parseList(box.programs ?? ""),
+    craOnly: box.craOnly === true,
   };
 }
 
-// A box's limits with the loan programs it takes. A box saved before programs existed takes any.
-export type BoxRules = BoxCriteria & { programs: string[] };
-// A loan as a box scores it, with its program. Null or left out where the tape states none.
-export type ProgramNote = ScoreNote & { loanProgram?: string | null };
+// A box's limits with the loan programs it takes, and whether it takes CRA-eligible paper only. A box saved before
+// programs or the CRA switch existed takes any.
+export type BoxRules = BoxCriteria & { programs: string[]; craOnly?: boolean };
+// A loan as a box scores it, with its program and CRA facts. Null or left out where the tape states none.
+export type ProgramNote = ScoreNote & { loanProgram?: string | null; tractIncomeLevel?: string | null; lmiBorrower?: boolean | null };
 
 // The loan programs a box takes, judged as its lien and performance are: a pool fits when at least half its UPB
 // carries one of them. A loan whose tape states no program never counts toward the limit, as on the book's filter.
@@ -77,16 +82,31 @@ export function programFit(notes: ProgramNote[], programs: string[]): { fit: boo
   return { fit: true, reason: covered >= 0.999 ? `${list}, as your box asks` : `${Math.round(covered * 100)}% of UPB is ${list}, as your box asks` };
 }
 
-// The box test with its programs. A box whose only limit is its programs leaves lib/buy-box.ts nothing else to check,
-// so the paper scores the base any fit starts at, 55, once it has a balance and a price, as every scored tape must.
+// A box that takes CRA-eligible paper only, judged as its programs are: a pool fits when at least half its UPB reads as
+// CRA-eligible (lib/cra.ts, UPB's simplified reading). A loan whose tape states neither CRA fact never counts. The
+// reason counts the loans, or names the single loan's reason.
+export function craFit(notes: ProgramNote[], craOnly: boolean | undefined): { fit: boolean; reason: string | null } {
+  if (!craOnly) return { fit: true, reason: null };
+  if (craShare(notes) < 0.5) return { fit: false, reason: null };
+  const count = craCount(notes);
+  return { fit: true, reason: notes.length === 1 ? `CRA-eligible (${craReasonText(count.reasons)}), as your box asks` : `${craCountLine(count)}, as your box asks` };
+}
+
+// The box test with its programs and the CRA switch. A box whose only limits are these leaves lib/buy-box.ts nothing
+// else to check, so the paper scores the base any fit starts at, 55, once it has a balance and a price, as every scored
+// tape must.
 export function scoreBox(notes: ProgramNote[], box: BoxRules): BoxScore | null {
   const programs = programFit(notes, box.programs);
   if (!programs.fit) return null;
+  const cra = craFit(notes, box.craOnly);
+  if (!cra.fit) return null;
   const upb = notes.reduce((sum, note) => sum + note.upb, 0);
   const price = notes.reduce((sum, note) => sum + note.askingPrice, 0);
-  const result = boxHasConstraint(box) ? scoreAgainstBox(notes, box) : box.programs.length && upb > 0 && price > 0 ? { score: 55, reasons: [] } : null;
-  if (!result || !programs.reason) return result;
-  return { score: result.score, reasons: [...result.reasons, programs.reason] };
+  const own = box.programs.length > 0 || box.craOnly === true;
+  const result = boxHasConstraint(box) ? scoreAgainstBox(notes, box) : own && upb > 0 && price > 0 ? { score: 55, reasons: [] } : null;
+  const extra = [programs.reason, cra.reason].filter((reason): reason is string => Boolean(reason));
+  if (!result || !extra.length) return result;
+  return { score: result.score, reasons: [...result.reasons, ...extra] };
 }
 
 // A draft at upload may not carry a value, an origination date or a loan program. Without them a box's LTV, seasoning
@@ -97,6 +117,8 @@ type ScoredLoan = Pick<StandingNote, "upb" | "askingPrice" | "monthlyPi" | "inte
   estimatedValue?: number;
   originationDate?: Date | null;
   loanProgram?: string | null;
+  tractIncomeLevel?: string | null;
+  lmiBorrower?: boolean | null;
 };
 
 function notesOf(notes: ScoredLoan[], now: Date): ProgramNote[] {
@@ -112,6 +134,8 @@ function notesOf(notes: ScoredLoan[], now: Date): ProgramNote[] {
     estimatedValue: note.estimatedValue === undefined ? undefined : Number(note.estimatedValue),
     seasoningMonths: seasoningMonths(note.originationDate, now),
     loanProgram: note.loanProgram ?? null,
+    tractIncomeLevel: note.tractIncomeLevel ?? null,
+    lmiBorrower: note.lmiBorrower ?? null,
   }));
 }
 
@@ -119,6 +143,8 @@ function notesOf(notes: ScoredLoan[], now: Date): ProgramNote[] {
 // to the seller's ask, and a tape asking more than the box pays still gets the box's figure. A yield or spread rule
 // meets its target IRR by construction, so that limit gives way to performing loans only. When the price misses the
 // box's other limits, the box is scored at the ask as before, with no price. ignoreAsk prices before the ask caps it.
+// A standing price is a bid for the whole listing, so a box that takes CRA-eligible paper only prices a listing only
+// when every loan on it reads as CRA-eligible; a pool that fits on half its UPB is scored without a price.
 export function scoreMatch(
   kind: string,
   standingNotes: StandingNote[],
@@ -129,16 +155,24 @@ export function scoreMatch(
   rate: MarketRate | null,
   options: { ignoreAsk?: boolean } = {},
 ) {
-  const priced = ruleHolder(box.user) ? indicativeFor(box, { kind }, standingNotes, now, premiumBps, rate, options) : null;
+  const criteria = criteriaFrom(box);
+  const ineligible = criteria.craOnly ? notes.filter((note) => !isCraEligible(note)).length : 0;
+  const ruled = ruleHolder(box.user);
+  const priced = ruled && !ineligible ? indicativeFor(box, { kind }, standingNotes, now, premiumBps, rate, options) : null;
   if (priced?.price != null) {
-    const criteria = criteriaFrom(box);
     const atBid = notes.map((note, index) => ({ ...note, askingPrice: priced.loans[index]?.price ?? note.askingPrice }));
     const solved = box.bidBasis === "YIELD" || box.bidBasis === "SPREAD";
     const limits = solved ? { ...criteria, targetYield: null, statuses: criteria.statuses.length ? criteria.statuses : ["PERFORMING"] } : criteria;
     const result = scoreBox(atBid, limits);
     if (result) return { result: { ...result, reasons: [...result.reasons, "At the standing price"] }, price: priced.price, rateAsOf: priced.rateAsOf };
   }
-  return { result: scoreBox(notes, criteriaFrom(box)), price: null, rateAsOf: null };
+  const result = scoreBox(notes, criteria);
+  // Say why a box with a standing rule sent no price, so the buyer doesn't read it as a miss.
+  if (result && ineligible && ruled && ruleOf(box)) {
+    const held = `${ineligible === 1 ? "1 loan isn't" : `${ineligible} loans aren't`} CRA-eligible, so no standing price`;
+    return { result: { ...result, reasons: [...result.reasons, held] }, price: null, rateAsOf: null };
+  }
+  return { result, price: null, rateAsOf: null };
 }
 
 function sameTime(a: Date | null | undefined, b: Date | null | undefined) {
@@ -304,7 +338,8 @@ export async function rescoreSpreadBoxes() {
   return boxes.length;
 }
 
-export type DraftLoan = StandingNote & { state: string; lienPosition: string; loanProgram?: string | null };
+// A draft without its CRA facts doesn't fit a box that takes CRA-eligible paper only, as with the program.
+export type DraftLoan = StandingNote & { state: string; lienPosition: string; loanProgram?: string | null; tractIncomeLevel?: string | null; lmiBorrower?: boolean | null };
 
 export type StandingDemand = {
   // Each fitting box's own price for the whole draft, before the ask caps it. No buyer or box is named.

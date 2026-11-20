@@ -1,3 +1,5 @@
+import { closedCovenant } from "@/lib/covenant-text";
+import { TRACT_INCOME_LEVELS } from "@/lib/cra";
 import { FORECLOSURES, LIEN_POSITIONS, OCCUPANCIES, PAYMENT_STATUSES, PROPERTY_TYPES } from "@/lib/labels";
 import {
   BANKRUPTCY_CHAPTERS,
@@ -24,9 +26,10 @@ import {
 // extension: nothing in MISMO is close. The field travels in a UPB extension, the way MISMO carries data it doesn't
 //   define.
 
-// v3.1 added the loan program and the FHA or VA partial claim.
-export const STANDARD_VERSION = "UPB tape standard v3.1";
-export const STANDARD_SET_ON = "2026-11-15";
+// v3.1 added the loan program and the FHA or VA partial claim. v3.2 added the census tract, its income level and the LMI
+// borrower flag, for buyers screening for CRA credit (lib/cra.ts).
+export const STANDARD_VERSION = "UPB tape standard v3.2";
+export const STANDARD_SET_ON = "2026-11-20";
 
 export type MismoMatch = "exact" | "approximate" | "extension";
 
@@ -181,6 +184,25 @@ const SPECS: Record<TapeFieldKey, Spec> = {
     mismo: extension("PartialClaimIndicator", "No MISMO data point UPB is sure of. The claim is the agency's own subordinate lien, which MISMO would carry as a separate LOAN."),
   },
   partialClaimBalance: { type: "money", allowed: "Above zero. Goes with a partial claim of yes", mismo: extension("PartialClaimBalanceAmount", "No MISMO data point UPB is sure of.") },
+  censusTract: {
+    type: "text",
+    allowed: "11 digits: the 2-digit state, 3-digit county and 6-digit tract codes. 12086.0105 and 12-086-010500 read as 12086010500",
+    mismo: approximate(
+      `${PROPERTY}/LOCATION_IDENTIFIER/CENSUS_INFORMATION`,
+      "CensusTractIdentifier",
+      "The closest MISMO name, not yet checked against the 3.4 reference model. MISMO may hold the tract apart from the state and county FIPS codes; UPB keeps all 11 digits as one value.",
+    ),
+  },
+  tractIncomeLevel: {
+    type: "choice",
+    allowed: `${choices(TRACT_INCOME_LEVELS)}, as the FFIEC census file gives it. The file's codes 1 to 4, and 0 for unknown, also read`,
+    mismo: extension("CensusTractIncomeLevelType", "No MISMO data point UPB is sure of. The level comes from the FFIEC census file, not the loan."),
+  },
+  lmiBorrower: {
+    type: "yes or no",
+    allowed: "Yes when the borrower's income was at or under 80% of the area median at origination",
+    mismo: extension("LMIBorrowerIndicator", "No MISMO data point UPB is sure of. MISMO carries the borrower's income, not whether it was low or moderate."),
+  },
   scraFlag: { type: "yes or no", allowed: "Yes when the borrower has Servicemembers Civil Relief Act protection", mismo: extension("SCRAProtectionIndicator", "No MISMO data point UPB is sure of.") },
   borrowerDeceased: { type: "yes or no", mismo: extension("BorrowerDeceasedIndicator", "No MISMO data point UPB is sure of.") },
   litigationFlag: { type: "yes or no", allowed: "Yes when a case touches the loan or the property", mismo: extension("LitigationIndicator", "No MISMO data point UPB is sure of.") },
@@ -222,7 +244,11 @@ export const STANDARD_GROUPS = [
   { group: "core", title: "The loan", lede: "Required fields first. A row missing one is sent back with the reason." },
   { group: "servicing", title: "Servicing record", lede: "Optional. What the servicer's statement says about payments, workouts and filings." },
   { group: "terms", title: "Rate, credit and registry", lede: "Optional. An adjustable rate needs its index and margin. A credit score needs its model and date." },
-  { group: "risk", title: "Balances and risk flags", lede: "Optional. Balances a buyer prices from, how the payment is set, the loan program and any FHA or VA partial claim, and flags that change what a buyer can do." },
+  {
+    group: "risk",
+    title: "Balances and risk flags",
+    lede: "Optional. Balances a buyer prices from, how the payment is set, the loan program and any FHA or VA partial claim, the census tract and CRA facts a bank buyer screens for, and flags that change what a buyer can do. UPB reads a loan in a low- or moderate-income tract, or to an LMI borrower, as CRA-eligible; the buyer's CRA officer decides what counts.",
+  },
 ] as const;
 
 // Fields that find the borrower or the loan, or the seller (a MERS Org ID names the firm holding control or the file).
@@ -258,6 +284,8 @@ export function mismoLoan(note: Record<string, unknown>, open: boolean) {
   const out: Record<string, string | number | boolean> = {};
   for (const field of TAPE_STANDARD) {
     if (!open && WITHHELD_UNTIL_OPEN.has(field.key)) continue;
+    // A covenant that names the borrower waits for the street, as on the listing page (lib/covenant-text.ts).
+    if (!open && field.key === "inheritedCovenants" && !closedCovenant(note.inheritedCovenants as string | null | undefined, note)) continue;
     // The tape's placeholder for a missing street isn't an address.
     if (field.key === "streetAddress" && note.streetAddress === "Not provided on tape") continue;
     const value = jsonValue(note[field.key]);

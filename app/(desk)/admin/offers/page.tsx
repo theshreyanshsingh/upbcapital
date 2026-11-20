@@ -7,6 +7,7 @@ import { ConfirmRows, ConfirmSubmit } from "@/components/confirm-submit";
 import { Notice } from "@/components/notice";
 import { OfferThread } from "@/components/offer-thread";
 import { PageIntro } from "@/components/page-intro";
+import { RoundTag } from "@/components/sale-rounds";
 import { SubmitButton } from "@/components/submit-button";
 import { requireRole } from "@/lib/auth";
 import { money, num, prettyDate, q } from "@/lib/format";
@@ -103,6 +104,7 @@ export default async function AdminOffersPage({
                 </div>
                 <p className="text-[13px] font-medium text-link">
                   {inquiry.buyNow ? "buy it now" : inquiry.type.replaceAll("_", " ").toLowerCase()} · {inquiry.status.toLowerCase()}
+                  <RoundTag round={inquiry.round} />
                 </p>
               </div>
               {walled && <p className="mt-3 text-sm text-muted-foreground">Amount sealed until the deadline.</p>}

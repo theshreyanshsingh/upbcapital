@@ -3,6 +3,7 @@ import { audit } from "@/lib/audit";
 import { calendarDay } from "@/lib/borrower-notices";
 import { closingLoans } from "@/lib/closing";
 import { buyerSideEmails } from "@/lib/closing-service";
+import { unset } from "@/lib/db-filters";
 import { DESK_DENIED, deskCan, type Staff } from "@/lib/desk-roles";
 import { notify, notifyDesk } from "@/lib/email";
 import { isENote } from "@/lib/enotes";
@@ -82,6 +83,22 @@ export function exceptionsLine(closing: CustodyFields, max = 160) {
   if (!custodyExceptionOpen(closing)) return null;
   const text = oneLine(closing.custodianExceptions ?? "");
   return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
+}
+
+// Every closing with custodian exceptions still open, dated by the latest time they were recorded, for the desk's
+// risk queue (lib/risk-queue.ts).
+export async function openCustodyExceptions() {
+  const rows = await prisma.closing.findMany({
+    where: { custodianExceptions: { not: null }, AND: [unset("exceptionsClearedAt")] },
+    select: { id: true, deskBidId: true, deskOwnerId: true, custodianName: true, custodianExceptions: true, exceptionsClearedAt: true, custodianReceiptAt: true, listing: { select: { title: true } } },
+  });
+  const open = rows.filter(custodyExceptionOpen);
+  const events = open.length
+    ? await prisma.auditEvent.findMany({ where: { entityType: "closing", entityId: { in: open.map((row) => row.id) }, action: "CUSTODY_EXCEPTIONS" }, select: { entityId: true, createdAt: true }, orderBy: { createdAt: "desc" } })
+    : [];
+  const recorded = new Map<string, Date>();
+  for (const event of events) if (!recorded.has(event.entityId)) recorded.set(event.entityId, event.createdAt);
+  return open.map((row) => ({ ...row, recordedAt: recorded.get(row.id) ?? row.custodianReceiptAt ?? null, line: exceptionsLine(row) ?? "" }));
 }
 
 // The collateral has left the seller once the desk marks the file transfer step done, an original note, allonge or

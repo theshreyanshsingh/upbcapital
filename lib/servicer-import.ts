@@ -100,6 +100,11 @@ export const REPORT_FIELDS = [
   "loanProgram",
   "partialClaim",
   "partialClaimBalance",
+  // Tape v3.2: a servicer's boarding data often carries the census tract the originator reported, and some exports the
+  // tract's income level and an LMI flag (lib/cra.ts).
+  "censusTract",
+  "tractIncomeLevel",
+  "lmiBorrower",
 ] as const satisfies readonly TapeFieldKey[];
 
 export type ReportField = (typeof REPORT_FIELDS)[number];

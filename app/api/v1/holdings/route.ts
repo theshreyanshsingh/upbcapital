@@ -3,10 +3,11 @@ import { apiCaller } from "@/lib/api-limit";
 import { badRequest, paginate, readPage } from "@/lib/buyer-api";
 import { ensureBuyerHolding } from "@/lib/portfolio";
 import { prisma } from "@/lib/prisma";
+import { withCallLog } from "@/lib/api-log";
 
 // The paper this account holds, as its portfolio page lists it. A holding has no edit time, so updated_since reads
 // when it was acquired.
-export async function GET(request: Request) {
+async function handleGet(request: Request) {
   const caller = await apiCaller(request, "holdings:read");
   if (caller.response) return caller.response;
   const page = readPage(new URL(request.url));
@@ -40,3 +41,6 @@ export async function GET(request: Request) {
     nextCursor: shown.nextCursor,
   });
 }
+
+// Logged with the status this route answers (lib/api-log.ts).
+export const GET = withCallLog(handleGet);

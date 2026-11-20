@@ -102,3 +102,16 @@ export async function pendingWireChanges(closingId: string | null) {
     : new Map<string, string>();
   return rows.map((row) => ({ ...row, proposedBy: people.get(row.proposedById) ?? "A desk member" }));
 }
+
+// Every proposal waiting across the desk, closings and the default alike, for the desk's risk queue (lib/risk-queue.ts).
+export async function allPendingWireChanges() {
+  const rows = await prisma.wireChange.findMany({
+    where: { status: "PENDING" },
+    select: { id: true, closingId: true, proposedById: true, createdAt: true, closing: { select: { deskOwnerId: true, listing: { select: { title: true } } } } },
+    orderBy: { createdAt: "asc" },
+  });
+  const people = rows.length
+    ? new Map((await prisma.user.findMany({ where: { id: { in: [...new Set(rows.map((row) => row.proposedById))] } }, select: { id: true, name: true } })).map((person) => [person.id, person.name]))
+    : new Map<string, string>();
+  return rows.map((row) => ({ ...row, proposedBy: people.get(row.proposedById) ?? "A desk member" }));
+}

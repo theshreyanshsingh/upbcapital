@@ -16,6 +16,8 @@ import { awardBlock } from "@/lib/private-listings";
 import { OFAC_HOLD_MESSAGE, awardScreenBlock, ofacHold } from "@/lib/screening";
 import { strikeStanding } from "@/lib/strikes";
 import { notifyWatchers } from "@/lib/watchers";
+import { covenantAwardBlock } from "@/lib/covenants";
+import { roundAwardBlock } from "@/lib/sale-rounds";
 
 const LIVE = ["OPEN", "REVIEWED"] as const;
 
@@ -237,6 +239,9 @@ export async function checkAward(inquiryId: string, part?: { noteIds: string[] }
   // today's list, and a new match or a list that can't be read stops the award (lib/screening.ts).
   const screenBlock = await awardScreenBlock(offer);
   if (screenBlock) return { error: screenBlock } as const;
+  // Covenants that pass with the loans need the winner's current acknowledgement, as the bid did (lib/covenants.ts).
+  const covenantHold = await covenantAwardBlock(inquiryId);
+  if (covenantHold) return { error: covenantHold } as const;
   // A buyer or seat holder the seller now excludes, or a private listing no longer shows to, can't win it unless
   // already a closing party on it. The desk reads why; the buyer is never told (lib/private-listings.ts).
   const hidden = await awardBlock(offer, seats.map((seat) => seat.userId));
@@ -246,6 +251,10 @@ export async function checkAward(inquiryId: string, part?: { noteIds: string[] }
   const standings = await Promise.all([offer.buyerId, ...seats.map((seat) => seat.userId)].map((userId) => strikeStanding(userId)));
   if (standings[0].paused) return { error: "This buyer's bidding is paused for closings that didn't complete. Clear a strike on their buyer file before awarding." } as const;
   if (standings.some((standing) => standing.paused)) return { error: "A group seat holder's bidding is paused for closings that didn't complete. Clear a strike on their buyer file before awarding." } as const;
+  // An indicative bid from round one never wins, nor does a bid from a firm off a two-round sale's shortlist, so no
+  // deposit or closing can come from one (lib/sale-rounds.ts).
+  const roundHold = await roundAwardBlock(offer);
+  if (roundHold) return { error: roundHold } as const;
   if (offer.listing.bidMode !== "NONE" && !deadlinePassed(offer.listing.bidDeadline)) return { error: "Award this after the bid deadline." } as const;
   const conflict = part ? await partConflict(offer.listingId, part.noteIds) : await tradeConflict(offer.listingId, offer.noteId);
   if (conflict) return { error: conflict } as const;
@@ -763,6 +772,9 @@ export async function sellerPickBid(input: { inquiryId: string; sellerId: string
   if (offer.type !== "OFFER" || (offer.status !== "OPEN" && offer.status !== "REVIEWED")) return { error: "That bid is no longer open." } as const;
   if (offer.listing.status !== "APPROVED") return { error: "This listing isn't live right now, so you can't pick a bid." } as const;
   if (sealedFromSeller(offer.listing, now)) return { error: "Bids are sealed until the deadline, so you can pick one once it passes." } as const;
+  // An indicative bid isn't binding, so the seller picks only from the final round (lib/sale-rounds.ts).
+  const roundHold = await roundAwardBlock(offer);
+  if (roundHold) return { error: roundHold } as const;
   if (bidExpired(offer.expiresAt, now)) return { error: "That bid passed its good-until date, so it can't be awarded." } as const;
   if (awaitingSeller(offer)) return { error: "The desk asked you about this bid. Approve, decline or counter it where it waits." } as const;
   const price = buyerPrice(offer.amount, pricedMessages(offer.messages), offer.buyerId);

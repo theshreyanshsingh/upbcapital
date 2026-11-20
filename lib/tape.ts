@@ -30,6 +30,7 @@ import {
   type ServicingRecord,
   type TapeFieldKey,
 } from "@/lib/tape-fields";
+import { parseCensusTract, parseLmiBorrower, parseTractIncomeLevel } from "@/lib/cra";
 import { parseMersOrgId } from "@/lib/enotes";
 
 export type TapeMatrix = {
@@ -367,6 +368,41 @@ function readRisk(
     put(record, "loanProgram", program);
   }
   readPartialClaim(record, get, raw, warn, notes);
+  readCra(record, get, raw, warn, notes);
+}
+
+// Tape v3.2: the census tract, the tract's income level and the LMI borrower flag, under the same rule. A tract in
+// another layout is stored as its 11 digits. "Unknown" is a tract income level the FFIEC file uses, so the level is
+// read before the placeholders. lib/cra.ts.
+function readCra(
+  record: ServicingRecord,
+  get: (key: TapeFieldKey) => string,
+  raw: (key: TapeFieldKey) => string,
+  warn: (field: TapeFieldKey, message: string) => void,
+  notes: ServicingNote[],
+) {
+  const tractRaw = get("censusTract");
+  if (tractRaw) {
+    const tract = parseCensusTract(tractRaw);
+    if (ROUNDED.test(tractRaw)) {
+      warn("censusTract", `Census tract “${clip(tractRaw)}” was rounded by a spreadsheet and will be left off. Format the column as text and export again.`);
+    } else if (!tract) {
+      warn("censusTract", `Census tract “${clip(tractRaw)}” isn't 11 digits for the state, county and tract, and will be left off.`);
+    } else {
+      record.censusTract = tract;
+      if (tract !== tractRaw.trim()) notes.push({ field: "censusTract", level: "fix", message: `Census tract “${clip(tractRaw)}” will be stored as ${tract}.` });
+    }
+  }
+  const levelRaw = raw("tractIncomeLevel");
+  const level = parseTractIncomeLevel(levelRaw);
+  if (level == null && get("tractIncomeLevel")) {
+    warn("tractIncomeLevel", `Tract income level “${clip(levelRaw)}” isn't low, moderate, middle, upper or unknown and will be left off.`);
+  }
+  put(record, "tractIncomeLevel", level);
+  const lmiRaw = raw("lmiBorrower");
+  const lmi = parseLmiBorrower(lmiRaw);
+  if (lmi == null && get("lmiBorrower")) warn("lmiBorrower", `LMI borrower “${clip(lmiRaw)}” wasn't read as yes or no and will be left off.`);
+  put(record, "lmiBorrower", lmi);
 }
 
 // An FHA or VA partial claim and its balance. A "Partial Claim" column sometimes holds the amount, which says there is

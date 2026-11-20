@@ -23,6 +23,8 @@ export async function buyItNow(formData: FormData) {
     listingId,
     price,
     buyerEntityId: String(formData.get("buyerEntityId") || ""),
+    // The tick on the covenants that pass with these loans, naming the version shown (lib/covenants.ts).
+    covenantsAck: String(formData.get("covenantsAck") || ""),
   });
   if (result.error !== null) {
     redirect(result.verification ? `/buyer/verification?error=${encodeURIComponent(result.error)}` : `${back}?error=${encodeURIComponent(result.error)}#offer`);
