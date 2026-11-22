@@ -206,6 +206,8 @@ export function navFor(user: ShellUser): NavItem[] {
       { href: "/buyer/groups", label: "Groups", icon: Users, section: "Deals" },
       { href: "/buyer/flow", label: "Programmes", icon: Repeat, section: "Deals" },
       { href: "/closings", label: "Closings", icon: FolderOpen, section: "Deals" },
+      // Deposits and closing wires owed, by date (lib/cash-needs.ts).
+      { href: "/buyer/cash", label: "Cash needs", icon: Banknote, section: "Deals" },
       { href: "/buyer/portfolio", label: "Portfolio", icon: Wallet, section: "Deals" },
       { href: "/buyer/buy-box", label: "Buy box", icon: Target, section: "Account" },
       { href: "/buyer/alerts", label: "Alerts", icon: Search, section: "Account" },

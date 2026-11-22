@@ -139,6 +139,7 @@ export function navPages(role: Role | string, can?: readonly DeskCapability[]): 
       { href: "/buyer/requests", label: "Requests", keywords: "bids wanted post what you buy" },
       { href: "/buyer/groups", label: "Groups", keywords: "group buy" },
       { href: "/closings", label: "Closings", keywords: "settlement checklist" },
+      { href: "/buyer/cash", label: "Cash needs", keywords: "deposits wires funding owed due calendar" },
       { href: "/buyer/portfolio", label: "Portfolio", keywords: "holdings owned" },
       { href: "/buyer/buy-box", label: "Buy box", keywords: "criteria standing bids" },
       { href: "/buyer/alerts", label: "Alerts", keywords: "saved searches" },

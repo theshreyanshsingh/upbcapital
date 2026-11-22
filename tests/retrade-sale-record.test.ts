@@ -332,7 +332,7 @@ test("the seller's sale file opens after an award and leaves out desk notes, scr
   }
 });
 
-// The board pack's two figures on real rows, in March 1993, a month nothing else writes to.
+// The board pack's two figures on real rows, in March 1991, a month nothing else writes to.
 test("the board pack counts pool attrition and the cover bid, with a one-bid award on its own line", async () => {
   const made: Made = { users: [], listings: [] };
   try {
@@ -345,32 +345,32 @@ test("the board pack counts pool attrition and the cover bid, with a one-bid awa
       return row;
     };
     // A pool of three bid whole at 120k against a rival's 108k. The desk kicked one loan out and two closed.
-    const pool3 = await create("Board pool", { kind: "POOL", status: "SOLD", submittedAt: day("1993-01-10"), approvedAt: day("1993-01-12"), soldAt: day("1993-03-20") }, [
+    const pool3 = await create("Board pool", { kind: "POOL", status: "SOLD", submittedAt: day("1991-01-10"), approvedAt: day("1991-01-12"), soldAt: day("1991-03-20") }, [
       loanData("1 Attrition Ave", 100000, 60000), loanData("2 Attrition Ave", 80000, 50000), loanData("3 Attrition Ave", 50000, 30000),
     ]);
     const [one, two, three] = ["1 Attrition Ave", "2 Attrition Ave", "3 Attrition Ave"].map((address) => street(pool3, address));
-    const won = await prisma.inquiry.create({ data: { listingId: pool3.id, buyerId: first.id, type: "OFFER", amount: 120000, status: "ACCEPTED", createdAt: day("1993-02-01") } });
-    await prisma.inquiry.create({ data: { listingId: pool3.id, buyerId: second.id, type: "OFFER", amount: 108000, status: "DECLINED", createdAt: day("1993-02-02") } });
-    await prisma.inquiry.create({ data: { listingId: pool3.id, buyerId: second.id, type: "OFFER", noteId: one.id, amount: 70000, status: "DECLINED", createdAt: day("1993-02-03") } });
+    const won = await prisma.inquiry.create({ data: { listingId: pool3.id, buyerId: first.id, type: "OFFER", amount: 120000, status: "ACCEPTED", createdAt: day("1991-02-01") } });
+    await prisma.inquiry.create({ data: { listingId: pool3.id, buyerId: second.id, type: "OFFER", amount: 108000, status: "DECLINED", createdAt: day("1991-02-02") } });
+    await prisma.inquiry.create({ data: { listingId: pool3.id, buyerId: second.id, type: "OFFER", noteId: one.id, amount: 70000, status: "DECLINED", createdAt: day("1991-02-03") } });
     const sold = await prisma.closing.create({
       data: {
         listingId: pool3.id, inquiryId: won.id, noteIds: [one.id, two.id], salePrice: 105000, buyerPremiumCents: 0, sellerCommissionCents: 0,
-        buyerTotalCents: 10_500_000, netToSellerCents: 10_500_000, status: "COMPLETE", openedAt: day("1993-03-01"), closedAt: day("1993-03-15"),
+        buyerTotalCents: 10_500_000, netToSellerCents: 10_500_000, status: "COMPLETE", openedAt: day("1991-03-01"), closedAt: day("1991-03-15"),
       },
     });
-    await prisma.closingKickout.create({ data: { closingId: sold.id, noteId: three.id, priceCents: 1_500_000, reason: "Paid off", actorId: seller.id, createdAt: day("1993-03-08") } });
+    await prisma.closingKickout.create({ data: { closingId: sold.id, noteId: three.id, priceCents: 1_500_000, reason: "Paid off", actorId: seller.id, createdAt: day("1991-03-08") } });
     // A single loan with one bid, walked away from in diligence.
-    const single = await create("Board single", { kind: "SINGLE", status: "WITHDRAWN", submittedAt: day("1993-01-15"), approvedAt: day("1993-01-16"), withdrawnAt: day("1993-03-28") }, [loanData("4 Attrition Ave", 40000, 30000)]);
-    const walked = await prisma.inquiry.create({ data: { listingId: single.id, buyerId: first.id, type: "OFFER", amount: 30000, status: "WITHDRAWN", createdAt: day("1993-02-10"), withdrawnAt: day("1993-03-10") } });
+    const single = await create("Board single", { kind: "SINGLE", status: "WITHDRAWN", submittedAt: day("1991-01-15"), approvedAt: day("1991-01-16"), withdrawnAt: day("1991-03-28") }, [loanData("4 Attrition Ave", 40000, 30000)]);
+    const walked = await prisma.inquiry.create({ data: { listingId: single.id, buyerId: first.id, type: "OFFER", amount: 30000, status: "WITHDRAWN", createdAt: day("1991-02-10"), withdrawnAt: day("1991-03-10") } });
     await prisma.closing.create({
       data: {
         listingId: single.id, inquiryId: walked.id, noteId: single.notes[0].id, salePrice: 30000, buyerPremiumCents: 0, sellerCommissionCents: 0, buyerTotalCents: 3_000_000,
-        netToSellerCents: 3_000_000, status: "CANCELED", openedAt: day("1993-03-02"), canceledAt: day("1993-03-10"), cancelFault: "NEITHER", walkAwayReason: "TITLE",
+        netToSellerCents: 3_000_000, status: "CANCELED", openedAt: day("1991-03-02"), canceledAt: day("1991-03-10"), cancelFault: "NEITHER", walkAwayReason: "TITLE",
         cancelReason: "The buyer walked away in diligence: Title.",
       },
     });
 
-    const pack = await boardPack("1993-03", { now: day("1993-04-15") });
+    const pack = await boardPack("1991-03", { now: day("1991-04-15") });
     assert.deepEqual(pack.current.speed.attrition, {
       offered: { loans: 4, upbCents: 27_000_000 },
       awarded: { loans: 4, upbCents: 27_000_000 },

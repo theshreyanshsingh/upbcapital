@@ -636,6 +636,17 @@ model Listing {
   availabilityRemindedAt DateTime?
   stalePausedAt          DateTime?
   launchNotifiedAt     DateTime?
+  // A seller's price ladder (lib/price-ladder.ts): the ask steps down by ladderStepBps of itself every
+  // ladderEveryDays, never below ladderFloor, and waits while a bid is live. Stopped when the listing leaves the book
+  // or the seller or desk ends it.
+  ladderStepBps        Int?
+  ladderEveryDays      Int?
+  ladderFloor          Float?
+  ladderNextAt         DateTime?
+  ladderSetById        String?
+  ladderSetAt          DateTime?
+  ladderStoppedAt      DateTime?
+  ladderStopReason     String?
   notes                Note[]
   // A tranche of a seller's forward-flow programme. Committed buyers get a first look before it opens to all.
   // lib/flow-programs.ts.
@@ -653,10 +664,12 @@ model Listing {
   deskHoldings         DeskHolding[]
   sends                ListingSend[]
   questions            ListingQuestion[]
+  priceChanges         PriceChange[]
   createdAt            DateTime      @default(now())
   updatedAt            DateTime      @updatedAt
 
   @@index([status])
+  @@index([ladderNextAt])
   @@index([sellerId])
   @@index([brokerId])
   @@index([approvedAt])
@@ -2980,4 +2993,23 @@ model FirmTask {
 
   @@index([firmId, listingId])
   @@index([assigneeId])
+}
+
+
+// A live listing's asking price as it moved: every desk reprice and price-ladder step (lib/price-history.ts). The
+// amounts are the ask across the loans that moved, so a pool's row covers the loans still for sale.
+model PriceChange {
+  id        String   @id @default(cuid()) @map("_id")
+  listingId String
+  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  before    Float
+  after     Float
+  loans     Int
+  // DESK or LADDER.
+  source    String
+  actorId   String?
+  createdAt DateTime @default(now())
+
+  @@index([listingId, createdAt])
+  @@index([createdAt])
 }

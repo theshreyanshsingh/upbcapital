@@ -5,6 +5,7 @@ import { launchPending } from "@/lib/launch-rules";
 import { prisma } from "@/lib/prisma";
 import { audienceOf } from "@/lib/private-listings";
 import { emitBuyerWebhook } from "@/lib/webhooks";
+import { recordPriceChange, type PriceSource } from "@/lib/price-history";
 
 // Buyers who saved a listing hear when something they would act on changes: a new price, a buy-it-now price, a
 // deadline, a withdrawal, new files in the data room, or a published answer. Each notice says what changed and links
@@ -68,12 +69,15 @@ async function watchWebhook(event: "listing.repriced" | "listing.deadline", list
 
 // A live listing's ask moved, whoever moved it. Watchers hear the old and new total for the loans that changed, which
 // the book already shows them. A save that leaves the price where it was tells nobody.
-export async function watchReprice(input: { listingId: string; before: number; after: number; loans: number; actorId: string }) {
+export async function watchReprice(input: { listingId: string; before: number; after: number; loans: number; actorId: string; source?: PriceSource }) {
   if (input.loans < 1 || Math.round(input.before * 100) === Math.round(input.after * 100)) return 0;
   const listing = await prisma.listing.findUnique({ where: { id: input.listingId }, select: { title: true, status: true } });
   if (!listing || listing.status !== "APPROVED") return 0;
   // A price lives on the loans, so the listing is touched for an API sync that asks what changed since.
   await prisma.listing.update({ where: { id: input.listingId }, data: { updatedAt: new Date() } });
+  // Every live reprice goes on the listing's price history, marked by who moved it (lib/price-history.ts).
+  const source = input.source ?? ((await prisma.user.findUnique({ where: { id: input.actorId }, select: { role: true } }))?.role === "ADMIN" ? "DESK" : "SELLER");
+  await recordPriceChange({ listingId: input.listingId, before: input.before, after: input.after, loans: input.loans, source, actorId: input.actorId });
   const which = input.loans === 1 ? "The ask" : `The ask on ${input.loans} loans`;
   return notifyWatchers({
     listingId: input.listingId,

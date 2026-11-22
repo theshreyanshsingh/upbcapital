@@ -62,6 +62,7 @@ import { getSettings } from "@/lib/settings";
 import { joinBlock, leaveBlock, roundText, when } from "@/lib/sale-events";
 import { sheetShows, standingSheet } from "@/lib/standing-bids";
 import { deskDecisionAllowed } from "@/lib/listing-status";
+import { PriceLadderPanel } from "@/components/price-ladder";
 
 export const metadata = { title: "Review listing" };
 
@@ -406,6 +407,8 @@ export default async function AdminListingPage({
           )}
           {sells ? <SubmitButton className="h-11 text-[13px] font-medium">Save edits</SubmitButton> : <p className="text-sm text-muted-foreground">Edits are for the sales side of the desk.</p>}
         </form>
+        {/* The price ladder and the price history. components/price-ladder.tsx. */}
+        <PriceLadderPanel listingId={listing.id} viewer={user} from="desk" />
 
         {duplicates.length > 0 && (
           <section id="duplicates" className="mt-8 scroll-mt-6 border border-warn/40 bg-warn/5 p-4 rounded-xl" aria-labelledby="duplicates-heading">

@@ -3,6 +3,7 @@ import { PublicPage } from "@/components/public-page";
 import { BUYER_SCOPES, SCOPE_LABELS } from "@/lib/api-keys";
 import { API_LIMIT } from "@/lib/api-limit";
 import { PAGE_LIMIT } from "@/lib/buyer-api";
+import { MCP_PATH, MCP_TOOLS, MCP_VERSIONS } from "@/lib/mcp";
 import { BUYER_WEBHOOK_EVENTS } from "@/lib/webhooks";
 import { PROVENANCE_VERSION } from "@/lib/provenance-rules";
 
@@ -14,6 +15,7 @@ export const metadata: Metadata = {
 const APP = process.env.NEXT_PUBLIC_APP_URL || "";
 const ID = "cm3k9x2ab0001";
 const web = `${APP}/marketplace/${ID}`;
+const MCP_URL = `${APP}${MCP_PATH}`;
 
 function Example({ label, children }: { label: string; children: unknown }) {
   return (
@@ -194,6 +196,20 @@ export default function DevelopersPage() {
       <p>listing.matched goes when a listing goes live and fits a buy box, once per buyer, naming the best-scoring box. listing.repriced goes when a listing you saved has a new ask; previousAsk and ask cover the loans whose price moved. listing.deadline goes once, about a day before bids close on a listing you saved. offer.status goes when one of your bids or requests is placed, countered, accepted, declined, withdrawn or expires. change is created, countered, accepted, declined or expired, status is where it stands now, and reason says why where there is one, such as another_bid_accepted or withdrawn.</p>
       <Example label="listing.repriced">{{ event: "listing.repriced", sentAt: "2026-11-09T14:00:03.000Z", listingId: ID, title: "Orlando SFR first lien", saleFormat: "NONE", bidDeadline: null, webUrl: web, loansRepriced: 1, previousAsk: 118000, ask: 109500 }}</Example>
       <Example label="offer.status">{{ event: "offer.status", sentAt: "2026-11-21T16:30:12.000Z", inquiryId: "cm3kc8f2e0011", listingId: ID, type: "OFFER", status: "DECLINED", change: "declined", reason: "another_bid_accepted" }}</Example>
+
+      <h2 id="mcp" className="scroll-mt-24 pt-6 text-2xl font-semibold tracking-tight text-foreground">Connect an AI assistant (MCP)</h2>
+      <p>An AI assistant or agent that speaks the Model Context Protocol can read the account through the buyer API. The server is at <span className="break-all font-mono text-[14px]">{MCP_URL}</span>. It takes the same buyer API key, sent as Authorization: Bearer upb_… on every request, so any MCP client that can send that header connects. The key&apos;s scopes and the Pro rule apply as on the endpoints above.</p>
+      <p>It is read-only: no tool bids, messages or changes anything. Each tool reads one buyer endpoint and answers what that endpoint would for the key, so the assistant gets nothing the API wouldn&apos;t give. Each tool call counts as one API call toward the {API_LIMIT.requests} a minute and is logged under Recent calls with that endpoint&apos;s path. Connecting and listing the tools aren&apos;t counted.</p>
+      <ul className="list-disc space-y-1 pl-5">
+        {MCP_TOOLS.map((tool) => (
+          <li key={tool.name}><span className="font-mono text-[14px]">{tool.name}</span> · {tool.summary}. <span className="break-all font-mono text-[13px] text-muted-foreground">GET {tool.endpoint}</span>, scope {tool.scope}</li>
+        ))}
+      </ul>
+      <p>A refusal comes back as the tool&apos;s error, in the API&apos;s own words: a missing scope, lapsed Pro, a record the key may not see, or the wait after too many calls. The transport is streamable HTTP, answered as plain JSON with no event stream or session, in protocol versions {MCP_VERSIONS.join(", ")}.</p>
+      <Example label="Claude Code">{`claude mcp add --transport http upb ${MCP_URL} \\
+  --header "Authorization: Bearer YOUR_KEY"`}</Example>
+      <Example label="JSON config, for clients that take one">{{ mcpServers: { upb: { type: "http", url: MCP_URL, headers: { Authorization: "Bearer YOUR_KEY" } } } }}</Example>
+      <p>The assistant reads whatever the key&apos;s scopes allow. A key with only listings:read keeps it to the book, and revoking the key at Buyer API cuts it off.</p>
 
       <Heading>Seller endpoints</Heading>
       <p>POST /api/v1/tapes with JSON. title is the pool name. csv is the tape, using the same headers as the upload template. ownership is the version of the ownership statement the seller gives, &quot;{PROVENANCE_VERSION}&quot;: the seller owns these loans or holds the owner&apos;s written mandate, and they are not pledged or sold elsewhere. A tape without it is refused. The listing is submitted for review and the response is listingId and loans. Scope tapes:write.</p>

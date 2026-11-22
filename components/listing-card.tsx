@@ -31,6 +31,7 @@ export function ListingCard({
   comparable = false,
   indicative = null,
   cra = null,
+  priceCut = null,
 }: {
   href: string;
   title: string;
@@ -58,6 +59,9 @@ export function ListingCard({
   // The CRA badge's words from lib/cra.ts craBadgeText(), on a card the viewer can open. It is a loan-file fact, so a
   // held card leaves it off, as the book's CRA filter skips held listings.
   cra?: string | null;
+  // The latest move on the ask in the last 30 days, when it was a cut (lib/price-history.ts recentCuts). A figure, so
+  // only on a card that shows the figures.
+  priceCut?: { percent: number; at: Date } | null;
 }) {
   const style = BID_MODES.find((mode) => mode.value === bidMode)?.label ?? "Open offers";
   return (
@@ -102,6 +106,11 @@ export function ListingCard({
           </div>
         ) : (
           !lockReason && <p className="text-[13px] font-medium text-muted-foreground">Economics reserved for Pro</p>
+        )}
+        {metrics && priceCut && (
+          <p className="mt-2 text-[13px] font-medium text-good tabular-nums">
+            Ask cut {priceCut.percent}% on {prettyDate(priceCut.at)}
+          </p>
         )}
         {metrics && indicative && (
           <p className="mt-2 text-[13px] text-muted-foreground tabular-nums">

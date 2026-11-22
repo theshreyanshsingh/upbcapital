@@ -88,6 +88,8 @@ import { getSettings, isPro } from "@/lib/settings";
 import { canSubmitOffer } from "@/lib/verification";
 import { mapPoint, showableAvm } from "@/lib/enrichment";
 import { OutsideParties } from "@/components/outside-parties";
+import { PriceHistory } from "@/components/price-history";
+import { priceHistory } from "@/lib/price-history";
 
 export const metadata = { title: "Listing" };
 
@@ -274,6 +276,8 @@ export default async function ListingPage({
   const pool = poolMetrics(forSale);
   const economics = listing.kind === "POOL" ? pool : noteMetrics(notes[0]);
   const asking = listing.kind === "POOL" ? pool.totalAsk : notes[0].askingPrice;
+  // The ask as it moved, with the figures: Pro buyers and the desk (lib/price-history.ts).
+  const history = pro ? await priceHistory(listing.id) : [];
   const avms = forSale.map((note) => note.avm).filter((value): value is number => value != null);
   // The fees the listing went live with, which the closing will charge. A graded schedule prices the premium on the
   // ask here, and the bid forms price it on the figure the buyer types; premiumBps is the rate it comes to at the ask.
@@ -445,6 +449,7 @@ export default async function ListingPage({
             } : null}
           />
           <IndicativePrice indicative={indicative} pro={pro} ask={asking} />
+          <PriceHistory rows={history} showSource={user.role === "ADMIN"} />
           {user.role === "BUYER" && (
             <AccessLadder
               listingId={listing.id}

@@ -47,6 +47,7 @@ import { deskBidNotAcceptable } from "@/lib/awards";
 import { reviewLabel } from "@/lib/listing-status";
 import { chargedText, feesFor } from "@/lib/fee-schedule";
 import { getSettings } from "@/lib/settings";
+import { PriceLadderPanel } from "@/components/price-ladder";
 
 export const metadata = { title: "Your listing" };
 
@@ -123,6 +124,8 @@ export default async function SellerListingPage({
         <IntakeConfirm listing={listing} viewerId={user.id} />
         {/* The ownership statement, and the seller's word that the loans are still for sale. components/listing-provenance.tsx. */}
         <AvailabilityPanel listing={listing} viewerId={user.id} from="seller" />
+        {/* The price ladder and the price history. components/price-ladder.tsx. */}
+        <PriceLadderPanel listingId={listing.id} viewer={user} from="seller" />
         <ComplianceNote states={listing.notes.map((note) => note.state)} sellerFinanced={listing.sellerFinanced} sellerRole={listing.seller.role} />
         <SellerDiligence listingId={listing.id} />
         <DiscrepancyAnswers

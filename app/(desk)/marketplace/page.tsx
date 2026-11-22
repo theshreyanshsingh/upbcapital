@@ -52,6 +52,7 @@ import { prisma } from "@/lib/prisma";
 import { isPrivateListing, listingAccess, visibleWhere } from "@/lib/private-listings";
 import { advanceSaleEvents, openEvents, roundText, when } from "@/lib/sale-events";
 import { getSettings, isEarlyAccess, isPro } from "@/lib/settings";
+import { recentCuts } from "@/lib/price-history";
 
 export const metadata = { title: "The book" };
 
@@ -161,6 +162,8 @@ export default async function MarketplacePage({
   const indicatives = pro
     ? await loadIndicatives(shown.filter((row) => row.veil.figures).map((row) => ({ id: row.listing.id, status: row.listing.status, notes: row.listing.notes }))).catch(() => new Map())
     : new Map();
+  // Recent cuts on the ask, for the cards that show figures (lib/price-history.ts).
+  const cuts = await recentCuts().catch(() => new Map<string, { percent: number; at: Date }>());
   const indicativeOf = (id: string) => {
     const range = indicatives.get(id);
     return range ? { low: range.low, high: range.high, rate: range.rate } : null;
@@ -412,6 +415,7 @@ export default async function MarketplacePage({
               comparable
               indicative={veil.figures ? indicativeOf(listing.id) : null}
               cra={veil.hold === null ? craBadgeText(listing.kind, forSale) : null}
+              priceCut={veil.figures ? cuts.get(listing.id) ?? null : null}
             />
           ))}
         </div>

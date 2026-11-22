@@ -61,6 +61,9 @@ export default async function BuyerApiPage({ searchParams }: { searchParams: Pro
       <p className="mt-6 text-sm text-muted-foreground">
         Send the key as Authorization: Bearer upb_… . Endpoints, paging, scopes and event bodies are on <Link href="/developers" className="text-link">the developers page</Link>.
       </p>
+      <p className="mt-2 text-sm text-muted-foreground">
+        The same key connects an AI assistant to the account, read-only, over MCP. <Link href="/developers#mcp" className="text-link">Connect an AI assistant</Link>.
+      </p>
 
       <h2 className="eyebrow mt-10">Keys</h2>
       {keys.length === 0 && <p className="mt-3 text-sm text-muted-foreground">No keys yet.</p>}

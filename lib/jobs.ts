@@ -134,6 +134,8 @@ export async function runJobs(now = new Date()) {
     ["Flow releases", () => import("@/lib/flow-programs").then((flow) => flow.runFlowReleases(now))],
     // A live listing unconfirmed for 30 days asks its seller once; still unconfirmed 7 days later, it pauses.
     ["Stale listings", () => import("@/lib/provenance").then((provenance) => provenance.runFreshness(now))],
+    // Price ladders whose step is due move the ask down, unless a bid is live or the listing is off the book.
+    ["Price ladders", () => import("@/lib/price-ladder").then((ladder) => ladder.runPriceLadders(now))],
     ["Search roundups", () => sendSearchRoundups(now)],
     // Each seller or broker with a live listing hears how it did, once a week.
     ["Seller reports", () => sendSellerReports(now)],
