@@ -14,7 +14,9 @@ import { deskSeatLines, seatsUnderFirms } from "@/lib/seats";
 import { roleLabel } from "@/lib/labels";
 import { ofacBlocks } from "@/lib/ofac";
 import { prisma } from "@/lib/prisma";
-import { literal } from "@/lib/db-filters";
+import type { Prisma } from "@prisma/client";
+import { literal, unset } from "@/lib/db-filters";
+import { pageWindow } from "@/lib/filters";
 import { getSettings } from "@/lib/settings";
 import { DESK_ROLE_HINTS, DESK_ROLE_LABELS, DESK_ROLES, deskCan, deskRoleOf } from "@/lib/staff";
 import { strikeLimitOf, strikesFor, type StrikeRow } from "@/lib/strikes";
@@ -30,13 +32,20 @@ export default async function UsersPage({
   const params = await searchParams;
   const filter = q(params, "q").trim().slice(0, 80);
   const text = { contains: literal(filter), mode: "insensitive" as const };
+  const where: Prisma.UserWhereInput = filter ? { OR: [{ name: text }, { email: text }, { companyName: text }] } : {};
+  // A page of accounts at a time, newest first, so a new sign-up waiting for approval is on the first page. Every
+  // account's row carries its forms, and at a couple of thousand accounts one page of all of them took half a
+  // minute (stress test, November 2026).
+  const [total, own] = await Promise.all([
+    prisma.user.count({ where }),
+    prisma.user.count({ where: { AND: [where, unset("principalId"), unset("seatAddedAt")] } }),
+  ]);
+  const pages = pageWindow(total, q(params, "page"), USERS_PAGE);
   const [users, reviews] = await Promise.all([
-    prisma.user.findMany({
-      where: filter ? { OR: [{ name: text }, { email: text }, { companyName: text }] } : undefined,
-      orderBy: { createdAt: "desc" },
-    }),
+    prisma.user.findMany({ where, orderBy: [{ createdAt: "desc" }, { id: "desc" }], skip: pages.start, take: USERS_PAGE }),
     prisma.ofacCheck.findMany({ where: { result: "REVIEW" }, select: { userId: true, result: true, status: true } }),
   ]);
+  const pageHref = (page: number) => `/admin/users?${new URLSearchParams({ ...(filter ? { q: filter } : {}), page: String(page) })}`;
   const held = new Set(reviews.filter(ofacBlocks).map((row) => row.userId));
   // A firm lists its seats and their roles, and a seat names its firm (lib/seats.ts).
   const seatLines = await deskSeatLines(users);
@@ -88,7 +97,8 @@ export default async function UsersPage({
         <input name="q" type="search" defaultValue={filter} aria-label="Filter accounts" placeholder="Name, email, or company" className="desk-input" />
         <button type="submit" className="h-11 shrink-0 rounded-lg border border-border px-4 text-[13px] font-medium">Filter</button>
       </form>
-      {filter && <p className="mt-2 text-sm text-muted-foreground">{listed.accounts} account{listed.accounts === 1 ? "" : "s"} match “{filter}”. <a href="/admin/users" className="text-link">Show all</a></p>}
+      {filter && <p className="mt-2 text-sm text-muted-foreground">{own} account{own === 1 ? "" : "s"} match “{filter}”. <a href="/admin/users" className="text-link">Show all</a></p>}
+      {pages.pageCount > 1 && <p className="mt-2 text-[13px] text-muted-foreground tabular-nums">Showing {pages.first}–{pages.end} of {total.toLocaleString("en-US")}, newest first</p>}
       <div className="mt-6 relative overflow-x-auto border border-border rounded-xl">
         <table className="min-w-full text-left text-sm">
           <thead className="text-xs font-medium text-muted-foreground">
@@ -168,9 +178,18 @@ export default async function UsersPage({
           </tbody>
         </table>
       </div>
+      {pages.pageCount > 1 && (
+        <nav aria-label="Pages" className="mt-6 flex flex-wrap items-center gap-4 text-[13px] font-medium tabular-nums">
+          {pages.page > 1 ? <a className="inline-flex min-h-9 items-center text-link" href={pageHref(pages.page - 1)}>Previous</a> : <span className="text-muted-foreground">Previous</span>}
+          <span className="text-muted-foreground">Page {pages.page} of {pages.pageCount}</span>
+          {pages.page < pages.pageCount ? <a className="inline-flex min-h-9 items-center text-link" href={pageHref(pages.page + 1)}>Next</a> : <span className="text-muted-foreground">Next</span>}
+        </nav>
+      )}
     </div>
   );
 }
+
+const USERS_PAGE = 100;
 
 // A buyer's closings that didn't complete, folded under their name. Clearing one takes a note for the audit log.
 function Strikes({ rows, limit, canClear }: { rows: StrikeRow[]; limit: number; canClear: boolean }) {

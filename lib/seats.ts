@@ -21,6 +21,12 @@ import { consumeRateLimit } from "@/lib/rate-limit";
 // The account a session acts for, with the seat that is signed in when it is a firm's seat.
 export type ActingUser = User & { actor?: { id: string; name: string; email: string; seatRole: string; bidLimitCents: number | null } };
 
+// The accounts whose in-app notices a signed-in person reads: the firm's, and their own seat's. Notices to a seat
+// (a task assigned, a bid to approve) are kept under the seat's id; everything else is kept under the firm's.
+export function noticeAccountIds(user: { id: string; actor?: { id: string } | null }) {
+  return user.actor?.id && user.actor.id !== user.id ? [user.id, user.actor.id] : [user.id];
+}
+
 export const SEAT_ROLES = ["VIEW", "TRADE", "APPROVE", "MANAGE"] as const;
 export type SeatRole = (typeof SEAT_ROLES)[number];
 

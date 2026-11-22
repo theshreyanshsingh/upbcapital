@@ -1746,6 +1746,8 @@ model BuyerHolding {
   id                String        @id @default(cuid()) @map("_id")
   userId            String
   user              User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // The portfolio upload this holding came from, so a whole upload can be taken back. lib/portfolio-import.ts.
+  importBatchId     String?
   closingId         String?
   listingId         String?
   title             String
@@ -2922,4 +2924,60 @@ model TrackedNote {
 
   @@index([userId])
   @@index([lastValuedAt])
+}
+
+// A pass for someone outside UPB, such as a party's attorney, title officer, custodian or auditor, to read one closing
+// or one listing's data room for a limited time. The link carries the token; only its hash is stored. lib/guest-access.ts.
+model GuestPass {
+  id          String    @id @default(cuid()) @map("_id")
+  tokenHash   String    @unique
+  // What it opens: a closing (closingId) or a listing's data room (listingId). Exactly one is set.
+  closingId   String?
+  listingId   String?
+  name        String
+  email       String
+  // ATTORNEY, TITLE, CUSTODIAN, AUDITOR or OTHER.
+  role        String
+  // Whose guest: BUYER, SELLER or DESK.
+  side        String
+  createdById String
+  expiresAt   DateTime
+  revokedAt   DateTime?
+  lastUsedAt  DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([closingId])
+  @@index([listingId])
+}
+
+// A firm's private note on a listing, read by every seat of the firm and nobody else. lib/firm-workspace.ts.
+model FirmNote {
+  id        String   @id @default(cuid()) @map("_id")
+  // The firm: the principal account its seats act for.
+  firmId    String
+  listingId String
+  // The person who wrote it, a seat or the principal.
+  authorId  String
+  body      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([firmId, listingId])
+}
+
+// A firm's diligence task on a listing: what to do, who has it, by when, and when it was done.
+model FirmTask {
+  id          String    @id @default(cuid()) @map("_id")
+  firmId      String
+  listingId   String
+  title       String
+  assigneeId  String?
+  dueAt       DateTime?
+  doneAt      DateTime?
+  doneById    String?
+  createdById String
+  createdAt   DateTime  @default(now())
+
+  @@index([firmId, listingId])
+  @@index([assigneeId])
 }

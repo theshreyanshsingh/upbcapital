@@ -9,7 +9,7 @@ import { bidderAlias } from "@/lib/bidder-alias";
 import { chosenEntity } from "@/lib/buyer-entities";
 import { buyNowOffer, samePrice } from "@/lib/buy-now";
 import { covenantCheck, recordCovenantAck, type CovenantAck } from "@/lib/covenants";
-import { unset } from "@/lib/db-filters";
+import { keptWithinLimit, OLDEST_FIRST, unset } from "@/lib/db-filters";
 import { ACKNOWLEDGE_FIRST, acknowledgementMissing, eligibilityFor, eligibilityLog, type Eligibility } from "@/lib/eligibility";
 import { notify, notifyDesk } from "@/lib/email";
 import { allInFor, feeTerms } from "@/lib/fee-schedule";
@@ -314,6 +314,34 @@ type InquiryInput = {
   covenants?: CovenantAck | null;
 };
 
+// A bid that no longer meets a rule checkOffer passed it on, once it is written beside another of the buyer's bids sent
+// at the same moment. writeInquiry takes it back and throws this, and the caller refuses it as it would a failed check.
+export class BidRefused extends Error {
+  verification: boolean;
+  constructor(message: string, verification = false) {
+    super(message);
+    this.verification = verification;
+  }
+}
+
+// Bids sent at the same moment each pass checkOffer before either is written. Counted again with this one in, the
+// rules that span a buyer's bids still hold: one best-and-final bid each, the earlier staying (lib/db-filters.ts), and
+// open bids within the verified funds. Null when the bid stands.
+async function writtenBidBlock(bid: { id: string; listingId: string; buyerId: string; noteId: string | null; amount: number | null }, bidMode: string) {
+  if (bidMode === "BEST_AND_FINAL") {
+    const mine = () =>
+      prisma.inquiry.findMany({
+        where: { listingId: bid.listingId, buyerId: bid.buyerId, type: "OFFER", ...(bid.noteId ? { noteId: bid.noteId } : unset("noteId")), status: { in: ["OPEN", "REVIEWED", "ACCEPTED", "WITHDRAWN", "EXPIRED"] } },
+        select: { id: true },
+        orderBy: OLDEST_FIRST,
+      });
+    if (!(await keptWithinLimit(bid.id, 1, mine))) return { error: "Best and final allows one bid on this listing.", verification: false };
+  }
+  if (bid.amount == null) return null;
+  const limit = await fundsLimitBlock({ userId: bid.buyerId, listingId: bid.listingId, noteId: bid.noteId, amount: bid.amount });
+  return limit.error !== null ? { error: limit.error, verification: limit.verification } : null;
+}
+
 // The row and the opening bid message. Callers that claim something first write this, link it, then announce it.
 export async function writeInquiry(input: InquiryInput) {
   const offer = input.type === "OFFER";
@@ -335,6 +363,12 @@ export async function writeInquiry(input: InquiryInput) {
       ...(round ? { round } : {}),
     },
   });
+  // Checked before anything else is written for it, so a bid taken back leaves nothing behind.
+  const refused = offer ? await writtenBidBlock(inquiry, input.listing.bidMode) : null;
+  if (refused) {
+    await prisma.inquiry.deleteMany({ where: { id: inquiry.id } });
+    throw new BidRefused(refused.error, refused.verification);
+  }
   // A final bid replaces its firm's indicative bid on the same loans.
   if (round === 2) await supersedeIndicative(inquiry);
   if (offer && input.covenants) await recordCovenantAck(input.user.id, "inquiry", inquiry.id, input.covenants);
@@ -411,7 +445,13 @@ export async function placeBuyNow(input: { user: Buyer; listingId: string; price
   const mine = await prisma.inquiry.findFirst({ where: { listingId: listing.id, buyerId: user.id, type: "OFFER", buyNow: true, status: { in: [...LIVE, "ACCEPTED"] } }, select: { id: true } });
   if (mine) return { error: "You already confirmed buy it now on this listing.", verification: false };
   const bid = { user, listing, type: "OFFER", noteId: "", amount: offer.price, message: "Confirmed at the seller's buy-it-now price.", expiresAt: null, buyNow: true, buyerEntityId: check.buyerEntityId, covenants: check.covenants };
-  const inquiry = await writeInquiry(bid);
+  let inquiry: Awaited<ReturnType<typeof writeInquiry>>;
+  try {
+    inquiry = await writeInquiry(bid);
+  } catch (error) {
+    if (error instanceof BidRefused) return { error: error.message, verification: error.verification };
+    throw error;
+  }
   await announceInquiry(inquiry, bid);
   await logEligibility(user.id, inquiry.id, check);
   const title = listing.title;

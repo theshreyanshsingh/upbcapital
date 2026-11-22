@@ -5,6 +5,7 @@ import { SubmitButton } from "@/components/submit-button";
 import { requireUser } from "@/lib/auth";
 import { prettyDate, q } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
+import { noticeAccountIds } from "@/lib/seats";
 
 export const metadata = { title: "Notices" };
 
@@ -17,7 +18,7 @@ export default async function NotificationsPage({
   const params = await searchParams;
   const notes = await prisma.notification.findMany({
     // By account only: matching on email would hand the desk inbox's alerts to whoever registers that address.
-    where: { userId: user.id },
+    where: { userId: { in: noticeAccountIds(user) } },
     orderBy: { createdAt: "desc" },
     take: 50,
   });

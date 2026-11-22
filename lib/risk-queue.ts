@@ -14,6 +14,7 @@ import { pausedListings, statementHolds } from "@/lib/provenance";
 import { openReviewWhere, reviewKey } from "@/lib/screening";
 import { dealOwners } from "@/lib/staff";
 import { allPendingWireChanges } from "@/lib/wire-changes";
+import { offerBookHref } from "@/lib/offers";
 
 // The desk's risk queue: every open hold and red flag across the platform on one page, so nobody visits a dozen
 // pages to learn what is stuck and for how long. Each kind has one small reader below, and each reader asks the module
@@ -307,7 +308,7 @@ async function covenantAcks(): Promise<RawRiskItem[]> {
     kind: "COVENANTS",
     title: bid.listing.title,
     detail: `${bid.buyer.name}'s bid. ${bid.stale ? "The covenants changed after the buyer acknowledged them." : "The buyer hasn't acknowledged the covenants."}`,
-    href: `/admin/offers#offer-${bid.id}`,
+    href: offerBookHref(bid.id),
     openedAt: bid.createdAt,
     ownerId: bid.listing.deskOwnerId,
     resolver: "sales",

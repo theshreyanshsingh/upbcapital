@@ -95,3 +95,19 @@ export function bidTerms(diligenceDays?: number) {
 export function goodUntilRow(goodUntil: string): [string, string] {
   return ["Good until", goodUntil ? prettyDate(`${goodUntil}T23:59:00Z`) : "No end date"];
 }
+
+// The desk's offer book shows this many offers a page, newest first. At thousands of bids one page of all of them
+// never finished rendering (stress test, November 2026).
+export const OFFER_BOOK_PAGE = 50;
+
+// A link to one offer on the desk's offer book. The server can't see a #fragment, so `offer` names the bid and the
+// book opens on the page that holds it; the fragment then scrolls to it.
+export function offerBookHref(inquiryId: string) {
+  return `/admin/offers?offer=${encodeURIComponent(inquiryId)}#offer-${inquiryId}`;
+}
+
+// The page, counting from 1, that holds an offer created at `createdAt` with this id, given how many offers in the
+// same view sort ahead of it (newer, or as new with a larger id).
+export function offerBookPage(ahead: number, size = OFFER_BOOK_PAGE) {
+  return Math.floor(Math.max(0, ahead) / size) + 1;
+}

@@ -4,6 +4,7 @@ import { answerDeskBid } from "@/actions/desk-book";
 import { ConfirmSubmit } from "@/components/confirm-submit";
 import { SubmitButton } from "@/components/submit-button";
 import { AvailabilityPanel } from "@/components/listing-provenance";
+import { ListingHealthPanel } from "@/components/listing-health";
 import { DiscrepancyAnswers } from "@/components/discrepancy-answers";
 import { QuestionQueue } from "@/components/listing-questions";
 import { RoomAccessPanel } from "@/components/room-access";
@@ -77,6 +78,8 @@ export default async function ResalePage({
       <p className="mt-3 text-sm text-muted-foreground">
         {STATUS[listing.status] ?? listing.status} Asking {money(ask)} across {listing.notes.length} loan{listing.notes.length === 1 ? "" : "s"}.
       </p>
+      {/* A live listing's funnel against similar listings, and its next steps. components/listing-health.tsx. */}
+      <ListingHealthPanel listingId={listing.id} viewer={user} from="resale" />
       {/* The ownership statement, and the seller's word that the loans are still for sale. components/listing-provenance.tsx. */}
       <AvailabilityPanel listing={listing} viewerId={user.id} from="resale" />
       <DiscrepancyAnswers

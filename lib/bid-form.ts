@@ -1,6 +1,6 @@
 import { actionGate } from "@/lib/action-gates";
 import { audit } from "@/lib/audit";
-import { announceInquiry, checkOffer, inquiryBlock, logEligibility, writeInquiry, type OfferCheck } from "@/lib/inquiry";
+import { announceInquiry, BidRefused, checkOffer, inquiryBlock, logEligibility, writeInquiry, type OfferCheck } from "@/lib/inquiry";
 import { loanPricesFromForm, type LoanPrices } from "@/lib/loan-prices";
 import { prisma } from "@/lib/prisma";
 import { formFields, holdSeatBid, overSeatLimit, type ActingUser } from "@/lib/seats";
@@ -69,7 +69,14 @@ export async function placeInquiry(user: ActingUser, formData: FormData, options
   }
   if (!listing) return { error: "This listing is not taking new inquiries.", redirect: back };
   const input = { user, listing, type, noteId, amount, message, expiresAt, loanPrices, allowPartial, buyerEntityId, covenants: passed?.covenants ?? null };
-  const inquiry = await writeInquiry(input);
+  let inquiry: Awaited<ReturnType<typeof writeInquiry>>;
+  try {
+    inquiry = await writeInquiry(input);
+  } catch (error) {
+    // Another of the buyer's bids went in at the same moment, and this one no longer fits beside it (lib/inquiry.ts).
+    if (error instanceof BidRefused) return error.verification ? refuse(error.message, "/buyer/verification") : refuse(error.message);
+    throw error;
+  }
   await announceInquiry(inquiry, input);
   if (passed) await logEligibility(user.id, inquiry.id, passed);
   // Which seat placed it, for the firm's own offer book. An approved bid is told by its approval instead.

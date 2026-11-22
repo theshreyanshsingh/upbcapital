@@ -5,7 +5,7 @@ import { unset } from "@/lib/db-filters";
 import { notify } from "@/lib/email";
 import { money, prettyDate } from "@/lib/format";
 import { articleFor, marketRate, rateStale, type MarketRate } from "@/lib/indicative";
-import { announceInquiry, checkOffer, logEligibility, writeInquiry } from "@/lib/inquiry";
+import { announceInquiry, BidRefused, checkOffer, logEligibility, writeInquiry } from "@/lib/inquiry";
 import { launchBlock } from "@/lib/launch-rules";
 import { ofacBlocks } from "@/lib/ofac";
 import { prisma } from "@/lib/prisma";
@@ -456,6 +456,7 @@ export async function confirmStanding(input: { matchId: string; user: Buyer; pri
   } catch (error) {
     // No bid was written, so the invitation opens again for another try.
     await prisma.listingMatch.updateMany({ where: { id: match.id, answeredAt: now, ...unset("inquiryId") }, data: { answeredAt: null } });
+    if (error instanceof BidRefused) return { error: error.message, verification: error.verification } as const;
     throw error;
   }
   await prisma.listingMatch.update({ where: { id: match.id }, data: { inquiryId: inquiry.id } });

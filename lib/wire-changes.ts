@@ -1,5 +1,5 @@
 import { audit } from "@/lib/audit";
-import { unset } from "@/lib/db-filters";
+import { keptWithinLimit, OLDEST_FIRST, unset } from "@/lib/db-filters";
 import { buyerSideEmails } from "@/lib/closing-service";
 import { DESK_DENIED, deskCan, type Staff } from "@/lib/desk-roles";
 import { notify, notifyDesk } from "@/lib/email";
@@ -36,6 +36,13 @@ export async function proposeWireChange(actor: Actor, input: { closingId: string
   const waiting = await prisma.wireChange.findFirst({ where: { status: "PENDING", ...(closingId ? { closingId } : unset("closingId")) } });
   if (waiting) return { error: "A wire change is already waiting for approval. Approve or reject it first." } as const;
   const change = await prisma.wireChange.create({ data: { closingId, proposedById: actor.id, instructions, reason } });
+  // Two proposals sent at once can both pass the check above. Counted again with this one in, the later one comes back
+  // out (lib/db-filters.ts), so one change waits at a time.
+  const pending = () => prisma.wireChange.findMany({ where: { status: "PENDING", ...(closingId ? { closingId } : unset("closingId")) }, select: { id: true }, orderBy: OLDEST_FIRST });
+  if (!(await keptWithinLimit(change.id, 1, pending))) {
+    await prisma.wireChange.deleteMany({ where: { id: change.id } });
+    return { error: "A wire change is already waiting for approval. Approve or reject it first." } as const;
+  }
   await audit(actor.id, "WIRE_PROPOSED", closingId ? "closing" : "settings", closingId ?? "default", `Change ${change.id}. Before: ${excerpt(current)}. Proposed: ${excerpt(instructions)}.${reason ? ` Reason: ${reason}` : ""}`);
   await notifyDesk(
     `Wire change to approve · ${title}`,

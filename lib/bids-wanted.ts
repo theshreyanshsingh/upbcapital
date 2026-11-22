@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import type { BuyerRequest, Prisma } from "@prisma/client";
 import { audit } from "@/lib/audit";
 import { chosenEntity } from "@/lib/buyer-entities";
-import { unset } from "@/lib/db-filters";
+import { keptWithinLimit, OLDEST_FIRST, unset } from "@/lib/db-filters";
 import { MIN_FIRMS } from "@/lib/demand-board";
 import { notify } from "@/lib/email";
 import { programLabel, PROGRAM_CHOICES } from "@/lib/filters";
@@ -362,6 +362,12 @@ async function liveCount(firm: string, now: Date, except?: string) {
   return prisma.buyerRequest.count({ where: { AND: [liveWhere(now), { userId: firm }, ...(except ? [{ id: { not: except } }] : [])] } });
 }
 
+// Requests posted at once can each pass the count, so one just posted is counted again with the firm's others
+// (lib/db-filters.ts). False when it would take the firm past the limit.
+function keptOpen(firm: string, requestId: string, now: Date) {
+  return keptWithinLimit(requestId, OPEN_LIMIT, () => prisma.buyerRequest.findMany({ where: { AND: [liveWhere(now), { userId: firm }] }, select: { id: true }, orderBy: OLDEST_FIRST }));
+}
+
 const LIMIT_LINE = `Your firm has ${OPEN_LIMIT} open requests, the most at once. Pause, close or mark one filled first.`;
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -390,6 +396,10 @@ export async function createRequest(user: Poster, input: RequestInput, now = new
       expiresAt: new Date(now.getTime() + read.expiryDays * DAY),
     },
   });
+  if (!(await keptOpen(firm, row.id, now))) {
+    await prisma.buyerRequest.deleteMany({ where: { id: row.id } });
+    return fail(LIMIT_LINE);
+  }
   await audit(firm, "BUYER_REQUEST", "buyerRequest", row.id, `Posted · ${read.title} · ${read.expiryDays} days`);
   return { ok: true, value: { id: row.id } };
 }
@@ -444,6 +454,12 @@ export async function setRequestStatus(user: Poster, requestId: string, action: 
   }
   const moved = await prisma.buyerRequest.updateMany({ where: { id: request.id, status: from }, data: { status } });
   if (moved.count !== 1) return fail("This request changed a moment ago. Look again.");
+  // A resume and a new request at the same moment can both pass the count. Counted again with this one open, a
+  // resume past the limit goes back to paused.
+  if (status === "OPEN" && (await liveCount(firm, now)) > OPEN_LIMIT) {
+    await prisma.buyerRequest.updateMany({ where: { id: request.id, status: "OPEN" }, data: { status: "PAUSED" } });
+    return fail(LIMIT_LINE);
+  }
   await audit(firm, "BUYER_REQUEST_STATUS", "buyerRequest", request.id, `${from} to ${status}`);
   return { ok: true, value: { status } };
 }
@@ -733,6 +749,13 @@ export async function answerRequest(actor: { id: string }, input: { requestId: s
   if (reason === "first_look") return fail("That listing is in its programme's first look, so it can't go to this buyer until the release.");
   if (regulatedOnly(listing) && !(await regulatedUserIds([buyer.id])).has(buyer.id)) return fail("That sale is open to banks and credit unions only, and this buyer isn't one.");
   const invited = reason === "private";
+  const response = await prisma.requestResponse.create({ data: { requestId: request.id, listingId: listing.id, sellerId: account.id, status: "SENT" } });
+  // Sent twice at once, both answers can pass the check above. Counted again before anything else is written, the
+  // later one comes back out (lib/db-filters.ts), so the listing is invited and the buyer hears once.
+  if (!(await keptWithinLimit(response.id, 1, () => prisma.requestResponse.findMany({ where: { requestId: request.id, listingId: listing.id }, select: { id: true }, orderBy: OLDEST_FIRST })))) {
+    await prisma.requestResponse.deleteMany({ where: { id: response.id } });
+    return fail("That listing already went to this buyer for this request.");
+  }
   if (invited) {
     const type = (await buyerTypes([request], sight.standing)).get(request.id) ?? "Private buyer";
     const token = randomBytes(24).toString("base64url");
@@ -744,7 +767,6 @@ export async function answerRequest(actor: { id: string }, input: { requestId: s
     const { rescoreListing } = await import("@/lib/matching");
     await rescoreListing(listing.id, false, now).catch(() => undefined);
   }
-  const response = await prisma.requestResponse.create({ data: { requestId: request.id, listingId: listing.id, sellerId: account.id, status: "SENT" } });
   await audit(account.id, "REQUEST_ANSWERED", "buyerRequest", request.id, `${listing.title} (${listing.id})${invited ? " · invited privately" : ""}`);
   const review = listing.status === "APPROVED" ? "" : " It is in review at the desk, and opens to you once the desk approves it.";
   await notify(

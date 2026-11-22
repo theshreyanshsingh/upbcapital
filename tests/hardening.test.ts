@@ -103,6 +103,26 @@ test("limits use memory or the database from the env", async () => {
   process.env.RATE_LIMIT_STORE = previous;
 });
 
+test("a burst of tries at once on one key lets through exactly the limit and stores every try", async () => {
+  const previous = process.env.RATE_LIMIT_STORE;
+  process.env.RATE_LIMIT_STORE = "database";
+  resetRateLimits();
+  const key = `burst-${Date.now()}-${crypto.randomUUID().slice(0, 6)}`;
+  try {
+    const results = await Promise.all(Array.from({ length: 300 }, () => consumeRateLimit(key, 20, 60_000)));
+    assert.equal(results.filter(Boolean).length, 20);
+    const rows = await prisma.rateWindow.findMany({ where: { key: { startsWith: key } } });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].count, 300);
+    assert.ok(rows[0].expiresAt.getTime() > Date.now());
+    // The window holds after the burst: the next try is still over the limit.
+    assert.equal(await consumeRateLimit(key, 20, 60_000), false);
+  } finally {
+    await prisma.rateWindow.deleteMany({ where: { key: { startsWith: key } } });
+    process.env.RATE_LIMIT_STORE = previous;
+  }
+});
+
 test("a loan sold out of a live pool shows its street only to its buyer, while the rest stays open", () => {
   const base = { listingStatus: "APPROVED", signedNda: true, wholeParty: false, loanParty: false };
   assert.equal(loanOpenTo({ ...base, tradeStatus: "AVAILABLE" }), true);

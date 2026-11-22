@@ -242,24 +242,9 @@ export function tradeFromLoans(
 // A private sale's price stays out: comps reach every Pro buyer, the indicative range and the dispatch, so only a
 // listing that was public is a comp (lib/private-listings.ts).
 export async function loadClosedTrades(now = new Date(), windowMonths = COMP_WINDOW_MONTHS): Promise<ClosedTrade[]> {
-  const [{ prisma }, { publicListing }] = await Promise.all([import("@/lib/prisma"), import("@/lib/private-listings")]);
   const since = new Date(now);
   since.setMonth(since.getMonth() - windowMonths);
-  const loanFields = { id: true, upb: true, lienPosition: true, paymentStatus: true, state: true } as const;
-  const [closings, sold] = await Promise.all([
-    prisma.closing.findMany({
-      where: { status: "COMPLETE", listing: publicListing() },
-      select: { listingId: true, noteId: true, noteIds: true, salePrice: true, closedAt: true, openedAt: true, listing: { select: { notes: { select: loanFields } } } },
-      orderBy: { openedAt: "desc" },
-      take: 5000,
-    }),
-    prisma.listing.findMany({
-      where: { status: "SOLD", AND: [publicListing()] },
-      select: { id: true, salePrice: true, soldAt: true, updatedAt: true, notes: { select: loanFields } },
-      orderBy: { updatedAt: "desc" },
-      take: 5000,
-    }),
-  ]);
+  const [closings, sold] = await closedRows();
   const trades: ClosedTrade[] = [];
   const closed = new Set<string>();
   for (const closing of closings) {
@@ -277,4 +262,43 @@ export async function loadClosedTrades(now = new Date(), windowMonths = COMP_WIN
     if (trade) trades.push(trade);
   }
   return trades;
+}
+
+// The closed trades every comp reads: the same for every viewer, since only listings that were public count. In
+// production the read is shared for a minute, so a book of thousands of trades isn't read again for each page and
+// each concurrent visitor waits on the one read in flight (stress test, November 2026). A new closing shows in the
+// comps within the minute. Tests and development read fresh each time.
+const CLOSED_ROWS_MS = 60_000;
+let closedCache: { at: number; rows: ReturnType<typeof readClosedRows> } | null = null;
+
+function closedRows() {
+  if (process.env.NODE_ENV !== "production") return readClosedRows();
+  const now = Date.now();
+  if (!closedCache || now - closedCache.at > CLOSED_ROWS_MS) {
+    const rows = readClosedRows();
+    closedCache = { at: now, rows };
+    rows.catch(() => {
+      if (closedCache?.rows === rows) closedCache = null;
+    });
+  }
+  return closedCache.rows;
+}
+
+async function readClosedRows() {
+  const [{ prisma }, { publicListing }] = await Promise.all([import("@/lib/prisma"), import("@/lib/private-listings")]);
+  const loanFields = { id: true, upb: true, lienPosition: true, paymentStatus: true, state: true } as const;
+  return Promise.all([
+    prisma.closing.findMany({
+      where: { status: "COMPLETE", listing: publicListing() },
+      select: { listingId: true, noteId: true, noteIds: true, salePrice: true, closedAt: true, openedAt: true, listing: { select: { notes: { select: loanFields } } } },
+      orderBy: { openedAt: "desc" },
+      take: 5000,
+    }),
+    prisma.listing.findMany({
+      where: { status: "SOLD", AND: [publicListing()] },
+      select: { id: true, salePrice: true, soldAt: true, updatedAt: true, notes: { select: loanFields } },
+      orderBy: { updatedAt: "desc" },
+      take: 5000,
+    }),
+  ]);
 }

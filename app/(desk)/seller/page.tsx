@@ -13,6 +13,8 @@ import { cellFacts, compsFor, loadClosedTrades, marketView, suggestedPrice } fro
 import { isReleaseBuild } from "@/lib/deploy";
 import { money, num, q } from "@/lib/format";
 import { feeTerms, feesFor, rateText } from "@/lib/fee-schedule";
+import { funnelLine, loadFunnels } from "@/lib/listing-health";
+import { readIn } from "@/lib/bulk-read";
 import { prisma } from "@/lib/prisma";
 import { getSettings } from "@/lib/settings";
 
@@ -39,10 +41,11 @@ export default async function SellerHome({
   const today = feeTerms(null, settings);
   const soldNet = listings.filter((listing) => listing.netToSellerCents != null).reduce((sum, listing) => sum + (listing.netToSellerCents ?? 0), 0);
   const [peers, trades] = await Promise.all([
-    prisma.note.findMany({
-      where: { listing: { status: { in: ["APPROVED", "PENDING"] }, kind: "SINGLE" } },
-      select: { state: true, paymentStatus: true, upb: true, askingPrice: true, listingId: true },
-    }),
+    // The live single-loan book's loans, read by listing (lib/bulk-read.ts): a filter through each loan's listing ran
+    // a lookup per loan, and at a few thousand listings this page took half a minute.
+    prisma.listing
+      .findMany({ where: { status: { in: ["APPROVED", "PENDING"] }, kind: "SINGLE" }, select: { id: true } })
+      .then((live) => readIn("Note", "listingId", live.map((listing) => listing.id), { pick: ["state", "paymentStatus", "upb", "askingPrice", "listingId"] })),
     loadClosedTrades(),
   ]);
   const book = peers.map((note) => ({
@@ -52,6 +55,8 @@ export default async function SellerHome({
     askingPrice: num(note.askingPrice),
     listingId: note.listingId,
   }));
+  // Each live listing's buyer funnel in one line; the listing page has the rest (lib/listing-health.ts).
+  const funnels = await loadFunnels(listings.filter((listing) => listing.status === "APPROVED"));
   const views = listings.reduce((sum, listing) => sum + listing.viewCount, 0);
   const offers = listings.reduce((sum, listing) => sum + listing.inquiries.filter((inquiry) => inquiry.type === "OFFER").length, 0);
 
@@ -109,6 +114,7 @@ export default async function SellerHome({
             ? compsFor({ state: listing.notes[0].state, lienPosition: listing.notes[0].lienPosition, paymentStatus: listing.notes[0].paymentStatus }, trades)
             : null;
           const offerCount = listing.inquiries.filter((inquiry) => inquiry.type === "OFFER").length;
+          const funnel = funnels.get(listing.id);
           return (
             <Link key={listing.id} href={`/seller/listings/${listing.id}`} className="flex flex-wrap items-center justify-between gap-3 px-5 py-5 hover:bg-muted/60">
               <div>
@@ -116,6 +122,7 @@ export default async function SellerHome({
                 <p className="mt-1 text-sm text-muted-foreground">
                   {listing.kind === "POOL" ? `${listing.notes.length} loans` : listing.notes[0]?.city} · {listing.viewCount} views · {listing.inquiries.length} inquiries · {offerCount} offers · ask {money(ask)}
                 </p>
+                {funnel && <p className="mt-1 text-sm text-foreground tabular-nums">{funnelLine(funnel)}</p>}
                 {suggestion && (
                   <p className="mt-1 text-sm text-link tabular-nums">Suggested {money(suggestion.price)} from {suggestion.sample} live asks at {suggestion.priceToUpb.toFixed(0)}% of UPB.</p>
                 )}

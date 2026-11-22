@@ -7,6 +7,7 @@ import { money, moneyCompact, num, pct } from "@/lib/format";
 import { labelOf } from "@/lib/labels";
 import { upbBucket } from "@/lib/strata";
 import { noteMetrics } from "@/lib/metrics";
+import { withNotes } from "@/lib/bulk-read";
 import { prisma } from "@/lib/prisma";
 import { publicTestimonials, REVIEWS_NOTE } from "@/lib/reviews";
 import { outsideFirstLook, publicListing } from "@/lib/private-listings";
@@ -29,17 +30,15 @@ export default async function HomePage() {
     getCurrentUser(),
     getSettings(),
     // Private listings stay off the public page: its cards, counts and totals are the open book's (lib/private-listings.ts).
-    prisma.note.findMany({
-      where: { listing: { status: { in: ["APPROVED", "PENDING"] }, AND: [publicListing(), released] } },
-      include: { listing: true },
-    }),
+    // The live book's loans, read by listing (lib/bulk-read.ts): a filter through each loan's listing ran a lookup
+    // per loan, and at a few thousand listings this page took minutes.
+    prisma.listing
+      .findMany({ where: { status: { in: ["APPROVED", "PENDING"] }, AND: [publicListing(), released] }, select: { id: true, kind: true, status: true } })
+      .then(async (live) => (await withNotes(live, { shared: true })).flatMap(({ notes, ...listing }) => notes.map((note) => ({ ...note, listing })))),
     prisma.listing.count({ where: { status: { in: ["APPROVED", "PENDING"] }, AND: [publicListing(), released] } }),
-    prisma.listing.findMany({
-      where: { status: { in: ["APPROVED", "PENDING"] }, AND: [publicListing(), released] },
-      include: { notes: true },
-      orderBy: { approvedAt: "desc" },
-      take: 6,
-    }),
+    prisma.listing
+      .findMany({ where: { status: { in: ["APPROVED", "PENDING"] }, AND: [publicListing(), released] }, orderBy: { approvedAt: "desc" }, take: 6 })
+      .then(withNotes),
   ]);
   const upb = notes.reduce((sum, note) => sum + num(note.upb), 0);
   const states = new Set(notes.map((note) => note.state)).size;

@@ -11,6 +11,7 @@ import { unset } from "@/lib/db-filters";
 import { currentLegalVersion, legalDue } from "@/lib/legal";
 import { confirmationDue } from "@/lib/email-confirm";
 import { deskPowers } from "@/lib/desk-roles";
+import { noticeAccountIds } from "@/lib/seats";
 
 export const dynamic = "force-dynamic";
 
@@ -32,7 +33,7 @@ export default async function DeskLayout({ children }: { children: React.ReactNo
   if (!user) redirect("/login");
   const unread = await prisma.notification.count({
     // By account only. A copy kept for an address with no account belongs to no one who signs up with it later.
-    where: { userId: user.id, ...unset("readAt") },
+    where: { userId: { in: noticeAccountIds(user) }, ...unset("readAt") },
   });
   // Pages and actions for this role. Records are searched through /api/command, scoped the same way.
   const palette = paletteCommands(user);

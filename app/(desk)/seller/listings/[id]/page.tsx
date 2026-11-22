@@ -12,6 +12,7 @@ import { Countdown } from "@/components/countdown";
 import { DiscrepancyAnswers } from "@/components/discrepancy-answers";
 import { IntakeConfirm } from "@/components/desk-intake";
 import { AvailabilityPanel } from "@/components/listing-provenance";
+import { ListingHealthPanel } from "@/components/listing-health";
 import { OwnershipStatement } from "@/components/ownership-statement";
 import { SellerDiligence } from "@/components/diligence-checklist";
 import { ReaderSummary } from "@/components/document-reader";
@@ -22,6 +23,7 @@ import { RoomFiles } from "@/components/room-files";
 import { RoundTag } from "@/components/sale-rounds";
 import { ServicerReportPanel } from "@/components/loan-file-desk";
 import { Notice } from "@/components/notice";
+import { OutsideParties } from "@/components/outside-parties";
 import { PhotoManager } from "@/components/photo-manager";
 import { ResultConsent } from "@/components/result-consent";
 import { StatusPill } from "@/components/status-pill";
@@ -39,6 +41,7 @@ import { docLabel } from "@/lib/labels";
 import { money, num, prettyDate, q } from "@/lib/format";
 import { launchPending, launchTime } from "@/lib/launch-rules";
 import { buyerPrice } from "@/lib/offers";
+import { loiHref, loiReady } from "@/lib/loi";
 import { prisma } from "@/lib/prisma";
 import { deskBidNotAcceptable } from "@/lib/awards";
 import { reviewLabel } from "@/lib/listing-status";
@@ -79,6 +82,8 @@ export default async function SellerListingPage({
   const contact = user.role === "ADMIN" ? null : await deskContact(listing.deskOwnerId);
   // The buyer's own latest price, not the opening bid, which goes stale once they reprice.
   const latest = (inquiry: (typeof listing.inquiries)[number]) => buyerPrice(inquiry.amount, inquiry.messages, inquiry.buyerId);
+  // Standing bids a letter of intent can be drawn for, linked once their amounts show here (lib/loi.ts).
+  const letters = await loiReady(listing.inquiries);
   const report = listing.status === "SUBMITTED" || listing.status === "UNDER_REVIEW" || listing.status === "CHANGES_REQUESTED"
     ? null
     : sellerReport(await listingActivity(listing.id, listing.sellerId));
@@ -112,6 +117,8 @@ export default async function SellerListingPage({
           </p>
         )}
         <p className="mt-4 max-w-2xl text-sm leading-relaxed text-muted-foreground">{listing.summary}</p>
+        {/* A live listing's funnel against similar listings, and its next steps. components/listing-health.tsx. */}
+        <ListingHealthPanel listingId={listing.id} viewer={user} from="seller" />
         {/* A tape the desk filed for the seller, to confirm, and the diligence set. components/desk-intake.tsx, components/diligence-checklist.tsx. */}
         <IntakeConfirm listing={listing} viewerId={user.id} />
         {/* The ownership statement, and the seller's word that the loans are still for sale. components/listing-provenance.tsx. */}
@@ -164,6 +171,8 @@ export default async function SellerListingPage({
           engagement={log.status === 200 ? log.engagement : []}
         />
         <PrivateSalePanel listingId={listing.id} from="seller" readOnly={user.role === "ADMIN" && !deskCan(user, "sales")} />
+        {/* Guest links for the seller's attorney or custodian, and the bidders' guests by name and role. components/outside-parties.tsx. */}
+        <OutsideParties viewer={user} listingId={listing.id} from="seller" />
         <section className="mt-10">
           {listing.deskBids.map((bid) => (
             <div key={bid.id} className="mb-6 border border-link/30 bg-link/5 p-4 rounded-xl">
@@ -207,6 +216,10 @@ export default async function SellerListingPage({
                 )}
                 {latest(inquiry) && sealed && <p className="mt-1 text-sm text-muted-foreground">Amount sealed until the deadline.</p>}
                 {!(sealed && inquiry.type === "OFFER") && <p className="mt-1 text-sm text-muted-foreground">{inquiry.message}</p>}
+                {/* The bid as a non-binding letter of intent, for the seller's board. Never while its amount is sealed. */}
+                {!sealed && letters.has(inquiry.id) && (
+                  <a href={loiHref(inquiry.id)} className="mt-1 inline-flex min-h-10 items-center text-[13px] font-medium text-link">Download the letter of intent (PDF)</a>
+                )}
               </li>
             ))}
           </ul>
@@ -261,7 +274,7 @@ export default async function SellerListingPage({
           <AuctionForm listingId={listing.id} bidMode={listing.bidMode} deadline={listing.bidDeadline} />
         )}
         {listing.kind === "POOL" && (
-          <form action={bulkReprice} className="mt-4 space-y-3 border border-border p-4 rounded-xl">
+          <form id="bulk-price" action={bulkReprice} className="mt-4 scroll-mt-6 space-y-3 border border-border p-4 rounded-xl">
             <p className="eyebrow">Bulk price</p>
             <input type="hidden" name="listingId" value={listing.id} />
             <label className="block">

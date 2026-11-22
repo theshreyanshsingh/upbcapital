@@ -16,6 +16,7 @@ import { canSee, invitedTo, listingAccess, visibleWhere } from "@/lib/private-li
 import { documentGate } from "@/lib/room-access";
 import { getSettings, isPro } from "@/lib/settings";
 import { threadWalls } from "@/lib/threads";
+import { offerBookHref } from "@/lib/offers";
 
 // The ⌘K palette's data. Pages and actions are built here from the role and passed to the client. Search results
 // come from searchCommands, scoped to what this viewer may open: a buyer finds only the public listings the book
@@ -134,6 +135,7 @@ export function navPages(role: Role | string, can?: readonly DeskCapability[]): 
       { href: "/inbox", label: "Inbox", keywords: "messages threads" },
       { href: "/buyer/favorites", label: "Favorites", keywords: "watchlist saved" },
       { href: "/buyer/offers", label: "Inquiries", keywords: "offers bids questions" },
+      { href: "/buyer/tasks", label: "My tasks", keywords: "diligence checklist to do firm notes assigned" },
       { href: "/buyer/requests", label: "Requests", keywords: "bids wanted post what you buy" },
       { href: "/buyer/groups", label: "Groups", keywords: "group buy" },
       { href: "/closings", label: "Closings", keywords: "settlement checklist" },
@@ -573,7 +575,7 @@ async function messageResults(viewer: PaletteViewer, text: Text, term: string): 
       group: "Messages",
       label: row.inquiry.listing.title,
       hint: `${MESSAGE_KIND[row.kind] ?? "Message"} · ${excerpt(row.body, term)}`,
-      href: desk ? `/admin/offers#offer-${row.inquiryId}` : `/buyer/offers#inquiry-${row.inquiryId}`,
+      href: desk ? offerBookHref(row.inquiryId) : `/buyer/offers#inquiry-${row.inquiryId}`,
       private: true,
     }));
 }

@@ -200,6 +200,8 @@ export function navFor(user: ShellUser): NavItem[] {
       { href: "/inbox", label: "Inbox", icon: Inbox },
       { href: "/buyer/favorites", label: "Favorites", icon: Star, section: "Deals" },
       { href: "/buyer/offers", label: "Inquiries", icon: Handshake, section: "Deals" },
+      // The diligence tasks the firm assigned to this person (lib/firm-workspace.ts).
+      { href: "/buyer/tasks", label: "My tasks", icon: ClipboardList, section: "Deals" },
       { href: "/buyer/requests", label: "Requests", icon: Megaphone, section: "Deals" },
       { href: "/buyer/groups", label: "Groups", icon: Users, section: "Deals" },
       { href: "/buyer/flow", label: "Programmes", icon: Repeat, section: "Deals" },

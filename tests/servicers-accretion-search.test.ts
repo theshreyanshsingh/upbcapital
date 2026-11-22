@@ -399,7 +399,7 @@ test("the desk reads bid messages and threads only within the sealed-bid wall", 
   const world = await searchWorld();
   try {
     const sales = await search(world.sales, world.word);
-    assert.equal(sales.find((row) => row.id === `message:${world.msgA.id}`)?.href, `/admin/offers#offer-${world.bidA.id}`);
+    assert.equal(sales.find((row) => row.id === `message:${world.msgA.id}`)?.href, `/admin/offers?offer=${world.bidA.id}#offer-${world.bidA.id}`);
     assert.ok(ids(sales, "Messages").has(`message:${world.msgB.id}`));
     assert.ok(ids(sales, "Threads").has(`post:${world.bidThread.posts[0].id}`));
     assert.equal(sales.find((row) => row.id === `file:${world.roomDoc.id}`)?.href, `/admin/listings/${world.room.id}#documents`);

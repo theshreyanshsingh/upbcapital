@@ -1,7 +1,7 @@
 import { deskWalled } from "@/lib/auction";
 import { deskCan, type Staff } from "@/lib/desk-roles";
 import { prettyDate } from "@/lib/format";
-import { buyerPrice } from "@/lib/offers";
+import { buyerPrice, offerBookHref } from "@/lib/offers";
 import { sendAudience } from "@/lib/outreach";
 import { prisma } from "@/lib/prisma";
 
@@ -170,7 +170,7 @@ export function nextStep(facts: PipelineFacts, listing: PipelineListing, now = n
   const beforeDeadline = Boolean(deadline && deadline.getTime() > now.getTime());
   const roundClosed = Boolean(deadline && deadline.getTime() <= now.getTime());
   if (facts.awarded) {
-    return facts.awarded.closingId ? step("CLOSING", "Run the closing", `/closings/${facts.awarded.closingId}`) : step("AWARD", "Check the award on the offer book", `/admin/offers#offer-${facts.awarded.inquiryId}`);
+    return facts.awarded.closingId ? step("CLOSING", "Run the closing", `/closings/${facts.awarded.closingId}`) : step("AWARD", "Check the award on the offer book", offerBookHref(facts.awarded.inquiryId));
   }
   if (listing.status !== "APPROVED") {
     if (listing.awardedElsewhere) return step("NONE", "None: the sale went to another bidder");
@@ -181,7 +181,7 @@ export function nextStep(facts: PipelineFacts, listing: PipelineListing, now = n
   if (facts.room === "PENDING") return step("ROOM", "Decide their room access", `${page}#room-access`);
   if (facts.liveBid) {
     if (beforeDeadline) return step("WAIT", `None until the deadline on ${prettyDate(deadline)}`);
-    return step("DECIDE", "Decide on their bid", `/admin/offers#offer-${facts.liveBid.inquiryId}`);
+    return step("DECIDE", "Decide on their bid", offerBookHref(facts.liveBid.inquiryId));
   }
   if (facts.room === "DECLINED") return step("NONE", "None: their room access was declined");
   if (roundClosed) return step("NONE", "None: bidding has closed");

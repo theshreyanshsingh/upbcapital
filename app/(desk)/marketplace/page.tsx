@@ -47,6 +47,7 @@ import { loadIndicatives } from "@/lib/indicative";
 import { labelOf, LIEN_POSITIONS, PAYMENT_STATUSES, US_STATES } from "@/lib/labels";
 import { comingSoonCard, launchPending } from "@/lib/launch-rules";
 import { bookVeil, common, listingFigures, loansForSale } from "@/lib/metrics";
+import { groupBy, withNotes } from "@/lib/bulk-read";
 import { prisma } from "@/lib/prisma";
 import { isPrivateListing, listingAccess, visibleWhere } from "@/lib/private-listings";
 import { advanceSaleEvents, openEvents, roundText, when } from "@/lib/sale-events";
@@ -77,12 +78,16 @@ export default async function MarketplacePage({
   const access = await listingAccess(user);
   const [settings, everything, saved, events] = await Promise.all([
     getSettings(),
-    prisma.listing.findMany({
-      // Private listings show to their invitees only, and a seller's excluded buyers see none of theirs, in the
-      // book and in every count and filter built from it (lib/private-listings.ts).
-      where: { status: { in: ["APPROVED", "PENDING", "SOLD"] }, AND: [visibleWhere(access)] },
-      include: { notes: true, favorites: { where: { userId: user.id } } },
-      orderBy: { approvedAt: "desc" },
+    // Private listings show to their invitees only, and a seller's excluded buyers see none of theirs, in the
+    // book and in every count and filter built from it (lib/private-listings.ts). The loans and this viewer's
+    // favorites are read by listing (lib/bulk-read.ts), since an include across the whole book took over a minute
+    // at a few thousand listings.
+    Promise.all([
+      prisma.listing.findMany({ where: { status: { in: ["APPROVED", "PENDING", "SOLD"] }, AND: [visibleWhere(access)] }, orderBy: { approvedAt: "desc" } }).then((rows) => withNotes(rows, { shared: true })),
+      prisma.favorite.findMany({ where: { userId: user.id } }),
+    ]).then(([listings, favorites]) => {
+      const mine = groupBy(favorites, "listingId");
+      return listings.map((listing) => ({ ...listing, favorites: mine.get(listing.id) ?? [] }));
     }),
     user.role === "BUYER" && pro ? prisma.savedSearch.findMany({ where: { userId: user.id }, orderBy: { createdAt: "desc" }, take: 8 }) : Promise.resolve([]),
     openEvents().catch(() => []),

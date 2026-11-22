@@ -148,7 +148,7 @@ test("the next step comes from rules, and says why when there is none", () => {
   assert.equal(at(facts({ room: "OPEN", openQuestions: 2 }, { questions: [ago(1), ago(2)] })).text, "Answer their 2 questions");
   // A sealed bid waits for the deadline; after it, the desk decides on the offer book.
   assert.equal(at(facts({ room: "OPEN", liveBid: { inquiryId: "B1" } }, { bids: [ago(1)] })).text, "None until the deadline on Nov 18, 2026");
-  assert.deepEqual(at(facts({ room: "OPEN", liveBid: { inquiryId: "B1" } }, { bids: [ago(1)] }), { ...live, bidDeadline: ago(1) }), { key: "DECIDE", text: "Decide on their bid", href: "/admin/offers#offer-B1" });
+  assert.deepEqual(at(facts({ room: "OPEN", liveBid: { inquiryId: "B1" } }, { bids: [ago(1)] }), { ...live, bidDeadline: ago(1) }), { key: "DECIDE", text: "Decide on their bid", href: "/admin/offers?offer=B1#offer-B1" });
   assert.equal(at(facts({ room: "OPEN" }, { ndaSignedAt: ago(3) }), { ...live, bidDeadline: ago(1) }).text, "None: bidding has closed");
   // The award, and everyone else once it went to someone.
   assert.deepEqual(at(facts({ awarded: { inquiryId: "B1", closingId: "C1" } }, { bids: [ago(1)] }), { ...live, status: "PENDING", awardedElsewhere: true }), { key: "CLOSING", text: "Run the closing", href: "/closings/C1" });

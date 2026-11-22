@@ -84,6 +84,14 @@ export async function accessLog(listingId: string, viewer: Viewer) {
     if (!bidderActor(row.actor)) continue;
     entries.push({ at: row.createdAt.getTime(), row: { bidder: label(row.actor.id), event: "Download", file: row.detail, at: iso(row.createdAt), ...context(row.actor.id) } });
   }
+  // Downloads by an outside party on a guest pass (lib/guest-access.ts): whose guest, the guest's name and role (never
+  // an email), and the pass. A buyer's guest names the buyer as the buyer's own downloads do. Not counted as engagement.
+  for (const view of await import("@/lib/guest-access").then((guests) => guests.guestRoomViews(listing.id))) {
+    const unmet = view.buyer && !people.has(view.buyer.id) ? (desk || named.has(view.buyer.id) ? view.buyer.companyName || view.buyer.name : aliases.get(view.buyer.id) ?? "A bidder") : null;
+    const owner = view.side === "SELLER" ? "Seller" : view.side === "DESK" ? "Desk" : unmet ?? label(view.createdById);
+    const none = { nda_signed_at: "", access: "", access_decided_at: "", files_destroyed: "", destroyed_at: "" };
+    entries.push({ at: view.at.getTime(), row: { bidder: `${owner}'s guest · ${view.name}, ${view.role}`, event: `Guest view · pass ${view.passId}`, file: view.file, at: iso(view.at), ...(view.side === "BUYER" ? context(view.createdById) : none) } });
+  }
   const rows = entries.sort((a, b) => a.at - b.at).map((entry) => entry.row);
 
   // One line per bidder: what they took and when they were last in the listing.

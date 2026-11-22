@@ -4,7 +4,7 @@ import { audit } from "@/lib/audit";
 import { appOrigin } from "@/lib/billing";
 import { seasoningMonths } from "@/lib/buy-box";
 import { loadClosedTrades, type ClosedTrade } from "@/lib/comps";
-import { unset } from "@/lib/db-filters";
+import { keptWithinLimit, OLDEST_FIRST, unset } from "@/lib/db-filters";
 import { MIN_FIRMS } from "@/lib/demand-board";
 import { notify } from "@/lib/email";
 import { chargeFees, feeTerms } from "@/lib/fee-schedule";
@@ -312,9 +312,9 @@ async function createWatch(user: Holder, data: WatchInput | (Omit<WatchInput, "p
   if (!canWatch(user)) return { error: "Note watch is for seller accounts." };
   if ((await prisma.trackedNote.count({ where: { userId: user.id } })) >= MAX_WATCHED) return { error: LIMIT_TEXT };
   const created = await prisma.trackedNote.create({ data: { userId: user.id, ...data } });
-  // Two forms sent at once can both pass the count. The later one goes, so a holder never keeps more than the limit.
-  const own = await prisma.trackedNote.findMany({ where: { userId: user.id }, select: { id: true }, orderBy: [{ createdAt: "asc" }, { id: "asc" }] });
-  if (own.findIndex((row) => row.id === created.id) >= MAX_WATCHED) {
+  // Two forms sent at once can both pass the count. The later one goes, so a holder never keeps more than the limit,
+  // even when the earlier one lands second (lib/db-filters.ts).
+  if (!(await keptWithinLimit(created.id, MAX_WATCHED, () => prisma.trackedNote.findMany({ where: { userId: user.id }, select: { id: true }, orderBy: OLDEST_FIRST })))) {
     await prisma.trackedNote.deleteMany({ where: { id: created.id } });
     return { error: LIMIT_TEXT };
   }
@@ -510,13 +510,18 @@ function due(note: Pick<TrackedNote, "lastValuedAt">, now: Date) {
 // readings are made before the claim, so one that fails leaves the month for the next run; each claim is on the
 // reading the run saw, so an overlapping run reads and sends nothing twice.
 export async function sendHolderWatch(user: Pick<User, "id" | "email">, ctx: WatchContext) {
-  const notes = await prisma.trackedNote.findMany({ where: { userId: user.id, alertsOn: true, ...unset("listingId") }, orderBy: { createdAt: "asc" }, take: MAX_WATCHED });
+  const notes = await prisma.trackedNote.findMany({ where: { userId: user.id, alertsOn: true, ...unset("listingId") }, orderBy: OLDEST_FIRST, take: MAX_WATCHED });
   // When any of the holder's notes is due, all of them are read together, so their dates line up and the holder gets
   // one email a month rather than one per note added on a different day.
   if (!notes.some((note) => due(note, ctx.now))) return false;
   const readings = notes.map((note) => ({ note, reading: readNote(note, ctx) }));
   const read = new Map<string, Reading>();
-  for (const { note, reading } of readings) if (await saveReading(note, reading)) read.set(note.id, reading);
+  // Every run claims the notes in the same order. One that finds a note already taken stops there and sends nothing,
+  // since another run has this holder, so overlapping runs send one email between them rather than one each.
+  for (const { note, reading } of readings) {
+    if (!(await saveReading(note, reading))) return false;
+    read.set(note.id, reading);
+  }
   if (!read.size) return false;
   const rows: DigestNote[] = notes.map((note) => {
     const reading = read.get(note.id);

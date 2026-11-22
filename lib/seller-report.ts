@@ -3,6 +3,7 @@ import { appOrigin } from "@/lib/billing";
 import { unset } from "@/lib/db-filters";
 import { notify } from "@/lib/email";
 import { prettyDate } from "@/lib/format";
+import { listingHealth, stepLine, type ListingHealth } from "@/lib/listing-health";
 import { prisma } from "@/lib/prisma";
 import { periodPassed } from "@/lib/schedule";
 
@@ -45,11 +46,12 @@ export function daysLive(approvedAt: Date | null, now = new Date()) {
   return approvedAt ? Math.max(0, Math.floor((now.getTime() - approvedAt.getTime()) / DAY)) : null;
 }
 
-export function reportSection(listing: { title: string; approvedAt: Date | null }, week: ActivityWeek, link: string, now = new Date()) {
+// `next` is the listing's first next step from its listing health (lib/listing-health.ts), when it has one.
+export function reportSection(listing: { title: string; approvedAt: Date | null }, week: ActivityWeek, link: string, now = new Date(), next: string | null = null) {
   const days = daysLive(listing.approvedAt, now);
   const live = days === null ? "live" : `live ${days} day${days === 1 ? "" : "s"}`;
   const lines = ROWS.map(([key, label]) => `${label}: ${week[key].week} this week, ${change(week[key].week, week[key].prior)}. ${week[key].total} in all.`);
-  return [`${listing.title} · ${live}`, ...lines, link].join("\n");
+  return [`${listing.title} · ${live}`, ...lines, ...(next ? [`Next step: ${next}`] : []), link].join("\n");
 }
 
 // Sellers and brokers on at least one live listing. `userIds` narrows a run, so a test reports only its own.
@@ -78,9 +80,11 @@ export async function sendSellerReport(user: Owner, now = new Date()) {
   // A broker's deals open under the broker desk; the seller pages are for sellers.
   const page = user.role === "BROKER" ? "broker/deals" : "seller/listings";
   const sections: string[] = [];
+  // A failed health read leaves the next steps out rather than holding the week's report.
+  const health = await listingHealth(listings.slice(0, MAX_LISTINGS).map((listing) => listing.id), now).catch(() => new Map<string, ListingHealth>());
   for (const listing of listings.slice(0, MAX_LISTINGS)) {
     const week = activityWeek(await listingActivity(listing.id, listing.sellerId, now), now);
-    sections.push(reportSection(listing, week, `${origin}/${page}/${listing.id}`, now));
+    sections.push(reportSection(listing, week, `${origin}/${page}/${listing.id}`, now, stepLine(health.get(listing.id)?.steps[0])));
   }
   const claim = await prisma.user.updateMany({
     where: { id: user.id, ...(user.lastSellerReportAt ? { lastSellerReportAt: user.lastSellerReportAt } : unset("lastSellerReportAt")) },

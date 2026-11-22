@@ -3,6 +3,7 @@ import { inviteStandingBid } from "@/actions/standing-bids";
 import { SubmitButton } from "@/components/submit-button";
 import { money, pct, prettyDate } from "@/lib/format";
 import type { SheetRow } from "@/lib/standing-bids";
+import { offerBookHref } from "@/lib/offers";
 
 // The desk's indicative bid sheet: what each buy box with a price rule would pay for this tape. None of it binds
 // until a buyer confirms, and only a live listing can be sent to buyers. A standing price confirms into a bid, so a
@@ -69,7 +70,7 @@ function RowState({ row, listingId, canInvite, walled = false }: { row: SheetRow
   if (row.inquiryId) {
     return (
       <p className="text-good">
-        Bid {prettyDate(row.answeredAt)} · <Link href={`/admin/offers#offer-${row.inquiryId}`} className="text-link">Offer book</Link>
+        Bid {prettyDate(row.answeredAt)} · <Link href={offerBookHref(row.inquiryId)} className="text-link">Offer book</Link>
       </p>
     );
   }

@@ -21,6 +21,7 @@ import { TrailingDocsPanel } from "@/components/trailing-docs";
 import { WalkAwayForm } from "@/components/walk-away-form";
 import { ConfirmRows, ConfirmSubmit } from "@/components/confirm-submit";
 import { Notice } from "@/components/notice";
+import { OutsideParties } from "@/components/outside-parties";
 import { SubmitButton } from "@/components/submit-button";
 import { Textarea } from "@/components/ui/textarea";
 import { closingAccess } from "@/lib/acl";
@@ -403,6 +404,8 @@ export default async function ClosingPage({
         {party && <TrailingDocsPanel closing={closing} buyerId={inquiry?.buyerId ?? null} viewer={user} />}
         {/* Each side's answers after close, and repurchase claims on the seller's representations. components/claims-panel.tsx. */}
         {party && <ClaimsPanel closing={closing} viewer={user} leadBuyerId={inquiry?.buyerId ?? null} loanPrices={inquiry?.loanPrices} />}
+        {/* Guest links for each side's attorney, title officer, custodian or auditor. components/outside-parties.tsx. */}
+        {party && <OutsideParties viewer={user} closingId={closing.id} listingId={closing.listingId} from="closing" />}
       </div>
       <aside className="space-y-4 lg:sticky lg:top-8 lg:self-start">
         <div className="glass p-6">

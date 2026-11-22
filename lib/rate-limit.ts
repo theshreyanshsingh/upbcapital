@@ -35,16 +35,30 @@ export async function consumeRateLimit(key: string, limit: number, windowMs: num
       return count > 0 && count <= limit;
     }
     const slot = `${key}:${Math.floor(now / windowMs)}`;
-    const row = await prisma.rateWindow.upsert({
-      where: { key: slot },
-      create: { key: slot, count: 1, expiresAt: new Date(now + windowMs) },
-      update: { count: { increment: 1 } },
-    });
+    const count = await countHit(slot, new Date(now + windowMs));
     if (Math.random() < 0.02) {
       await prisma.rateWindow.deleteMany({ where: { expiresAt: { lt: new Date(now) } } });
     }
-    return row.count <= limit;
+    return count <= limit;
   } catch {
     return rateLimit(key, limit, windowMs, now);
   }
+}
+
+// One atomic increment in MongoDB, creating the window on its first hit. Prisma's upsert runs as a transaction, and
+// a burst on one key failed most of them on write conflicts: they fell back to this process's memory, and the stored
+// count stayed far under the real one, so a burst of 400 sign-in tries left a count of 4 (stress test, November
+// 2026). findAndModify on _id is a single write that MongoDB retries itself when two first hits race.
+async function countHit(slot: string, expiresAt: Date) {
+  const result = (await prisma.$runCommandRaw({
+    findAndModify: "RateWindow",
+    query: { _id: slot },
+    update: { $inc: { count: 1 }, $setOnInsert: { expiresAt: { $date: expiresAt.toISOString() } } },
+    upsert: true,
+    new: true,
+  })) as { value?: { count?: unknown } | null };
+  const raw = result.value?.count;
+  const count = typeof raw === "object" && raw !== null ? Number(Object.values(raw)[0]) : Number(raw);
+  if (!Number.isFinite(count)) throw new Error("Rate window count missing");
+  return count;
 }

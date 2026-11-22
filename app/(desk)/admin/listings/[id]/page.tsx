@@ -51,7 +51,7 @@ import { labelOf } from "@/lib/labels";
 import { launchPending, launchTime } from "@/lib/launch-rules";
 import { completeness, completenessLine, groupByNote, verifiedMap } from "@/lib/loan-file";
 import { RESEND_AFTER, sendAudience } from "@/lib/outreach";
-import { buyerPrice } from "@/lib/offers";
+import { buyerPrice, offerBookHref } from "@/lib/offers";
 import { DUPLICATE_REASONS, duplicateGateMessage, duplicatesFor } from "@/lib/duplicates";
 import { deskMaryland, MARYLAND_HEADING, MARYLAND_PROMPT } from "@/lib/eligibility";
 import { prisma } from "@/lib/prisma";
@@ -566,7 +566,7 @@ export default async function AdminListingPage({
                 {!(walled && inquiry.type === "OFFER") && <p className="text-sm text-muted-foreground">{inquiry.message}</p>}
                 {/* Awards and declines happen on the offer book, which shows the counters, the seller's answer and the all-in. */}
                 {(inquiry.status === "OPEN" || inquiry.status === "REVIEWED") && (
-                  <Link href={`/admin/offers#offer-${inquiry.id}`} className="mt-3 inline-block text-[13px] font-medium text-link">Decide on the offer book</Link>
+                  <Link href={offerBookHref(inquiry.id)} className="mt-3 inline-block text-[13px] font-medium text-link">Decide on the offer book</Link>
                 )}
               </li>
             ))}

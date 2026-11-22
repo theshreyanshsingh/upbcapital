@@ -3,14 +3,17 @@ import { withdrawInquiry } from "@/actions/buyer";
 import { BackupAsks } from "@/components/backup-asks";
 import { ConfirmSubmit } from "@/components/confirm-submit";
 import { DestructionRequests } from "@/components/destruction-requests";
+import { OpenTasksCount } from "@/components/firm-workspace";
 import { MasterAgreementBanner } from "@/components/master-agreement-banner";
 import { OfferThread } from "@/components/offer-thread";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { RoundTag } from "@/components/sale-rounds";
 import { requireRole } from "@/lib/auth";
+import { openTaskCounts } from "@/lib/firm-workspace";
 import { money, num, prettyDate, q } from "@/lib/format";
 import { standingLoanPrices } from "@/lib/loan-prices";
+import { loiHref, loiReady } from "@/lib/loi";
 import { bidExpired, buyerPrice, canCounter, counterFrom, openCounter, withdrawBlock } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
 import { seatBylines } from "@/lib/seats";
@@ -35,6 +38,10 @@ export default async function OffersPage({
   const closingFor = new Map(closings.map((closing) => [closing.inquiryId, closing.id]));
   // Which of the firm's seats placed each bid, and who approved it when it waited (lib/seats.ts).
   const bylines = await seatBylines(user.id, inquiries.map((item) => item.id));
+  // The bids a letter of intent can be drawn for: priced bids that still stand, not a group's (lib/loi.ts).
+  const letters = await loiReady(inquiries);
+  // The firm's open diligence tasks on each listing, from its Firm notes tab (lib/firm-workspace.ts).
+  const taskCounts = await openTaskCounts(user, inquiries.map((item) => item.listingId));
   return (
     <div>
       <PageIntro eyebrow="Inquiries" title="What you have asked for." />
@@ -62,6 +69,11 @@ export default async function OffersPage({
                 <Link href={`/marketplace/${inquiry.listingId}`} className="font-semibold tracking-tight text-2xl text-foreground">{inquiry.listing.title}</Link>
                 <span className="text-[13px] font-medium text-link">{inquiry.status.toLowerCase()}<RoundTag round={inquiry.round} /></span>
               </div>
+              {taskCounts.has(inquiry.listingId) && (
+                <Link href={`/marketplace/${inquiry.listingId}?tab=firm#firm-tasks`} className="inline-flex min-h-10 items-center">
+                  <OpenTasksCount count={taskCounts.get(inquiry.listingId)} />
+                </Link>
+              )}
               <p className="mt-2 text-sm text-muted-foreground">
                 {inquiry.type.replaceAll("_", " ").toLowerCase()}
                 {inquiry.note ? ` · ${inquiry.note.city}` : ""}
@@ -78,6 +90,12 @@ export default async function OffersPage({
                 </p>
               )}
               {closingId && <Link href={`/closings/${closingId}`} className="mt-3 inline-block text-[13px] font-medium text-link">Closing checklist</Link>}
+              {/* A non-binding summary of the bid, for a credit committee (lib/loi.ts). */}
+              {letters.has(inquiry.id) && (
+                <p className="mt-2">
+                  <a href={loiHref(inquiry.id)} className="inline-flex min-h-10 items-center text-[13px] font-medium text-link">Download the letter of intent (PDF)</a>
+                </p>
+              )}
               {live && !lapsed && groupId && (
                 <p className="mt-3 text-sm text-muted-foreground">
                   A group&apos;s bid is withdrawn by the group.{" "}

@@ -1,5 +1,6 @@
 import { audit } from "@/lib/audit";
 import { getApiUser } from "@/lib/auth";
+import { guestDocumentDownload } from "@/lib/guest-access";
 import { documentGate, stampName } from "@/lib/room-access";
 import { getBytes } from "@/lib/storage";
 import { attachmentName } from "@/lib/uploads";
@@ -7,8 +8,12 @@ import { bidderCopy } from "@/lib/watermark";
 
 export const runtime = "nodejs";
 
-export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
+export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
+  // A guest pass's link (lib/guest-access.ts) carries ?guest=. The file opens under documentGate for the party that
+  // made the pass, is stamped "Guest · name · role" and is logged as a guest view. No session is read or set.
+  const guest = new URL(request.url).searchParams.get("guest");
+  if (guest !== null) return guestDocumentDownload(guest, id, request);
   const user = await getApiUser();
   if (!user) return new Response("Sign in required.", { status: 401 });
   const { document, allowed, buyerCopy } = await documentGate(user, id);

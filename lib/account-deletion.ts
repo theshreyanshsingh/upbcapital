@@ -222,6 +222,9 @@ export async function anonymiseAccount(userId: string, now = new Date()): Promis
     prisma.apiKey.deleteMany({ where: { userId } }),
     prisma.webhookEndpoint.deleteMany({ where: { userId } }),
     prisma.loginCode.deleteMany({ where: { userId } }),
+    // The firm's private notes and diligence tasks served only the firm (lib/firm-workspace.ts).
+    prisma.firmNote.deleteMany({ where: { firmId: userId } }),
+    prisma.firmTask.deleteMany({ where: { firmId: userId } }),
     prisma.passwordReset.deleteMany({ where: { userId } }),
     // The owners listed on the buyer's files are people too. With no closing they go, and their screens stay in the
     // compliance log. With one, they are who stood behind the trade, so they stay with it.

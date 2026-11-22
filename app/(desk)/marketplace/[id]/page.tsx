@@ -32,6 +32,7 @@ import { StrataPanel } from "@/components/strata-panel";
 import { SubmitButton } from "@/components/submit-button";
 import { CraBadge, CraFacts, PoolRisks, TapeRisks } from "@/components/tape-risk";
 import { ENoteLine } from "@/components/enote-line";
+import { FirmWorkspacePanel } from "@/components/firm-workspace";
 import { TabsContent } from "@/components/ui/tabs";
 import { canManageRoom, canReadDocument, dataRoomOpenTo, isPrivateDocument, loanFileAccess, loanOpenTo, ndaOpensRoom } from "@/lib/acl";
 import { dealAccess } from "@/lib/data-room";
@@ -59,6 +60,7 @@ import { bidEntities } from "@/lib/buyer-entities";
 import { tapeDownloads } from "@/lib/bid-tape";
 import { compsFor, loadClosedTrades } from "@/lib/comps";
 import { loadIndicative } from "@/lib/indicative";
+import { loiHref, loiReady } from "@/lib/loi";
 import { enrichListing, notifyIfAuctionClosed, rememberView } from "@/lib/listing-intel";
 import { stratify } from "@/lib/strata";
 import { num, prettyDate, q } from "@/lib/format";
@@ -85,6 +87,7 @@ import { chargeFees, effectiveBps, feeTerms } from "@/lib/fee-schedule";
 import { getSettings, isPro } from "@/lib/settings";
 import { canSubmitOffer } from "@/lib/verification";
 import { mapPoint, showableAvm } from "@/lib/enrichment";
+import { OutsideParties } from "@/components/outside-parties";
 
 export const metadata = { title: "Listing" };
 
@@ -353,6 +356,9 @@ export default async function ListingPage({
   const entities = user.role === "BUYER" ? await bidEntities(user.id) : [];
   // How many other firms are bidding, where the seller chose to show it. Counts only (lib/bidder-count.ts).
   const otherBidders = await bidderCountFor(listing, user).catch(() => null);
+  // The buyer's bids here that a letter of intent can be drawn for, linked on the bid rail (lib/loi.ts).
+  const letterIds = mine ? await loiReady(mine) : new Set<string>();
+  const letters = (mine ?? []).filter((inquiry) => letterIds.has(inquiry.id));
   // Shared Q&A: answers read inside the room, a bidder's own questions, and the form for a bidder in the room.
   const managesRoom = canManageRoom(user, listing);
   const [answered, myQuestions] = await Promise.all([
@@ -370,7 +376,8 @@ export default async function ListingPage({
   const buyNow = canOffer && verified && takeable.price != null ? { price: pro ? takeable.price : null, pool: listing.kind === "POOL" } : undefined;
   const deadline = listing.status === "APPROVED" && listing.bidMode !== "NONE" && listing.bidDeadline ? { at: listing.bidDeadline.toISOString(), mode: listing.bidMode } : null;
   const asked = q(query, "tab");
-  const fallback = TABS.includes(asked as (typeof TABS)[number]) ? asked : q(query, "loan") ? "file" : "overview";
+  // The Firm notes tab is a buyer's only (components/firm-workspace.tsx).
+  const fallback = TABS.includes(asked as (typeof TABS)[number]) || (asked === "firm" && user.role === "BUYER") ? asked : q(query, "loan") ? "file" : "overview";
   const named = (noteId: string | null) => {
     const note = noteId ? notes.find((item) => item.id === noteId) : null;
     if (!note) return null;
@@ -472,6 +479,7 @@ export default async function ListingPage({
               { value: "room", label: "Data room", count: dataRoom.length },
               { value: "analysis", label: "Analysis" },
               { value: "activity", label: "Activity" },
+              ...(user.role === "BUYER" ? [{ value: "firm", label: "Firm notes" }] : []),
             ]}
           >
             <TabsContent value="overview" keepMounted>
@@ -620,6 +628,9 @@ export default async function ListingPage({
                 waiting={accessWaiting}
                 loans={listing.kind === "POOL" ? notes.map((note, index) => ({ id: note.id, label: `Loan ${index + 1} · ${note.open ? `${note.streetAddress}, ` : ""}${note.city}, ${note.state}` })) : []}
               />
+              {/* A buyer in the room can give its attorney or auditor a guest link to what it may open itself. It shows
+                  nothing to anyone who can't create one (lib/guest-access.ts). */}
+              {user.role === "BUYER" && <OutsideParties viewer={user} listingId={listing.id} from="buyer" />}
             </TabsContent>
 
             <TabsContent value="analysis" keepMounted>
@@ -749,6 +760,14 @@ export default async function ListingPage({
                 ownerHref={user.role === "ADMIN" ? `/admin/listings/${listing.id}` : listing.sellerId === user.id ? `/seller/listings/${listing.id}` : null}
               />
             </TabsContent>
+
+            {/* The buyer firm's own notes and diligence tasks, shared by its seats. Private to the firm: the seller
+                and the desk never read them (lib/firm-workspace.ts). */}
+            {user.role === "BUYER" && (
+              <TabsContent value="firm">
+                <FirmWorkspacePanel user={user} listingId={listing.id} />
+              </TabsContent>
+            )}
           </ListingTabs>
         </div>
 
@@ -783,6 +802,21 @@ export default async function ListingPage({
             closedText={limitLine ?? (rounds && !rounds.canBid && listing.status === "APPROVED" ? rounds.title : undefined) ?? (listing.status === "APPROVED" && !wholeOpen ? "Some loans in this pool have traded, so it can't be bid whole. Bid the loans still for sale in the table." : undefined)}
           />
           <BidderCountLine count={otherBidders} />
+          {/* A non-binding summary of each of the buyer's own standing bids, for a credit committee. Never anyone else's. */}
+          {letters.length > 0 && (
+            <div className="glass p-4">
+              <p className="text-[13px] font-medium text-foreground">Your bids here</p>
+              <ul className="mt-1 space-y-1">
+                {letters.map((inquiry) => (
+                  <li key={inquiry.id} className="min-w-0">
+                    <a href={loiHref(inquiry.id)} className="inline-flex min-h-10 items-center break-words text-[13px] font-medium text-link">
+                      Letter of intent for your bid of {prettyDate(inquiry.createdAt)}{named(inquiry.noteId) ? ` on ${named(inquiry.noteId)}` : ""} (PDF)
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           <p className="text-xs leading-relaxed text-muted-foreground">
             Seller: {seller}.{" "}
             {withheld ? "The name shows once the data room opens to you. " : managesRoom && buyersSee !== seller && !namedToEveryBuyer(listing) ? `Buyers outside the data room see ${buyersSee}. ` : ""}

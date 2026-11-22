@@ -1,7 +1,9 @@
 import Link from "next/link";
+import { OpenTasksCount } from "@/components/firm-workspace";
 import { PageIntro } from "@/components/page-intro";
 import { requireRole } from "@/lib/auth";
 import { money, num } from "@/lib/format";
+import { openTaskCounts } from "@/lib/firm-workspace";
 import { launchPending, launchTime } from "@/lib/launch-rules";
 import { prisma } from "@/lib/prisma";
 import { canSee, listingAccess } from "@/lib/private-listings";
@@ -22,6 +24,8 @@ export default async function FavoritesPage() {
     listingAccess(user),
   ]);
   const favorites = saved.filter((favorite) => canSee(access, favorite.listing));
+  // The firm's open diligence tasks on each, from its Firm notes tab (lib/firm-workspace.ts).
+  const taskCounts = await openTaskCounts(user, favorites.map((favorite) => favorite.listingId));
   return (
     <div>
       <PageIntro eyebrow="Favorites" title="Paper you kept." />
@@ -39,6 +43,7 @@ export default async function FavoritesPage() {
                 {pro ? ` · ask ${money(favorite.listing.notes.reduce((sum, note) => sum + num(note.askingPrice), 0))}` : " · economics on Pro"}
               </p>
             )}
+            <OpenTasksCount count={taskCounts.get(favorite.listingId)} className="mt-1 block" />
           </Link>
         ))}
       </div>

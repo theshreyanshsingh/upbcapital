@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { quoteSlice, relistBuyerNote } from "@/actions/assets";
 import { addOwnedNote, emailStatement, logBuyerPayment, setBuyerHoldingStatus } from "@/actions/portfolio";
+import { BookImport } from "@/components/book-import";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { OwnershipStatement } from "@/components/ownership-statement";
@@ -204,6 +205,8 @@ export default async function PortfolioPage({
           </ul>
         </section>
       )}
+      {/* A whole book at once, from a CSV or Excel file, with an undo (components/book-import.tsx). */}
+      <BookImport userId={user.id} notice={q(params, "importNotice")} error={q(params, "importError")} />
       <form action={addOwnedNote} className="glass mt-12 grid gap-3 p-5 sm:grid-cols-2">
         <p className="eyebrow sm:col-span-2">Add a note you already hold</p>
         <label className="block sm:col-span-2"><span className="text-[13px] text-muted-foreground">Title</span><input name="title" className="desk-input mt-2" aria-label="Holding title" required /></label>

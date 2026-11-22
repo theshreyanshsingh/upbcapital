@@ -11,6 +11,7 @@ import { PrivateSalePanel } from "@/components/private-sale";
 import { RoomFiles } from "@/components/room-files";
 import { MandateFile } from "@/components/seller-identity";
 import { AvailabilityPanel } from "@/components/listing-provenance";
+import { ListingHealthPanel } from "@/components/listing-health";
 import { SubmitButton } from "@/components/submit-button";
 import { SaleApproval, WithdrawListing } from "@/components/sale-approval";
 import { Notice } from "@/components/notice";
@@ -27,6 +28,7 @@ import { roomRequests } from "@/lib/room-access";
 import { deskContact } from "@/lib/staff";
 import { deskBidNotAcceptable } from "@/lib/awards";
 import { reviewLabel } from "@/lib/listing-status";
+import { OutsideParties } from "@/components/outside-parties";
 
 export const metadata = { title: "Deal" };
 
@@ -117,6 +119,8 @@ export default async function BrokerDealPage({
         <Stat k="Filed" v={prettyDate(listing.submittedAt)} />
       </dl>
       {listing.summary && <p className="mt-6 text-sm leading-relaxed text-foreground/85">{listing.summary}</p>}
+      {/* A live listing's funnel against similar listings, and its next steps. components/listing-health.tsx. */}
+      <ListingHealthPanel listingId={listing.id} viewer={user} from="broker" />
       {/* The ownership statement, and the seller's word that the loans are still for sale. components/listing-provenance.tsx. */}
       <AvailabilityPanel listing={listing} viewerId={user.id} from="broker" />
       <DiscrepancyAnswers
@@ -168,6 +172,7 @@ export default async function BrokerDealPage({
         engagement={log.status === 200 ? log.engagement : []}
       />
       <PrivateSalePanel listingId={listing.id} from="broker" />
+      <OutsideParties viewer={user} listingId={listing.id} from="broker" />
       {listing.deskBids.map((bid) => (
         <div key={bid.id} className="mt-6 border border-link/30 bg-link/5 p-4 rounded-xl">
           <p className="eyebrow">The desk bid on this</p>

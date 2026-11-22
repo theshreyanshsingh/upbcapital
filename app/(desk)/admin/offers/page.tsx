@@ -10,13 +10,15 @@ import { PageIntro } from "@/components/page-intro";
 import { RoundTag } from "@/components/sale-rounds";
 import { SubmitButton } from "@/components/submit-button";
 import { requireRole } from "@/lib/auth";
+import { pageWindow } from "@/lib/filters";
 import { money, num, prettyDate, q } from "@/lib/format";
 import { feeTerms, feesFor, rateText } from "@/lib/fee-schedule";
-import { bidExpired, buyerPrice, canCounter, counterFrom, openCounter } from "@/lib/offers";
+import { bidExpired, buyerPrice, canCounter, counterFrom, OFFER_BOOK_PAGE, offerBookPage, openCounter } from "@/lib/offers";
 import { prisma } from "@/lib/prisma";
 import { awardBlocks } from "@/lib/private-listings";
 import { getSettings } from "@/lib/settings";
 import { deskCan } from "@/lib/staff";
+import type { Prisma } from "@prisma/client";
 import Link from "next/link";
 
 export const metadata = { title: "Offers" };
@@ -32,14 +34,29 @@ export default async function AdminOffersPage({
   // Mine: offers on the listings this desk member owns.
   const mine = q(params, "mine") === "1";
   const sells = deskCan(user, "sales");
+  // Mine reads the desk member's listings first, so the offers are read by listing rather than through a lookup on
+  // every offer.
+  const owned = mine ? (await prisma.listing.findMany({ where: { deskOwnerId: user.id }, select: { id: true } })).map((listing) => listing.id) : null;
+  const where: Prisma.InquiryWhereInput = owned ? { listingId: { in: owned } } : {};
+  // A page at a time, newest first. A link to one offer opens the page that holds it (lib/offers.ts offerBookHref).
+  const focus = q(params, "offer");
+  const target = focus ? await prisma.inquiry.findUnique({ where: { id: focus }, select: { id: true, createdAt: true } }) : null;
+  const ahead = target
+    ? await prisma.inquiry.count({ where: { AND: [where, { OR: [{ createdAt: { gt: target.createdAt } }, { createdAt: target.createdAt, id: { gt: target.id } }] }] } })
+    : null;
+  const total = await prisma.inquiry.count({ where });
+  const pages = pageWindow(total, ahead != null ? String(offerBookPage(ahead)) : q(params, "page"), OFFER_BOOK_PAGE);
   const [inquiries, settings] = await Promise.all([
     prisma.inquiry.findMany({
-      where: mine ? { listing: { deskOwnerId: user.id } } : undefined,
+      where,
       include: { buyer: { include: { referredBy: true } }, listing: { include: { broker: true } }, note: true, messages: { include: { author: true }, orderBy: { createdAt: "asc" } } },
-      orderBy: { createdAt: "desc" },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      skip: pages.start,
+      take: OFFER_BOOK_PAGE,
     }),
     getSettings(),
   ]);
+  const pageHref = (page: number) => `/admin/offers?${new URLSearchParams({ ...(mine ? { mine: "1" } : {}), page: String(page) })}`;
   const closings = await prisma.closing.findMany({ where: { inquiryId: { in: inquiries.map((item) => item.id) } } });
   const closingFor = new Map(closings.map((closing) => [closing.inquiryId, closing.id]));
   // The buying entity each bid is for, when the buyer chose one beyond their main file.
@@ -52,6 +69,11 @@ export default async function AdminOffersPage({
       <PageIntro eyebrow="Offers" title="Bids and counters." lede={`A bid goes to the seller for approval unless their reserve covers it. Approval opens a closing. If it trades at the working price, the buyer also pays ${premium} on top. Loan bids do not take the rest of the pool off the book.`} />
       <Notice notice={q(params, "notice")} error={q(params, "error")} />
       <OwnerFilter base="/admin/offers" mine={mine} />
+      {total > 0 && (
+        <p className="mt-3 text-[13px] text-muted-foreground tabular-nums">
+          {total.toLocaleString("en-US")} {total === 1 ? "offer" : "offers"}, newest first{pages.pageCount > 1 ? ` · showing ${pages.first}–${pages.end}` : ""}
+        </p>
+      )}
       {!deskCan(user, "sealedBids") && <p className="mt-3 text-sm text-muted-foreground">Your desk role doesn&apos;t read sealed bids, so sealed and best-and-final amounts stay hidden until the deadline{deskCan(user, "deskBook") ? ", and until the listing leaves the market, since you bid for the desk book" : ""}.</p>}
       <ul className="mt-6 space-y-3">
         {inquiries.length === 0 && <li className="text-sm text-muted-foreground">{mine ? "No offers on listings you own." : "No offers yet."}</li>}
@@ -215,6 +237,13 @@ export default async function AdminOffersPage({
           );
         })}
       </ul>
+      {pages.pageCount > 1 && (
+        <nav aria-label="Pages" className="mt-6 flex flex-wrap items-center gap-4 text-[13px] font-medium tabular-nums">
+          {pages.page > 1 ? <Link className="inline-flex min-h-9 items-center text-link" href={pageHref(pages.page - 1)}>Previous</Link> : <span className="text-muted-foreground">Previous</span>}
+          <span className="text-muted-foreground">Page {pages.page} of {pages.pageCount}</span>
+          {pages.page < pages.pageCount ? <Link className="inline-flex min-h-9 items-center text-link" href={pageHref(pages.page + 1)}>Next</Link> : <span className="text-muted-foreground">Next</span>}
+        </nav>
+      )}
     </div>
   );
 }

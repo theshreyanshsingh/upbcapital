@@ -19,6 +19,7 @@ import { ownAccounts } from "@/lib/seats";
 import { loadServiceEvents, SERVICE_METRICS, SERVICE_MIN_EVENTS, serviceFigures, type ServiceFigures } from "@/lib/service-metrics";
 import { getSettings } from "@/lib/settings";
 import { funnelOf, funnelRows, type FunnelRow, type ValuationFunnel } from "@/lib/valuations";
+import { groupBy, mongoDate, readIn } from "@/lib/bulk-read";
 
 // The monthly board pack: one calendar month (UTC) of UPB's own records, with the month before and the trailing
 // three months, worked out the same way every time. A month is locked into BoardSnapshot once it is over, so a later
@@ -347,32 +348,30 @@ async function loadRows(window: Range, cohortStart: Date): Promise<Rows> {
       feeSellerCommissionBps: true,
       feeSchedule: true,
       feePayer: true,
-      notes: { select: { id: true, upb: true, askingPrice: true, tradeStatus: true } },
     },
   });
   const ids = listings.map((listing) => listing.id);
-  const [closings, entries, bids] = await Promise.all([
-    prisma.closing.findMany({
-      where: { listingId: { in: ids } },
-      select: { id: true, listingId: true, status: true, openedAt: true, closedAt: true, canceledAt: true, cancelFault: true, noteId: true, noteIds: true, salePrice: true, inquiryId: true, deskBidId: true },
+  // Read by listing id (lib/bulk-read.ts): Prisma's `in` and include compare every row with every id, and at a few
+  // thousand listings this page took over fifteen seconds (stress test, November 2026).
+  const [loans, closings, entries, bids] = await Promise.all([
+    readIn("Note", "listingId", ids, { pick: ["id", "listingId", "upb", "askingPrice", "tradeStatus"] }),
+    readIn("Closing", "listingId", ids, {
+      pick: ["id", "listingId", "status", "openedAt", "closedAt", "canceledAt", "cancelFault", "noteId", "noteIds", "salePrice", "inquiryId", "deskBidId"],
     }),
-    prisma.reviewComment.findMany({
-      where: { listingId: { in: ids }, action: { in: ["REJECT", "REQUEST_CHANGES", "RESUBMIT", "MARK_PENDING"] } },
-      select: { listingId: true, action: true, createdAt: true },
-    }),
-    prisma.inquiry.findMany({ where: { type: "OFFER", listingId: { in: ids }, createdAt: { lt: window.end } }, select: { listingId: true, buyerId: true, createdAt: true } }),
+    readIn("ReviewComment", "listingId", ids, { pick: ["listingId", "action", "createdAt"], where: { action: { $in: ["REJECT", "REQUEST_CHANGES", "RESUBMIT", "MARK_PENDING"] } } }),
+    readIn("Inquiry", "listingId", ids, { pick: ["listingId", "buyerId", "createdAt"], where: { type: "OFFER", createdAt: { $lt: mongoDate(window.end) } } }),
   ]);
+  const loansOf = groupBy(loans, "listingId");
+  const withLoans = listings.map((listing) => ({ ...listing, notes: (loansOf.get(listing.id) ?? []).map(({ id, upb, askingPrice, tradeStatus }) => ({ id, upb, askingPrice, tradeStatus })) }));
   // The bids each award was chosen from, the desk's own winning bids, and the kick-outs, for pool attrition and the
   // cover bid.
   const awarded = [...new Set(closings.map((closing) => closing.listingId))];
   const deskBidIds = closings.map((closing) => closing.deskBidId).filter((id): id is string => Boolean(id));
   const [awardBids, deskBids, kickouts] = await Promise.all([
-    awarded.length
-      ? prisma.inquiry.findMany({
-          where: { type: "OFFER", listingId: { in: awarded } },
-          select: { id: true, listingId: true, buyerId: true, noteId: true, amount: true, status: true, createdAt: true, expiresAt: true, withdrawnAt: true, messages: { select: { kind: true, amount: true, createdAt: true, authorId: true } } },
-        })
-      : Promise.resolve([]),
+    readIn("Inquiry", "listingId", awarded, { pick: ["id", "listingId", "buyerId", "noteId", "amount", "status", "createdAt", "expiresAt", "withdrawnAt"], where: { type: "OFFER" } }).then(async (rows) => {
+      const messages = groupBy(await readIn("OfferMessage", "inquiryId", rows.map((row) => row.id), { pick: ["inquiryId", "kind", "amount", "createdAt", "authorId"] }), "inquiryId");
+      return rows.map((row) => ({ ...row, messages: (messages.get(row.id) ?? []).map(({ kind, amount, createdAt, authorId }) => ({ kind, amount, createdAt, authorId })) }));
+    }),
     deskBidIds.length ? prisma.deskBid.findMany({ where: { id: { in: deskBidIds } }, select: { id: true, noteId: true, amount: true } }) : Promise.resolve([]),
     closings.length ? prisma.closingKickout.findMany({ where: { closingId: { in: closings.map((closing) => closing.id) } }, select: { closingId: true, noteId: true } }) : Promise.resolve([]),
   ]);
@@ -398,7 +397,7 @@ async function loadRows(window: Range, cohortStart: Date): Promise<Rows> {
   }
   const entriesOf = new Map<string, { action: string; at: Date }[]>();
   for (const entry of entries) entriesOf.set(entry.listingId, [...(entriesOf.get(entry.listingId) ?? []), { action: entry.action, at: entry.createdAt }]);
-  const rows: ListingRow[] = listings.map((listing) => {
+  const rows: ListingRow[] = withLoans.map((listing) => {
     const own = closingsOf.get(listing.id) ?? [];
     return {
       ...listing,
