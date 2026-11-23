@@ -188,5 +188,5 @@ test("the privacy text keeps sanctions records for the 10-year floor and deal re
   const privacy = fillLegal(DEFAULT_LEGAL.PRIVACY.body, { retentionYears: 7, contact: "desk@example.org" });
   assert.match(privacy, /deal records, with the compliance file behind each trade, for at least 7 years/);
   assert.match(privacy, /sanctions screening records for at least 10 years even when that period is shorter/);
-  assert.match(privacy, /Counsel to confirm both periods/);
+  assert.doesNotMatch(privacy, /Counsel to/);
 });

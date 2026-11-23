@@ -13,6 +13,7 @@ import {
   currentLegalVersion,
   fillLegal,
   legalBlocks,
+  legalContact,
   legalDue,
   legalLinkParts,
   nextLegalVersion,
@@ -35,23 +36,33 @@ test.after(async () => {
 // ---------------------------------------------------------------------------------------------------------------
 // The legal texts, as pure rules.
 
-test("the built-in terms and privacy policy open with the draft note and cover what counsel asked for", () => {
+test("the built-in terms and privacy policy read as final text and cover what counsel asked for", () => {
+  // QA retest, 2026-11-23: no draft note and no bracketed placeholders on the public pages.
   for (const doc of Object.values(DEFAULT_LEGAL)) {
     const [first] = legalBlocks(doc.body);
-    assert.equal(first.kind, "note");
-    assert.match(first.kind === "note" ? first.text : "", /^Draft under counsel review\./);
+    assert.equal(first.kind, "heading");
+    assert.ok(legalBlocks(doc.body).every((block) => block.kind !== "note"));
+    assert.doesNotMatch(doc.body, /\[[^\]]+\]|Draft under counsel review|Counsel to/);
   }
   const terms = DEFAULT_LEGAL.TERMS.body;
   assert.match(terms, /accredited-investor certification/);
   assert.match(terms, /not a lender, a loan servicer, a fund or an investment adviser/);
-  assert.match(terms, /within \[12\] months/);
+  assert.match(terms, /within 12 months of the introduction/);
   assert.match(terms, /do not contact the borrower, the occupants or the servicer/);
   assert.match(terms, /anonymised, aggregate market data/);
-  assert.match(terms, /laws of \[state\]/);
+  assert.match(terms, /laws of the State of Florida/);
   const privacy = fillLegal(DEFAULT_LEGAL.PRIVACY.body, { retentionYears: 7, contact: "desk@example.org" });
   assert.match(privacy, /for at least 7 years/);
-  assert.match(privacy, /Write to desk@example\.org from the email on your account/);
+  assert.match(privacy, /Write to desk@example\.org with the subject "Delete my account"/);
+  assert.match(privacy, /Amazon Web Services .* MongoDB Atlas .* Cloudflare .* Resend .* OpenRouter/);
   assert.doesNotMatch(privacy, /\{\{/);
+  // Without a desk address, the texts send people to the Inbox instead of showing a placeholder.
+  const contact = legalContact({});
+  assert.equal(contact, "the desk from the Inbox in your UPB account");
+  const noAddress = fillLegal(DEFAULT_LEGAL.PRIVACY.body, { retentionYears: 7, contact });
+  assert.match(noAddress, /Questions about privacy go to the desk from the Inbox in your UPB account\./);
+  assert.doesNotMatch(noAddress, /\[/);
+  assert.equal(legalContact({ DESK_EMAIL: " desk@example.org " }), "desk@example.org");
   // The legal pages are never closing paper.
   assert.equal(isTemplateKey("TERMS"), false);
   assert.equal(isTemplateKey("PRIVACY"), false);

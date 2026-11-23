@@ -13,36 +13,33 @@ export const LEGAL_VERSION = "1";
 
 export const LEGAL_PATHS: Record<LegalKey, string> = { TERMS: "/terms", PRIVACY: "/privacy" };
 
-const DRAFT_NOTE = "> Draft under counsel review. This text is not final, and it may change before UPB Capital opens to the public. Figures in square brackets are placeholders for counsel.";
-
 export const DEFAULT_LEGAL: Record<LegalKey, { title: string; body: string }> = {
   TERMS: {
     title: "Terms of use",
     body: [
-      DRAFT_NOTE,
       "## Who these terms cover",
       "These terms apply to everyone who opens an account on UPB Capital or uses its site, desk or API. \"UPB\", \"we\" and \"the desk\" mean UPB Capital. \"You\" means the person or company using it. By creating an account or using the desk, you agree to these terms and to the privacy policy at /privacy.",
       "## Who may use UPB",
       "You must be at least 18 and able to sign a binding contract. If you sign up for a company, you confirm you may bind it.",
-      "The desk approves every buyer, institution and broker account before it can bid, upload a tape or file for someone else. The desk may decline an account. [Counsel to confirm the discretion wording.]",
+      "The desk approves every buyer, institution and broker account before it can bid, upload a tape or file for someone else. The desk may decline an account.",
       "To make an offer, a buyer needs an approved buyer file: the buying entity, proof of funds, and the accredited-investor certification. You confirm that what you put in your files is true, and you tell the desk when it changes.",
       "Nobody on a sanctions list, and nobody acting for someone who is, may use UPB.",
       "## What UPB is, and is not",
       "UPB is a venue and a desk. It lists mortgage notes, runs bids and the closing checklist, and keeps the record of each trade.",
-      "UPB is not a lender, a loan servicer, a fund or an investment adviser. It does not make or service loans, pool investors' money, or manage investments. Servicing, foreclosure, licensing and legal advice stay with the parties and their own lawyers. [Counsel to confirm the escrow and money-handling wording.]",
+      "UPB is not a lender, a loan servicer, a fund or an investment adviser. It does not make or service loans, pool investors' money, or manage investments. Servicing, foreclosure, licensing and legal advice stay with the parties and their own lawyers.",
       "## Fees",
       "UPB charges the fees on its fee schedule at /fees: a buyer premium added on top of the accepted price, and a seller commission taken from the seller's proceeds. Pro membership is billed monthly.",
       "The fees on a listing are shown before you bid. A listing keeps the fees in force when the desk approved it, and a closing keeps the fees it opened with.",
       "Fees are due at closing unless the schedule says otherwise. Taxes and third-party costs, such as recording or a servicer's boarding fee, are yours.",
       "## No going around the desk",
-      "If UPB introduces you to a note or to the other side of a trade, and that trade closes anywhere else within [12] months of the introduction, you owe UPB the fees it would have charged on the desk.",
-      "This covers the same loan with the same seller or buyer, including a trade through a related company or someone acting for you. [Counsel to confirm the term and its enforceability by state.]",
+      "If UPB introduces you to a note or to the other side of a trade, and that trade closes anywhere else within 12 months of the introduction, you owe UPB the fees it would have charged on the desk.",
+      "This covers the same loan with the same seller or buyer, including a trade through a related company or someone acting for you.",
       "## Confidential files and borrowers",
       "Street addresses, borrower names and data-room files open only after you sign the listing's confidentiality agreement. You use them only to evaluate a possible purchase of that listing.",
       "You do not contact the borrower, the occupants or the servicer. You do not copy or forward the file, except to your counsel or a lender working on your bid. These duties continue after a bid ends and after your account closes.",
       "The desk logs every file opened and downloaded.",
       "## The law on collecting and transferring loans",
-      "Each party follows the laws that apply to owning, collecting and transferring mortgage loans. These include the Fair Debt Collection Practices Act, the notice rules for a servicing transfer under RESPA and the Truth in Lending Act, state licensing and foreclosure law, and sanctions law. [Counsel to confirm the list.]",
+      "Each party follows the laws that apply to owning, collecting and transferring mortgage loans. These include the Fair Debt Collection Practices Act, the notice rules for a servicing transfer under RESPA and the Truth in Lending Act, state licensing and foreclosure law, and sanctions law.",
       "The buyer, or its servicer, sends the borrower the notices the law requires when a loan changes hands. Draft notices on UPB are a convenience, not legal advice.",
       "## Market data and results",
       "UPB may publish anonymised, aggregate market data drawn from activity on the desk, such as price ranges, volumes, times to close, and results by state or loan type. Published data never names a borrower, a street address or a party, unless that party agreed.",
@@ -50,22 +47,21 @@ export const DEFAULT_LEGAL: Record<LegalKey, { title: string; body: string }> = 
       "Nothing on UPB is investment, legal, tax or accounting advice. Price ranges, yields, value estimates, comps and scores are tools, not recommendations. You make your own decision with your own advisers, and you do your own diligence.",
       "## Information as it is",
       "Listings, tapes and documents come from sellers and third parties. The desk reviews them but does not promise that any of them are complete or correct, or that a loan will perform. The site, the desk and its data are provided as they are, without warranties, as far as the law allows.",
-      "UPB is not liable for indirect losses or lost profits. Its total liability to you for any claim is limited to the fees you paid UPB in the [12] months before the claim. [Counsel to confirm the limit and its exceptions.]",
+      "UPB is not liable for indirect losses or lost profits. Its total liability to you for any claim is limited to the fees you paid UPB in the 12 months before the claim. Nothing in these terms limits a liability that the law does not allow to be limited.",
       "## Suspension and termination",
       "The desk may pause bidding on an account, suspend it or close it for a breach of these terms, a sanctions match, missed closings, or a risk to other users or to UPB. The desk tells you why, unless the law forbids it.",
       "You may close your account at any time by writing the desk. Fees already owed, the confidentiality duties and the no-circumvention clause continue after an account closes.",
       "## Changes",
       "The desk may change these terms. When a change needs your consent, you are asked to accept the new version the next time you use the desk.",
       "## Governing law",
-      "These terms are governed by the laws of [state], without regard to its conflict-of-law rules. Disputes go to the courts of [county and state]. [Counsel to decide on arbitration and venue.]",
+      "These terms are governed by the laws of the State of Florida, without regard to its conflict-of-law rules.",
       "## Contact",
-      "Write the desk at {{contact}}.",
+      "Write to {{contact}}.",
     ].join("\n\n"),
   },
   PRIVACY: {
     title: "Privacy policy",
     body: [
-      DRAFT_NOTE,
       "## Who we are",
       "UPB Capital runs a desk for buying and selling mortgage notes. This policy says what we collect, why, who handles it for us, and what you can ask for. It covers the site, the desk and the API.",
       "## What we collect",
@@ -104,7 +100,7 @@ export const DEFAULT_LEGAL: Record<LegalKey, { title: string; body: string }> = 
         "- property data and value estimates, which receive a loan's address but not your details;",
         "- AI tools the desk uses to draft summaries and answer questions about listings.",
       ].join("\n"),
-      "[Counsel to add the named list of providers and where they hold data.]",
+      "Our main providers today are Amazon Web Services (hosting and file storage), MongoDB Atlas (the database), Cloudflare (the network in front of the site), Resend (email delivery) and OpenRouter (the AI models).",
       "## Who else sees it",
       [
         "- The other side of a deal, as far as the deal needs: a seller sees a bidder's entity and bid, and a buyer sees the loan file after signing the confidentiality agreement.",
@@ -113,7 +109,7 @@ export const DEFAULT_LEGAL: Record<LegalKey, { title: string; body: string }> = 
         "- A buyer of UPB's business, under this policy.",
       ].join("\n"),
       "## How long we keep it",
-      `We keep account and deal records, with the compliance file behind each trade, for at least {{retentionYears}} years after an account closes or a trade finishes, because tax and lending rules require it. We keep sanctions screening records for at least ${SANCTIONS_RECORD_YEARS} years even when that period is shorter, because we read OFAC's recordkeeping rule to require it. [Counsel to confirm both periods.] Site visit logs and notices you have read are deleted once they are {{retentionYears}} years old.`,
+      `We keep account and deal records, with the compliance file behind each trade, for at least {{retentionYears}} years after an account closes or a trade finishes, because tax and lending rules require it. We keep sanctions screening records for at least ${SANCTIONS_RECORD_YEARS} years even when that period is shorter, because we read OFAC's recordkeeping rule to require it. Site visit logs and notices you have read are deleted once they are {{retentionYears}} years old.`,
       "## How we protect it",
       "Data travels encrypted. Passwords are stored only as a hash. Two-step sign-in is available on every account, and the desk can require it. Data-room files open only to approved parties, and every download is logged. No system is perfectly secure, and we will tell you of a breach that affects you as the law requires.",
       "## Your rights",
@@ -125,13 +121,13 @@ export const DEFAULT_LEGAL: Record<LegalKey, { title: string; body: string }> = 
       ].join("\n"),
       "Your state may give you more rights. Using them never changes how the desk treats you.",
       "## Asking for deletion",
-      "Write to {{contact}} from the email on your account, with the subject \"Delete my account\". We confirm it is you, then delete or anonymise your data within [30] days. We keep only what the law requires or an open deal needs, and we tell you what we kept and why.",
+      "Write to {{contact}} with the subject \"Delete my account\", from the email address on the account you want deleted. We confirm it is you, then delete or anonymise your data within 30 days. We keep only what the law requires or an open deal needs, and we tell you what we kept and why.",
       "## Children",
       "UPB is not for anyone under 18.",
       "## Changes",
       "When this policy changes in a way that needs your consent, you are asked to accept the new version the next time you use the desk.",
       "## Contact",
-      "Questions about privacy go to {{contact}}. [Counsel to add a postal address and the person responsible for privacy.]",
+      "Questions about privacy go to {{contact}}.",
     ].join("\n\n"),
   },
 };
@@ -140,7 +136,7 @@ export function isLegalKey(value: string): value is LegalKey {
   return (LEGAL_KEYS as readonly string[]).includes(value);
 }
 
-// The saved text, or the built-in draft. Nothing is written on a read, since the public pages read it on every visit.
+// The saved text, or the built-in text. Nothing is written on a read, since the public pages read it on every visit.
 export async function loadLegal(key: LegalKey) {
   const row = await prisma.documentTemplate.findUnique({ where: { key } });
   return row ? { ...row, key } : { key, ...DEFAULT_LEGAL[key], updatedAt: null };
@@ -192,7 +188,9 @@ export function fillLegal(body: string, vars: { retentionYears: number; contact:
 }
 
 export function legalContact(env: Record<string, string | undefined> = process.env) {
-  return env.DESK_EMAIL?.trim() || "[privacy contact email]";
+  // DESK_EMAIL is the desk's public address (DEPLOY.md). Without one, the texts point to the Inbox every account has; each
+  // sentence with {{contact}} reads either way ("Write to …", "go to …").
+  return env.DESK_EMAIL?.trim() || "the desk from the Inbox in your UPB account";
 }
 
 export type LegalBlock =
