@@ -2,7 +2,7 @@ import Link from "next/link";
 import { LoginPanel } from "@/components/auth-forms";
 import { Logo } from "@/components/logo";
 import { Notice } from "@/components/notice";
-import { DEMO_EMAILS, DEMO_LOGINS, DEV_DEMO_PASSWORD, showDemoDesk } from "@/lib/deploy";
+import { DEMO_EMAILS, DEMO_LOGINS, DEV_DEMO_PASSWORD, demoDeskOpen, showDemoDesk } from "@/lib/deploy";
 import { q } from "@/lib/format";
 import { safeNext } from "@/lib/safe-next";
 import { prisma } from "@/lib/prisma";
@@ -17,7 +17,8 @@ export default async function LoginPage({
   const params = await searchParams;
   // A same-site path to return to, such as a private-sale invitation, kept when they choose to sign up instead.
   const next = safeNext(q(params, "next"), "");
-  const demoAccounts = await prisma.user.count({ where: { email: { in: DEMO_EMAILS } } }).catch(() => 0);
+  // The demo panel, with the shared password, shows only where the demo seats may sign in (lib/deploy.ts demoDeskOpen).
+  const demoAccounts = demoDeskOpen(process.env) ? await prisma.user.count({ where: { email: { in: DEMO_EMAILS } } }).catch(() => 0) : 0;
   const demo = showDemoDesk(process.env, demoAccounts) ? { password: DEV_DEMO_PASSWORD, accounts: DEMO_LOGINS } : undefined;
   return (
     <main id="desk" className="flex min-h-screen items-center justify-center px-4 py-12">

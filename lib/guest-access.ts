@@ -12,7 +12,7 @@ import { closingPacket } from "@/lib/closing-packet";
 import { loadDealTimeline, timelineView, type TimelineSide } from "@/lib/closing-service";
 import { dealAccess } from "@/lib/data-room";
 import { keptWithinLimit, OLDEST_FIRST, unset } from "@/lib/db-filters";
-import { demoAddress, isReleaseBuild } from "@/lib/deploy";
+import { demoAddress, demoSeatShut, isReleaseBuild } from "@/lib/deploy";
 import { DEPOSIT_TIMELINE_ACTIONS } from "@/lib/deposits";
 import { DESK_DENIED, deskCan } from "@/lib/desk-roles";
 import { sendSecret } from "@/lib/email";
@@ -473,7 +473,8 @@ async function resolvePass(token: string, ip: string, now: Date): Promise<Resolv
   const pass = await prisma.guestPass.findUnique({ where: { tokenHash: hash } });
   if (!pass || !sameHash(pass.tokenHash, hash) || passState(pass, now) !== "live") return { state: "ended" };
   const creator = await prisma.user.findUnique({ where: { id: pass.createdById } });
-  if (!creator || accountLocked(creator.accountStatus) || creator.deletedAt) return { state: "ended" };
+  // A demo seat's links end with its sign-in on a public origin (lib/deploy.ts demoSeatShut).
+  if (!creator || accountLocked(creator.accountStatus) || creator.deletedAt || demoSeatShut(creator.email)) return { state: "ended" };
   let resolved: Resolved = { state: "ended" };
   if (pass.closingId && !pass.listingId) {
     const scope = await loadClosingScope(pass.closingId);

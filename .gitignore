@@ -16,6 +16,10 @@
 # next.js
 /.next/
 /out/
+# scripts/deploy.sh: the build in progress, the build before the live one, and its one-at-a-time lock
+/.next-build/
+/.next-old/
+/.deploy.lock
 
 # production
 /build

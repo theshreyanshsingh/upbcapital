@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { ApiKey, User } from "@prisma/client";
 import { accountLocked } from "@/lib/access";
 import { unset } from "@/lib/db-filters";
+import { demoSeatShut } from "@/lib/deploy";
 import { prettyDate } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
 import { isPro } from "@/lib/settings";
@@ -71,6 +72,8 @@ export async function checkApiKey(header: string | null, now = new Date()): Prom
   if (!key) return UNKNOWN;
   if (key.revokedAt) return { ok: false, status: 401, error: "This API key was revoked. Mint a new one." };
   if (key.user.deletedAt || accountLocked(key.user.accountStatus)) return { ok: false, status: 401, error: "This key's account is suspended or closed." };
+  // The MCP connector checks keys here too, so a demo seat's key stops wherever its sign-in does (lib/deploy.ts).
+  if (demoSeatShut(key.user.email)) return { ok: false, status: 401, error: "This key belongs to a demo account, which works only on a local copy of the desk." };
   await markKeyUsed(key.id, now);
   const { user, ...row } = key;
   return { ok: true, key: row, user, scopes: scopesOf(key) };

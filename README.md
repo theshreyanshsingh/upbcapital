@@ -53,6 +53,8 @@ Password for every sample account: `Desk1847!`
 
 The sign-in page lists six of these accounts (not the two waiting seats) and fills the password only when they exist in the database and the app is not a Vercel or `UPB_RELEASE` build. A production database never has them, because bootstrap refuses one that does.
 
+The password is public, so the demo seats only work where the public can't reach them (`demoDeskOpen` in lib/deploy.ts). That means `NEXT_PUBLIC_APP_URL` is unset, `localhost`, `127.0.0.1`, `[::1]`, `*.localhost` or `*.test`, or `DEMO_DESK=1` is set for a private demo server. On any other origin the sign-in page doesn't list them, and their sign-in is refused. Their existing sessions, API keys, MCP connector, calendar links and guest links stop working too. A `.env` copied from the server names its public origin, so run locally with `NEXT_PUBLIC_APP_URL=http://localhost:4317`, as the `upb-local-db` launch configuration does.
+
 A downloadable tape template, with three fictional rows, is linked from the upload screen and at `/api/tapes/template?format=csv` or `?format=xlsx`.
 
 Tape v3 adds original balance, escrow, arrears, a payoff with its good-through date, balloon date, payment type, a junior lien's senior balance, and SCRA, deceased and litigation flags. The flags, and on a non-performing loan an "SOL exposure: check with counsel" line from the state table in lib/statute-limits.ts, show as risk lines on the buyer's listing. A state UPB isn't sure of has no figure. `/tape-standard` publishes every field with its type, values, whether it's required and its MISMO 3.x path (lib/mismo.ts), marked exact, approximate or a UPB extension, and not MISMO-certified. `/api/listings/:id/export?format=mismo` returns the tape as JSON keyed by those paths, under the CSV export's access rules.
@@ -148,7 +150,7 @@ The app container runs `npm run db:indexes` and then listens on port 4317. Set `
 
 Vercel and MongoDB Atlas: follow [DEPLOY.md](DEPLOY.md). The Vercel build syncs the indexes, then creates one admin from `ADMIN_EMAIL` and `ADMIN_PASSWORD`. `npm run db:seed` refuses to run when `NODE_ENV` is production or `VERCEL` is set, so demo accounts never load there.
 
-A plain server under pm2, with no proxy: the whole app (pages and API) is one Next.js process, plus the daily jobs. It uses port 3009; SynergyFund's frontend holds 3007 on the shared server.
+A plain server under pm2, with no proxy: the whole app (pages and API) is one Next.js process, plus the daily jobs. It uses port 3009; SynergyFund's frontend holds 3007 on the shared server. The first time:
 
 ```bash
 npm ci && npm run db:indexes && npm run build
@@ -156,6 +158,8 @@ pm2 start node_modules/.bin/next --name upb-capital -- start -p 3009 -H 0.0.0.0
 pm2 start node_modules/.bin/tsx --name upb-jobs --cron-restart "0 13 * * *" --no-autorestart -- --env-file=.env scripts/jobs.ts
 pm2 save
 ```
+
+Every deploy after that is `bash scripts/deploy.sh` in the checkout. It pulls, installs when the lockfile changed, syncs the indexes, builds into `.next-build` while the site keeps running, swaps that in as `.next`, and restarts `upb-capital`. Then it checks that the home page and every build file it names answer 200. A failed build leaves the live site untouched. Don't run `npm run build` in place under a running server: until it restarts, its pages name CSS and scripts that answer 400. DEPLOY.md, "A server under pm2", has the details.
 
 Session cookies are https-only in production. If the server is reached over plain `http://`, set `ALLOW_HTTP_SESSIONS="1"` in `.env` or sign-in will not stick.
 

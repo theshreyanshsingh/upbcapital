@@ -56,8 +56,37 @@ export function secureCookies(env: Record<string, string | undefined> = process.
   return env.NODE_ENV === "production" && env.ALLOW_HTTP_SESSIONS !== "1";
 }
 
+// The server's own address is on this machine or a reserved test name: NEXT_PUBLIC_APP_URL unset or empty, or a host
+// of localhost, 127.0.0.1, [::1], *.localhost or *.test. An address that doesn't parse is not local.
+export function localOrigin(appUrl: string | undefined) {
+  const value = (appUrl || "").trim();
+  if (!value) return true;
+  let host: string;
+  try {
+    host = new URL(value).hostname.toLowerCase().replace(/\.$/, "");
+  } catch {
+    return false;
+  }
+  return host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host.endsWith(".localhost") || host.endsWith(".test");
+}
+
+// The seeded seats share a password that is public in the repository, so they work only where the public can't reach
+// them: on a local origin, or on a private demo server that opts in with DEMO_DESK=1. A release build has none.
+export function demoDeskOpen(env: Record<string, string | undefined> = process.env) {
+  return !isReleaseBuild(env) && (env.DEMO_DESK === "1" || localOrigin(env.NEXT_PUBLIC_APP_URL));
+}
+
+// A demo address this server keeps out: a demo build on a public origin without DEMO_DESK=1. Sign-in refuses it, and
+// its sessions, API keys, calendar links and guest links stop working. A release build is left as it was; its
+// bootstrap refuses a database that holds demo seats.
+export function demoSeatShut(email: string | null | undefined, env: Record<string, string | undefined> = process.env) {
+  return !isReleaseBuild(env) && !demoDeskOpen(env) && demoAddress(email || "");
+}
+
+export const DEMO_SEAT_SHUT = "The demo accounts only sign in on a local copy of the desk. Sign in with your own account.";
+
 export function showDemoDesk(env: Record<string, string | undefined>, demoAccounts: number) {
-  return !isReleaseBuild(env) && demoAccounts > 0;
+  return demoDeskOpen(env) && demoAccounts > 0;
 }
 
 // SynergyFund's database lives on the same Atlas cluster; UPB must never write into it.

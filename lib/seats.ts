@@ -5,7 +5,7 @@ import { accountLocked } from "@/lib/access";
 import type { GatedAction } from "@/lib/action-gates";
 import { audit } from "@/lib/audit";
 import { unset } from "@/lib/db-filters";
-import { demoAddress, isReleaseBuild } from "@/lib/deploy";
+import { demoAddress, demoSeatShut, isReleaseBuild } from "@/lib/deploy";
 import { notify, sendAlert, sendSecret } from "@/lib/email";
 import { money } from "@/lib/format";
 import { signupConsent } from "@/lib/legal";
@@ -92,16 +92,17 @@ export function secondFactorSubject(account: { user: User; person: User }) {
 }
 
 // Who a session's user acts as, and who they are. A seat acts for its firm. A seat whose firm is locked or deleted is
-// out, and so is one that was removed: it keeps its row for the record but has no account of its own.
+// out, and so is one that was removed: it keeps its row for the record but has no account of its own. A demo seat, or
+// a seat acting for one, is out on a public origin (lib/deploy.ts demoSeatShut), since the demo password is public.
 export async function resolveSessionUser(sessionUserId: string): Promise<{ user: ActingUser; person: User } | null> {
   const person = await prisma.user.findUnique({ where: { id: sessionUserId } });
-  if (!person || accountLocked(person.accountStatus) || person.deletedAt) return null;
+  if (!person || accountLocked(person.accountStatus) || person.deletedAt || demoSeatShut(person.email)) return null;
   if (!person.principalId) return person.seatAddedAt ? null : { user: person, person };
   if (person.role === "ADMIN") return null;
   const principal = await prisma.user.findUnique({ where: { id: person.principalId } });
   // A seat can't hold seats, and it always has its firm's role.
   if (!principal || principal.principalId || principal.role === "ADMIN" || principal.role !== person.role) return null;
-  if (accountLocked(principal.accountStatus) || principal.deletedAt) return null;
+  if (accountLocked(principal.accountStatus) || principal.deletedAt || demoSeatShut(principal.email)) return null;
   const actor = { id: person.id, name: person.name, email: person.email, seatRole: person.seatRole ?? "VIEW", bidLimitCents: person.seatBidLimitCents ?? null };
   return { user: { ...principal, actor }, person };
 }

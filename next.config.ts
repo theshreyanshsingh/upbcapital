@@ -28,7 +28,20 @@ export function framedHeaders(appUrl = process.env.NEXT_PUBLIC_APP_URL || "") {
   return securityHeaders(appUrl).filter((header) => header.key !== "X-Frame-Options" && header.key !== "Content-Security-Policy");
 }
 
+// scripts/deploy.sh builds the next version into .next-build while the running server keeps serving .next, then swaps
+// the two and restarts, so a failed build never touches the live site. Only that folder is accepted. Its type check
+// reads tsconfig.deploy.json, which takes .next-build's route types and not the live build's, whose would clash.
+export function buildDir(env: Record<string, string | undefined> = process.env) {
+  const dir = env.UPB_BUILD_DIR || ".next";
+  if (dir !== ".next" && dir !== ".next-build") throw new Error("UPB_BUILD_DIR may only be .next-build (see scripts/deploy.sh).");
+  return dir;
+}
+
+const distDir = buildDir();
+
 const nextConfig: NextConfig = {
+  distDir,
+  typescript: { tsconfigPath: distDir === ".next" ? "tsconfig.json" : "tsconfig.deploy.json" },
   serverExternalPackages: ["bcryptjs", "xlsx", "@aws-sdk/client-s3", "nodemailer"],
   experimental: {
     serverActions: {

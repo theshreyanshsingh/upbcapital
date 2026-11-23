@@ -7,7 +7,7 @@ import { z } from "zod";
 import { deletedAccountRefusal } from "@/lib/account-deletion";
 import { audit } from "@/lib/audit";
 import { clearSession, getCurrentUser, requireUser, setPending, setSession } from "@/lib/auth";
-import { demoAddress, isReleaseBuild } from "@/lib/deploy";
+import { DEMO_SEAT_SHUT, demoAddress, demoSeatShut, isReleaseBuild } from "@/lib/deploy";
 import { sendConfirmation } from "@/lib/email-confirm";
 import { notifyDesk } from "@/lib/email";
 import { screenInBackground, screenUser } from "@/lib/screening";
@@ -153,6 +153,8 @@ export async function login(_prev: { error: string }, formData: FormData) {
   if (!(await consumeRateLimit(`login-account:${email}`, 20, 15 * 60 * 1000))) {
     return { error: "Too many sign-in attempts on this account. Wait fifteen minutes and try again." };
   }
+  // The demo seats' password is public, so on a public origin they are refused before any password is checked.
+  if (demoSeatShut(email)) return { error: DEMO_SEAT_SHUT };
   const user = await prisma.user.findUnique({ where: { email } });
   if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
     if (user) await audit(user.id, "LOGIN_FAILED", "user", user.id, meta.ipAddress);

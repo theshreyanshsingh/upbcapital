@@ -7,7 +7,7 @@ import { redirect } from "next/navigation";
 import { accountLocked, needsSecondFactor } from "@/lib/access";
 import { audit } from "@/lib/audit";
 import { clearPending, currentSessionId, endSessions, pendingUserId, requirePerson, setSession, twoStepRequired } from "@/lib/auth";
-import { demoSeat } from "@/lib/deploy";
+import { DEMO_SEAT_SHUT, demoSeat, demoSeatShut } from "@/lib/deploy";
 import { sendAlert, sendSecret } from "@/lib/email";
 import { homeFor } from "@/lib/labels";
 import { prisma } from "@/lib/prisma";
@@ -102,6 +102,10 @@ export async function verifyLoginTotp(formData: FormData) {
   if (!userId) redirect("/login?error=" + encodeURIComponent("Sign in again, then enter the code."));
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user || !user.totpEnabled || accountLocked(user.accountStatus)) redirect("/login");
+  if (demoSeatShut(user.email)) {
+    await clearPending();
+    redirect("/login?error=" + encodeURIComponent(DEMO_SEAT_SHUT));
+  }
   // The page sign-in was going to, carried through the code step. Same-site paths only.
   const next = safeNext(formData.get("next"), "");
   const verify = `/login/verify?${next ? `next=${encodeURIComponent(next)}&` : ""}error=`;

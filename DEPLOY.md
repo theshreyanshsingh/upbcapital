@@ -64,6 +64,7 @@ Create a **private** Blob store in the Vercel dashboard and connect it to this p
 | Variable | Where to get it | If unset |
 | --- | --- | --- |
 | `ADMIN_NAME` | Any display name. | The admin is named “Desk admin”. |
+| `DEMO_DESK` | `1` only on a private demo server nobody else can reach. It lets the seeded demo seats sign in, and the sign-in page list them with their public password, on an origin that isn't local. Ignored by a release build. Never set it on a public site. | The demo seats work only when `NEXT_PUBLIC_APP_URL` is unset, `localhost`, `127.0.0.1`, `[::1]`, `*.localhost` or `*.test`. On any other origin their sign-in is refused and their sessions, API keys, MCP connector, calendar links and guest links stop working. |
 | `DESK_EMAIL` | A shared desk inbox. Gets desk alerts alongside every approved admin and is shown in the public footer. Not a `@upbcapital.test` address. | Desk alerts go to approved admins only. The footer shows no address. |
 | `STRIPE_SECRET_KEY` | Stripe → Developers → API keys. | Pro checkout stays simulated. No card is charged. |
 | `STRIPE_WEBHOOK_SECRET` | Stripe → Webhooks → endpoint `https://<domain>/api/billing/webhook`. | The webhook route answers 400 and processes nothing, so memberships do not update after checkout. |
@@ -95,6 +96,29 @@ Create a **private** Blob store in the Vercel dashboard and connect it to this p
 | `LLM_API_KEY` or `OPENAI_API_KEY` | OpenAI or a compatible host. | The desk assistant writes a local sketch. |
 | `LLM_BASE_URL` | Defaults to `https://api.openai.com/v1`. | |
 | `LLM_MODEL` | Defaults to `gpt-4o-mini`. | |
+
+## A server under pm2 (the EC2 host)
+
+The checkout runs as two pm2 processes: `upb-capital` (`next start` on port 3009) and `upb-jobs` (the daily jobs on a 13:00 UTC cron). README.md has the commands that start them the first time. To deploy, from the checkout:
+
+```bash
+cd /root/upbcapital && bash scripts/deploy.sh
+```
+
+`scripts/deploy.sh`:
+
+1. Runs `git pull --ff-only`. Already up to date is fine. If the pull can't fast-forward, it stops and changes nothing.
+2. Runs `npm ci`, but only when `package-lock.json` changed since its last install there, or `node_modules` is missing. `--install` forces it. npm ci empties `node_modules` under the running server, so it isn't repeated for nothing.
+3. Runs `npm run db:indexes`.
+4. Builds into `.next-build` with `UPB_BUILD_DIR=.next-build npm run build`. The live site keeps serving `.next` throughout, so a failed build leaves it exactly as it was. That build type-checks with `tsconfig.deploy.json`, which reads `.next-build`'s route types and not the live build's.
+5. Moves `.next` to `.next-old` and `.next-build` to `.next`, then restarts the web process straight away. The web process is the pm2 process started from the checkout that runs `next start`, else the one named `upb-capital`. If there is none, it starts `upb-capital` on `PORT` (default 3009).
+6. Waits up to two minutes for `http://127.0.0.1:<port>/` to answer 200. Then it fetches every `/_next/static` file the home page names. If either check fails, it prints the process's pm2 logs and the command that puts `.next-old` back, and exits with an error.
+
+Never run `npm run build` in place while the server runs. `next build` empties `.next` first, and a server that isn't restarted keeps the old build's file list in memory. Its pages then name CSS and scripts that answer 400.
+
+`upb-jobs` is not restarted. pm2 starts it on its cron, and it runs `scripts/jobs.ts` from source through tsx, so its next run uses the new code. A restart would run every daily job immediately.
+
+Behind Cloudflare, middleware sends a visitor who reached Cloudflare over plain http to the same address over https (308), using Cloudflare's `cf-visitor` header. It doesn't read `X-Forwarded-Proto`, which a proxy in between may set to http on every request. Any `www.` host goes to the bare host over https. Requests without `cf-visitor`, such as local ones or the deploy check, are left alone. For `www.` to work, add a proxied DNS record for `www` in Cloudflare.
 
 ## Still outside this repo
 
