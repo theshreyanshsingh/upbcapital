@@ -30,3 +30,20 @@ const VENDOR_KEYS = [
 ];
 
 for (const key of VENDOR_KEYS) process.env[key] = "";
+
+// Tests create, change and delete records, so they only ever run against a local database. Without this the Prisma
+// client filled DATABASE_URL from .env, which names the Atlas database the live desk uses: on 2026-11-23 a full run
+// there left test accounts, listings and notifications behind. TEST_DATABASE_URL may name another local database.
+const LOCAL_TEST_DATABASE = "mongodb://localhost:27017/upb_capital_test?directConnection=true";
+const testDatabase = process.env.TEST_DATABASE_URL || LOCAL_TEST_DATABASE;
+const testHost = (() => {
+  try {
+    return new URL(testDatabase).hostname.replace(/^\[|\]$/g, "");
+  } catch {
+    return "";
+  }
+})();
+if (!["localhost", "127.0.0.1", "::1"].includes(testHost)) {
+  throw new Error("The tests only run against a MongoDB on this computer. Set TEST_DATABASE_URL to a local database, or leave it unset for upb_capital_test on localhost:27017.");
+}
+process.env.DATABASE_URL = testDatabase;
