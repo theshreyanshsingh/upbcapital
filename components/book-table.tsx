@@ -22,6 +22,8 @@ export type BookTableRow = {
   figures: { upb: number; asking: number; priceToUpb: number | null; yield: number | null; value: number; ltv?: number | null } | null;
   // The desk's indicative range in whole percent of UPB, from loadIndicatives(). Null when veiled or unpriced.
   indicative?: { low: number; high: number; rate?: RateStamp | null } | null;
+  // The latest move on the ask in the last 30 days, when it was a cut, as the card shows it. Null when veiled.
+  priceCut?: { percent: number; at: Date } | null;
 };
 
 type Column = { label: string; sort?: SortKey; figure?: boolean; numeric?: boolean };
@@ -104,7 +106,7 @@ export function BookTable({
               <td className="px-3 py-3">{row.lien}</td>
               <td className="px-3 py-3">{row.performance}</td>
               <Figure value={row.figures ? money(row.figures.upb) : null} />
-              <Figure value={row.figures ? money(row.figures.asking) : null} />
+              <Figure value={row.figures ? money(row.figures.asking) : null} note={row.figures && row.priceCut ? `Cut ${row.priceCut.percent}% · ${prettyDate(row.priceCut.at)}` : null} />
               <Figure value={row.figures ? pct(row.figures.priceToUpb) : null} />
               <Figure value={row.figures ? (row.figures.yield == null ? "None" : pct(row.figures.yield)) : null} />
               <Figure value={row.figures ? (row.figures.value ? money(row.figures.value) : "—") : null} />
@@ -143,7 +145,7 @@ export function BookTable({
   );
 }
 
-function Figure({ value }: { value: string | null }) {
+function Figure({ value, note }: { value: string | null; note?: string | null }) {
   return (
     <td className="px-3 py-3 text-right whitespace-nowrap tabular-nums">
       {value ?? (
@@ -152,6 +154,7 @@ function Figure({ value }: { value: string | null }) {
           <span className="sr-only">On Pro</span>
         </span>
       )}
+      {value && note && <span className="block text-xs font-medium text-good">{note}</span>}
     </td>
   );
 }

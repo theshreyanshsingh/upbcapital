@@ -71,6 +71,8 @@ export async function checkApiKey(header: string | null, now = new Date()): Prom
   const key = await prisma.apiKey.findUnique({ where: { hash: hashKey(token) }, include: { user: true } });
   if (!key) return UNKNOWN;
   if (key.revokedAt) return { ok: false, status: 401, error: "This API key was revoked. Mint a new one." };
+  // A connected app's access token lasts an hour, and the app renews it with its refresh token (lib/oauth.ts).
+  if (key.expiresAt && key.expiresAt.getTime() <= now.getTime()) return { ok: false, status: 401, error: "This access token expired." };
   if (key.user.deletedAt || accountLocked(key.user.accountStatus)) return { ok: false, status: 401, error: "This key's account is suspended or closed." };
   // The MCP connector checks keys here too, so a demo seat's key stops wherever its sign-in does (lib/deploy.ts).
   if (demoSeatShut(key.user.email)) return { ok: false, status: 401, error: "This key belongs to a demo account, which works only on a local copy of the desk." };

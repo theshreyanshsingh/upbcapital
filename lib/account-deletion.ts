@@ -220,6 +220,10 @@ export async function anonymiseAccount(userId: string, now = new Date()): Promis
     prisma.favorite.deleteMany({ where: { userId } }),
     prisma.buyBox.deleteMany({ where: { userId } }),
     prisma.apiKey.deleteMany({ where: { userId } }),
+    // The account's consents to connected apps and any codes not yet traded in (lib/oauth.ts). Their access tokens
+    // are keys, which go on the line above.
+    prisma.oAuthGrant.deleteMany({ where: { userId } }),
+    prisma.oAuthCode.deleteMany({ where: { userId } }),
     prisma.webhookEndpoint.deleteMany({ where: { userId } }),
     prisma.loginCode.deleteMany({ where: { userId } }),
     // The firm's private notes and diligence tasks served only the firm (lib/firm-workspace.ts).

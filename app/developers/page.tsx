@@ -49,6 +49,7 @@ const summary = {
   paymentStatuses: ["NON_PERFORMING"],
   upb: 182400,
   askingPrice: 118000,
+  lastPriceCut: { percent: 7.1, at: "2026-11-06T14:00:00.000Z" },
   estimatedValue: 265000,
   ltv: 68.83,
   priceToUpb: 64.69,
@@ -88,13 +89,14 @@ export default function DevelopersPage() {
       <p>Live listings this account may see: taking bids or in contract, and past any launch date. A private sale shows only to the buyers its seller invited, and a seller who excludes the account shows none of theirs. Scope listings:read.</p>
       <p>Filters, all optional: state (two letters), lien_position (FIRST, SECOND, THIRD, OTHER), payment_status (PERFORMING, SUB_PERFORMING, NON_PERFORMING), loan_program (CONVENTIONAL, FHA, VA, USDA, PRIVATE, OTHER), max_ltv (percent), min_upb and max_upb (dollars). Lien, status and program take several values, comma-separated. A pool is judged as the book judges it: its balance and LTV on the loans still for sale, its state, lien, performance and program on any one loan. A loan whose tape states no program matches no loan_program filter.</p>
       <p>cra=1 lists CRA-eligible paper only: a loan whose tape puts the property in a low- or moderate-income census tract, or marks the borrower LMI. A pool matches when any loan still for sale does. This is UPB&apos;s simplified reading of the tape; your CRA officer and regulator decide what counts. Each loan in a listing carries censusTract, tractIncomeLevel and lmiBorrower, null where the tape lacks them.</p>
+      <p>price_cut=1 lists only listings whose latest move on the ask in the last 30 days was a cut, as the book&apos;s price-cut filter reads it. price_cut=0 or leaving it out is no filter.</p>
       <Example label="Request">{`curl -H "Authorization: Bearer upb_…" \\
   "${APP}/api/v1/listings?state=FL&lien_position=FIRST&max_ltv=80&limit=50"`}</Example>
       <Example label="Response">{{ listings: [summary], nextCursor: "WyIyMDI2LTExLTA4VDA5OjEyOjQ0LjAwMFoiLCJjbTNrOXgyYWIwMDAxIl0" }}</Example>
-      <p>Money is in dollars and ratios in percent. saleFormat is NONE for open offers, SEALED or BEST_AND_FINAL. bidDeadline is set when a round has one. updatedAt moves when the listing or its price changes.</p>
+      <p>Money is in dollars and ratios in percent. saleFormat is NONE for open offers, SEALED or BEST_AND_FINAL. bidDeadline is set when a round has one. updatedAt moves when the listing or its price changes. lastPriceCut is the latest move on the ask in the last 30 days when it was a cut: percent is how far the ask fell, to one decimal, and at is when. It is null otherwise, and turns null 30 days after the cut without moving updatedAt.</p>
 
       <Endpoint>GET /api/v1/listings/:id</Endpoint>
-      <p>One live listing&apos;s summary and loan tape, as a signed-in buyer reads it before the confidentiality agreement. It never carries data-room files, the street, zip or borrower, the loan number, MERS or eNote ids, the seller&apos;s memo, or anyone&apos;s bid. seller is the seller&apos;s type, such as Credit union or Bank, until this account is in the listing&apos;s data room, and then the seller&apos;s name. paused is true when the seller hasn&apos;t reconfirmed the loans are still available: the listing is off the book and takes no bids until they do. confirmedAvailableAt is the seller&apos;s latest confirmation. otherBidders is how many other firms hold a live bid, where the seller chose to show it: count runs from 0 to 5, orMore is true at 5 or more, and label is the line the listing page shows. A firm counts once however many seats it has, a group once, and the desk&apos;s own book once. It is null when the seller hasn&apos;t chosen it, once the round&apos;s deadline passes, or once a bid is accepted, and it never carries an amount, a rank or when anyone bid. Each loan lists every other tape field, null where the tape lacks it. A value estimate shows only where it came from a real provider. Scope listings:read.</p>
+      <p>One live listing&apos;s summary and loan tape, as a signed-in buyer reads it before the confidentiality agreement. It never carries data-room files, the street, zip or borrower, the loan number, MERS or eNote ids, the seller&apos;s memo, or anyone&apos;s bid. seller is the seller&apos;s type, such as Credit union or Bank, until this account is in the listing&apos;s data room, and then the seller&apos;s name. paused is true when the seller hasn&apos;t reconfirmed the loans are still available: the listing is off the book and takes no bids until they do. confirmedAvailableAt is the seller&apos;s latest confirmation. otherBidders is how many other firms hold a live bid, where the seller chose to show it: count runs from 0 to 5, orMore is true at 5 or more, and label is the line the listing page shows. A firm counts once however many seats it has, a group once, and the desk&apos;s own book once. It is null when the seller hasn&apos;t chosen it, once the round&apos;s deadline passes, or once a bid is accepted, and it never carries an amount, a rank or when anyone bid. priceHistory lists each move on the ask while the listing was live, oldest first: at, the ask before and after across the loans that moved, and loans, how many moved. It never says who moved it. Each loan lists every other tape field, null where the tape lacks it. A value estimate shows only where it came from a real provider. Scope listings:read.</p>
       <Example label="Response, shortened">{{
         ...summary,
         summary: "Vacant SFR, foreclosure filed, BPO in the room.",
@@ -123,6 +125,7 @@ export default function DevelopersPage() {
           valueEstimateProvider: null,
           valueEstimateAsOf: null,
         }],
+        priceHistory: [{ at: "2026-11-06T14:00:00.000Z", before: 127000, after: 118000, loans: 1 }],
         otherBidders: { count: 2, orMore: false, label: "2 other bidders" },
       }}</Example>
 
@@ -210,6 +213,9 @@ export default function DevelopersPage() {
   --header "Authorization: Bearer YOUR_KEY"`}</Example>
       <Example label="JSON config, for clients that take one">{{ mcpServers: { upb: { type: "http", url: MCP_URL, headers: { Authorization: "Bearer YOUR_KEY" } } } }}</Example>
       <p>The assistant reads whatever the key&apos;s scopes allow. A key with only listings:read keeps it to the book, and revoking the key at Buyer API cuts it off.</p>
+      <h3 className="pt-2 text-[15px] font-medium text-foreground">From claude.ai, ChatGPT and other connectors that sign in</h3>
+      <p>A connector that can&apos;t send a header signs in instead. Add a custom connector with the server URL above. It sends you to UPB, where you sign in and approve it on a screen that names the app as it named itself, the address it returns to and what it may read. The owner or a managing seat of a Pro buyer account with an approved buyer file can approve. The app then reads with the scopes you approved, on access tokens that last an hour and that it renews itself, and the same rules and the same {API_LIMIT.requests} a minute apply. Revoke it any time under Connected apps on Buyer API.</p>
+      <p>For other clients: this is OAuth 2.1 as the MCP authorization spec asks, with dynamic registration for public clients, the authorization code flow with PKCE (S256 only), and refresh tokens that change on every use. The server&apos;s 401 points to <span className="break-all font-mono text-[14px]">{APP}/.well-known/oauth-protected-resource</span>, and the endpoints are listed at <span className="break-all font-mono text-[14px]">{APP}/.well-known/oauth-authorization-server</span>.</p>
 
       <Heading>Seller endpoints</Heading>
       <p>POST /api/v1/tapes with JSON. title is the pool name. csv is the tape, using the same headers as the upload template. ownership is the version of the ownership statement the seller gives, &quot;{PROVENANCE_VERSION}&quot;: the seller owns these loans or holds the owner&apos;s written mandate, and they are not pledged or sold elsewhere. A tape without it is refused. The listing is submitted for review and the response is listingId and loans. Scope tapes:write.</p>

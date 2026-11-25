@@ -278,6 +278,53 @@ export async function loadDiligence(listingId: string) {
   return { listing, diligence };
 }
 
+// The checklist for many listings at once, as loadDiligence gives each, read in a handful of queries by id rather than
+// two per listing: the weekly seller reports check every live listing's set (lib/listing-health.ts), and one read per
+// listing ran into the minutes at a few thousand listings (stress test, November 2026).
+export async function loadDiligenceMany(listingIds: string[]) {
+  const result = new Map<string, NonNullable<Awaited<ReturnType<typeof loadDiligence>>>["diligence"]>();
+  if (!listingIds.length) return result;
+  const { groupBy, readIn } = await import("@/lib/bulk-read");
+  const listings = await readIn("Listing", "id", listingIds, { pick: ["id", "kind", "sellerId", "diligenceWaivers", "clientSellerName"] });
+  const ids = listings.map((listing) => listing.id);
+  const [notes, documents, sellers] = await Promise.all([
+    readIn("Note", "listingId", ids, {
+      pick: ["id", "listingId", "streetAddress", "city", "state", "lienPosition", "paymentStatus", "avmValue", "avmProvider", "avmAsOf", "servicerSourcedAt", "eNote", "mersMin", "verifiedFields"],
+    }),
+    readIn("Document", "listingId", ids, { pick: ["listingId", "type", "noteId", "originalName"], where: { type: { $nin: ["PHOTO", "NDA", "MANDATE"] } } }),
+    readIn("User", "id", listings.map((listing) => listing.sellerId), { pick: ["id", "name", "companyName"] }),
+  ]);
+  const collateral = (await readIn("CollateralItem", "noteId", notes.map((note) => note.id))).sort(
+    (a, b) => a.sequence - b.sequence || a.createdAt.getTime() - b.createdAt.getTime(),
+  );
+  const notesOf = groupBy(notes, "listingId");
+  const documentsOf = groupBy(documents, "listingId");
+  const sellerOf = new Map(sellers.map((seller) => [seller.id, seller]));
+  for (const listing of listings) {
+    // The loans as loadDiligence reads them, without the listing id the grouping needed.
+    const own = (notesOf.get(listing.id) ?? []).map((note) => {
+      const copy: Partial<typeof note> = { ...note };
+      delete copy.listingId;
+      return copy as Omit<typeof note, "listingId">;
+    });
+    const loanIds = new Set(own.map((note) => note.id));
+    const seller = sellerOf.get(listing.sellerId);
+    const holder = listing.clientSellerName || seller?.companyName || seller?.name || null;
+    result.set(
+      listing.id,
+      diligenceChecklist({
+        kind: listing.kind,
+        notes: own,
+        collateral: collateral.filter((item) => loanIds.has(item.noteId)),
+        documents: (documentsOf.get(listing.id) ?? []).map(({ type, noteId, originalName }) => ({ type, noteId, originalName })),
+        waivers: listing.diligenceWaivers,
+        holder,
+      }),
+    );
+  }
+  return result;
+}
+
 export async function diligenceHold(listingId: string) {
   const loaded = await loadDiligence(listingId);
   return loaded ? diligenceGateMessage(loaded.diligence, loaded.listing.kind) : null;

@@ -1207,6 +1207,11 @@ model Favorite {
   listingId String
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  // A target ask the buyer wants to hear about (lib/target-alerts.ts): told once when the ask reaches it or goes
+  // under, then the target is spent until they set a new one. Seen by the buyer alone.
+  targetAsk   Float?
+  targetSetAt DateTime?
+  targetHitAt DateTime?
   createdAt DateTime @default(now())
 
   @@unique([userId, listingId])
@@ -2262,10 +2267,15 @@ model ApiKey {
   scopes     String?
   revokedAt  DateTime?
   lastUsedAt DateTime?
+  // An OAuth access token for a connected app is a key too (lib/oauth.ts): it lives an hour and names the buyer's
+  // grant to that app. A key a buyer mints by hand has neither.
+  expiresAt  DateTime?
+  grantId    String?
   createdAt  DateTime  @default(now())
 
   @@index([userId])
   @@index([prefix])
+  @@index([grantId])
 }
 
 model WebhookEndpoint {
@@ -3012,4 +3022,52 @@ model PriceChange {
 
   @@index([listingId, createdAt])
   @@index([createdAt])
+}
+
+
+// An app that registered itself to connect to the MCP server over OAuth (RFC 7591 dynamic registration), such as an
+// AI assistant's connector. It is public: no secret, PKCE on every authorization (lib/oauth.ts).
+model OAuthClient {
+  id           String    @id @default(cuid()) @map("_id")
+  clientId     String    @unique
+  name         String
+  redirectUris String[]
+  lastUsedAt   DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([createdAt])
+}
+
+// A buyer's consent to one app: the scopes allowed and the current refresh token's hash, replaced on every refresh.
+// Revoking it revokes every access token issued under it.
+model OAuthGrant {
+  id               String    @id @default(cuid()) @map("_id")
+  clientId         String
+  userId           String
+  scopes           String
+  refreshHash      String?   @unique
+  refreshExpiresAt DateTime?
+  revokedAt        DateTime?
+  lastUsedAt       DateTime?
+  createdAt        DateTime  @default(now())
+
+  @@index([userId])
+  @@index([clientId])
+}
+
+// A one-time authorization code, minutes long, bound to its client, redirect, PKCE challenge and scopes.
+model OAuthCode {
+  id          String    @id @default(cuid()) @map("_id")
+  codeHash    String    @unique
+  clientId    String
+  userId      String
+  redirectUri String
+  scopes      String
+  challenge   String
+  resource    String?
+  expiresAt   DateTime
+  usedAt      DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([expiresAt])
 }

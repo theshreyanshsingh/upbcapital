@@ -1,4 +1,22 @@
-import { Prisma, type Closing, type Favorite, type Inquiry, type Listing, type Note, type OfferMessage, type ReviewComment, type User } from "@prisma/client";
+import {
+  Prisma,
+  type AuditEvent,
+  type Closing,
+  type CollateralItem,
+  type Document,
+  type Favorite,
+  type Inquiry,
+  type Listing,
+  type ListingMatch,
+  type ListingQuestion,
+  type ListingView,
+  type NdaAcknowledgment,
+  type Note,
+  type OfacCheck,
+  type OfferMessage,
+  type ReviewComment,
+  type User,
+} from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
 // Prisma's MongoDB connector sends `field: { in: ids }` as one $eq per id inside $expr, which no index serves, so a
@@ -8,7 +26,24 @@ import { prisma } from "@/lib/prisma";
 // rebuild each row as Prisma returns it: every scalar present, a missing optional field null, dates as Dates.
 
 // A User read names its fields with `pick`: the row carries the password hash and second-factor secret.
-type Rows = { Note: Note; Listing: Listing; Inquiry: Inquiry; Favorite: Favorite; User: User; Closing: Closing; ReviewComment: ReviewComment; OfferMessage: OfferMessage };
+type Rows = {
+  Note: Note;
+  Listing: Listing;
+  Inquiry: Inquiry;
+  Favorite: Favorite;
+  User: User;
+  Closing: Closing;
+  ReviewComment: ReviewComment;
+  OfferMessage: OfferMessage;
+  ListingView: ListingView;
+  NdaAcknowledgment: NdaAcknowledgment;
+  ListingQuestion: ListingQuestion;
+  AuditEvent: AuditEvent;
+  ListingMatch: ListingMatch;
+  OfacCheck: OfacCheck;
+  Document: Document;
+  CollateralItem: CollateralItem;
+};
 type ModelName = keyof Rows;
 type Field = { name: string; dbName: string; type: string; list: boolean; fallback: unknown };
 
@@ -21,6 +56,14 @@ const DELEGATES: Record<ModelName, { findRaw: (args: { filter: Prisma.InputJsonO
   Closing: prisma.closing,
   ReviewComment: prisma.reviewComment,
   OfferMessage: prisma.offerMessage,
+  ListingView: prisma.listingView,
+  NdaAcknowledgment: prisma.ndaAcknowledgment,
+  ListingQuestion: prisma.listingQuestion,
+  AuditEvent: prisma.auditEvent,
+  ListingMatch: prisma.listingMatch,
+  OfacCheck: prisma.ofacCheck,
+  Document: prisma.document,
+  CollateralItem: prisma.collateralItem,
 };
 
 // Ids go to MongoDB in slices, so one read never nears its 16MB command limit.

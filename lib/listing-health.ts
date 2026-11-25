@@ -1,8 +1,8 @@
-import type { LienPosition, ListingKind, PaymentStatus, Prisma } from "@prisma/client";
+import type { ListingKind, Prisma } from "@prisma/client";
 import { deadlinePassed } from "@/lib/auction";
 import { bidderCountLock } from "@/lib/bidder-count";
 import { compsFor, loadClosedTrades, MIN_TRADES, type CompCell } from "@/lib/comps";
-import { loadDiligence } from "@/lib/diligence-checklist";
+import { loadDiligenceMany } from "@/lib/diligence-checklist";
 import { prettyDate } from "@/lib/format";
 import { compSubjectOf, loadIndicatives, type LoaderNote } from "@/lib/indicative";
 import { regulatedOnly } from "@/lib/institutions";
@@ -13,6 +13,8 @@ import { prisma } from "@/lib/prisma";
 import { isPrivateListing, publicListing } from "@/lib/private-listings";
 import { PAUSE_AFTER_DAYS, REMIND_AFTER_DAYS } from "@/lib/provenance";
 import { availableSince, remindedSince, stalePaused } from "@/lib/provenance-rules";
+import { ladderBlock, ladderRunning } from "@/lib/price-ladder";
+import { groupBy, readIn, withNotes } from "@/lib/bulk-read";
 
 // Listing health: for one of a seller's live listings, what buyers did with it (opened it, signed the NDA, took a file
 // from the room, asked, saved it, bid), against the median of similar listings, and up to MAX_STEPS next steps from
@@ -105,8 +107,6 @@ export function profileLabel(profile: Profile) {
   const kind = profile.kind === "POOL" ? "Pools" : "Single notes";
   return `${kind}, ${labelOf("lien", profile.lienPosition).toLowerCase()} lien, ${labelOf("payment", profile.paymentStatus).toLowerCase()}`;
 }
-
-const sameProfile = (a: Profile, b: Profile) => a.kind === b.kind && a.lienPosition === b.lienPosition && a.paymentStatus === b.paymentStatus;
 
 // When buyers could first act on it: the approval, or the launch for a listing that came soon first.
 export function liveSince(listing: { approvedAt: Date | null; launchAt?: Date | null }) {
@@ -212,7 +212,7 @@ export const MANY_FITS = 5;
 export const RECONFIRM_SOON_DAYS = 7;
 
 // Where the seller acts on a step. The page turns each into a link: a section on the page, the desk, or a desk tool.
-export type StepTarget = "availability" | "diligence" | "files" | "photos" | "price" | "audience" | "limits" | "announce" | "bidderCount";
+export type StepTarget = "availability" | "diligence" | "files" | "photos" | "price" | "ladder" | "audience" | "limits" | "announce" | "bidderCount";
 
 export type HealthStep = {
   key: "PAUSED" | "RECONFIRM" | "DILIGENCE" | "ASKING" | "PRICE" | "NO_FIT" | "FEW_OPENED" | "BIDDER_COUNT";
@@ -252,6 +252,8 @@ export type HealthFacts = {
   topics: AskedTopic[];
   // The desk reading the page acts itself rather than asking the desk.
   desk?: boolean;
+  // The seller's price ladder (lib/price-ladder.ts): running, open to set, or not possible on this listing.
+  ladder?: "RUNNING" | "OPEN" | null;
 };
 
 function fmtPct(value: number) {
@@ -291,7 +293,8 @@ function reconfirmStep(facts: HealthFacts): HealthStep | null {
 }
 
 function priceStep(facts: HealthFacts): HealthStep | null {
-  if (facts.roundOpen || facts.askOfUpb == null || !facts.liveSince) return null;
+  // A running ladder is already moving the ask down, so the step doesn't ask again.
+  if (facts.roundOpen || facts.ladder === "RUNNING" || facts.askOfUpb == null || !facts.liveSince) return null;
   const days = Math.floor((facts.now.getTime() - facts.liveSince.getTime()) / DAY);
   if (days < PRICE_AFTER_DAYS || facts.funnel.bids.total > 0) return null;
   const views = facts.funnel.views.total;
@@ -309,11 +312,14 @@ function priceStep(facts: HealthFacts): HealthStep | null {
   return {
     key: "PRICE",
     fact,
-    suggestion: "Buyers are opening it but nobody has bid. Weigh your ask against these figures. The price is yours to set.",
+    suggestion:
+      facts.ladder === "OPEN"
+        ? "Buyers are opening it but nobody has bid. Weigh your ask against these figures. The price is yours to set, by hand or with a price ladder that steps it down on a schedule to a floor you choose, waiting while any bid is live."
+        : "Buyers are opening it but nobody has bid. Weigh your ask against these figures. The price is yours to set.",
     reason: comps
       ? `Shown when buyers open it ${looked}, nobody has bid after ${PRICE_AFTER_DAYS} days live, and the ask is above the range of UPB's comparable trades.`
       : `Shown when buyers open it ${looked}, nobody has bid after ${PRICE_AFTER_DAYS} days live, and the ask is above UPB's indicative range, an estimate from the desk's model and UPB's own trades. Not an appraisal or advice.`,
-    target: "price",
+    target: facts.ladder === "OPEN" ? "ladder" : "price",
   };
 }
 
@@ -430,13 +436,14 @@ export async function loadEvents(listings: { id: string; sellerId: string; broke
   const result = new Map<string, FunnelEvents>(listings.map((listing) => [listing.id, emptyEvents()]));
   if (!listings.length) return result;
   const ids = listings.map((listing) => listing.id);
+  // Read by listing id (lib/bulk-read.ts): the weekly reports read thousands of listings at once.
   const [views, ndas, favorites, inquiries, questions, files] = await Promise.all([
-    prisma.listingView.findMany({ where: { listingId: { in: ids }, userId: { not: null } }, select: { listingId: true, userId: true, createdAt: true } }),
-    prisma.ndaAcknowledgment.findMany({ where: { listingId: { in: ids } }, select: { listingId: true, userId: true, acknowledgedAt: true } }),
-    prisma.favorite.findMany({ where: { listingId: { in: ids } }, select: { listingId: true, userId: true, createdAt: true } }),
-    prisma.inquiry.findMany({ where: { listingId: { in: ids }, type: { in: ["OFFER", "INFO_REQUEST"] } }, select: { listingId: true, buyerId: true, type: true, createdAt: true } }),
-    prisma.listingQuestion.findMany({ where: { listingId: { in: ids } }, select: { listingId: true, askerId: true, createdAt: true } }),
-    prisma.auditEvent.findMany({ where: { entityId: { in: ids }, action: { in: FILE_ACTIONS } }, select: { entityId: true, actorId: true, createdAt: true } }),
+    readIn("ListingView", "listingId", ids, { pick: ["listingId", "userId", "createdAt"], where: { userId: { $ne: null } } }),
+    readIn("NdaAcknowledgment", "listingId", ids, { pick: ["listingId", "userId", "acknowledgedAt"] }),
+    readIn("Favorite", "listingId", ids, { pick: ["listingId", "userId", "createdAt"] }),
+    readIn("Inquiry", "listingId", ids, { pick: ["listingId", "buyerId", "type", "createdAt"], where: { type: { $in: ["OFFER", "INFO_REQUEST"] } } }),
+    readIn("ListingQuestion", "listingId", ids, { pick: ["listingId", "askerId", "createdAt"] }),
+    readIn("AuditEvent", "entityId", ids, { pick: ["entityId", "actorId", "createdAt"], where: { action: { $in: FILE_ACTIONS } } }),
   ]);
   const people = new Set<string>([
     ...views.map((row) => row.userId as string),
@@ -447,7 +454,7 @@ export async function loadEvents(listings: { id: string; sellerId: string; broke
     ...files.map((row) => row.actorId).filter((id): id is string => Boolean(id)),
   ]);
   const desk = new Set(
-    people.size ? (await prisma.user.findMany({ where: { id: { in: [...people] }, role: "ADMIN" }, select: { id: true } })).map((user) => user.id) : [],
+    (await readIn("User", "id", [...people], { pick: ["id"], where: { role: "ADMIN" } })).map((user) => user.id),
   );
   const owners = new Map(listings.map((listing) => [listing.id, [listing.sellerId, listing.brokerId]]));
   const add = (listingId: string, stage: FunnelStage, userId: string | null | undefined, at: Date) => {
@@ -487,8 +494,18 @@ const SUBJECT_SELECT = {
   availableConfirmedAt: true,
   availabilityRemindedAt: true,
   stalePausedAt: true,
+  saleEventId: true,
+  roundOneEndsAt: true,
+  flowProgramId: true,
+  buyNowPrice: true,
+  ladderStepBps: true,
+  ladderNextAt: true,
+  ladderStoppedAt: true,
   notes: true,
 } satisfies Prisma.ListingSelect;
+
+// The subject's own fields, read by id with its loans beside them (lib/bulk-read.ts).
+const SUBJECT_FIELDS = (Object.keys(SUBJECT_SELECT) as (keyof typeof SUBJECT_SELECT)[]).filter((key): key is Exclude<keyof typeof SUBJECT_SELECT, "notes"> => key !== "notes");
 
 const PEER_STATUSES = ["APPROVED", "PENDING", "SOLD", "WITHDRAWN"] as const;
 
@@ -500,46 +517,47 @@ async function similarListings(subjects: SubjectRow[], now: Date) {
     const profile = profileOf(subject);
     byProfile.set(`${profile.kind}|${profile.lienPosition}|${profile.paymentStatus}`, profile);
   }
-  const candidates = (
+  // Each kind's public listings, newest first, with their loans read by listing id; each profile then keeps those with
+  // a loan of its lien and payment status, as many as SIMILAR_SCAN. One read per kind rather than a filter through
+  // every listing's loans per profile (lib/bulk-read.ts).
+  const kinds = [...new Set([...byProfile.values()].map((profile) => profile.kind))];
+  const byKind = new Map(
     await Promise.all(
-      [...byProfile.values()].map((profile) =>
-        prisma.listing.findMany({
-          where: {
-            kind: profile.kind as ListingKind,
-            status: { in: [...PEER_STATUSES] },
-            approvedAt: { lte: now },
-            notes: { some: { lienPosition: profile.lienPosition as LienPosition, paymentStatus: profile.paymentStatus as PaymentStatus } },
-            AND: [publicListing()],
-          },
-          select: {
-            id: true,
-            kind: true,
-            sellerId: true,
-            brokerId: true,
-            status: true,
-            approvedAt: true,
-            launchAt: true,
-            soldAt: true,
-            withdrawnAt: true,
-            updatedAt: true,
-            notes: { select: { upb: true, lienPosition: true, paymentStatus: true } },
-          },
+      kinds.map(async (kind) => {
+        const rows = await prisma.listing.findMany({
+          where: { kind: kind as ListingKind, status: { in: [...PEER_STATUSES] }, approvedAt: { lte: now }, AND: [publicListing()] },
+          select: { id: true, kind: true, sellerId: true, brokerId: true, status: true, approvedAt: true, launchAt: true, soldAt: true, withdrawnAt: true, updatedAt: true },
           orderBy: { approvedAt: "desc" },
-          take: SIMILAR_SCAN,
-        }),
-      ),
-    )
-  ).flat();
+        });
+        const loans = groupBy(await readIn("Note", "listingId", rows.map((row) => row.id), { pick: ["listingId", "upb", "lienPosition", "paymentStatus"] }), "listingId");
+        return [kind, rows.map((row) => ({ ...row, notes: (loans.get(row.id) ?? []).map(({ upb, lienPosition, paymentStatus }) => ({ upb, lienPosition, paymentStatus })) }))] as const;
+      }),
+    ),
+  );
+  const candidates = [...byProfile.values()].flatMap((profile) =>
+    (byKind.get(profile.kind) ?? [])
+      .filter((row) => row.notes.some((note) => note.lienPosition === profile.lienPosition && note.paymentStatus === profile.paymentStatus))
+      .slice(0, SIMILAR_SCAN),
+  );
   type Peer = { id: string; sellerId: string; brokerId: string | null; until: Date };
+  // Each candidate's own profile, worked out once and grouped in scan order, so a subject reads only the candidates of
+  // its profile. Recomputed for every subject and candidate pair, it took seconds at a few thousand listings.
+  const keyOf = (profile: Profile) => `${profile.kind}|${profile.lienPosition}|${profile.paymentStatus}`;
+  const byKey = new Map<string, typeof candidates>();
+  for (const candidate of candidates) {
+    const key = keyOf(profileOf(candidate));
+    const group = byKey.get(key);
+    if (group) group.push(candidate);
+    else byKey.set(key, [candidate]);
+  }
   const result = new Map<string, Peer[]>();
   for (const subject of subjects) {
     const profile = profileOf(subject);
     const days = daysLive(subject, now);
     const peers: Peer[] = [];
-    for (const peer of candidates) {
+    for (const peer of byKey.get(keyOf(profile)) ?? []) {
       if (peers.length >= SIMILAR_LIMIT) break;
       if (peer.id === subject.id || peer.sellerId === subject.sellerId || (subject.brokerId && peer.brokerId === subject.brokerId)) continue;
-      if (!sameProfile(profileOf(peer), profile)) continue;
       const until = peerWindow(peer, days, now);
       if (until) peers.push({ id: peer.id, sellerId: peer.sellerId, brokerId: peer.brokerId, until });
     }
@@ -551,10 +569,12 @@ async function similarListings(subjects: SubjectRow[], now: Date) {
 // Open or confirmed sanctions reviews on the listings or their sellers of record.
 async function heldListings(subjects: SubjectRow[]) {
   const parties = [...new Set(subjects.flatMap((subject) => [subject.sellerId, subject.brokerId]).filter((id): id is string => Boolean(id)))];
-  const rows = await prisma.ofacCheck.findMany({
-    where: { result: "REVIEW", OR: [{ listingId: { in: subjects.map((subject) => subject.id) } }, { userId: { in: parties } }] },
-    select: { listingId: true, userId: true, result: true, status: true },
-  });
+  const pick = ["id", "listingId", "userId", "result", "status"] as const;
+  const [onListings, onParties] = await Promise.all([
+    readIn("OfacCheck", "listingId", subjects.map((subject) => subject.id), { pick, where: { result: "REVIEW" } }),
+    readIn("OfacCheck", "userId", parties, { pick, where: { result: "REVIEW" } }),
+  ]);
+  const rows = [...new Map([...onListings, ...onParties].map((row) => [row.id, row])).values()];
   const open = rows.filter(ofacBlocks);
   return new Set(
     subjects
@@ -568,7 +588,9 @@ async function heldListings(subjects: SubjectRow[]) {
 export async function listingHealth(listingIds: string[], now = new Date(), options: { desk?: boolean } = {}): Promise<Map<string, ListingHealth>> {
   const result = new Map<string, ListingHealth>();
   if (!listingIds.length) return result;
-  const subjects = await prisma.listing.findMany({ where: { id: { in: listingIds }, status: "APPROVED" }, select: SUBJECT_SELECT });
+  const subjects = (await withNotes(
+    await readIn("Listing", "id", listingIds, { pick: SUBJECT_FIELDS, where: { status: "APPROVED" } }),
+  )) as SubjectRow[];
   if (!subjects.length) return result;
   const ids = subjects.map((subject) => subject.id);
   const peers = await similarListings(subjects, now);
@@ -578,13 +600,13 @@ export async function listingHealth(listingIds: string[], now = new Date(), opti
     loadClosedTrades(now).catch(() => []),
     // Standing prices stay out: one buyer's standing price is theirs, not the seller's to read.
     loadIndicatives(subjects.map((subject) => ({ id: subject.id, status: subject.status, notes: subject.notes as LoaderNote[] })), now, { standing: false }).catch(() => new Map()),
-    prisma.listingQuestion.findMany({ where: { listingId: { in: ids } }, select: { listingId: true, askerId: true, question: true, status: true } }),
-    prisma.document.findMany({ where: { listingId: { in: ids } }, select: { listingId: true, type: true } }),
-    prisma.listingMatch.findMany({ where: { listingId: { in: ids } }, select: { listingId: true, userId: true } }),
+    readIn("ListingQuestion", "listingId", ids, { pick: ["listingId", "askerId", "question", "status"] }),
+    readIn("Document", "listingId", ids, { pick: ["listingId", "type"] }),
+    readIn("ListingMatch", "listingId", ids, { pick: ["listingId", "userId"] }),
     heldListings(subjects),
-    Promise.all(subjects.map((subject) => loadDiligence(subject.id))),
+    loadDiligenceMany(ids),
   ]);
-  subjects.forEach((subject, index) => {
+  subjects.forEach((subject) => {
     const own = events.get(subject.id) ?? emptyEvents();
     const funnel = funnelOf(own, now);
     const days = daysLive(subject, now);
@@ -595,7 +617,7 @@ export async function listingHealth(listingIds: string[], now = new Date(), opti
     const ask = loans.reduce((sum, note) => sum + Math.max(0, note.askingPrice), 0);
     const comps = loans.length ? compsFor(compSubjectOf(loans), trades, MIN_TRADES, now) : null;
     const range = indicatives.get(subject.id) ?? null;
-    const loaded = diligence[index];
+    const loaded = { diligence: diligence.get(subject.id) ?? { lines: [] } };
     const pool = subject.kind === "POOL";
     const missing = (loaded?.diligence.lines ?? [])
       .filter((line) => line.state === "missing")
@@ -619,6 +641,7 @@ export async function listingHealth(listingIds: string[], now = new Date(), opti
       confirmedAt: availableSince(subject),
       remindedAt: remindedSince(subject),
       roundOpen: subject.bidMode !== "NONE" && !deadlinePassed(subject.bidDeadline, now),
+      ladder: ladderRunning(subject) ? "RUNNING" : ladderBlock(subject) ? null : "OPEN",
       private: isPrivateListing(subject),
       regulatedOnly: regulatedOnly(subject),
       showBidderCount: subject.showBidderCount === true,

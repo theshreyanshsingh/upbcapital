@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { apiCaller } from "@/lib/api-limit";
 import { bidderCountFor } from "@/lib/bidder-count";
 import { isLive, listingDetail } from "@/lib/buyer-api";
+import { priceHistory } from "@/lib/price-history";
 import { prisma } from "@/lib/prisma";
 import { canSeeListing } from "@/lib/private-listings";
 import { sellerNameSight, sellerShown, servicerShown } from "@/lib/seller-anonymity";
@@ -25,7 +26,8 @@ async function handleGet(request: Request, context: { params: Promise<{ id: stri
   // A listing its seller hasn't reconfirmed is paused: off the book and taking no bids, but still found by id, as its
   // page is, so a buyer with an open bid can follow it (lib/provenance.ts).
   const allowed = (await sellerNameSight(caller.user, [listing])).get(listing.id) ?? false;
-  const detail = listingDetail(listing);
+  // Every move on the ask, oldest first, without who moved it, as a Pro buyer sees it on the listing page.
+  const detail = listingDetail(listing, await priceHistory(listing.id));
   // A seller servicing its own loans is named in the servicer field, so until the name shows that reads as the type.
   const loans = detail.loans.map((loan) => ({ ...loan, servicerName: servicerShown(listing, loan.servicerName as string | null, allowed) }));
   // How many other firms hold a live bid, where the seller chose to show it, as on the listing page. Counts only, and

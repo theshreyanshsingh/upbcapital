@@ -66,22 +66,53 @@ export async function reportOwners(userIds?: string[]): Promise<Owner[]> {
   });
 }
 
-// One report a week. The figures are read before the claim, so a read that fails leaves the week for the next run;
-// the claim is a conditional write, so an overlapping run sends nothing twice.
-export async function sendSellerReport(user: Owner, now = new Date()) {
-  if (!reportOn(user) || !reportDue(user.lastSellerReportAt, now)) return false;
-  const listings = await prisma.listing.findMany({
-    where: { status: "APPROVED", OR: [{ sellerId: user.id }, { brokerId: user.id }] },
-    select: { id: true, title: true, approvedAt: true, sellerId: true },
+const REPORT_LISTING = { id: true, title: true, approvedAt: true, sellerId: true, brokerId: true } as const;
+type ReportListing = { id: string; title: string; approvedAt: Date | null; sellerId: string; brokerId: string | null };
+export type PreparedReports = { listings: Map<string, ReportListing[]>; health: Map<string, ListingHealth> };
+
+// What a run's reports read, read once for every owner due: their live listings in one read, and the health of the
+// listings each report shows in one pass. Health compares each listing with similar ones and the comps, and read per
+// owner that comparison was most of the job's time at a few thousand listings (stress test, November 2026).
+export async function prepareReports(owners: Owner[], now = new Date()): Promise<PreparedReports> {
+  const ids = new Set(owners.map((owner) => owner.id));
+  const listings = new Map<string, ReportListing[]>();
+  if (!ids.size) return { listings, health: new Map() };
+  const rows = await prisma.listing.findMany({
+    where: { status: "APPROVED", OR: [{ sellerId: { in: [...ids] } }, { brokerId: { in: [...ids] } }] },
+    select: REPORT_LISTING,
     orderBy: { approvedAt: "asc" },
   });
+  for (const row of rows) {
+    for (const owner of new Set([row.sellerId, row.brokerId])) {
+      if (owner && ids.has(owner)) listings.set(owner, [...(listings.get(owner) ?? []), row]);
+    }
+  }
+  const shown = [...new Set([...listings.values()].flatMap((list) => list.slice(0, MAX_LISTINGS).map((listing) => listing.id)))];
+  // A failed health read leaves the next steps out rather than holding the week's reports.
+  const health = await listingHealth(shown, now).catch(() => new Map<string, ListingHealth>());
+  return { listings, health };
+}
+
+// One report a week. The figures are read before the claim, so a read that fails leaves the week for the next run;
+// the claim is a conditional write, so an overlapping run sends nothing twice.
+export async function sendSellerReport(user: Owner, now = new Date(), prepared?: PreparedReports) {
+  if (!reportOn(user) || !reportDue(user.lastSellerReportAt, now)) return false;
+  const listings = prepared
+    ? (prepared.listings.get(user.id) ?? [])
+    : await prisma.listing.findMany({
+        where: { status: "APPROVED", OR: [{ sellerId: user.id }, { brokerId: user.id }] },
+        select: REPORT_LISTING,
+        orderBy: { approvedAt: "asc" },
+      });
   if (!listings.length) return false;
   const origin = appOrigin();
   // A broker's deals open under the broker desk; the seller pages are for sellers.
   const page = user.role === "BROKER" ? "broker/deals" : "seller/listings";
   const sections: string[] = [];
   // A failed health read leaves the next steps out rather than holding the week's report.
-  const health = await listingHealth(listings.slice(0, MAX_LISTINGS).map((listing) => listing.id), now).catch(() => new Map<string, ListingHealth>());
+  const health = prepared
+    ? prepared.health
+    : await listingHealth(listings.slice(0, MAX_LISTINGS).map((listing) => listing.id), now).catch(() => new Map<string, ListingHealth>());
   for (const listing of listings.slice(0, MAX_LISTINGS)) {
     const week = activityWeek(await listingActivity(listing.id, listing.sellerId, now), now);
     sections.push(reportSection(listing, week, `${origin}/${page}/${listing.id}`, now, stepLine(health.get(listing.id)?.steps[0])));

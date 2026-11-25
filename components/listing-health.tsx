@@ -33,6 +33,10 @@ function linkFor(
     case "price":
       if (ctx.pool && ctx.from === "seller") return { href: "#bulk-price", label: "Go to bulk price" };
       return away;
+    case "ladder":
+      // The seller's page and the desk's carry the price ladder (components/price-ladder.tsx).
+      if (ctx.from === "seller") return { href: "#price-ladder", label: "Set a price ladder" };
+      return ctx.desk ? { href: `/admin/listings/${ctx.listingId}#price-ladder`, label: "Set a price ladder" } : away;
     case "audience":
       return { href: "#audience", label: "Change the audience" };
     case "limits":

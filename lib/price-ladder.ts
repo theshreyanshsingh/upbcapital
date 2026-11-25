@@ -9,7 +9,8 @@ import { watchReprice } from "@/lib/watchers";
 // A seller's price ladder: the ask steps down by a share of itself every so many days until a buyer bids or it
 // reaches the seller's floor. The seller, or the sales side of the desk, sets it, as either can reprice the listing
 // (actions/desk.ts bulkReprice). Each step is a reprice like any other: the loans for sale take the new ask in
-// proportion, watchers hear, it goes on the price history (lib/price-history.ts) and buy boxes are scored again. A
+// proportion, watchers hear, it goes on the price history (lib/price-history.ts) and buy boxes are scored again, all in
+// lib/watchers.ts watchReprice. A
 // step that falls due while a bid is live waits a day at a time, so the price never moves under a bidder. Buyers see
 // each new price; no buyer sees the schedule or the floor.
 
@@ -250,9 +251,6 @@ export async function runPriceLadders(now = new Date(), options: { listingIds?: 
     const actorId = listing.ladderSetById ?? listing.sellerId;
     await watchReprice({ listingId: listing.id, before: ask, after: target, loans: open.length, actorId, source: "LADDER" });
     await audit(null, "PRICE_LADDER_STEP", "listing", listing.id, `${money(ask)} to ${money(target)} on ${open.length} loan${open.length === 1 ? "" : "s"}`);
-    // A lower ask can bring the listing inside more buyers' boxes, and they hear as for any new match.
-    const { rescoreListing } = await import("@/lib/matching");
-    await rescoreListing(listing.id, true, now);
     const floored = target <= listing.ladderFloor + 0.005;
     if (floored) await prisma.listing.update({ where: { id: listing.id }, data: { ladderNextAt: null, ladderStoppedAt: now, ladderStopReason: STOP_REASONS.FLOOR } });
     const next = floored

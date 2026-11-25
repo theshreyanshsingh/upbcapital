@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { apiCaller } from "@/lib/api-limit";
 import { badRequest, listingSummary, liveWhere, matchesFilters, paginate, readListingFilters, readPage } from "@/lib/buyer-api";
 import { PROGRAM_CHOICES } from "@/lib/filters";
+import { recentCuts } from "@/lib/price-history";
 import { prisma } from "@/lib/prisma";
 import { listingScope } from "@/lib/private-listings";
 import { sellerNameSight, sellerShown } from "@/lib/seller-anonymity";
@@ -31,19 +32,21 @@ async function handleGet(request: Request) {
   const live = await prisma.listing.findMany({
     where: { AND: [liveWhere(), await listingScope(caller.user), ...(page.since ? [{ updatedAt: { gte: page.since } }] : [])] },
   });
-  const [withLoans, sellers] = await Promise.all([
+  // Recent cuts on the ask are read once for the whole book, never per listing (lib/price-history.ts).
+  const [withLoans, sellers, cuts] = await Promise.all([
     withNotes(live, { oldestFirst: true, shared: true }),
     readIn("User", "id", live.map((listing) => listing.sellerId), { pick: ["id", "role", "name", "companyName", "companyType"] }),
+    recentCuts(),
   ]);
   const sellerOf = new Map(sellers.map(({ id, ...seller }) => [id, seller]));
   const listings = withLoans.flatMap((listing) => {
     const seller = sellerOf.get(listing.sellerId);
     return seller ? [{ ...listing, seller }] : [];
   });
-  const shown = paginate(listings.filter((listing) => matchesFilters(listing, filters)), (listing) => listing.updatedAt, page);
+  const shown = paginate(listings.filter((listing) => matchesFilters(listing, filters, cuts)), (listing) => listing.updatedAt, page);
   const named = await sellerNameSight(caller.user, shown.rows);
   return NextResponse.json({
-    listings: shown.rows.map((listing) => ({ ...listingSummary(listing), seller: sellerShown(listing, named.get(listing.id) ?? false) })),
+    listings: shown.rows.map((listing) => ({ ...listingSummary(listing, cuts.get(listing.id) ?? null), seller: sellerShown(listing, named.get(listing.id) ?? false) })),
     nextCursor: shown.nextCursor,
   });
 }

@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { BID_MODES, BOOK_STATUSES, KINDS, listOf, PROGRAM_CHOICES, SORTS, type BookFilters, type BookSort, type Flag } from "@/lib/filters";
+import { BID_MODES, BOOK_STATUSES, KINDS, listOf, PRICE_CUT_LABEL, PROGRAM_CHOICES, SORTS, type BookFilters, type BookSort, type Flag } from "@/lib/filters";
 import { FORECLOSURES, LIEN_POSITIONS, OCCUPANCIES, PAYMENT_STATUSES, PROPERTY_TYPES } from "@/lib/labels";
 import { cn } from "@/lib/utils";
 
@@ -147,11 +147,15 @@ export function BookFiltersForm({
                   </div>
                 ))}
               </div>
-              <p className="text-xs leading-relaxed text-muted-foreground">A pool is judged on the totals of the loans still for sale. Note rate matches any one loan. LTV is UPB over the seller&apos;s estimated value.</p>
+              <label className="flex min-h-6 items-center gap-2 text-sm text-foreground pointer-coarse:min-h-10 pointer-coarse:gap-2.5">
+                <input type="checkbox" name="priceCut" value="1" defaultChecked={Boolean(filters.priceCut)} className="size-4 accent-link" />
+                {PRICE_CUT_LABEL}
+              </label>
+              <p className="text-xs leading-relaxed text-muted-foreground">A pool is judged on the totals of the loans still for sale. Note rate matches any one loan. LTV is UPB over the seller&apos;s estimated value. A price cut counts when the latest move on the ask was down.</p>
             </fieldset>
           ) : (
             <p className={cn("text-sm leading-relaxed text-muted-foreground", sheet ? "col-span-2" : "sm:col-span-2")}>
-              Filters on balance, ask, rate, price to UPB, yield, value and LTV are part of Pro, along with those sorts.
+              Filters on balance, ask, rate, price to UPB, yield, value, LTV and recent price cuts are part of Pro, along with those sorts.
             </p>
           )}
         </div>

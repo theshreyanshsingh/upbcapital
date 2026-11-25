@@ -9,6 +9,7 @@ import { launchPending } from "@/lib/launch-rules";
 import { LOAN_FIELDS } from "@/lib/loan-file";
 import { listingFigures, loansForSale } from "@/lib/metrics";
 import { buyerPrice, counterFrom, openCounter } from "@/lib/offers";
+import { latestCuts, RECENT_CUT_DAYS, type PriceRow } from "@/lib/price-history";
 import { prisma } from "@/lib/prisma";
 import { isPrivateListing } from "@/lib/private-listings";
 import { watchLink } from "@/lib/watchers";
@@ -111,11 +112,19 @@ export function readListingFilters(url: URL): BookFilters | { error: string } {
     if ("bad" in amount) return { error: `${name} is a number.` };
     if (amount.value != null) filters[key] = amount.value;
   }
+  // price_cut=1: listings whose latest move on the ask in the last 30 days was a cut, as the book's filter reads it.
+  const cut = params.get("price_cut");
+  if (cut != null && cut !== "0" && cut !== "1") return { error: "price_cut is 1 for listings whose ask was cut in the last 30 days, or 0." };
+  if (cut === "1") filters.priceCut = true;
   return filters;
 }
 
-export function matchesFilters(listing: ListingWithNotes, filters: BookFilters) {
-  return listingMatches({ kind: listing.kind, status: listing.status, bidMode: listing.bidMode, bidDeadline: listing.bidDeadline, notes: listing.notes }, filters);
+export type PriceCut = { percent: number; at: Date };
+
+// cuts is recentCuts(), read once per request. Without it a price_cut filter matches nothing.
+export function matchesFilters(listing: ListingWithNotes, filters: BookFilters, cuts?: Map<string, PriceCut>) {
+  const priceCut = cuts ? (cuts.get(listing.id) ?? null) : undefined;
+  return listingMatches({ kind: listing.kind, status: listing.status, bidMode: listing.bidMode, bidDeadline: listing.bidDeadline, notes: listing.notes, priceCut }, filters);
 }
 
 // Live on the book: taking bids or in contract, and past any launch date. Merge it with AND.
@@ -133,8 +142,9 @@ const round = (value: number | null, digits = 2) => (value == null || !Number.is
 const iso = (value: Date | null | undefined) => (value ? value.toISOString() : null);
 const distinct = (values: string[]) => [...new Set(values)].sort();
 
-// A listing as its row on the book reads to a Pro buyer: a live pool's figures are the loans still for sale.
-export function listingSummary(listing: ListingWithNotes) {
+// A listing as its row on the book reads to a Pro buyer: a live pool's figures are the loans still for sale. cut is the
+// latest move on the ask in the last 30 days when it was a cut, as the book's card shows it.
+export function listingSummary(listing: ListingWithNotes, cut: PriceCut | null = null) {
   const forSale = loansForSale(listing.status, listing.notes);
   const figures = listingFigures(listing.kind, forSale);
   const buyNow = buyNowOffer(listing, forSale.length === listing.notes.length);
@@ -151,6 +161,7 @@ export function listingSummary(listing: ListingWithNotes) {
     paymentStatuses: distinct(forSale.map((note) => note.paymentStatus)),
     upb: round(figures.upb),
     askingPrice: round(figures.asking),
+    lastPriceCut: cut ? { percent: cut.percent, at: cut.at.toISOString() } : null,
     estimatedValue: round(figures.value),
     ltv: round(figures.ltv),
     priceToUpb: round(figures.priceToUpb),
@@ -184,8 +195,24 @@ export function loanFacts(note: Note) {
   return facts;
 }
 
-export function listingDetail(listing: ListingWithNotes) {
-  return { ...listingSummary(listing), summary: listing.summary, loans: listing.notes.map(loanFacts) };
+const DAY = 24 * 60 * 60 * 1000;
+
+// One listing's lastPriceCut from its own history, over the window recentCuts() reads for the list.
+export function cutFromHistory(listingId: string, history: PriceRow[], now = new Date()) {
+  const since = now.getTime() - RECENT_CUT_DAYS * DAY;
+  const recent = history.filter((row) => row.createdAt.getTime() >= since && row.createdAt.getTime() <= now.getTime());
+  return latestCuts(recent.map((row) => ({ listingId, ...row }))).get(listingId) ?? null;
+}
+
+// Each move on the ask, oldest first: when, the ask before and after across the loans that moved, and how many moved.
+// Who moved it stays private, as on the listing page, so the source is left out.
+export function priceMoves(history: PriceRow[]) {
+  return history.map((row) => ({ at: row.createdAt.toISOString(), before: round(row.before), after: round(row.after), loans: row.loans }));
+}
+
+// history is priceHistory(listing.id) from lib/price-history.ts, oldest first.
+export function listingDetail(listing: ListingWithNotes, history: PriceRow[] = []) {
+  return { ...listingSummary(listing, cutFromHistory(listing.id, history)), summary: listing.summary, loans: listing.notes.map(loanFacts), priceHistory: priceMoves(history) };
 }
 
 // ---------------------------------------------------------------------------------------------------------------

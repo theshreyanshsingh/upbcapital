@@ -50,6 +50,9 @@ export type BookFilters = {
   // Loan to value in percent: UPB over the estimated value, as lib/metrics.ts reads it.
   ltvMin?: number;
   ltvMax?: number;
+  // The latest move on the ask in the last 30 days was a cut (lib/price-history.ts recentCuts), as the card's
+  // "Ask cut" line reads it. Kept out of saved searches: see filtersFromSaved.
+  priceCut?: boolean;
 };
 
 export const BID_MODES = [
@@ -68,6 +71,9 @@ export const KINDS = [
   { value: "POOL", label: "Pools" },
 ] as const;
 
+// The window is RECENT_CUT_DAYS in lib/price-history.ts, which reads the database and so isn't imported here.
+export const PRICE_CUT_LABEL = "Price cut in the last 30 days";
+
 // The tape's loan programs, with private money named briefly for a filter's chip and a buy box's reason.
 export const PROGRAM_CHOICES = LOAN_PROGRAMS.map((program) => ({ value: program.value, label: program.value === "PRIVATE" ? "Private or seller-financed" : program.label }));
 
@@ -79,8 +85,9 @@ export const MULTI_KEYS = ["paymentStatus", "lienPosition", "propertyType", "occ
 export type MultiKey = (typeof MULTI_KEYS)[number];
 export const FLAG_KEYS = ["modified", "bankruptcy", "hoaLien", "taxDelinquent", "deadline"] as const;
 
-// Every figure a free member sees veiled. Filtering on one would reveal it, so these apply on Pro only.
-export const FIGURE_KEYS = ["upbMin", "upbMax", "priceMin", "priceMax", "rateMin", "rateMax", "ptuMin", "ptuMax", "yieldMin", "yieldMax", "valueMin", "valueMax", "ltvMin", "ltvMax"] as const;
+// Every figure a free member sees veiled, and the cut on the ask that shows beside them. Filtering on one would
+// reveal it, so these apply on Pro only.
+export const FIGURE_KEYS = ["upbMin", "upbMax", "priceMin", "priceMax", "rateMin", "rateMax", "ptuMin", "ptuMax", "yieldMin", "yieldMax", "valueMin", "valueMax", "ltvMin", "ltvMax", "priceCut"] as const;
 
 // Facts that show only on a listing the viewer can open: its loan file and tape flags.
 export const FILE_KEYS = ["occupancy", "foreclosureStatus", "loanProgram", "cra", "dlqMin", "dlqMax", "modified", "bankruptcy", "hoaLien", "taxDelinquent"] as const;
@@ -89,7 +96,7 @@ const KEY_ORDER: (keyof BookFilters)[] = [
   "q", "state", "kind", "status", "paymentStatus", "lienPosition", "propertyType", "occupancy", "foreclosureStatus", "loanProgram", "cra",
   "dlqMin", "dlqMax", "modified", "bankruptcy", "hoaLien", "taxDelinquent", "bidMode", "deadline",
   "upbMin", "upbMax", "priceMin", "priceMax", "rateMin", "rateMax", "ptuMin", "ptuMax", "yieldMin", "yieldMax", "valueMin", "valueMax",
-  "ltvMin", "ltvMax",
+  "ltvMin", "ltvMax", "priceCut",
 ];
 
 const CHOICES: Record<MultiKey, readonly { value: string }[]> = {
@@ -171,17 +178,28 @@ export function parseFilters(input: Raw): BookFilters {
     valueMax: amount("valueMax"),
     ltvMin: amount("ltvMin"),
     ltvMax: amount("ltvMax"),
+    // priceCut=1 from the address bar or the form's checkbox.
+    priceCut: ["1", "true", "yes", "on"].includes(first("priceCut")?.toLowerCase() ?? "") ? true : undefined,
   };
   return Object.fromEntries(Object.entries(filters).filter(([, value]) => value !== undefined)) as BookFilters;
 }
 
-// A saved search's JSON, back into filters. Numbers and lists come back through the same parser as the URL.
+// What a saved search keeps of the book's filters. A saved search alerts as new paper goes live, and new paper has
+// no price history yet, so a price-cut filter would never let it alert. The book's save form says it is left off.
+export function savableFilters(filters: BookFilters): BookFilters {
+  const kept = { ...filters };
+  delete kept.priceCut;
+  return kept;
+}
+
+// A saved search's JSON, back into filters. Numbers and lists come back through the same parser as the URL. A
+// price-cut flag stored by a hand-made request is dropped, so no view or alert reads it as applied.
 export function filtersFromSaved(json: unknown): BookFilters {
   if (!json || typeof json !== "object" || Array.isArray(json)) return {};
-  return parseFilters(Object.fromEntries(Object.entries(json).map(([key, value]) => [
+  return savableFilters(parseFilters(Object.fromEntries(Object.entries(json).map(([key, value]) => [
     key,
     Array.isArray(value) ? value.map(String) : value == null ? undefined : String(value),
-  ])));
+  ]))));
 }
 
 export function listOf(value: Many | undefined | null): string[] {
@@ -237,6 +255,9 @@ export type MatchListing = {
   status?: string;
   bidMode?: string;
   bidDeadline?: Date | string | null;
+  // The latest move on the ask in the last 30 days when it was a cut, from recentCuts(); null when there was none.
+  // A caller that read no cuts leaves it out, and then the price-cut filter never matches.
+  priceCut?: { percent: number; at: Date } | null;
 };
 
 function inList(value: string | undefined, wanted: Many | undefined) {
@@ -297,6 +318,7 @@ export function listingMatches(listing: MatchListing, filters: BookFilters) {
   if (filters.status && listing.status !== filters.status) return false;
   if (!inList(listing.bidMode, filters.bidMode)) return false;
   if (!flagMatches(deadlineOf(listing), filters.deadline)) return false;
+  if (filters.priceCut && !listing.priceCut) return false;
   const open = listing.notes.filter((note) => !note.tradeStatus || note.tradeStatus === "AVAILABLE");
   const notes = open.length ? open : listing.notes;
   const { ptuMin, ptuMax, yieldMin, yieldMax, valueMin, valueMax, ltvMin, ltvMax } = filters;
@@ -421,6 +443,7 @@ export function appliedChips(filters: BookFilters) {
       chips.push({ label: value === "yes" ? yes : no, without: drop(key) });
     } else if (key === "q") chips.push({ label: `Place: ${value}`, without: drop("q") });
     else if (key === "cra") chips.push({ label: "CRA-eligible only", without: drop("cra") });
+    else if (key === "priceCut") chips.push({ label: PRICE_CUT_LABEL, without: drop("priceCut") });
     else if (key === "state") chips.push({ label: String(value), without: drop("state") });
     else if (key === "kind") chips.push({ label: KINDS.find((kind) => kind.value === value)?.label ?? String(value), without: drop("kind") });
     else if (key === "status") chips.push({ label: BOOK_STATUSES.find((status) => status.value === value)?.label ?? String(value), without: drop("status") });
@@ -458,6 +481,7 @@ export const SORTS = [
   { value: "ask", label: "Largest ask", pro: true, dir: "desc" },
   { value: "value", label: "Largest value", pro: true, dir: "desc" },
   { value: "ltv", label: "Lowest LTV", pro: true, dir: "asc" },
+  { value: "cut", label: "Latest price cut", pro: true, dir: "desc" },
 ] as const;
 
 export type SortKey = (typeof SORTS)[number]["value"];
@@ -479,6 +503,8 @@ export type SortRow = {
   deadline: number | null;
   state: string;
   figures: { upb: number; asking: number; value: number; priceToUpb: number | null; yield: number | null; ltv?: number | null };
+  // When the ask was last cut, in the last 30 days (MatchListing.priceCut), else null.
+  cutAt?: number | null;
 };
 
 function sortValue(row: SortRow, key: SortKey): number | string | null {
@@ -490,6 +516,8 @@ function sortValue(row: SortRow, key: SortKey): number | string | null {
   if (key === "upb") return row.figures.upb;
   if (key === "ask") return row.figures.asking;
   if (key === "ltv") return row.figures.ltv ?? null;
+  // Most recent cut first; a listing with no recent cut goes after, newest first.
+  if (key === "cut") return row.cutAt ?? null;
   return row.figures.value;
 }
 

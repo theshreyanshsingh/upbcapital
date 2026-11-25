@@ -78,13 +78,20 @@ export async function watchReprice(input: { listingId: string; before: number; a
   // Every live reprice goes on the listing's price history, marked by who moved it (lib/price-history.ts).
   const source = input.source ?? ((await prisma.user.findUnique({ where: { id: input.actorId }, select: { role: true } }))?.role === "ADMIN" ? "DESK" : "SELLER");
   await recordPriceChange({ listingId: input.listingId, before: input.before, after: input.after, loans: input.loans, source, actorId: input.actorId });
+  // A new ask can bring the listing inside more buyers' boxes, or take it out of some, so the boxes are scored again.
+  // Owners of newly matching boxes hear as for any new match (lib/matching.ts).
+  await import("@/lib/matching").then((matching) => matching.rescoreListing(input.listingId, true));
+  // Buyers whose price alert the new ask reaches hear once (lib/target-alerts.ts), and that alert is their notice of the
+  // new price: the general one below leaves them out.
+  const alerted = new Set<string>();
+  await import("@/lib/target-alerts").then((targets) => targets.checkTargets(input.listingId, new Date(), alerted));
   const which = input.loans === 1 ? "The ask" : `The ask on ${input.loans} loans`;
   return notifyWatchers({
     listingId: input.listingId,
     event: "REPRICE",
     subject: `New price · ${listing.title}`,
     body: `${listing.title}, a listing you saved, has a new price. ${which} moved ${input.after < input.before ? "down" : "up"} from ${money(input.before)} to ${money(input.after)}.`,
-    except: [input.actorId],
+    except: [input.actorId, ...alerted],
     hook: { loansRepriced: input.loans, previousAsk: input.before, ask: input.after },
   });
 }

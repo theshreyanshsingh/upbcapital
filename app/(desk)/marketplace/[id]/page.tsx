@@ -89,6 +89,7 @@ import { canSubmitOffer } from "@/lib/verification";
 import { mapPoint, showableAvm } from "@/lib/enrichment";
 import { OutsideParties } from "@/components/outside-parties";
 import { PriceHistory } from "@/components/price-history";
+import { PriceTarget } from "@/components/price-target";
 import { priceHistory } from "@/lib/price-history";
 
 export const metadata = { title: "Listing" };
@@ -450,6 +451,8 @@ export default async function ListingPage({
           />
           <IndicativePrice indicative={indicative} pro={pro} ask={asking} />
           <PriceHistory rows={history} showSource={user.role === "ADMIN"} />
+          {/* A buyer's alert when the ask reaches a figure they set, on a live listing (lib/target-alerts.ts). */}
+          {user.role === "BUYER" && listing.status === "APPROVED" && <PriceTarget listingId={listing.id} viewer={user} pro={pro} />}
           {user.role === "BUYER" && (
             <AccessLadder
               listingId={listing.id}

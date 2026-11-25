@@ -205,6 +205,14 @@ test("an ask above the comps shows the comparison when buyers look and nobody bi
   assert.match(nextSteps({ ...above, askOfUpb: 80 })[0].fact, /^UPB's indicative range for it is 66–78% of UPB; your ask is 80%\.$/);
   // A running bid round keeps the ask where bidders saw it.
   assert.deepEqual(nextSteps({ ...above, roundOpen: true }), []);
+  // A listing that can take a price ladder is offered one, still with no price named; a running ladder is already
+  // moving the ask, so the step stays quiet.
+  const ladder = nextSteps({ ...above, ladder: "OPEN" });
+  assert.equal(ladder[0].target, "ladder");
+  assert.match(ladder[0].suggestion, /price ladder/);
+  assert.doesNotMatch(ladder[0].suggestion, PRICE_WORDS);
+  assert.deepEqual(nextSteps({ ...above, ladder: "RUNNING" }), []);
+  assert.equal(nextSteps({ ...above, ladder: null })[0].target, "price");
   // Without enough similar listings, ten buyers stand in for the median.
   assert.deepEqual(keys(nextSteps({ ...above, similar: null, funnel: funnel({ views: 10 }) })), ["PRICE"]);
   assert.deepEqual(nextSteps({ ...above, similar: null, funnel: funnel({ views: 9 }) }), []);

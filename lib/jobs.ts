@@ -13,7 +13,7 @@ import { prisma } from "@/lib/prisma";
 import { listingScope } from "@/lib/private-listings";
 import { bidNeedsReminder, taskNeedsReminder } from "@/lib/schedule";
 import { roundupSearches, sendSearchRoundup } from "@/lib/search-alerts";
-import { reportOwners, sendSellerReport } from "@/lib/seller-report";
+import { prepareReports, reportDue, reportOn, reportOwners, sendSellerReport } from "@/lib/seller-report";
 import { purgeTapeDrafts } from "@/lib/tape-draft";
 import { unset } from "@/lib/db-filters";
 import { notifyWatchers } from "@/lib/watchers";
@@ -242,7 +242,10 @@ export async function sendSearchRoundups(now = new Date(), options: { userIds?: 
 // The weekly report to each seller or broker with a live listing, claimed on lastSellerReportAt.
 export async function sendSellerReports(now = new Date(), options: { userIds?: string[] } = {}) {
   const owners = await reportOwners(options.userIds);
-  return eachItem("seller report", owners, (user) => `user ${user.id}`, (user) => sendSellerReport(user, now));
+  // Only owners due this run, with what their reports read prepared together (lib/seller-report.ts prepareReports).
+  const due = owners.filter((user) => reportOn(user) && reportDue(user.lastSellerReportAt, now));
+  const prepared = await prepareReports(due, now);
+  return eachItem("seller report", due, (user) => `user ${user.id}`, (user) => sendSellerReport(user, now, prepared));
 }
 
 // Each due delivery is claimed on its try count, so an overlapping run sends it once. `endpointIds` narrows a run and

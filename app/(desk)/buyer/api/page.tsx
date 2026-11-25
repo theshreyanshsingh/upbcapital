@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { deleteBuyerWebhook, redeliverBuyerWebhook, revokeBuyerKey, saveBuyerWebhookEvents } from "@/actions/buyer-api";
+import { revokeConnectedApp } from "@/actions/oauth";
 import { RecentCalls } from "@/components/api-calls";
 import { BuyerKeyForm, BuyerWebhookForm } from "@/components/buyer-api-forms";
 import { Notice } from "@/components/notice";
@@ -10,7 +11,9 @@ import { BUYER_SCOPES, buyerApiProblem, buyerKeyProblem, proLapse, SCOPE_LABELS,
 import { API_LIMIT } from "@/lib/api-limit";
 import { recentCalls } from "@/lib/api-log";
 import { requireRole } from "@/lib/auth";
+import { unset } from "@/lib/db-filters";
 import { q } from "@/lib/format";
+import { connectedApps } from "@/lib/oauth";
 import { prisma } from "@/lib/prisma";
 import { canManageSeats } from "@/lib/seats";
 import { BUYER_WEBHOOK_EVENTS, deliveryState, endpointEvents, webhookUrlProblem } from "@/lib/webhooks";
@@ -26,11 +29,13 @@ export default async function BuyerApiPage({ searchParams }: { searchParams: Pro
   const user = await requireRole(["BUYER"]);
   if (user.accountStatus !== "APPROVED") redirect("/buyer/pending");
   const query = await searchParams;
-  const [file, keys, hooks, calls] = await Promise.all([
+  const [file, keys, hooks, calls, apps] = await Promise.all([
     prisma.buyerProfile.findUnique({ where: { userId: user.id }, select: { status: true } }),
-    prisma.apiKey.findMany({ where: { userId: user.id }, orderBy: { createdAt: "desc" } }),
+    // Keys minted here. A connected app's access token is a key too, listed under Connected apps instead.
+    prisma.apiKey.findMany({ where: { userId: user.id, ...unset("grantId") }, orderBy: { createdAt: "desc" } }),
     prisma.webhookEndpoint.findMany({ where: { userId: user.id }, include: { deliveries: { orderBy: { createdAt: "desc" }, take: 10 } }, orderBy: { createdAt: "desc" } }),
     recentCalls(user.id),
+    connectedApps(user.id),
   ]);
   // Pro runs the keys and the webhooks. A key minted under Pro is kept when Pro lapses, paused until it returns.
   const paused = buyerApiProblem(user);
@@ -89,7 +94,33 @@ export default async function BuyerApiPage({ searchParams }: { searchParams: Pro
       </ul>
       {!mintBlock && manage && <BuyerKeyForm scopes={BUYER_SCOPES.map((scope) => ({ scope, label: SCOPE_LABELS[scope] }))} />}
 
-      {keys.length > 0 && <RecentCalls groups={calls} csvHref="/api/security/api-calls" />}
+      <h2 id="connected-apps" className="eyebrow mt-10 scroll-mt-24">Connected apps</h2>
+      <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
+        AI assistants you approved by signing in, such as a claude.ai or ChatGPT connector. Each reads the account with the scopes you approved, read-only, on access that lasts an hour and that the app renews. Revoking one cuts it off at once.
+      </p>
+      {apps.length === 0 && <p className="mt-3 text-sm text-muted-foreground">No connected apps.</p>}
+      <ul className="mt-3 space-y-3">
+        {apps.map((app) => (
+          <li key={app.id} className="flex flex-wrap items-center justify-between gap-3 border border-border px-4 py-3 text-sm rounded-xl">
+            <span className="min-w-0">
+              <span className="block break-words text-foreground">{app.name}</span>
+              {app.hosts.length > 0 && <span className="block break-all text-xs text-muted-foreground">Returns to {app.hosts.join(", ")}</span>}
+              <span className="block text-xs text-muted-foreground">{app.scopes.map((scope) => SCOPE_LABELS[scope]).join(", ") || "No scopes"}</span>
+              <span className="block text-xs text-muted-foreground tabular-nums">
+                Approved {stamp(app.approvedAt)}{app.lastUsedAt ? ` · last used ${stamp(app.lastUsedAt)}` : ""}
+              </span>
+            </span>
+            {manage && (
+              <form action={revokeConnectedApp}>
+                <input type="hidden" name="id" value={app.id} />
+                <SubmitButton variant="ghost" pendingLabel="Revoking…" className="h-10 text-[13px] font-medium">Revoke</SubmitButton>
+              </form>
+            )}
+          </li>
+        ))}
+      </ul>
+
+      {calls.length > 0 && <RecentCalls groups={calls} csvHref="/api/security/api-calls" />}
 
       <h2 className="eyebrow mt-10">Webhooks</h2>
       <p className="mt-2 max-w-2xl text-sm text-muted-foreground">

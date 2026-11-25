@@ -72,7 +72,7 @@ export const MCP_TOOLS: McpTool[] = [
     title: "Search live listings",
     summary: "live listings this account may see, with the book's filters",
     description:
-      "Search the live book: mortgage-note listings this account may see that are taking bids or in contract. Each row is one listing's summary: loan count, states, lien positions, payment statuses, unpaid balance (upb), asking price, estimated value, LTV, price to UPB, current yield, note rate, sale format and bid deadline, the seller as a type such as Credit union until this account is in the data room, and webUrl to open it on UPB. Money is in dollars and ratios in percent. A pool is judged on its loans still for sale: balance and LTV on their totals, state, lien, performance and program on any one loan. " +
+      "Search the live book: mortgage-note listings this account may see that are taking bids or in contract. Each row is one listing's summary: loan count, states, lien positions, payment statuses, unpaid balance (upb), asking price, lastPriceCut (the latest move on the ask in the last 30 days when it was a cut: percent and when, else null), estimated value, LTV, price to UPB, current yield, note rate, sale format and bid deadline, the seller as a type such as Credit union until this account is in the data room, and webUrl to open it on UPB. Money is in dollars and ratios in percent. A pool is judged on its loans still for sale: balance and LTV on their totals, state, lien, performance and program on any one loan. " +
       PAGED,
     route: "listings",
     endpoint: "/api/v1/listings",
@@ -89,6 +89,7 @@ export const MCP_TOOLS: McpTool[] = [
       max_ltv: { type: "number", minimum: 0, description: "Highest loan-to-value, in percent." },
       min_upb: { type: "number", minimum: 0, description: "Lowest unpaid balance, in dollars." },
       max_upb: { type: "number", minimum: 0, description: "Highest unpaid balance, in dollars." },
+      price_cut: { type: "boolean", description: "true for listings whose latest move on the ask in the last 30 days was a cut." },
       ...PAGING,
     },
   },
@@ -97,7 +98,7 @@ export const MCP_TOOLS: McpTool[] = [
     title: "Read one listing",
     summary: "one listing's summary and loan tape",
     description:
-      "One live listing by id: its summary and loan tape as a signed-in buyer reads it before the confidentiality agreement. Each loan carries its city, state, balance, rate, payment, delinquency, dates, pay string, credit score and the other open tape fields, never the street, zip, borrower, loan number or a data-room file. paused is true while the seller hasn't reconfirmed the loans are still available. otherBidders is how many other firms hold a live bid, where the seller chose to show it, never an amount. A listing this account may not see reads as not found.",
+      "One live listing by id: its summary and loan tape as a signed-in buyer reads it before the confidentiality agreement. Each loan carries its city, state, balance, rate, payment, delinquency, dates, pay string, credit score and the other open tape fields, never the street, zip, borrower, loan number or a data-room file. priceHistory lists each move on the ask, oldest first: when, the ask before and after across the loans that moved, and how many loans; never who moved it. paused is true while the seller hasn't reconfirmed the loans are still available. otherBidders is how many other firms hold a live bid, where the seller chose to show it, never an amount. A listing this account may not see reads as not found.",
     route: "listing",
     endpoint: "/api/v1/listings/:id",
     scope: "listings:read",
@@ -309,8 +310,12 @@ export async function answerMcp(raw: string, run: ToolRunner, protocolHeader: st
   }
 }
 
-// RFC 6750's challenge, so a client knows to send a bearer token.
-const CHALLENGE = 'Bearer realm="upb-capital"';
+// RFC 6750's challenge, so a client knows to send a bearer token, with RFC 9728's pointer to the sign-in a connector
+// such as claude.ai's follows (lib/oauth.ts).
+function challenge(request: Request) {
+  const origin = ((process.env.NEXT_PUBLIC_APP_URL || "").trim() || new URL(request.url).origin).replace(/\/+$/, "");
+  return `Bearer realm="upb-capital", resource_metadata="${origin}/.well-known/oauth-protected-resource"`;
+}
 
 function refusal(status: number, message: string, headers?: Record<string, string>, code: number = RPC_ERRORS.keyRefused) {
   return Response.json({ jsonrpc: "2.0", id: null, error: { code, message } }, { status, headers });
@@ -320,9 +325,9 @@ function refusal(status: number, message: string, headers?: Record<string, strin
 // scopes are the endpoint's to refuse, so a tool call on a lapsed or narrow key comes back with the API's own reason.
 export async function mcpPost(request: Request, routes: V1Routes): Promise<Response> {
   const header = request.headers.get("authorization");
-  if (!tokenOf(header)) return refusal(401, "Send a UPB buyer API key as Authorization: Bearer upb_… . Mint one at /buyer/api.", { "WWW-Authenticate": CHALLENGE });
+  if (!tokenOf(header)) return refusal(401, "Send a UPB buyer API key as Authorization: Bearer upb_… . Mint one at /buyer/api.", { "WWW-Authenticate": challenge(request) });
   const check = await checkApiKey(header);
-  if (!check.ok) return refusal(401, check.error, { "WWW-Authenticate": `${CHALLENGE}, error="invalid_token"` });
+  if (!check.ok) return refusal(401, check.error, { "WWW-Authenticate": `${challenge(request)}, error="invalid_token"` });
   // The tools are the buyer endpoints, so a seller's or the desk's key has nothing to read here.
   if (check.user.role !== "BUYER") return refusal(403, "The MCP connector reads the buyer API, so it takes a buyer account's key. Mint one at /buyer/api.");
   const tooLarge = () => refusal(413, "That request is too large for one MCP message.", undefined, RPC_ERRORS.invalidRequest);

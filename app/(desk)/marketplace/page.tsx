@@ -30,6 +30,7 @@ import {
   listOf,
   pageWindow,
   parseFilters,
+  savableFilters,
   sortFor,
   SORTS,
   sortRows,
@@ -101,6 +102,9 @@ export default async function MarketplacePage({
   const inEvent = (listing: { saleEventId?: string | null }) => !eventId || listing.saleEventId === eventId;
   const openable = openableListingIds(listings, settings.earlyAccessHours, settings.freeBrowseLimit);
   const states = [...new Set(listings.flatMap((listing) => listing.notes.map((note) => note.state)))].sort();
+  // Recent cuts on the ask (lib/price-history.ts), read once for the book. A figure, so on Pro only: the cards that
+  // show figures, the price-cut filter and the sort by latest cut.
+  const cuts = (pro ? await recentCuts().catch(() => null) : null) ?? new Map<string, { percent: number; at: Date }>();
 
   const rows = listings.map((listing) => {
     const notes = listing.notes.map((note) => ({
@@ -144,8 +148,9 @@ export default async function MarketplacePage({
       veil,
       held: veil.hold !== null,
       figures: listingFigures(listing.kind, forSale),
-      match: { kind: listing.kind, status: listing.status, bidMode: listing.bidMode, bidDeadline: listing.bidDeadline, notes },
+      match: { kind: listing.kind, status: listing.status, bidMode: listing.bidMode, bidDeadline: listing.bidDeadline, notes, priceCut: cuts.get(listing.id) ?? null },
       approvedAt: listing.approvedAt?.getTime() ?? 0,
+      cutAt: cuts.get(listing.id)?.at.getTime() ?? null,
       deadline: listing.bidMode !== "NONE" && listing.bidDeadline ? listing.bidDeadline.getTime() : null,
       state: forSale[0]?.state ?? "",
     };
@@ -162,8 +167,6 @@ export default async function MarketplacePage({
   const indicatives = pro
     ? await loadIndicatives(shown.filter((row) => row.veil.figures).map((row) => ({ id: row.listing.id, status: row.listing.status, notes: row.listing.notes }))).catch(() => new Map())
     : new Map();
-  // Recent cuts on the ask, for the cards that show figures (lib/price-history.ts).
-  const cuts = await recentCuts().catch(() => new Map<string, { percent: number; at: Date }>());
   const indicativeOf = (id: string) => {
     const range = indicatives.get(id);
     return range ? { low: range.low, high: range.high, rate: range.rate } : null;
@@ -206,6 +209,12 @@ export default async function MarketplacePage({
     const probe: BookFilters = { ...applied, ltvMin: undefined, ltvMax: max };
     return { label: `${max}% or less`, count: book.filter((row) => bookMatches(row.listing, probe, row.held)).length, on, href: href({ filters: { ...applied, ltvMin: undefined, ltvMax: on ? undefined : max } }) };
   };
+  // A recent cut on the ask shows beside the figures, so its one-tap filter is on Pro too.
+  const cutChip = (): Chip => {
+    const on = Boolean(applied.priceCut);
+    const probe: BookFilters = { ...applied, priceCut: true };
+    return { label: "Cut in the last 30 days", count: book.filter((row) => bookMatches(row.listing, probe, row.held)).length, on, href: href({ filters: { ...applied, priceCut: on ? undefined : true } }) };
+  };
   const groups = [
     { label: "Performance", chips: PAYMENT_STATUSES.map((status) => chip("paymentStatus", status.value, status.label)).filter(shownChip) },
     { label: "Lien", chips: LIEN_POSITIONS.map((lien) => chip("lienPosition", lien.value, lien.label)).filter(shownChip) },
@@ -213,6 +222,7 @@ export default async function MarketplacePage({
     { label: "Bid style", chips: BID_MODES.map((mode) => chip("bidMode", mode.value, mode.label)).filter(shownChip) },
     { label: "Deadline", chips: [single("deadline", "yes", "Dated deadline")].filter(shownChip) },
     { label: "LTV", chips: pro ? [ltvChip(80), ltvChip(60)].filter(shownChip) : [] },
+    { label: "Ask", chips: pro ? [cutChip()].filter(shownChip) : [] },
     {
       label: "Sale event",
       chips: events.map((event) => ({
@@ -313,9 +323,16 @@ export default async function MarketplacePage({
           })}
           {saved.length === 0 && <span className="text-[13px] text-muted-foreground">None yet. Filter the book, then save the view to get alerts.</span>}
           {saved.length > 0 && <Link href="/buyer/alerts" className="text-[13px] font-medium text-muted-foreground hover:text-foreground">Manage alerts</Link>}
-          {filtersActive(applied) && (
+          {/* A saved view alerts as new paper goes live, before any price has moved, so the price-cut filter isn't saved
+              with it (lib/filters.ts savableFilters). The line says so rather than dropping it quietly. */}
+          {applied.priceCut && (
+            <span className="order-last w-full text-xs leading-relaxed text-muted-foreground">
+              Saved views leave out the price-cut filter. They alert as new paper goes live, before any price has moved.
+            </span>
+          )}
+          {filtersActive(savableFilters(applied)) && (
             <form action={saveSearch} className="flex flex-wrap items-end gap-2 sm:ml-auto">
-              <input type="hidden" name="filters" value={JSON.stringify(applied)} />
+              <input type="hidden" name="filters" value={JSON.stringify(savableFilters(applied))} />
               <label className="block text-xs text-muted-foreground">
                 Name this view
                 <input name="name" required minLength={2} className="desk-input mt-1 w-56 max-w-full" />
@@ -385,6 +402,7 @@ export default async function MarketplacePage({
                 hold: row.veil.hold,
                 figures: row.veil.figures ? row.figures : null,
                 indicative: row.veil.figures ? indicativeOf(row.listing.id) : null,
+                priceCut: row.veil.figures ? cuts.get(row.listing.id) ?? null : null,
               }))}
             />
           </div>
