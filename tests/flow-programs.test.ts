@@ -34,6 +34,7 @@ import {
   awardBlock,
   canSee,
   canSeeListing,
+  firstLookListingIds,
   inviteBuyers,
   invitedTo,
   listingAccess,
@@ -322,6 +323,7 @@ test("in first look only active committed buyers, the seller and the desk see a 
   assert.equal(access.firstLookOpen?.has(listing.id), true, "the book lifts its veil for a committed buyer");
   assert.equal(canSee(await listingAccess(outsider), shown), false);
   assert.equal((await prisma.listing.count({ where: { id: listing.id, AND: [await outsideFirstLook()] } })), 0, "off the public pages");
+  assert.equal((await firstLookListingIds()).has(listing.id), true, "off the home page too");
   assert.deepEqual((await audienceOf(shown, [committed, outsider])).map((user) => user.id), [committed.id]);
   assert.equal(await awardBlock({ id: "bid", listingId: listing.id, listing: shown, buyer: outsider }), AWARD_FIRST_LOOK);
   assert.equal(await awardBlock({ id: "bid", listingId: listing.id, listing: shown, buyer: committed }), null);

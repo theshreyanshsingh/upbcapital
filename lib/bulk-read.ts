@@ -217,6 +217,12 @@ export async function bookLoans(listingIds: readonly string[], now = Date.now())
   return new Map([...snapshot.byListing, ...fresh]);
 }
 
+// Starts the shared read of the book's loans when it is due, so a page can read its own listings at the same time and
+// then take their loans from it (withNotes with shared). Production only, like the sharing.
+export function warmBookLoans(now = Date.now()) {
+  if (process.env.NODE_ENV === "production") bookLoans([], now).catch(() => undefined);
+}
+
 // For tests: the next shared read goes to the database.
 export function resetBookLoans() {
   shared = null;

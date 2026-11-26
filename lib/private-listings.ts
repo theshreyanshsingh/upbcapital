@@ -280,10 +280,16 @@ async function firstLookFor(userId: string | null): Promise<Pick<ListingAccess, 
   };
 }
 
+// The listings forward-flow tranches hold in their first look, which the public pages leave out.
+export async function firstLookListingIds(): Promise<Set<string>> {
+  const rows = await prisma.flowTranche.findMany({ where: { status: FIRST_LOOK }, select: { listingId: true } });
+  return new Set(rows.map((row) => row.listingId));
+}
+
 // For the public pages that list with publicListing alone: nothing in a first look.
 export async function outsideFirstLook(): Promise<Prisma.ListingWhereInput> {
-  const rows = await prisma.flowTranche.findMany({ where: { status: FIRST_LOOK }, select: { listingId: true } });
-  return rows.length ? { id: { notIn: rows.map((row) => row.listingId) } } : {};
+  const ids = await firstLookListingIds();
+  return ids.size ? { id: { notIn: [...ids] } } : {};
 }
 
 // ---------------------------------------------------------------------------------------------------------------

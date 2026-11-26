@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { after } from "next/server";
 import { ArrowRight, BadgeCheck, CalendarClock, Eye, FileSearch, Lock, ShieldCheck } from "lucide-react";
 import { MarketingFooter, MarketingHeader } from "@/components/marketing";
 import { getCurrentUser } from "@/lib/auth";
@@ -7,10 +8,10 @@ import { money, moneyCompact, num, pct } from "@/lib/format";
 import { labelOf } from "@/lib/labels";
 import { upbBucket } from "@/lib/strata";
 import { noteMetrics } from "@/lib/metrics";
-import { withNotes } from "@/lib/bulk-read";
+import { warmBookLoans, withNotes } from "@/lib/bulk-read";
 import { prisma } from "@/lib/prisma";
 import { publicTestimonials, REVIEWS_NOTE } from "@/lib/reviews";
-import { outsideFirstLook, publicListing } from "@/lib/private-listings";
+import { firstLookListingIds, publicListing } from "@/lib/private-listings";
 import { getSettings } from "@/lib/settings";
 import { ensureStories } from "@/lib/stories";
 import { bpsToPercent } from "@/lib/money";
@@ -23,23 +24,36 @@ const outline = "inline-flex h-12 items-center justify-center gap-2 rounded-xl b
 const sectionHead = "mt-3 font-display text-[2.375rem] font-medium leading-[1.08] tracking-[-0.02em] text-foreground md:text-[3.25rem]";
 
 export default async function HomePage() {
-  await recordHit("/");
-  // So are forward-flow tranches still in their first look.
-  const released = await outsideFirstLook();
-  const [user, settings, notes, liveCount, publicListings] = await Promise.all([
+  // Counting the visit, and the journal's first posts on a new database, wait until the page has gone out: neither
+  // changes what it shows.
+  after(() => Promise.all([recordHit("/"), ensureStories()]));
+  warmBookLoans();
+  // Everything the page shows is read at once, and fresh on every visit, which listings are public included. It used
+  // to be about nine reads one after another, two seconds to the first byte on the live server; now it is one round
+  // trip, two when the shared read of the book's loans is due.
+  const [user, settings, firstLook, live, quotes] = await Promise.all([
     getCurrentUser(),
     getSettings(),
+    firstLookListingIds(),
     // Private listings stay off the public page: its cards, counts and totals are the open book's (lib/private-listings.ts).
-    // The live book's loans, read by listing (lib/bulk-read.ts): a filter through each loan's listing ran a lookup
-    // per loan, and at a few thousand listings this page took minutes.
-    prisma.listing
-      .findMany({ where: { status: { in: ["APPROVED", "PENDING"] }, AND: [publicListing(), released] }, select: { id: true, kind: true, status: true } })
-      .then(async (live) => (await withNotes(live, { shared: true })).flatMap(({ notes, ...listing }) => notes.map((note) => ({ ...note, listing })))),
-    prisma.listing.count({ where: { status: { in: ["APPROVED", "PENDING"] }, AND: [publicListing(), released] } }),
-    prisma.listing
-      .findMany({ where: { status: { in: ["APPROVED", "PENDING"] }, AND: [publicListing(), released] }, orderBy: { approvedAt: "desc" }, take: 6 })
-      .then(withNotes),
+    prisma.listing.findMany({
+      where: { status: { in: ["APPROVED", "PENDING"] }, AND: [publicListing()] },
+      select: { id: true, kind: true, status: true, approvedAt: true },
+    }),
+    // Rows labeled Placeholder came from an earlier seed. They never show here, and the journal page can delete them.
+    // A review from a party to a completed closing names its side and month; a typed testimonial its role (lib/reviews.ts).
+    publicTestimonials(2),
   ]);
+  // So are forward-flow tranches still in their first look.
+  const shown = live.filter((listing) => !firstLook.has(listing.id));
+  // The live book's loans, read by listing (lib/bulk-read.ts): a filter through each loan's listing ran a lookup
+  // per loan, and at a few thousand listings this page took minutes.
+  const book = await withNotes(shown, { shared: true });
+  const notes = book.flatMap(({ notes, ...listing }) => notes.map((note) => ({ ...note, listing })));
+  const liveCount = shown.length;
+  // The cards: the six approved most recently.
+  const approved = (listing: { approvedAt: Date | null }) => listing.approvedAt?.getTime() ?? 0;
+  const publicListings = [...book].sort((a, b) => approved(b) - approved(a)).slice(0, 6);
   const upb = notes.reduce((sum, note) => sum + num(note.upb), 0);
   const states = new Set(notes.map((note) => note.state)).size;
   const single = notes.filter((note) => note.listing.kind === "SINGLE" && note.listing.status === "APPROVED");
@@ -58,10 +72,6 @@ export default async function HomePage() {
         paymentStatus: featured.paymentStatus,
       })
     : null;
-  await ensureStories();
-  // Rows labeled Placeholder came from an earlier seed. They never show here, and the journal page can delete them.
-  // A review from a party to a completed closing names its side and month; a typed testimonial its role (lib/reviews.ts).
-  const quotes = await publicTestimonials(2);
   const premium = bpsToPercent(settings.buyerPremiumBps);
   const commission = bpsToPercent(settings.sellerCommissionBps);
   const pro = (settings.proMonthlyPriceCents / 100).toLocaleString("en-US");
