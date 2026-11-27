@@ -13,7 +13,8 @@ import { prisma } from "@/lib/prisma";
 import { publicTestimonials, REVIEWS_NOTE } from "@/lib/reviews";
 import { firstLookListingIds, publicListing } from "@/lib/private-listings";
 import { getSettings } from "@/lib/settings";
-import { ensureStories } from "@/lib/stories";
+import { ensureStoriesOnce } from "@/lib/stories";
+import { joinInFlight } from "@/lib/in-flight";
 import { bpsToPercent } from "@/lib/money";
 
 export const dynamic = "force-dynamic";
@@ -23,16 +24,14 @@ const outline = "inline-flex h-12 items-center justify-center gap-2 rounded-xl b
 // Section headlines share the display serif; the desk's own pages use it only for their titles.
 const sectionHead = "mt-3 font-display text-[2.375rem] font-medium leading-[1.08] tracking-[-0.02em] text-foreground md:text-[3.25rem]";
 
-export default async function HomePage() {
-  // Counting the visit, and the journal's first posts on a new database, wait until the page has gone out: neither
-  // changes what it shows.
-  after(() => Promise.all([recordHit("/"), ensureStories()]));
-  warmBookLoans();
-  // Everything the page shows is read at once, and fresh on every visit, which listings are public included. It used
-  // to be about nine reads one after another, two seconds to the first byte on the live server; now it is one round
-  // trip, two when the shared read of the book's loans is due.
-  const [user, settings, firstLook, live, quotes] = await Promise.all([
-    getCurrentUser(),
+// Everything the page shows the same to every visitor, read fresh: the settings, which listings are public, the live
+// book's loans and the reviews. It used to be about nine reads one after another, two seconds to the first byte on the
+// live server; now it is one round trip, two when the shared read of the book's loans is due. Visitors who arrive
+// while a read is running share it rather than each starting their own (lib/in-flight.ts), so 25 at once cost the
+// database one read, not 25. Nothing is kept once the read is done: which listings are public is never older than
+// the read a visit joined.
+async function readHomePage() {
+  const [settings, firstLook, live, quotes] = await Promise.all([
     getSettings(),
     firstLookListingIds(),
     // Private listings stay off the public page: its cards, counts and totals are the open book's (lib/private-listings.ts).
@@ -49,6 +48,15 @@ export default async function HomePage() {
   // The live book's loans, read by listing (lib/bulk-read.ts): a filter through each loan's listing ran a lookup
   // per loan, and at a few thousand listings this page took minutes.
   const book = await withNotes(shown, { shared: true });
+  return { settings, shown, book, quotes };
+}
+
+export default async function HomePage() {
+  // Counting the visit, and the journal's first posts on a new database, wait until the page has gone out: neither
+  // changes what it shows. Visits are written in batches (lib/hits.ts) and the journal is checked once per server.
+  after(() => Promise.all([recordHit("/"), ensureStoriesOnce()]));
+  warmBookLoans();
+  const [user, { settings, shown, book, quotes }] = await Promise.all([getCurrentUser(), joinInFlight("home page", readHomePage)]);
   const notes = book.flatMap(({ notes, ...listing }) => notes.map((note) => ({ ...note, listing })));
   const liveCount = shown.length;
   // The cards: the six approved most recently.

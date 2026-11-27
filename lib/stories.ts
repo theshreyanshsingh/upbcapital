@@ -17,3 +17,13 @@ export async function ensureStories() {
       .catch(() => undefined);
   }
 }
+
+// The home page asks once per server: counting the posts on every visit held a database connection for a round trip
+// to Atlas each time (lib/in-flight.ts). The journal and its admin page still ask on every visit.
+let stocked: Promise<void> | null = null;
+export function ensureStoriesOnce() {
+  stocked ??= ensureStories().catch(() => {
+    stocked = null;
+  });
+  return stocked;
+}
