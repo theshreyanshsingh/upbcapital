@@ -90,6 +90,7 @@ import { mapPoint, showableAvm } from "@/lib/enrichment";
 import { OutsideParties } from "@/components/outside-parties";
 import { PriceHistory } from "@/components/price-history";
 import { PriceTarget } from "@/components/price-target";
+import { PaymentSchedule } from "@/components/payment-schedule";
 import { priceHistory } from "@/lib/price-history";
 
 export const metadata = { title: "Listing" };
@@ -704,6 +705,8 @@ export default async function ListingPage({
                   <p className="mt-3 text-sm text-muted-foreground">Yield, IRR, cash-on-cash, payback, non-performing resolutions and closed-trade comps open with Pro.</p>
                 </section>
               )}
+              {/* The remaining payments from the tape, one loan at a time, under the same Pro rule as the figures. */}
+              {pro && <PaymentSchedule listingId={listing.id} notes={listing.notes} forSale={forSale.map((note) => note.id)} selected={q(query, "schedule") || null} />}
               {listing.kind === "POOL" && pro && (
                 <section className="mt-8 grid gap-4 md:grid-cols-2">
                   <div className="glass p-6">

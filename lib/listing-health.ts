@@ -428,7 +428,7 @@ export type ListingHealth = {
   steps: HealthStep[];
 };
 
-const FILE_ACTIONS = ["DOCUMENT_DOWNLOAD", "TAPE_EXPORT", "MEMO_DOWNLOAD"];
+const FILE_ACTIONS = ["DOCUMENT_DOWNLOAD", "TAPE_EXPORT", "MEMO_DOWNLOAD", "SCHEDULE_EXPORT"];
 
 // Every buyer event on these listings, without the seller's own, the filing broker's or the desk's. A deleted buyer's
 // views have no user and are left out, as on the seller page.

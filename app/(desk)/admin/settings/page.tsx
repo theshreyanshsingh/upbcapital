@@ -24,6 +24,7 @@ import { FeeScheduleForm } from "@/components/fee-schedule-form";
 import { RecertifySettings } from "@/components/recertify-settings";
 import { TrialSettings } from "@/components/trial-settings";
 import { BidCapSettings } from "@/components/bid-cap-settings";
+import { DeskChatPanel } from "@/components/chat-alerts";
 import { SellerIdentitySetting } from "@/components/seller-identity";
 import { EmailConfirmSetting } from "@/components/email-confirm";
 import { SignatureSettings } from "@/components/signature-panel";
@@ -287,6 +288,7 @@ export default async function SettingsPage({
       <ReaderSettings owns={owns} />
       <SellerIdentitySetting value={settings.requireSellerIdentity} owns={owns} />
       <EmailConfirmSetting value={settings.requireEmailConfirmation} owns={owns} />
+      {owns && <DeskChatPanel notice={q(params, "chat")} error={q(params, "chatError")} />}
     </div>
   );
 }

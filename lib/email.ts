@@ -322,6 +322,9 @@ ${footer}
 // A notice that quotes a bid amount names the capability it needs, so a desk trader or a read-only seat never reads
 // a sealed figure from their inbox. The shared desk mailbox still gets every notice.
 export async function notifyDesk(subject: string, body: string, options: { capability?: DeskCapability } = {}) {
+  // The desk's Slack or Teams channel hears it too, by its event name only, without holding the notice up
+  // (lib/chat-alerts.ts).
+  import("@/lib/chat-alerts").then((chat) => chat.alertDeskChannel(subject, body, options.capability)).catch((error) => console.error("[upb-chat] desk alert failed:", error instanceof Error ? error.message : error));
   const admins = await prisma.user.findMany({
     where: { role: "ADMIN", accountStatus: "APPROVED" },
     select: { email: true, role: true, deskRole: true },

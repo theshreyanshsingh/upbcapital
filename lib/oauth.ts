@@ -3,6 +3,7 @@ import type { OAuthClient, User } from "@prisma/client";
 import { accountLocked } from "@/lib/access";
 import { BUYER_SCOPES, buyerKeyProblem, cleanBuyerScopes, hashKey, mintKey, scopesOf, type ApiScope } from "@/lib/api-keys";
 import { audit } from "@/lib/audit";
+import { notify } from "@/lib/email";
 import { unset } from "@/lib/db-filters";
 import { MCP_PATH } from "@/lib/mcp";
 import { prisma } from "@/lib/prisma";
@@ -496,7 +497,11 @@ async function refreshGrant(form: Record<string, string>, now: Date): Promise<An
   if (!client) return oauthError(401, "invalid_client", "UPB doesn't know this client_id. Register the client again.");
   const oldHash = hashKey(token);
   const grant = token.length <= 200 ? await prisma.oAuthGrant.findUnique({ where: { refreshHash: oldHash } }) : null;
-  if (!grant || grant.clientId !== client.clientId || grant.revokedAt || !grant.refreshExpiresAt || grant.refreshExpiresAt.getTime() <= now.getTime()) {
+  if (!grant) {
+    if (token.length <= 200) await replayedRefresh(oldHash, client.clientId, now);
+    return oauthError(400, "invalid_grant", INVALID_GRANT);
+  }
+  if (grant.clientId !== client.clientId || grant.revokedAt || !grant.refreshExpiresAt || grant.refreshExpiresAt.getTime() <= now.getTime()) {
     return oauthError(400, "invalid_grant", INVALID_GRANT);
   }
   // A refresh may narrow the scopes, never widen them.
@@ -509,7 +514,7 @@ async function refreshGrant(form: Record<string, string>, now: Date): Promise<An
   const refresh = newRefreshToken();
   const rotated = await prisma.oAuthGrant.updateMany({
     where: { id: grant.id, refreshHash: oldHash, ...unset("revokedAt") },
-    data: { refreshHash: hashKey(refresh), refreshExpiresAt: new Date(now.getTime() + REFRESH_DAYS * DAY), lastUsedAt: now },
+    data: { refreshHash: hashKey(refresh), previousRefreshHash: oldHash, refreshExpiresAt: new Date(now.getTime() + REFRESH_DAYS * DAY), lastUsedAt: now },
   });
   if (rotated.count !== 1) return oauthError(400, "invalid_grant", INVALID_GRANT);
   const scopes = cleanBuyerScopes(asked);
@@ -517,6 +522,44 @@ async function refreshGrant(form: Record<string, string>, now: Date): Promise<An
   if (!access) return oauthError(400, "invalid_grant", INVALID_GRANT);
   await prisma.oAuthClient.update({ where: { id: client.id }, data: { lastUsedAt: now } });
   return { status: 200, body: tokenBody(access, refresh, scopes) };
+}
+
+// A refresh token that was already exchanged, presented again. Rotation leaves only the newest one working, so a second
+// use of a replaced one means a copy is in someone else's hands, or the app lost an answer and retried. RFC 9700
+// (4.14.2) treats it as theft: the grant and its access token are revoked and the buyer hears, in words that fit
+// either case. A token two rotations old isn't recognised, and simply fails.
+async function replayedRefresh(hash: string, clientId: string, now: Date) {
+  const grant = await prisma.oAuthGrant.findFirst({ where: { previousRefreshHash: hash, clientId, ...unset("revokedAt") }, select: { id: true, userId: true } });
+  if (!grant || !(await revokeGrantRows(grant.id, grant.userId, now))) return;
+  await audit(null, "OAUTH_REFRESH_REPLAYED", "oauthGrant", grant.id, "A replaced refresh token was used again, so the connection was revoked");
+  const [user, client] = await Promise.all([
+    prisma.user.findUnique({ where: { id: grant.userId }, select: { email: true } }),
+    prisma.oAuthClient.findUnique({ where: { clientId }, select: { name: true } }),
+  ]);
+  if (!user) return;
+  const app = client?.name ? `"${client.name}"` : "a connected app";
+  await notify(
+    user.email,
+    "A connected app was disconnected",
+    `UPB disconnected ${app} from your account because an old sign-in token for it was used again. That happens when a copy of the token is used somewhere else, or when the app retries after losing an answer. If you still use the app, connect it again from the app itself. If you don't recognise it, look over your Buyer API keys and connected apps.`,
+  );
+}
+
+// Clients that registered but never connected, after a month, and codes past their minutes: the jobs' cleanup. A
+// client with any grant, live or revoked, stays, so the buyer's list and the audit log keep naming it.
+export const UNUSED_CLIENT_DAYS = 30;
+
+export async function cleanOAuth(now = new Date()) {
+  const cutoff = new Date(now.getTime() - UNUSED_CLIENT_DAYS * DAY);
+  const codes = await prisma.oAuthCode.deleteMany({ where: { expiresAt: { lt: new Date(now.getTime() - DAY) } } });
+  const stale = await prisma.oAuthClient.findMany({ where: { createdAt: { lt: cutoff }, ...unset("lastUsedAt") }, select: { clientId: true }, take: 5000 });
+  let clients = 0;
+  for (const { clientId } of stale) {
+    if (await prisma.oAuthGrant.count({ where: { clientId } })) continue;
+    if (await prisma.oAuthCode.count({ where: { clientId, expiresAt: { gt: now } } })) continue;
+    clients += (await prisma.oAuthClient.deleteMany({ where: { clientId, ...unset("lastUsedAt") } })).count;
+  }
+  return `OAuth cleanup removed ${clients} unused client${clients === 1 ? "" : "s"} and ${codes.count} old code${codes.count === 1 ? "" : "s"}`;
 }
 
 // POST /oauth/token's answer. basicClient is a client_id sent as HTTP Basic. Clients here are public, so a secret,

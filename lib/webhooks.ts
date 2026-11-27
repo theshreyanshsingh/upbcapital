@@ -209,6 +209,9 @@ export async function emitBuyerWebhook(userIds: string | string[], event: BuyerE
   try {
     const ids = [...new Set(typeof userIds === "string" ? [userIds] : userIds)];
     if (!ids.length) return 0;
+    // The same event goes to these buyers' Slack and Teams channels, to the same audience, without waiting on them
+    // (lib/chat-alerts.ts).
+    import("@/lib/chat-alerts").then((chat) => chat.alertBuyerChannels(ids, event, payload)).catch((error) => console.error("[upb-chat] buyer alert failed:", error instanceof Error ? error.message : error));
     const endpoints = await prisma.webhookEndpoint.findMany({ where: { userId: { in: ids } }, select: { userId: true, events: true } });
     const wanting = [...new Set(endpoints.filter((endpoint) => wantsEvent(endpoint, event)).map((endpoint) => endpoint.userId))];
     if (!wanting.length) return 0;

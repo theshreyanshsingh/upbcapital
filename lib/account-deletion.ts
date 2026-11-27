@@ -225,6 +225,8 @@ export async function anonymiseAccount(userId: string, now = new Date()): Promis
     prisma.oAuthGrant.deleteMany({ where: { userId } }),
     prisma.oAuthCode.deleteMany({ where: { userId } }),
     prisma.webhookEndpoint.deleteMany({ where: { userId } }),
+    // The firm's Slack and Teams channels, webhook addresses included (lib/chat-alerts.ts).
+    prisma.chatChannel.deleteMany({ where: { ownerId: userId } }),
     prisma.loginCode.deleteMany({ where: { userId } }),
     // The firm's private notes and diligence tasks served only the firm (lib/firm-workspace.ts).
     prisma.firmNote.deleteMany({ where: { firmId: userId } }),

@@ -4,6 +4,7 @@ import { addOwnedNote, emailStatement, logBuyerPayment, setBuyerHoldingStatus } 
 import { BookImport } from "@/components/book-import";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
+import { ExpectedPayments } from "@/components/payment-schedule";
 import { OwnershipStatement } from "@/components/ownership-statement";
 import { SubmitButton } from "@/components/submit-button";
 import { ACCRETION_NOTE, accretedThrough, accretionByYear, type Accretion } from "@/lib/accretion";
@@ -82,6 +83,8 @@ export default async function PortfolioPage({
           </p>
         </section>
       )}
+      {/* Scheduled P&I on the notes still held, month by month (components/payment-schedule.tsx). */}
+      {holdings.length > 0 && <ExpectedPayments userId={user.id} holdings={holdings} now={now} />}
 
       {/* Prepared from January to April, when returns are filed. The year can be picked at any time. */}
       {holdings.length > 0 && season.season ? (

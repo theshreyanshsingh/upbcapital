@@ -123,6 +123,8 @@ export async function runJobs(now = new Date()) {
     ["Retention", () => cleanRetention(now)],
     // API calls older than 90 days go from the call log (lib/api-log.ts).
     ["API call log", () => import("@/lib/api-log").then((log) => log.purgeApiCalls(now))],
+    // OAuth clients that registered and never connected, after a month, and old authorization codes (lib/oauth.ts).
+    ["OAuth cleanup", () => import("@/lib/oauth").then((oauth) => oauth.cleanOAuth(now))],
     ["Abandoned tapes", () => purgeTapeDrafts(now).then((count) => `abandoned tapes ${count}`)],
     // The first run of each month sends the market dispatch; later runs find the month claimed.
     ["Market dispatch", () => sendMarketDispatch(now)],

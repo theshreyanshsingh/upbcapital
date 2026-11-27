@@ -14,6 +14,7 @@ import { apiLogSettled } from "../lib/api-log";
 import {
   REGISTER_LIMIT,
   approveAuthorization,
+  cleanOAuth,
   checkAuthorizeRequest,
   clientNameOf,
   denyAuthorization,
@@ -472,9 +473,7 @@ test("a refresh rotates both tokens; the old refresh token then fails, and scope
   assert.notEqual(refresh, first.refresh);
   assert.equal(refreshed.body.expires_in, 3600);
 
-  const replay = await token({ grant_type: "refresh_token", refresh_token: first.refresh, client_id: first.clientId });
-  assert.equal(replay.status, 400);
-  assert.equal(replay.body.error, "invalid_grant");
+  // Using first.refresh again now would revoke the connection: see the replay test below.
 
   // The grant keeps one key row, with the new token on it: the old access token is gone, the new one reads.
   const now = await checkApiKey(`Bearer ${access}`);
@@ -586,4 +585,75 @@ test("the token endpoint takes JSON and a client_id sent as HTTP Basic, and is l
   for (let tries = 0; tries < 120; tries += 1) assert.equal((await token({ grant_type: "password" }, flood)).status, 400);
   const limited = await token({ grant_type: "password" }, flood);
   assert.equal(limited.status, 429);
+});
+
+test("a replaced refresh token used again revokes the connection and tells the buyer", async () => {
+  const first = await connect(world.buyer);
+  const second = await token({ grant_type: "refresh_token", refresh_token: first.refresh, client_id: first.clientId });
+  assert.equal(second.status, 200, JSON.stringify(second.body));
+  const access = String(second.body.access_token);
+  const refresh = String(second.body.refresh_token);
+  made.tokens.push(access);
+  const key = await prisma.apiKey.findUniqueOrThrow({ where: { hash: hashKey(access) } });
+  // Another connection of the same buyer, which the replay must leave alone.
+  const bystander = await connect(world.buyer);
+  try {
+    // From another client_id the old token isn't this grant's, and nothing is revoked.
+    const other = String((await register({ redirect_uris: [REDIRECT] })).body.client_id);
+    assert.equal((await token({ grant_type: "refresh_token", refresh_token: first.refresh, client_id: other })).body.error, "invalid_grant");
+    assert.ok((await checkApiKey(`Bearer ${access}`)).ok);
+
+    // A token nobody issued fails and revokes nothing.
+    assert.equal((await token({ grant_type: "refresh_token", refresh_token: `upbr_${randomBytes(32).toString("base64url")}`, client_id: first.clientId })).body.error, "invalid_grant");
+    assert.ok((await checkApiKey(`Bearer ${access}`)).ok);
+
+    // The replaced token from its own app: refused, and the connection goes, access and refresh both.
+    const replay = await token({ grant_type: "refresh_token", refresh_token: first.refresh, client_id: first.clientId });
+    assert.equal(replay.status, 400);
+    assert.equal(replay.body.error, "invalid_grant");
+    const grant = await prisma.oAuthGrant.findUniqueOrThrow({ where: { id: key.grantId! } });
+    assert.ok(grant.revokedAt);
+    assert.equal((await checkApiKey(`Bearer ${access}`)).ok, false);
+    assert.equal((await token({ grant_type: "refresh_token", refresh_token: refresh, client_id: first.clientId })).body.error, "invalid_grant");
+    assert.equal(await prisma.auditEvent.count({ where: { entityId: grant.id, action: "OAUTH_REFRESH_REPLAYED" } }), 1);
+    const notice = await prisma.notification.findFirst({ where: { toEmail: world.buyer.email, subject: "A connected app was disconnected" } });
+    assert.ok(notice);
+    assert.doesNotMatch(notice.body, /upbr_|upb_[0-9a-f]/);
+    // A second replay changes nothing more and sends nothing more.
+    await token({ grant_type: "refresh_token", refresh_token: first.refresh, client_id: first.clientId });
+    assert.equal(await prisma.notification.count({ where: { toEmail: world.buyer.email, subject: "A connected app was disconnected" } }), 1);
+
+    // The buyer's other connection still reads.
+    assert.ok((await checkApiKey(`Bearer ${bystander.access}`)).ok);
+  } finally {
+    await prisma.notification.deleteMany({ where: { toEmail: world.buyer.email } });
+  }
+});
+
+test("the cleanup drops clients that never connected after a month, and old codes, and keeps the rest", async () => {
+  const day = 24 * HOUR;
+  const now = new Date();
+  const client = async (name: string, data: { createdAt: Date; lastUsedAt?: Date }) => {
+    const clientId = `upbc_cleanup_${name}_${tag}`;
+    made.clients.push(clientId);
+    await prisma.oAuthClient.create({ data: { clientId, name, redirectUris: [REDIRECT], ...data } });
+    return clientId;
+  };
+  const unused = await client("unused", { createdAt: new Date(now.getTime() - 40 * day) });
+  const recent = await client("recent", { createdAt: new Date(now.getTime() - 5 * day) });
+  const used = await client("used", { createdAt: new Date(now.getTime() - 40 * day), lastUsedAt: new Date(now.getTime() - 35 * day) });
+  const granted = await client("granted", { createdAt: new Date(now.getTime() - 40 * day) });
+  await prisma.oAuthGrant.create({ data: { clientId: granted, userId: world.buyer.id, scopes: "listings:read", revokedAt: now } });
+  const pending = await client("pending", { createdAt: new Date(now.getTime() - 40 * day) });
+  const code = (clientId: string, expiresAt: Date) =>
+    prisma.oAuthCode.create({ data: { codeHash: hashKey(`${clientId}-${expiresAt.getTime()}`), clientId, userId: world.buyer.id, redirectUri: REDIRECT, scopes: "listings:read", challenge: "x", expiresAt } });
+  await code(pending, new Date(now.getTime() + 2 * 60 * 1000));
+  const old = await code(recent, new Date(now.getTime() - 2 * day));
+
+  const line = await cleanOAuth(now);
+  assert.match(line, /^OAuth cleanup removed \d+ unused clients? and \d+ old codes?$/);
+  const left = new Set((await prisma.oAuthClient.findMany({ where: { clientId: { in: [unused, recent, used, granted, pending] } }, select: { clientId: true } })).map((row) => row.clientId));
+  assert.deepEqual([...left].sort(), [granted, pending, recent, used].sort());
+  assert.equal(await prisma.oAuthCode.count({ where: { id: old.id } }), 0);
+  assert.equal(await prisma.oAuthCode.count({ where: { clientId: pending } }), 1);
 });

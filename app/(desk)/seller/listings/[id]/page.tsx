@@ -48,6 +48,8 @@ import { reviewLabel } from "@/lib/listing-status";
 import { chargedText, feesFor } from "@/lib/fee-schedule";
 import { getSettings } from "@/lib/settings";
 import { PriceLadderPanel } from "@/components/price-ladder";
+import { ShareListing } from "@/components/share-listing";
+import { sharePanel } from "@/lib/share-cards";
 
 export const metadata = { title: "Your listing" };
 
@@ -97,6 +99,8 @@ export default async function SellerListingPage({
   ]);
   const loanOptions = listing.notes.map((note, index) => ({ id: note.id, label: `Loan ${index + 1} · ${note.streetAddress ? `${note.streetAddress}, ` : ""}${note.city}, ${note.state}` }));
   const roomOpenStatus = ["SUBMITTED", "UNDER_REVIEW", "CHANGES_REQUESTED", "APPROVED"].includes(listing.status);
+  // The public teaser's link to share while the listing is live, and the visits it brought (lib/share-cards.ts).
+  const share = await sharePanel(listing);
 
   return (
     <div className="grid grid-cols-[minmax(0,1fr)] gap-8 lg:grid-cols-[minmax(0,1fr)_300px]">
@@ -174,6 +178,7 @@ export default async function SellerListingPage({
           engagement={log.status === 200 ? log.engagement : []}
         />
         <PrivateSalePanel listingId={listing.id} from="seller" readOnly={user.role === "ADMIN" && !deskCan(user, "sales")} />
+        {share && <ShareListing panel={share} />}
         {/* Guest links for the seller's attorney or custodian, and the bidders' guests by name and role. components/outside-parties.tsx. */}
         <OutsideParties viewer={user} listingId={listing.id} from="seller" />
         <section className="mt-10">

@@ -7,7 +7,8 @@ import { getCurrentUser } from "@/lib/auth";
 import { labelOf } from "@/lib/labels";
 import { launchPending } from "@/lib/launch-rules";
 import { prisma } from "@/lib/prisma";
-import { canSeeListing, isPrivateListing } from "@/lib/private-listings";
+import { canSeeListing } from "@/lib/private-listings";
+import { noteSharedVisit, siteBase } from "@/lib/share-cards";
 import { upbBucket } from "@/lib/strata";
 
 export const dynamic = "force-dynamic";
@@ -19,18 +20,32 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
     include: { notes: { take: 1 } },
   });
   const note = listing?.notes[0];
-  // A private listing names nothing in its title, whoever asks (lib/private-listings.ts).
-  if (!listing || !note || !["APPROVED", "PENDING"].includes(listing.status) || isPrivateListing(listing)) {
-    return { title: "Listing" };
+  // A listing an anonymous visitor can't see names nothing in its title, whoever asks: a private one, a forward-flow
+  // tranche still in its first look, or one paused off the book (lib/private-listings.ts canSeeListing), as the
+  // preview card decides (lib/share-cards.ts).
+  if (!listing || !note || !["APPROVED", "PENDING"].includes(listing.status) || !(await canSeeListing(null, listing))) {
+    return { title: "Listing", metadataBase: siteBase() };
   }
   const title = `${note.city}, ${note.state} ${labelOf("payment", note.paymentStatus).toLowerCase()} note`;
+  const description = `An anonymized ${labelOf("lien", note.lienPosition).toLowerCase()} mortgage note in ${note.city}, ${note.state}. Unpaid principal is in the ${upbBucket(Number(note.upb))} band.`;
+  // The preview card is ./opengraph-image.tsx, which Next names in og:image and twitter:image against the live site's
+  // address. No og:url, so a shared link keeps its ref=share when a social site links back.
   return {
     title,
-    description: `An anonymized ${labelOf("lien", note.lienPosition).toLowerCase()} mortgage note in ${note.city}, ${note.state}. Unpaid principal is in the ${upbBucket(Number(note.upb))} band.`,
+    description,
+    metadataBase: siteBase(),
+    openGraph: { title: `${title} · UPB Capital`, description, siteName: "UPB Capital", type: "website" },
+    twitter: { card: "summary_large_image" },
   };
 }
 
-export default async function OpenListingPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function OpenListingPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const { id } = await params;
   const [user, listing] = await Promise.all([
     getCurrentUser(),
@@ -40,6 +55,8 @@ export default async function OpenListingPage({ params }: { params: Promise<{ id
   // The public page of a private listing is not found, and neither is any listing of a seller who excludes the
   // signed-in buyer. An invitee, the seller and the desk see it.
   if (!(await canSeeListing(user, listing))) notFound();
+  // A visit through a seller's shared link (?ref=share) is counted for their share panel (lib/share-cards.ts).
+  await noteSharedVisit(listing, user, (await searchParams).ref);
   const note = [...listing.notes].sort((a, b) => Number(b.upb) - Number(a.upb))[0];
   const upb = listing.notes.reduce((sum, row) => sum + Number(row.upb), 0);
   const states = [...new Set(listing.notes.map((row) => row.state))].join(", ");

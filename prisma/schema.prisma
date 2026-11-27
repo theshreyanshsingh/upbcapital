@@ -3046,6 +3046,9 @@ model OAuthGrant {
   userId           String
   scopes           String
   refreshHash      String?   @unique
+  // The refresh token this one replaced. Seen again, it means a copy of an old token is in someone else's hands,
+  // and the grant is revoked (lib/oauth.ts).
+  previousRefreshHash String?
   refreshExpiresAt DateTime?
   revokedAt        DateTime?
   lastUsedAt       DateTime?
@@ -3053,6 +3056,7 @@ model OAuthGrant {
 
   @@index([userId])
   @@index([clientId])
+  @@index([previousRefreshHash])
 }
 
 // A one-time authorization code, minutes long, bound to its client, redirect, PKCE challenge and scopes.
@@ -3070,4 +3074,29 @@ model OAuthCode {
   createdAt   DateTime  @default(now())
 
   @@index([expiresAt])
+}
+
+// A Slack or Microsoft Teams channel that gets short alerts (lib/chat-alerts.ts): a buyer account's, for the events it
+// picks, or the desk's, for the desk's own notices. The URL is the channel's secret and never shows again in full.
+model ChatChannel {
+  id          String    @id @default(cuid()) @map("_id")
+  // The buyer account the channel belongs to; unset for the desk's channel.
+  ownerId     String?
+  desk        Boolean   @default(false)
+  // SLACK or TEAMS.
+  kind        String
+  url         String
+  urlHint     String
+  label       String    @default("")
+  // Comma-separated event names (lib/chat-alerts.ts).
+  events      String    @default("")
+  createdById String
+  lastSentAt  DateTime?
+  lastError   String?
+  failures    Int       @default(0)
+  pausedAt    DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([ownerId])
+  @@index([desk])
 }

@@ -29,6 +29,8 @@ import { deskContact } from "@/lib/staff";
 import { deskBidNotAcceptable } from "@/lib/awards";
 import { reviewLabel } from "@/lib/listing-status";
 import { OutsideParties } from "@/components/outside-parties";
+import { ShareListing } from "@/components/share-listing";
+import { sharePanel } from "@/lib/share-cards";
 
 export const metadata = { title: "Deal" };
 
@@ -96,6 +98,8 @@ export default async function BrokerDealPage({
   const loanOptions = listing.notes.map((note, index) => ({ id: note.id, label: `Loan ${index + 1} · ${note.streetAddress ? `${note.streetAddress}, ` : ""}${note.city}, ${note.state}` }));
   const roomOpenStatus = ["SUBMITTED", "UNDER_REVIEW", "CHANGES_REQUESTED", "APPROVED"].includes(listing.status);
   const contact = await deskContact(listing.deskOwnerId);
+  // The public teaser's link to share while the listing is live, and the visits it brought (lib/share-cards.ts).
+  const share = await sharePanel(listing);
 
   return (
     <div className="mx-auto max-w-3xl">
@@ -172,6 +176,7 @@ export default async function BrokerDealPage({
         engagement={log.status === 200 ? log.engagement : []}
       />
       <PrivateSalePanel listingId={listing.id} from="broker" />
+      {share && <ShareListing panel={share} />}
       <OutsideParties viewer={user} listingId={listing.id} from="broker" />
       {listing.deskBids.map((bid) => (
         <div key={bid.id} className="mt-6 border border-link/30 bg-link/5 p-4 rounded-xl">

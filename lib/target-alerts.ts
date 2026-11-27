@@ -117,6 +117,9 @@ export async function checkTargets(listingId: string, now = new Date(), told?: S
       `The ask on ${listing.title} is now ${dollars(ask)}, at or under your target of ${dollars(row.targetAsk)}. This alert is now spent. Set a new target on the listing for another.\n\nOpen the listing: ${watchLink(listingId)}`,
       { category: "watch", userId: user.id },
     );
+    // The buyer's Slack and Teams channels that take price alerts hear it too, without waiting (lib/chat-alerts.ts).
+    const hit = { listingId, title: listing.title, ask, targetAsk: row.targetAsk };
+    import("@/lib/chat-alerts").then((chat) => chat.alertBuyerChannels([user.id], chat.PRICE_ALERT_EVENT, hit)).catch((error) => console.error("[upb-chat] price alert failed:", error instanceof Error ? error.message : error));
     count += 1;
     told?.add(user.id);
   }

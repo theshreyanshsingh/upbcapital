@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { saveNotificationPrefs } from "@/actions/prefs";
 import { CalendarFeedSection } from "@/components/calendar-feed";
+import { BuyerChatAlerts } from "@/components/chat-alerts";
 import { Notice } from "@/components/notice";
 import { PageIntro } from "@/components/page-intro";
 import { PushControl } from "@/components/pwa";
@@ -102,6 +103,7 @@ export default async function NotificationPrefsPage({
         </p>
         <PushControl publicKey={pushPublicKey()} devices={devices} />
       </section>
+      {user.role === "BUYER" && <BuyerChatAlerts user={user} notice={q(params, "chat")} error={q(params, "chatError")} />}
       <CalendarFeedSection />
     </div>
   );
